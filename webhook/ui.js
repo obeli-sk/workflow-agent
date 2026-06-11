@@ -102,10 +102,11 @@ async function loadPromptPreview(execId) {
 // ----- detail -----------------------------------------------------------
 
 async function detailRun(id) {
-    const [status, prompt, walk, finalResult, pendingAsks, pendingConfirms] = await Promise.all([
+    const [status, prompt, walk, sentResults, finalResult, pendingAsks, pendingConfirms] = await Promise.all([
         loadStatus(id),
         loadPrompt(id),
         loadResponses(id),
+        loadSentResults(id),
         loadFinalResult(id),
         loadPendingAsks(id),
         loadPendingConfirms(id),
@@ -116,7 +117,7 @@ async function detailRun(id) {
         result_kind: status?.pending_state?.result_kind ?? null,
         created_at: status?.created_at || "",
         prompt,
-        turns: buildTurns(walk.replies, walk.toolChildren),
+        turns: buildTurns(walk.replies, walk.toolChildren, sentResults),
         final_result: finalResult,
         pending_asks: pendingAsks,
         pending_confirms: pendingConfirms,
@@ -378,6 +379,55 @@ async function loadResponses(execId) {
     return { replies, toolChildren };
 }
 
+// The tool responses *as the model received them* are the `tool_results` the
+// workflow passed to each session.send. Those are not in /responses (which only
+// has child results); they live in the workflow history as the params of the
+// send join_set_request. Reading them here means the UI shows what was actually
+// sent to the LLM (post any workflow processing), not the upstream tool child's
+// raw result. Flattened in dispatch order to align 1:1 with the tool calls.
+async function loadSentResults(execId) {
+    const sent = [];
+    let version = 0;
+    let including = true;
+    while (true) {
+        let payload;
+        try {
+            payload = await obeliskJson(
+                `/v1/executions/${encodeURIComponent(execId)}/events?version=${version}&including_cursor=${including}&length=200`,
+            );
+        } catch (_) { break; }
+        const events = payload.events || [];
+        for (const e of events) {
+            const he = e.event?.history_event?.event;
+            if (!he || he.type !== "join_set_request") continue;
+            if (parseJoinName(he.join_set_id) !== "send") continue;
+            const input = he.request?.params?.[1];
+            if (input && Array.isArray(input.tool_results)) {
+                for (const tr of input.tool_results) sent.push(normalizeSent(tr));
+            }
+        }
+        const max = payload.max_version;
+        if (typeof max !== "number" || events.length === 0 || max <= version) break;
+        version = max;
+        including = false;
+    }
+    return sent;
+}
+
+// A sent tool_result entry is { name, outcome: { ok|err } } where ok is the
+// activity's JSON string. Normalise to { ok }/{ err }, JSON-parsing ok so the
+// UI can pretty-print (mirrors unwrapTypedResult).
+function normalizeSent(entry) {
+    const o = entry && entry.outcome;
+    if (o && "ok" in o) {
+        let v = o.ok;
+        if (typeof v === "string") { try { v = JSON.parse(v); } catch (_) { /* keep string */ } }
+        return { ok: v };
+    }
+    if (o && "err" in o) return { err: o.err };
+    return null;
+}
+
 function parseJoinName(joinSetId) {
     // join_set_id format: "o:<ordinal>-<name>"
     if (typeof joinSetId !== "string") return "";
@@ -410,9 +460,12 @@ function unwrapTypedResult(result) {
 //   { kind: "tool_calls", calls: [{name, args, child_id?, ok?|err?}] }
 //   { kind: "final", text }
 //
-// Tool calls are paired with the next N entries in `toolChildren` (collected
-// from the workflow's response stream in dispatch order).
-function buildTurns(replies, toolChildren) {
+// Tool calls, child executions, and sent tool_results are all in dispatch order,
+// so a single cursor aligns them 1:1. The displayed response is what was sent to
+// the LLM (`sentResults`); we fall back to the child execution result when the
+// send isn't recorded (e.g. an in-flight turn, or apply_deployment which is
+// terminal and never sends results back). `child_id` always links to the child.
+function buildTurns(replies, toolChildren, sentResults) {
     const turns = [];
     let toolCursor = 0;
     for (const reply of replies) {
@@ -421,15 +474,18 @@ function buildTurns(replies, toolChildren) {
             turns.push({ kind: "final", text: reply.final });
         } else if (Array.isArray(reply.tool_calls)) {
             const calls = reply.tool_calls.map((c) => {
-                const child = toolChildren[toolCursor++];
+                const child = toolChildren[toolCursor];
+                const sent = sentResults[toolCursor];
+                toolCursor += 1;
                 const base = {
                     name: c?.name,
                     args: parseArgs(c?.arguments_json),
                     child_id: child?.id ?? null,
                 };
-                if (child && child.result) {
-                    if ("ok" in child.result) base.ok = child.result.ok;
-                    else if ("err" in child.result) base.err = child.result.err;
+                const src = sent || (child && child.result);
+                if (src) {
+                    if ("ok" in src) base.ok = src.ok;
+                    else if ("err" in src) base.err = src.err;
                 }
                 return base;
             });
