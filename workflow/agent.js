@@ -155,21 +155,37 @@ function drainTurn(socketPath) {
     throw `unexpected recv outcome: ${JSON.stringify(outcome)}`;
 }
 
-// The recv activity throws the permanent-rate-limited variant payload as
-// { permanent_rate_limited: { retry_after_seconds, message } }.
+// When an activity returns its err arm, the workflow runtime throws a JS Error
+// whose `message` is the JSON-encoded err value (workflow-js-runtime:
+// `Error(err_json)`). Parse it back into the agent-error variant object so the
+// arms below can inspect it; non-JSON errors (traps, etc.) yield null.
+function errPayload(error) {
+    const raw = (error && typeof error === "object" && typeof error.message === "string")
+        ? error.message
+        : (typeof error === "string" ? error : null);
+    if (raw === null) return null;
+    try {
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+// recv's permanent-rate-limited arm: { permanent_rate_limited: { retry_after_seconds, message } }.
 function rateLimited(error) {
-    if (error && typeof error === "object" &&
-        error.permanent_rate_limited && typeof error.permanent_rate_limited === "object") {
-        return error.permanent_rate_limited;
+    const p = errPayload(error);
+    if (p && p.permanent_rate_limited && typeof p.permanent_rate_limited === "object") {
+        return p.permanent_rate_limited;
     }
     return null;
 }
 
-// The recv activity throws the permanent-malformed-reply variant payload as
-// { permanent_malformed_reply: "<parse error>" }.
+// recv's permanent-malformed-reply arm: { permanent_malformed_reply: "<parse error>" }.
 function malformedReply(error) {
-    if (error && typeof error === "object" && typeof error.permanent_malformed_reply === "string") {
-        return error.permanent_malformed_reply;
+    const p = errPayload(error);
+    if (p && typeof p.permanent_malformed_reply === "string") {
+        return p.permanent_malformed_reply;
     }
     return null;
 }
