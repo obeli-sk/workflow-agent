@@ -17,10 +17,35 @@ obelisk.list_executions
     "execution_id_prefix"?: string,
     "show_derived"?: boolean,
     "hide_finished"?: boolean,
+    "component_digest"?: string,
     "deployment_id"?: string,
+    "cursor"?: string,
+    "direction"?: "older" | "newer",
+    "including_cursor"?: boolean,
     "length"?: number
   }
   Lists the most recent matching executions. An exact execution ID may be
   passed as execution_id_prefix; use get_execution for its current status.
+obelisk.get_logs
+  args: {
+    "execution_id": string,
+    "show_derived"?: boolean,
+    "show_logs"?: boolean,
+    "show_streams"?: boolean,
+    "levels"?: ["trace" | "debug" | "info" | "warn" | "error"],
+    "stream_types"?: ["stdout" | "stderr"],
+    "cursor"?: string,
+    "direction"?: "older" | "newer",
+    "including_cursor"?: boolean,
+    "length"?: number
+  }
+  Gets structured and stream logs. show_derived defaults to true.
+obelisk.list_deployments
+  args: {
+    "cursor_from"?: string,
+    "including_cursor"?: boolean,
+    "length"?: number
+  }
+  Lists deployments newest first.
 `;
 }

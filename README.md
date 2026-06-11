@@ -113,6 +113,10 @@ inspectable):
 | `http.get`                 | `obelisk-agent:tools/http.get`                   |
 | `input.ask_user`           | `obelisk-agent:tools/input.ask-user` *(stub)*    |
 
+Execution and deployment list tools expose the REST API pagination cursors.
+`obelisk.get_logs` also supports nested executions, log/stream filters, and
+cursor pagination.
+
 `input.ask_user` is configured as `activity_stub`: it parks the workflow and
 waits for an operator to PUT a response. The web UI surfaces pending asks on
 the detail page with an inline form. To answer from the shell instead:

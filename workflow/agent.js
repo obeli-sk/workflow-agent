@@ -167,14 +167,29 @@ function dispatch(call, draft) {
                     String(args.execution_id_prefix || ""),
                     Boolean(args.show_derived),
                     Boolean(args.hide_finished),
+                    String(args.component_digest || ""),
                     String(args.deployment_id || ""),
+                    String(args.cursor || ""),
+                    paginationDirection(args.direction),
+                    Boolean(args.including_cursor),
                     len,
                 ));
             }
             case "obelisk.get_execution":
                 return ok(name, webapi.getExecution(requireString(args.execution_id, "execution_id")));
             case "obelisk.get_logs":
-                return ok(name, webapi.getLogs(requireString(args.execution_id, "execution_id")));
+                return ok(name, webapi.getLogs(
+                    requireString(args.execution_id, "execution_id"),
+                    args.show_derived === undefined ? true : Boolean(args.show_derived),
+                    args.show_logs === undefined ? true : Boolean(args.show_logs),
+                    args.show_streams === undefined ? true : Boolean(args.show_streams),
+                    arrayArgOr(args.levels, []),
+                    arrayArgOr(args.stream_types, []),
+                    String(args.cursor || ""),
+                    paginationDirection(args.direction),
+                    Boolean(args.including_cursor),
+                    (args.length | 0) || 200,
+                ));
             case "obelisk.submit":
                 return ok(name, webapi.submitJson(
                     requireString(args.ffqn, "ffqn"),
@@ -183,7 +198,11 @@ function dispatch(call, draft) {
             case "obelisk.get_result":
                 return ok(name, webapi.getResultJson(requireString(args.execution_id, "execution_id")));
             case "obelisk.list_deployments":
-                return ok(name, webapi.listDeployments());
+                return ok(name, webapi.listDeployments(
+                    String(args.cursor_from || ""),
+                    Boolean(args.including_cursor),
+                    (args.length | 0) || 20,
+                ));
             case "obelisk.get_deployment":
                 return ok(name, webapi.getDeployment(requireString(args.deployment_id, "deployment_id")));
             case "obelisk.current_deployment_id":
@@ -460,6 +479,14 @@ function allowedHostsArgOr(value, fallback) {
 
 function stringArg(value, fallback) {
     return typeof value === "string" && value ? value : fallback;
+}
+
+function paginationDirection(value) {
+    if (value === undefined || value === null || value === "") return "";
+    if (value !== "older" && value !== "newer") {
+        throw "direction must be older or newer";
+    }
+    return value;
 }
 
 function requireArray(value, field) {

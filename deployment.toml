@@ -134,7 +134,11 @@ params = [
   { name = "execution-id-prefix", type = "string" },
   { name = "show-derived", type = "bool" },
   { name = "hide-finished", type = "bool" },
+  { name = "component-digest", type = "string" },
   { name = "deployment-id", type = "string" },
+  { name = "cursor", type = "string" },
+  { name = "direction", type = "string" },
+  { name = "including-cursor", type = "bool" },
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
@@ -160,6 +164,15 @@ name = "tool_get_logs"
 ffqn = "obelisk-agent:tools/webapi.get-logs"
 params = [
   { name = "execution-id", type = "string" },
+  { name = "show-derived", type = "bool" },
+  { name = "show-logs", type = "bool" },
+  { name = "show-streams", type = "bool" },
+  { name = "levels", type = "list<string>" },
+  { name = "stream-types", type = "list<string>" },
+  { name = "cursor", type = "string" },
+  { name = "direction", type = "string" },
+  { name = "including-cursor", type = "bool" },
+  { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
 location = "${DEPLOYMENT_DIR}/activity/tools/get-logs.js"
@@ -188,7 +201,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "${DEPLOYMENT_DIR}/activity/tools/get-result.js"
-exec.lock_expiry.hours = 1
+exec.lock_expiry.minutes = 10
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -196,6 +209,11 @@ methods = ["GET"]
 [[activity_js]]
 name = "tool_list_deployments"
 ffqn = "obelisk-agent:tools/webapi.list-deployments"
+params = [
+  { name = "cursor-from", type = "string" },
+  { name = "including-cursor", type = "bool" },
+  { name = "length", type = "u32" },
+]
 return_type = "result<string, string>"
 location = "${DEPLOYMENT_DIR}/activity/tools/list-deployments.js"
 [[activity_js.allowed_host]]
