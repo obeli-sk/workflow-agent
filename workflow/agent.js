@@ -615,7 +615,9 @@ function getComponentSource(name, args) {
         offset,
         length: slice.length,
         next_offset: nextOffset < total ? nextOffset : null,
-        source: slice,
+        // raw_body is emitted verbatim to the model (nonce-fenced) by
+        // server.js renderUserText, not JSON-escaped into the envelope.
+        raw_body: slice,
     }));
 }
 

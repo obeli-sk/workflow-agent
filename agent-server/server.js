@@ -40,6 +40,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 
 const SOCKET_PATH = process.argv[2];
 if (!SOCKET_PATH) {
@@ -108,17 +109,36 @@ function tryParse(value) {
 }
 
 // Render the common `agent-input` into the user-message text. `prompt` is sent
-// verbatim; `tool_results` is serialized into the JSON envelope the system
-// prompt instructs the model to expect.
+// verbatim; `tool_results` becomes the JSON envelope the system prompt expects.
+//
+// A tool result whose ok value carries a `raw_body` string (e.g. file source)
+// is not JSON-escaped into the envelope: the body is emitted verbatim *after*
+// the JSON, wrapped in a per-message random nonce fence, and the envelope keeps
+// only the marker under `body`. This keeps source readable and token-cheap for
+// the model instead of a `\n`-escaped string. (The wire transport into this
+// process is still JSON; this only changes what the model sees.)
 function renderUserText(input) {
   if (input && typeof input.prompt === "string") return input.prompt;
   if (input && Array.isArray(input.tool_results)) {
+    const nonce = randomBytes(4).toString("hex");
+    const bodies = [];
     const results = input.tool_results.map((tr) => {
       const outcome = tr && tr.outcome;
-      if (outcome && "ok" in outcome) return { name: tr.name, ok: tryParse(outcome.ok) };
-      return { name: tr.name, err: outcome ? outcome.err : "error" };
+      if (!outcome || !("ok" in outcome)) return { name: tr.name, err: outcome ? outcome.err : "error" };
+      const val = tryParse(outcome.ok);
+      if (val && typeof val === "object" && typeof val.raw_body === "string") {
+        const marker = `${nonce}-${bodies.length}`;
+        bodies.push({ marker, body: val.raw_body });
+        const { raw_body, ...meta } = val;
+        return { name: tr.name, ok: { ...meta, body: `@@${marker}@@` } };
+      }
+      return { name: tr.name, ok: val };
     });
-    return JSON.stringify({ tool_results: results });
+    let msg = JSON.stringify({ tool_results: results });
+    for (const b of bodies) {
+      msg += `\n\n@@${b.marker}@@\n${b.body}\n@@/${b.marker}@@`;
+    }
+    return msg;
   }
   return null;
 }
