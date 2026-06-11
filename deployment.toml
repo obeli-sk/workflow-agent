@@ -1,4 +1,6 @@
-# --- Agent lifecycle: provider-specific start (codex.start etc. come later) ---
+# --- Agent lifecycle: provider-specific start (one per backend) ---------------
+# Both point to the same agent-start.js; the AGENT_BACKEND env picks the auth
+# mount + backend, and server.js inside the container spawns the right CLI.
 
 [[activity_exec]]
 ffqn = "obelisk-agent:agent/claude.start"
@@ -14,10 +16,30 @@ env_vars = [
   "PATH",
   "HOME",
   { key = "AGENT_IMAGE",            value = "${AGENT_IMAGE:-ghcr.io/obeli-sk/obelisk-agent-server:latest}" },
-  { key = "AGENT_BACKEND",          value = "${AGENT_BACKEND:-claude}" },
+  { key = "AGENT_BACKEND",          value = "claude" },
   { key = "AGENT_MODEL",            value = "${AGENT_MODEL:-claude-opus-4-7}" },
   { key = "AGENT_EXTRA_ARGS",       value = "${AGENT_EXTRA_ARGS:-}" },
   { key = "AGENT_HOST_CLAUDE_DIR",  value = "${AGENT_HOST_CLAUDE_DIR:-${HOME}/.claude}" },
+]
+
+[[activity_exec]]
+ffqn = "obelisk-agent:agent/codex.start"
+params = [
+  { name = "container-name", type = "string" },
+  { name = "socket", type = "string" },
+]
+return_type = "result<record { container: string, image: string, socket: string, id: string }, string>"
+location = "${DEPLOYMENT_DIR}/activity/agent-start.js"
+exec.lock_expiry.minutes = 2
+max_retries = 1
+env_vars = [
+  "PATH",
+  "HOME",
+  { key = "AGENT_IMAGE",           value = "${AGENT_IMAGE:-ghcr.io/obeli-sk/obelisk-agent-server:latest}" },
+  { key = "AGENT_BACKEND",         value = "codex" },
+  { key = "AGENT_MODEL",           value = "${AGENT_CODEX_MODEL:-gpt-5.5}" },
+  { key = "AGENT_EXTRA_ARGS",      value = "${AGENT_CODEX_EXTRA_ARGS:-}" },
+  { key = "AGENT_HOST_CODEX_DIR",  value = "${AGENT_HOST_CODEX_DIR:-${HOME}/.codex}" },
 ]
 
 # --- Agent session: provider-agnostic send / recv / cleanup -------------------
@@ -203,6 +225,8 @@ return_type = "result<string, string>"
 ffqn = "obelisk-agent:workflow/workflow.run"
 params = [
   { name = "prompt", type = "string" },
+  # Which agent backend to drive: "claude" (default) or "codex". null => claude.
+  { name = "backend", type = "option<string>" },
 ]
 return_type = "result<string, string>"
 location = "${DEPLOYMENT_DIR}/workflow/agent.js"

@@ -9,6 +9,11 @@ RUN apt-get update \
 ARG CLAUDE_CODE_VERSION=latest
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
+# codex backend. server.js depends on the `codex exec --json` thread/turn event
+# schema (thread.started / item.completed / turn.completed); pin if it drifts.
+ARG CODEX_VERSION=latest
+RUN npm install -g @openai/codex@${CODEX_VERSION}
+
 COPY package.json ./
 COPY server.js entrypoint.sh system-prompt.md ./
 RUN chmod +x /app/entrypoint.sh

@@ -98,12 +98,19 @@ async function main() {
   if (!containerName) failPermanent("container-name must not be empty");
   if (!socketPath) failPermanent("socket must not be empty");
 
-  const hostClaudeDir = process.env.AGENT_HOST_CLAUDE_DIR;
-  if (!hostClaudeDir) {
-    failPermanent("AGENT_HOST_CLAUDE_DIR must be set to the host's claude-code config dir");
-  }
-  if (!fs.existsSync(hostClaudeDir)) {
-    failPermanent(`AGENT_HOST_CLAUDE_DIR=${hostClaudeDir} does not exist - run 'claude' once on the host to log in`);
+  // Each backend keeps its auth in a host config dir that we bind-mount into
+  // the container. The entrypoint then points the backend CLI at the mount.
+  const backend = process.env.AGENT_BACKEND || "claude";
+  const AUTH = {
+    claude: { envVar: "AGENT_HOST_CLAUDE_DIR", defaultDir: `${process.env.HOME}/.claude`, mount: "/host-claude", hint: "run 'claude' once on the host to log in" },
+    codex: { envVar: "AGENT_HOST_CODEX_DIR", defaultDir: `${process.env.HOME}/.codex`, mount: "/host-codex", hint: "run 'codex login' once on the host" },
+  }[backend];
+  if (!AUTH) failPermanent(`unknown AGENT_BACKEND: ${backend}`);
+
+  const hostAuthDir = process.env[AUTH.envVar] || AUTH.defaultDir;
+  if (!hostAuthDir) failPermanent(`${AUTH.envVar} must be set to the host's ${backend} config dir`);
+  if (!fs.existsSync(hostAuthDir)) {
+    failPermanent(`${AUTH.envVar}=${hostAuthDir} does not exist - ${AUTH.hint}`);
   }
 
   const socketDir = path.dirname(socketPath);
@@ -122,27 +129,25 @@ async function main() {
   }
 
   const containerSocket = `${CONTAINER_SOCKET_DIR}/${socketBase}`;
-  // Mount the host's ~/.claude read-write at /host-claude so token refresh
-  // propagates, but let the entrypoint hand-pick which files claude-code
-  // actually sees - the host dir contains plugins/skills/etc that would
-  // register tools claude tries to advertise to the API.
-  const containerHostClaude = "/host-claude";
+  // Mount the host's auth dir read-write (so token refresh / sessions persist)
+  // at the backend's mount point. The entrypoint hand-picks which files the CLI
+  // actually sees.
   const args = [
     "run",
     "--detach",
     "--name", containerName,
     "--user", `${uid}:${gid}`,
     "--mount", `type=bind,src=${socketDir},dst=${CONTAINER_SOCKET_DIR}`,
-    "--mount", `type=bind,src=${hostClaudeDir},dst=${containerHostClaude}`,
-    "-e", `AGENT_HOST_CLAUDE_DIR=${containerHostClaude}`,
-    "-e", `AGENT_BACKEND=${process.env.AGENT_BACKEND || "claude"}`,
-    "-e", `AGENT_MODEL=${process.env.AGENT_MODEL || "claude-opus-4-7"}`,
+    "--mount", `type=bind,src=${hostAuthDir},dst=${AUTH.mount}`,
+    "-e", `${AUTH.envVar}=${AUTH.mount}`,
+    "-e", `AGENT_BACKEND=${backend}`,
+    "-e", `AGENT_MODEL=${process.env.AGENT_MODEL || ""}`,
     "-e", `AGENT_EXTRA_ARGS=${process.env.AGENT_EXTRA_ARGS || ""}`,
     IMAGE_NAME,
     containerSocket,
   ];
 
-  console.error(`Starting agent container ${containerName} from ${IMAGE_NAME}`);
+  console.error(`Starting ${backend} agent container ${containerName} from ${IMAGE_NAME}`);
   const result = runDocker(args);
 
   waitForSocket(containerName, socketPath);

@@ -1,6 +1,6 @@
 # obelisk-agent
 
-An Obelisk app that runs an LLM CLI (`claude-code` today, `codex` planned) as a
+An Obelisk app that runs an LLM CLI (`claude-code` or `codex`) as a
 long-running external resource and drives it from a durable workflow.
 
 The structure follows `apps/fio`: each workflow execution spawns a docker
@@ -154,20 +154,22 @@ read-write so claude can refresh tokens.
 just serve
 ```
 
-Optional env vars consumed by `agent-start.js`:
+Optional env vars (defaults set per backend in `deployment.toml`):
 
 - `AGENT_IMAGE` - override the docker image tag
-- `AGENT_BACKEND` - `claude` (default); `codex` reserved
-- `AGENT_MODEL` - default `claude-opus-4-7`
-- `AGENT_EXTRA_ARGS` - appended to the CLI invocation inside the container
-- `AGENT_HOST_CLAUDE_DIR` - host path to mount as claude config, default `$HOME/.claude`
+- `AGENT_MODEL` - claude default `claude-opus-4-7`
+- `AGENT_CODEX_MODEL` - codex default `gpt-5.5` (a ChatGPT-account-supported model)
+- `AGENT_EXTRA_ARGS` / `AGENT_CODEX_EXTRA_ARGS` - extra CLI args inside the container
+- `AGENT_HOST_CLAUDE_DIR` - host claude config to mount, default `$HOME/.claude`
+- `AGENT_HOST_CODEX_DIR` - host codex config to mount, default `$HOME/.codex`
 
 ## Submit a one-shot prompt
 
-From the CLI:
+From the CLI (claude is the default backend; `run-codex` selects codex):
 
 ```sh
 just run 'Summarise the latest commits on main.'
+just run-codex 'Summarise the latest commits on main.'
 ```
 
 To submit paused:
@@ -176,7 +178,7 @@ To submit paused:
 OBELISK_SUBMIT_FLAGS=--paused just run 'prompt here'
 ```
 
-Or use the web UI (see below).
+Or use the web UI (the new-prompt form has a `claude`/`codex` selector).
 
 ## Web UI
 
@@ -205,17 +207,35 @@ multiple `session.recv` invocations (one per poll), and `session.cleanup`. The
 typed `agent-reply` per turn is captured as the `recv` activity result; the raw
 stream-json lands on the `recv` activity's stderr.
 
-## Adding codex
+## Backends
 
-`AGENT_BACKEND=codex` is reserved but not wired up. The common agent schema is
-the seam: only the start activity and `server.js` are provider-specific. To add
-codex:
+The backend is chosen by the workflow's `backend` param (`null`/absent =>
+claude, `"codex"` => codex). The common agent schema is the seam: only the start
+activity and `server.js` are provider-specific.
 
-1. Install codex in `agent-server/Dockerfile` (`npm i -g @openai/codex`).
-2. Add a `codex.start` activity (or generalize `agent-start.js`) and have the
-   workflow choose it.
-3. Branch on `AGENT_BACKEND` in `server.js`: spawn `codex exec --json`, and
-   translate its native events into the same `turn-outcome` / `agent-reply` /
-   `agent-error` shapes the claude path emits. The workflow and UI need no
-   changes.
-4. Mount the codex equivalent of `~/.claude` (or pass `OPENAI_API_KEY`).
+| | claude | codex |
+|---|---|---|
+| start activity | `obelisk-agent:agent/claude.start` | `obelisk-agent:agent/codex.start` |
+| auth | `~/.claude` -> `CLAUDE_CONFIG_DIR` | `~/.codex` -> `CODEX_HOME` (`auth.json` + `config.toml`) |
+| default model | `claude-opus-4-7` | `gpt-5.5` (ChatGPT-account-supported) |
+| process model | one persistent `claude -p --input-format stream-json` | `codex exec --json` per turn, continued with `codex exec resume <thread_id>` |
+| turn ends at | `result` event | `turn.completed` / `turn.failed` |
+
+Both run their full internal tool loop (FS, shell, web) within a turn and
+surface durable actions through the `{"tool_calls": …}` envelope. `server.js`
+normalizes each into the common `turn-outcome` / `agent-reply` / `agent-error`
+shapes, so the workflow and UI are backend-agnostic.
+
+codex specifics: it has no `--append-system-prompt`, so the system prompt rides
+along in the first turn's user message; the first turn uses
+`--dangerously-bypass-approvals-and-sandbox` (the container is the sandbox) and
+resume inherits it. The codex session is persisted under the host-mounted
+`~/.codex/sessions`, so the conversation survives a container restart (automatic
+restart-and-resume on container death is not yet wired). `server.js` waits for
+each `codex exec` process to fully close before the next `resume`, so the
+session file is flushed first.
+
+Authenticate codex once on the host (`codex login`), which populates `~/.codex`.
+
+To add a third backend, follow the same seam: a new `<backend>.start` activity +
+a branch in `server.js` that maps its native events to the common shapes.

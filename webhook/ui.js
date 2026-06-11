@@ -287,8 +287,10 @@ async function submit(request) {
     if (typeof prompt !== "string" || !prompt.trim()) {
         return jsonError(400, "prompt is required");
     }
+    // backend is the workflow's option<string>: null => claude.
+    const backend = (typeof payload?.backend === "string" && payload.backend) ? payload.backend : null;
     const execId = obelisk.executionIdGenerate();
-    try { obelisk.schedule(execId, WORKFLOW_FFQN, [prompt]); }
+    try { obelisk.schedule(execId, WORKFLOW_FFQN, [prompt, backend]); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }
@@ -353,6 +355,9 @@ const SHELL_HTML = `<!doctype html>
   aside header form textarea { width: 100%; resize: vertical; min-height: 3.5em; padding: 0.4em 0.6em; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
   aside header form button { margin-top: 0.4em; padding: 0.4em 0.9em; font: inherit; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: white; border-radius: 4px; }
   aside header form button:disabled { opacity: 0.5; cursor: wait; }
+  aside header form .new-row { display: flex; gap: 0.4em; align-items: center; }
+  aside header form .new-row button { margin-top: 0; }
+  aside header form select { padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--panel); }
   .runs { flex: 1; overflow-y: auto; }
   .run-item { display: block; padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); cursor: pointer; text-decoration: none; color: inherit; }
   .run-item:hover { background: #f4f4f4; }
@@ -403,7 +408,13 @@ const SHELL_HTML = `<!doctype html>
     <h1>obelisk-agent</h1>
     <form id="new-form">
       <textarea id="new-prompt" placeholder="Ask the agent..." required></textarea>
-      <button type="submit" id="new-submit">Send</button>
+      <div class="new-row">
+        <select id="new-backend" title="agent backend">
+          <option value="claude">claude</option>
+          <option value="codex">codex</option>
+        </select>
+        <button type="submit" id="new-submit">Send</button>
+      </div>
     </form>
   </header>
   <div class="runs" id="runs"></div>
@@ -642,12 +653,14 @@ function truncate(s, n) {
 
 async function submitPrompt(prompt) {
   const btn = document.getElementById('new-submit');
+  const sel = document.getElementById('new-backend');
+  const backend = sel ? sel.value : 'claude';
   btn.disabled = true;
   try {
     const r = await fetch('/api/submit', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, backend }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));

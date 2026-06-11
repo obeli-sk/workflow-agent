@@ -1,4 +1,5 @@
 import * as claude from "obelisk-agent:agent/claude";
+import * as codex from "obelisk-agent:agent/codex";
 import * as session from "obelisk-agent:agent/session";
 import * as webapi from "obelisk-agent:tools/webapi";
 import * as askUser from "obelisk-agent:tools/input";
@@ -7,18 +8,25 @@ const RECV_TIMEOUT_MS = 30000;
 const MAX_RECV_PER_TURN = 60; // 60 * 30s = 30 min ceiling per agent turn
 const MAX_TURNS = 30;          // hard cap on agent loop turns
 
-export default function run(prompt) {
+// Provider-specific start activities; session.{send,recv,cleanup} are shared.
+const STARTERS = { claude: claude.start, codex: codex.start };
+
+export default function run(prompt, backend) {
     if (typeof prompt !== "string" || !prompt.trim()) {
         throw "prompt is required";
     }
+    const which = (typeof backend === "string" && backend) ? backend : "claude";
+    const start = STARTERS[which];
+    if (!start) throw `unknown backend: ${which} (expected claude or codex)`;
+
     const sessionId = sanitize(obelisk.executionIdCurrent());
     const containerName = `obelisk-agent-${sessionId}`;
     const socketPath = `/tmp/obelisk-agent/${sessionId}.sock`;
 
     let workflowError = null;
     try {
-        const startInfo = claude.start(containerName, socketPath);
-        console.log(`Started ${startInfo.container} from ${startInfo.image}`);
+        const startInfo = start(containerName, socketPath);
+        console.log(`Started ${which} agent ${startInfo.container} from ${startInfo.image}`);
 
         // agent-input variant: { prompt } for the first turn, then { tool_results }.
         let nextInput = { prompt };
