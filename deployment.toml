@@ -61,8 +61,8 @@ exec.lock_expiry.seconds = 30
 max_retries = 3
 env_vars = ["PATH"]
 
-# turn-outcome (ok): one poll of the current turn (`working` => poll again,
-#   `reply` => the turn produced a parsed agent-reply).
+# turn-outcome (ok): the activity polls internally and returns when the turn
+# produces a parsed agent-reply. Native events stream to its persisted stderr.
 # agent-error (err): structured failures; cases containing `permanent` are not
 #   retried (the workflow handles rate-limit by sleeping).
 [[activity_exec]]
@@ -73,7 +73,7 @@ params = [
 ]
 return_type = "result<variant { working, reply(variant { final(string), tool-calls(list<record { name: string, arguments-json: string }>) }) }, variant { permanent-rate-limited(record { retry-after-seconds: u32, message: string }), permanent-agent-exited(string), permanent-error(string), transient-error(string), execution-failed }>"
 location = "${DEPLOYMENT_DIR}/activity/agent-recv.js"
-exec.lock_expiry.minutes = 2
+exec.lock_expiry.hours = 1
 max_output_bytes = 1048576   # 1 MiB; default 4 KiB overflows on bigger claude replies
 max_retries = 3
 env_vars = ["PATH"]
@@ -198,6 +198,19 @@ pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["POST"]
 
 [[activity_js]]
+name = "tool_deployment_edit"
+ffqn = "obelisk-agent:tools/webapi.deployment-edit"
+params = [
+  { name = "operation",    type = "string" },
+  { name = "payload-json", type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/deployment-edit.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "POST"]
+
+[[activity_exec]]
 name = "tool_apply_deployment"
 ffqn = "obelisk-agent:tools/webapi.apply-deployment"
 params = [
@@ -205,9 +218,12 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "${DEPLOYMENT_DIR}/activity/tools/apply-deployment.js"
-[[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["PUT"]
+exec.lock_expiry.seconds = 30
+max_retries = 1
+env_vars = [
+  "PATH",
+  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+]
 
 # --- Stub activity: human-in-the-loop -----------------------------------------
 
@@ -221,8 +237,8 @@ return_type = "result<string, string>"
 
 # confirm-apply: the human gate before a hot reload goes live. The workflow
 # parks on this stub when the agent requests obelisk.apply_deployment; the web
-# UI surfaces it as an Approve/Reject card (with a source diff vs the active
-# deployment). ok => approved (apply proceeds), err => rejected (apply skipped).
+# UI surfaces it as an OK/Cancel card (with a source diff vs the active
+# deployment). ok => approved (apply proceeds), err => cancelled (apply skipped).
 [[activity_stub]]
 name = "tool_confirm_apply"
 ffqn = "obelisk-agent:tools/deploy.confirm-apply"
@@ -230,7 +246,7 @@ params = [
   { name = "deployment-id", type = "string" },
   { name = "summary",       type = "string" },
 ]
-return_type = "result<string, string>"
+return_type = "result<_, string>"
 
 # --- Workflow -----------------------------------------------------------------
 
@@ -251,6 +267,7 @@ routes = [
   { methods = ["GET"], route = "/" },
   { methods = ["GET"], route = "/api/runs" },
   { methods = ["GET"], route = "/api/runs/:execution-id" },
+  { methods = ["GET"], route = "/api/logs/:execution-id" },
   { methods = ["POST"], route = "/api/submit" },
   { methods = ["POST"], route = "/api/answer/:child-id" },
   { methods = ["POST"], route = "/api/confirm/:child-id" },

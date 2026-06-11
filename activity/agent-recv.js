@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-// Thin adapter over the agent-server socket. The container's server.js has
-// already normalized the backend's native output, so this activity just maps
-// the socket outcome onto the WIT return type and echoes the raw stream-json
-// to stderr for debugging.
+// Adapter over the agent-server socket. It stays alive for the whole agent
+// turn, polling the container internally and streaming every native event to
+// stderr. This gives Obelisk one durable recv execution per turn instead of
+// one child execution per poll.
 //
 // Return type (deployment.toml):
 //   result<variant { working, reply(variant {
@@ -73,35 +73,36 @@ async function main() {
     failPermanent("timeout-ms must be a non-negative number");
   }
 
-  const response = await request(socketPath, { op: "recv", timeout_ms: timeoutMs });
-  if (!response.ok) fail(response.error || "recv failed");
+  while (true) {
+    const response = await request(socketPath, { op: "recv", timeout_ms: timeoutMs });
+    if (!response.ok) fail(response.error || "recv failed");
 
-  // Echo raw stream-json to stderr (persisted in the execution log) for debugging.
-  if (Array.isArray(response.raw)) {
-    for (const ev of response.raw) console.error(`[raw] ${JSON.stringify(ev)}`);
-  }
-
-  switch (response.outcome) {
-    case "working":
-      // turn-outcome::working (no payload)
-      return writeOk("working");
-    case "reply":
-      // turn-outcome::reply(agent-reply); server.js already shaped reply as
-      // { final } | { tool_calls: [{ name, arguments_json }] }
-      return writeOk({ reply: response.reply });
-    case "rate_limited": {
-      const rl = response.rate_limit || {};
-      return emitErr(
-        { permanent_rate_limited: { retry_after_seconds: rl.retry_after_seconds, message: rl.message } },
-        `rate limited: ${rl.message} (retry after ${rl.retry_after_seconds}s)`,
-      );
+    // Persist native events as they arrive so the UI can show live progress.
+    if (Array.isArray(response.raw)) {
+      for (const ev of response.raw) console.error(`[raw] ${JSON.stringify(ev)}`);
     }
-    case "exited":
-      return emitErr({ permanent_agent_exited: response.error || "agent exited" }, response.error || "agent exited");
-    case "error":
-      return emitErr({ permanent_error: response.error || "reply error" }, response.error || "reply error");
-    default:
-      return fail(`unknown recv outcome: ${response.outcome}`);
+
+    switch (response.outcome) {
+      case "working":
+        continue;
+      case "reply":
+        // turn-outcome::reply(agent-reply); server.js already shaped reply as
+        // { final } | { tool_calls: [{ name, arguments_json }] }
+        return writeOk({ reply: response.reply });
+      case "rate_limited": {
+        const rl = response.rate_limit || {};
+        return emitErr(
+          { permanent_rate_limited: { retry_after_seconds: rl.retry_after_seconds, message: rl.message } },
+          `rate limited: ${rl.message} (retry after ${rl.retry_after_seconds}s)`,
+        );
+      }
+      case "exited":
+        return emitErr({ permanent_agent_exited: response.error || "agent exited" }, response.error || "agent exited");
+      case "error":
+        return emitErr({ permanent_error: response.error || "reply error" }, response.error || "reply error");
+      default:
+        return fail(`unknown recv outcome: ${response.outcome}`);
+    }
   }
 }
 

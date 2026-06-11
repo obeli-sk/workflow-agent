@@ -14,10 +14,10 @@ agent-server/        Docker image: node + claude-code + server.js (normalizer)
 activity/
   agent-start.js     spawn the docker container, wait for the socket (claude.start)
   agent-send.js      send one agent-input (prompt | tool-results) (session.send)
-  agent-recv.js      poll the turn; return a typed turn-outcome (session.recv)
+  agent-recv.js      drain one turn; return a typed turn-outcome (session.recv)
   agent-cleanup.js   shut the server down, docker rm (session.cleanup)
 workflow/
-  agent.js           start -> send(prompt) -> loop(recv until reply) -> cleanup
+  agent.js           start -> send(prompt) -> recv(reply) -> cleanup
 deployment.toml      FFQNs, common agent schema, and lock_expiry per activity
 ```
 
@@ -49,11 +49,10 @@ args/results are inherently dynamic); everything else is a real variant/record.
 
 The LLM lives inside the docker container as a persistent process; activities
 just speak to it over a socket. `session.send` renders one `agent-input` line
-and returns. `session.recv` polls up to its `timeout-ms` and returns a
-`turn-outcome`: `working` while the turn is still streaming, or `reply` (the
-parsed `agent-reply`) once claude emits its `result` event. The workflow loops
-`recv` until it gets a `reply`, so each activity invocation stays well inside its
-`lock_expiry` and Obelisk gets a discrete log entry per poll.
+and returns. `session.recv` stays alive for a complete turn, polls the container
+internally, and streams native events to its persisted stderr. It returns
+`reply` once the backend emits its terminal event, so Obelisk records one recv
+execution per turn while live progress remains available in logs.
 
 ## stream-json protocol (claude backend)
 
@@ -108,6 +107,7 @@ inspectable):
 | `obelisk.get_logs`         | `obelisk-agent:tools/webapi.get-logs`            |
 | `obelisk.submit`           | `obelisk-agent:tools/webapi.submit-json`         |
 | `obelisk.get_result`       | `obelisk-agent:tools/webapi.get-result-json`     |
+| `obelisk.deployment_edit_*`| `obelisk-agent:tools/webapi.deployment-edit`     |
 | `http.get`                 | `obelisk-agent:tools/http.get`                   |
 | `input.ask_user`           | `obelisk-agent:tools/input.ask-user` *(stub)*    |
 
@@ -122,6 +122,26 @@ curl -X PUT http://127.0.0.1:5005/v1/executions/<child-id>/stub \
 
 Cancelling the stub child surfaces as an err tool_result; the LLM can react
 or emit `{"final": "Cancelled by user."}`.
+
+## Deployment edit transactions
+
+Component changes use one workflow-local draft instead of sending the full
+deployment through the model on every edit:
+
+1. `obelisk.deployment_edit_begin` captures the active deployment, or an
+   explicitly selected base deployment.
+2. Any number of idempotent JS activity, workflow, or webhook upserts and
+   component deletes mutate that durable draft in order.
+3. `obelisk.deployment_edit_show` stores the complete canonical draft in its
+   child execution result for UI inspection, returns compact metadata to the
+   model, and marks its current revision as reviewed.
+4. `obelisk.deployment_edit_submit` creates one inactive deployment. It refuses
+   unreviewed changes and detects an active-deployment change since begin.
+5. `obelisk.apply_deployment` presents the source diff and waits for OK/Cancel.
+
+`obelisk.deployment_edit_abort` discards the draft without creating a
+deployment. Repeating an identical upsert returns `unchanged`; deleting a
+missing component returns `already_absent`.
 
 ## Build the image
 
@@ -197,15 +217,16 @@ on whatever port the Obelisk server has configured for webhooks (default
 The detail page reconstructs the conversation from `/v1/executions/<id>/responses`
 by reading the typed `turn-outcome` returned by each `session.recv` child
 execution (the `reply` outcomes), so no extra storage is needed and no LLM JSON
-is parsed in the UI.
+is parsed in the UI. Its logs control loads workflow, stdout, and stderr entries
+from the root execution and every nested execution, including an active recv.
 
 ## Inspecting a run
 
 Each turn is a separate activity execution. Beyond the UI, you can use the
 standard Obelisk WebAPI / CLI to inspect them: `claude.start`, `session.send`,
-multiple `session.recv` invocations (one per poll), and `session.cleanup`. The
-typed `agent-reply` per turn is captured as the `recv` activity result; the raw
-stream-json lands on the `recv` activity's stderr.
+one `session.recv` per turn, tool activities, and `session.cleanup`. The typed
+`agent-reply` is captured as the `recv` result; native events stream to that
+activity's stderr.
 
 ## Backends
 

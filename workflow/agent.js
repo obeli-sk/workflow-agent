@@ -6,7 +6,6 @@ import * as askUser from "obelisk-agent:tools/input";
 import * as deploy from "obelisk-agent:tools/deploy";
 
 const RECV_TIMEOUT_MS = 30000;
-const MAX_RECV_PER_TURN = 60; // 60 * 30s = 30 min ceiling per agent turn
 const MAX_TURNS = 30;          // hard cap on agent loop turns
 
 // Provider-specific start activities; session.{send,recv,cleanup} are shared.
@@ -32,6 +31,13 @@ export default function run(prompt, backend) {
         // agent-input variant: { prompt } for the first turn, then { tool_results }.
         let nextInput = { prompt };
         let finalAnswer = null;
+        const deploymentDraft = {
+            config: null,
+            baseDeploymentId: null,
+            activeDeploymentId: null,
+            revision: 0,
+            shownRevision: -1,
+        };
 
         for (let turn = 0; turn < MAX_TURNS; turn += 1) {
             console.log(`--- turn ${turn} ---`);
@@ -45,10 +51,21 @@ export default function run(prompt, backend) {
             if (Array.isArray(reply.tool_calls) && reply.tool_calls.length > 0) {
                 console.log(`dispatching ${reply.tool_calls.length} tool call(s)`);
                 const results = reply.tool_calls.map((call) => {
-                    const result = dispatch(call);
+                    const result = dispatch(call, deploymentDraft);
                     console.log(`  ${call?.name}: ${"ok" in result.outcome ? "ok" : `err=${result.outcome.err}`}`);
                     return result;
                 });
+                const applyIndex = reply.tool_calls.findIndex((call) => call?.name === "obelisk.apply_deployment");
+                if (applyIndex !== -1) {
+                    const applyResult = results[applyIndex];
+                    if ("ok" in applyResult.outcome) {
+                        finalAnswer = `Deployment hot reload approved and scheduled: ${applyResult.outcome.ok}`;
+                    } else {
+                        finalAnswer = `Deployment hot reload was not scheduled: ${applyResult.outcome.err}`;
+                    }
+                    console.log("apply_deployment is terminal; finishing workflow before switch");
+                    break;
+                }
                 nextInput = { tool_results: results };
                 continue;
             }
@@ -99,19 +116,14 @@ function sendAndDrain(socketPath, input) {
     }
 }
 
-// recv returns a turn-outcome: the string "working" while the turn streams, or
-// { reply: agent-reply } once it completes. Failures (rate limit, agent exit,
-// malformed reply) are thrown as the agent-error variant payload.
+// recv stays alive for the whole turn and returns { reply: agent-reply } once
+// it completes. Failures are thrown as the agent-error variant payload.
 function drainTurn(socketPath) {
-    for (let attempt = 0; attempt < MAX_RECV_PER_TURN; attempt += 1) {
-        const outcome = session.recv(socketPath, RECV_TIMEOUT_MS);
-        if (outcome === "working") continue;
-        if (outcome && typeof outcome === "object" && outcome.reply) {
-            return outcome.reply;
-        }
-        throw `unexpected recv outcome: ${JSON.stringify(outcome)}`;
+    const outcome = session.recv(socketPath, RECV_TIMEOUT_MS);
+    if (outcome && typeof outcome === "object" && outcome.reply) {
+        return outcome.reply;
     }
-    throw `agent did not finish within ${MAX_RECV_PER_TURN} recv attempts`;
+    throw `unexpected recv outcome: ${JSON.stringify(outcome)}`;
 }
 
 // The recv activity throws the permanent-rate-limited variant payload as
@@ -128,7 +140,7 @@ function rateLimited(error) {
 // return a typed tool-result ({ name, outcome: result<string, string> }). The
 // ok arm carries the activity's JSON string verbatim; server.js parses it back
 // into structured data for the agent.
-function dispatch(call) {
+function dispatch(call, draft) {
     const name = (call && typeof call.name === "string") ? call.name : "?";
     let args;
     try {
@@ -166,13 +178,28 @@ function dispatch(call) {
                     requireString(args.config_json, "config_json"),
                     Boolean(args.verify),
                 ));
+            case "obelisk.deployment_edit_begin":
+                return beginDeploymentEdit(name, args, draft);
+            case "obelisk.deployment_edit_upsert_js_activity":
+                return upsertJsActivity(name, args, draft);
+            case "obelisk.deployment_edit_upsert_js_workflow":
+                return upsertJsWorkflow(name, args, draft);
+            case "obelisk.deployment_edit_upsert_js_webhook":
+                return upsertJsWebhook(name, args, draft);
+            case "obelisk.deployment_edit_delete":
+                return deleteDeploymentComponent(name, args, draft);
+            case "obelisk.deployment_edit_show":
+                return showDeploymentEdit(name, draft);
+            case "obelisk.deployment_edit_abort":
+                return abortDeploymentEdit(name, draft);
+            case "obelisk.deployment_edit_submit":
+                return submitDeploymentEdit(name, args, draft);
             case "obelisk.apply_deployment": {
                 const id = requireString(args.deployment_id, "deployment_id");
                 const summary = typeof args.summary === "string" ? args.summary : "";
-                // Durable human gate: park until an operator approves/rejects in
-                // the UI. confirmApply returns ok(note) on approve; on reject (or
-                // cancel) it throws the err arm, which the catch below turns into
-                // an err tool_result so the agent learns the operator declined.
+                // Durable human gate: park until an operator approves/cancels in
+                // the UI. Cancel throws the err arm, which the catch below turns
+                // into an err tool_result so the agent learns the decision.
                 deploy.confirmApply(id, summary);
                 return ok(name, webapi.applyDeployment(id));
             }
@@ -184,6 +211,253 @@ function dispatch(call) {
     } catch (e) {
         return err(name, String(e));
     }
+}
+
+function beginDeploymentEdit(name, args, draft) {
+    if (draft.config !== null) throw "a deployment edit transaction is already active";
+    const payload = {};
+    if (typeof args.deployment_id === "string" && args.deployment_id) {
+        payload.deployment_id = args.deployment_id;
+    }
+    const recordJson = webapi.deploymentEdit("begin", JSON.stringify(payload));
+    const begin = JSON.parse(recordJson);
+    const record = begin?.deployment;
+    if (!record || typeof record.deployment_id !== "string" || typeof record.config_json !== "string") {
+        throw "deployment-edit begin returned an invalid deployment record";
+    }
+    if (typeof begin.active_deployment_id !== "string" || !begin.active_deployment_id) {
+        throw "deployment-edit begin returned no active deployment id";
+    }
+    draft.config = JSON.parse(record.config_json);
+    draft.baseDeploymentId = record.deployment_id;
+    draft.activeDeploymentId = begin.active_deployment_id;
+    draft.revision = 0;
+    draft.shownRevision = -1;
+    return ok(name, JSON.stringify({
+        base_deployment_id: draft.baseDeploymentId,
+        active_deployment_id: draft.activeDeploymentId,
+        components: componentCounts(draft.config),
+    }));
+}
+
+function upsertJsActivity(name, args, draft) {
+    requireDraft(draft);
+    const ffqn = requireString(args.ffqn, "ffqn");
+    const componentName = requireString(args.name, "name");
+    const source = requireString(args.source, "source");
+    const list = requireArray(draft.config.activities_js, "activities_js");
+    const index = list.findIndex((item) => item?.ffqn === ffqn);
+    const collision = list.findIndex((item, i) => i !== index && item?.name === componentName);
+    if (collision !== -1) throw `activity name already belongs to ${list[collision].ffqn}`;
+    const previous = index === -1 ? null : list[index];
+    const template = previous || list[0];
+    if (!template) throw "deployment has no JS activity defaults";
+    const next = {
+        ...template,
+        name: componentName,
+        location: inlineSource(componentName, source),
+        content_digest: null,
+        component_digest: null,
+        ffqn,
+        params: arrayArgOr(args.params, previous?.params),
+        env_vars: arrayArgOr(args.env_vars, previous?.env_vars),
+        allowed_hosts: allowedHostsArgOr(args.allowed_hosts, previous?.allowed_hosts),
+        return_type: stringArg(args.return_type, previous?.return_type || "result"),
+    };
+    const action = applyUpsert(list, index, next);
+    recordUpsert(draft, action, "js_activity", ffqn);
+    return ok(name, JSON.stringify({ action, ffqn }));
+}
+
+function upsertJsWorkflow(name, args, draft) {
+    requireDraft(draft);
+    const ffqn = requireString(args.ffqn, "ffqn");
+    const componentName = requireString(args.name, "name");
+    const source = requireString(args.source, "source");
+    const list = requireArray(draft.config.workflows_js, "workflows_js");
+    const index = list.findIndex((item) => item?.ffqn === ffqn);
+    const collision = list.findIndex((item, i) => i !== index && item?.name === componentName);
+    if (collision !== -1) throw `workflow name already belongs to ${list[collision].ffqn}`;
+    const previous = index === -1 ? null : list[index];
+    const template = previous || list[0];
+    if (!template) throw "deployment has no JS workflow defaults";
+    const next = {
+        ...template,
+        name: componentName,
+        location: inlineSource(componentName, source),
+        content_digest: null,
+        component_digest: null,
+        ffqn,
+        params: arrayArgOr(args.params, previous?.params),
+        return_type: stringArg(args.return_type, previous?.return_type || "result"),
+    };
+    const action = applyUpsert(list, index, next);
+    recordUpsert(draft, action, "js_workflow", ffqn);
+    return ok(name, JSON.stringify({ action, ffqn }));
+}
+
+function upsertJsWebhook(name, args, draft) {
+    requireDraft(draft);
+    const componentName = requireString(args.name, "name");
+    const source = requireString(args.source, "source");
+    const list = requireArray(draft.config.webhooks_js, "webhooks_js");
+    const index = list.findIndex((item) => item?.name === componentName);
+    const previous = index === -1 ? null : list[index];
+    const template = previous || list[0];
+    if (!template) throw "deployment has no JS webhook defaults";
+    const routes = arrayArgOr(args.routes, previous?.routes);
+    if (routes.length === 0) throw "routes must contain at least one route";
+    const next = {
+        ...template,
+        name: componentName,
+        location: inlineSource(componentName, source),
+        content_digest: null,
+        routes,
+        env_vars: arrayArgOr(args.env_vars, previous?.env_vars),
+        allowed_host: allowedHostsArgOr(args.allowed_hosts, previous?.allowed_host),
+    };
+    const action = applyUpsert(list, index, next);
+    recordUpsert(draft, action, "js_webhook", componentName);
+    return ok(name, JSON.stringify({ action, name: componentName }));
+}
+
+function deleteDeploymentComponent(name, args, draft) {
+    requireDraft(draft);
+    const kind = requireString(args.kind, "kind");
+    const id = requireString(args.id, "id");
+    const spec = {
+        js_activity: { key: "activities_js", matches: (item) => item?.ffqn === id },
+        js_workflow: { key: "workflows_js", matches: (item) => item?.ffqn === id },
+        js_webhook: { key: "webhooks_js", matches: (item) => item?.name === id },
+    }[kind];
+    if (!spec) throw "kind must be js_activity, js_workflow, or js_webhook";
+    const list = requireArray(draft.config[spec.key], spec.key);
+    const index = list.findIndex(spec.matches);
+    if (index === -1) {
+        webapi.deploymentEdit("record", JSON.stringify({ action: "already_absent", kind, id }));
+        return ok(name, JSON.stringify({ action: "already_absent", kind, id }));
+    }
+    list.splice(index, 1);
+    recordDraftEdit(draft, { action: "deleted", kind, id });
+    return ok(name, JSON.stringify({ action: "deleted", kind, id }));
+}
+
+function showDeploymentEdit(name, draft) {
+    requireDraft(draft);
+    const configJson = JSON.stringify(draft.config);
+    // The child activity result contains the complete canonical deployment for
+    // operator inspection. Do not echo 94+ KB back through session.send: JSON
+    // argument escaping can exceed the OS argv limit.
+    webapi.deploymentEdit("show", JSON.stringify({ config_json: configJson }));
+    draft.shownRevision = draft.revision;
+    return ok(name, JSON.stringify({
+        reviewed_revision: draft.revision,
+        config_bytes: configJson.length,
+        components: componentCounts(draft.config),
+        complete_config: "available in the deployment_edit_show child execution result",
+    }));
+}
+
+function abortDeploymentEdit(name, draft) {
+    requireDraft(draft);
+    webapi.deploymentEdit("record", JSON.stringify({
+        action: "aborted",
+        base_deployment_id: draft.baseDeploymentId,
+        active_deployment_id: draft.activeDeploymentId,
+        revision: draft.revision,
+    }));
+    clearDraft(draft);
+    return ok(name, JSON.stringify({ aborted: true }));
+}
+
+function submitDeploymentEdit(name, args, draft) {
+    requireDraft(draft);
+    if (draft.shownRevision !== draft.revision) {
+        throw "current draft must be shown after its last edit before submit";
+    }
+    const deploymentId = webapi.deploymentEdit("submit", JSON.stringify({
+        active_deployment_id: draft.activeDeploymentId,
+        config_json: JSON.stringify(draft.config),
+        verify: Boolean(args.verify),
+    }));
+    const result = {
+        deployment_id: JSON.parse(deploymentId),
+        base_deployment_id: draft.baseDeploymentId,
+        revision: draft.revision,
+    };
+    clearDraft(draft);
+    return ok(name, JSON.stringify(result));
+}
+
+function recordDraftEdit(draft, event) {
+    webapi.deploymentEdit("record", JSON.stringify(event));
+    draft.revision += 1;
+    draft.shownRevision = -1;
+}
+
+function applyUpsert(list, index, next) {
+    if (index === -1) {
+        list.push(next);
+        return "added";
+    }
+    if (JSON.stringify(list[index]) === JSON.stringify(next)) return "unchanged";
+    list[index] = next;
+    return "replaced";
+}
+
+function recordUpsert(draft, action, kind, id) {
+    const event = { action, kind, id };
+    if (action === "unchanged") {
+        webapi.deploymentEdit("record", JSON.stringify(event));
+    } else {
+        recordDraftEdit(draft, event);
+    }
+}
+
+function requireDraft(draft) {
+    if (!draft || draft.config === null) throw "no deployment edit transaction; call deployment_edit_begin first";
+}
+
+function clearDraft(draft) {
+    draft.config = null;
+    draft.baseDeploymentId = null;
+    draft.activeDeploymentId = null;
+    draft.revision = 0;
+    draft.shownRevision = -1;
+}
+
+function inlineSource(name, source) {
+    return { content: { content: source, file_name: `${name}.js` } };
+}
+
+function arrayArgOr(value, fallback) {
+    return Array.isArray(value) ? value : (Array.isArray(fallback) ? fallback : []);
+}
+
+function allowedHostsArgOr(value, fallback) {
+    if (!Array.isArray(value)) return Array.isArray(fallback) ? fallback : [];
+    return value.map((host) => ({
+        pattern: requireString(host?.pattern, "allowed_hosts[].pattern"),
+        methods: Array.isArray(host?.methods) ? host.methods : [],
+        secrets: null,
+    }));
+}
+
+function stringArg(value, fallback) {
+    return typeof value === "string" && value ? value : fallback;
+}
+
+function requireArray(value, field) {
+    if (!Array.isArray(value)) throw `deployment config has no ${field} array`;
+    return value;
+}
+
+function componentCounts(config) {
+    return {
+        js_activities: Array.isArray(config.activities_js) ? config.activities_js.length : 0,
+        js_workflows: Array.isArray(config.workflows_js) ? config.workflows_js.length : 0,
+        js_webhooks: Array.isArray(config.webhooks_js) ? config.webhooks_js.length : 0,
+    };
 }
 
 function ok(name, jsonString) {

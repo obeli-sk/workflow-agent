@@ -5,6 +5,7 @@
 //   GET  /                          static shell (HTML + inline JS)
 //   GET  /api/runs                  list runs (sidebar)
 //   GET  /api/runs/:id              one run, normalised into turns
+//   GET  /api/logs/:id              logs from the run and all derived executions
 //   POST /api/submit                body: {prompt} -> {execution_id}
 //   POST /api/answer/:childId       body: {answer} -> {ok: true}
 //
@@ -28,6 +29,11 @@ export default async function handle(request) {
             const id = decodeURIComponent(path.substring("/api/runs/".length));
             if (!id) return jsonError(400, "missing run id");
             return jsonResponse(await detailRun(id));
+        }
+        if (method === "GET" && path.startsWith("/api/logs/")) {
+            const id = decodeURIComponent(path.substring("/api/logs/".length));
+            if (!id) return jsonError(400, "missing run id");
+            return jsonResponse(await loadExecutionTreeLogs(id));
         }
         if (method === "POST" && path === "/api/submit") return await submit(request);
         if (method === "POST" && path.startsWith("/api/answer/")) {
@@ -143,6 +149,40 @@ async function loadFinalResult(id) {
     } catch (e) { return { error: String(e) }; }
 }
 
+// Logs are loaded lazily from a separate endpoint because a run can have many
+// derived executions. Include unfinished children so the currently streaming
+// recv activity is visible while the model is working.
+async function loadExecutionTreeLogs(workflowId) {
+    let executions;
+    try {
+        executions = await obeliskJson("/v1/executions?show_derived=true&length=200");
+    } catch (_) {
+        executions = [];
+    }
+    const tree = executions.filter((e) => e?.execution_id === workflowId
+        || (typeof e?.execution_id === "string" && e.execution_id.startsWith(workflowId + ".")));
+    if (!tree.some((e) => e.execution_id === workflowId)) {
+        tree.push({ execution_id: workflowId, ffqn: WORKFLOW_FFQN });
+    }
+
+    const batches = await Promise.all(tree.map(async (execution) => {
+        try {
+            const logs = await obeliskJson(
+                `/v1/executions/${encodeURIComponent(execution.execution_id)}/logs`,
+            );
+            return logs.map((entry) => ({
+                ...entry,
+                execution_id: execution.execution_id,
+                ffqn: execution.ffqn || "",
+            }));
+        } catch (_) { return []; }
+    }));
+    const logs = batches.flat();
+    logs.sort((a, b) => String(a.created_at || a.cursor || "")
+        .localeCompare(String(b.created_at || b.cursor || "")));
+    return { logs };
+}
+
 async function loadPendingAsks(workflowId) {
     let candidates;
     try {
@@ -245,13 +285,15 @@ function collectSources(configJson) {
     return out;
 }
 
-// Compare two { fileName -> source } maps. Returns added / removed file names
-// and, for files present in both with different content, a line-level diff.
+// Compare two { fileName -> source } maps. Added and removed entries include
+// their complete source so the approval card always shows the actual change.
 function diffSources(oldMap, newMap) {
     const oldKeys = new Set(Object.keys(oldMap));
     const newKeys = new Set(Object.keys(newMap));
-    const added = [...newKeys].filter((k) => !oldKeys.has(k)).sort();
-    const removed = [...oldKeys].filter((k) => !newKeys.has(k)).sort();
+    const added = [...newKeys].filter((k) => !oldKeys.has(k)).sort()
+        .map((file) => ({ file, lines: lineDiff("", newMap[file]).filter((line) => line.tag === "+") }));
+    const removed = [...oldKeys].filter((k) => !newKeys.has(k)).sort()
+        .map((file) => ({ file, lines: lineDiff(oldMap[file], "").filter((line) => line.tag === "-") }));
     const changed = [];
     for (const k of [...newKeys].filter((x) => oldKeys.has(x)).sort()) {
         if (oldMap[k] !== newMap[k]) {
@@ -461,10 +503,9 @@ async function confirmDeploy(request, childId) {
     try { payload = JSON.parse(body); }
     catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
     const approve = Boolean(payload?.approve);
-    const note = typeof payload?.note === "string" ? payload.note.trim() : "";
     const stubResult = approve
-        ? { ok: note || "approved" }
-        : { err: note ? `operator declined: ${note}` : "operator declined" };
+        ? { ok: null }
+        : { err: "operator cancelled" };
     const resp = await fetch(
         `${apiBase()}/v1/executions/${encodeURIComponent(childId)}/stub`,
         {
@@ -545,6 +586,8 @@ const SHELL_HTML = `<!doctype html>
   .call summary .child-link:hover { background: #e3e3e3; color: var(--accent); }
   .meta a { color: var(--accent); text-decoration: none; }
   .meta a:hover { text-decoration: underline; }
+  .meta button { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
+  .meta button:hover { text-decoration: underline; }
   .call summary .status-pill { margin-left: auto; font-size: 0.8em; padding: 0.05em 0.5em; border-radius: 3px; }
   .call summary .status-pill.ok { background: var(--ok-bg); color: var(--ok); }
   .call summary .status-pill.err { background: var(--err-bg); color: var(--err); }
@@ -570,9 +613,15 @@ const SHELL_HTML = `<!doctype html>
   .confirm .diff .fname { display: block; padding: 0.3em 0.7em; font-weight: 600; background: #f2f2f2; border-top: 1px solid var(--line); }
   .confirm .changes { color: var(--muted); font-size: 0.85em; margin: 0.3em 0; }
   .confirm .buttons { display: flex; gap: 0.5em; margin-top: 0.6em; }
-  .confirm .note { width: 100%; min-height: 2.5em; margin-top: 0.4em; padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
   .confirm button.approve { border: 1px solid var(--ok); background: var(--ok); color: white; border-radius: 4px; padding: 0.4em 0.9em; cursor: pointer; font: inherit; }
   .confirm button.reject { border: 1px solid var(--err); background: white; color: var(--err); border-radius: 4px; padding: 0.4em 0.9em; cursor: pointer; font: inherit; }
+  .logs { max-width: 960px; border: 1px solid var(--line); border-radius: 6px; background: #111; color: #ddd; margin: 0.8em 0 1.2em; }
+  .logs .logs-head { padding: 0.5em 0.8em; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }
+  .logs .logs-head button { color: #9cc2ff; border: 0; background: none; cursor: pointer; }
+  .logs pre { margin: 0; padding: 0.8em; max-height: 32em; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 12px/1.45 ui-monospace, monospace; }
+  .logs .source { color: #8eaccf; }
+  .logs .level-error { color: #ff9b9b; }
+  .logs .level-warn { color: #ffd27d; }
   .err-box { background: var(--err-bg); border: 1px solid #f4c0c0; color: var(--err); padding: 0.6em 0.9em; border-radius: 4px; margin: 1em 0; }
   .ago { color: var(--muted); font-size: 0.8em; }
 </style>
@@ -599,7 +648,7 @@ const SHELL_HTML = `<!doctype html>
 </main>
 <script>
 const OBELISK_UI_URL = "__OBELISK_UI_URL__";
-const state = { selected: null, runs: [], detail: null, lastSig: null };
+const state = { selected: null, runs: [], detail: null, lastSig: null, logs: null, logsOpen: false };
 
 function execLink(id) {
   return OBELISK_UI_URL + '/execution/' + encodeURIComponent(id);
@@ -640,6 +689,8 @@ function readSelectedFromUrl() {
 function setSelected(id) {
   state.selected = id;
   state.lastSig = null;
+  state.logs = null;
+  state.logsOpen = false;
   const u = new URL(window.location.href);
   if (id) u.searchParams.set('run', id); else u.searchParams.delete('run');
   window.history.replaceState({}, '', u.toString());
@@ -741,7 +792,9 @@ function renderDetail() {
     +   '<a href="' + esc(execLink(d.id)) + '" target="_blank" rel="noopener"><code>' + esc(d.id) + '</code></a>'
     +   ' &middot; <span class="status ' + esc(label.replaceAll(' ', '_')) + '">' + esc(label) + '</span>'
     +   ' &middot; ' + esc(ago(d.created_at))
+    +   ' &middot; <button type="button" id="logs-toggle">logs (including nested)</button>'
     + '</div>'
+    + '<div id="logs-slot">' + renderLogs() + '</div>'
     + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div><pre>' + esc(d.prompt) + '</pre></div>' : '')
     + confirmsHtml
     + asksHtml
@@ -761,14 +814,14 @@ function renderDetail() {
 
   for (const card of main.querySelectorAll('.confirm')) {
     const child = card.dataset.child;
-    const note = () => (card.querySelector('.note')?.value || '').trim();
-    card.querySelector('button.approve')?.addEventListener('click', () => sendConfirm(child, true, note()));
-    card.querySelector('button.reject')?.addEventListener('click', () => sendConfirm(child, false, note()));
+    card.querySelector('button.approve')?.addEventListener('click', () => sendConfirm(child, true));
+    card.querySelector('button.reject')?.addEventListener('click', () => sendConfirm(child, false));
   }
+  main.querySelector('#logs-toggle')?.addEventListener('click', toggleLogs);
 }
 
 // One pending hot-reload confirmation: agent summary, target deployment, the
-// source diff vs the active deployment, and Approve/Reject controls.
+// source diff vs the active deployment, and OK/Cancel controls.
 function renderConfirm(c) {
   const diff = c.diff;
   let diffHtml;
@@ -783,8 +836,12 @@ function renderConfirm(c) {
     if (diff.changed.length) counts.push(diff.changed.length + ' changed');
     const summary = counts.length ? counts.join(', ') : 'no source changes';
     let body = '';
-    for (const f of diff.added) body += '<span class="fname">+ ' + esc(f) + ' (new file)</span>';
-    for (const f of diff.removed) body += '<span class="fname">- ' + esc(f) + ' (removed)</span>';
+    for (const f of diff.added) {
+      body += '<span class="fname">+ ' + esc(f.file) + ' (new file)</span><pre>' + renderDiffLines(f.lines) + '</pre>';
+    }
+    for (const f of diff.removed) {
+      body += '<span class="fname">- ' + esc(f.file) + ' (removed)</span><pre>' + renderDiffLines(f.lines) + '</pre>';
+    }
     for (const ch of diff.changed) {
       body += '<span class="fname">~ ' + esc(ch.file) + '</span><pre>' + renderDiffLines(ch.lines) + '</pre>';
     }
@@ -798,12 +855,68 @@ function renderConfirm(c) {
     + (c.deployment_id ? '<div class="dep-id">' + esc(c.deployment_id) + '</div>' : '')
     + (c.summary ? '<div class="summary">' + esc(c.summary) + '</div>' : '')
     + diffHtml
-    + '<textarea class="note" placeholder="Optional note (shown to the agent)"></textarea>'
     + '<div class="buttons">'
-    +   '<button type="button" class="approve">Approve &amp; hot reload</button>'
-    +   '<button type="button" class="reject">Reject</button>'
+    +   '<button type="button" class="approve">OK</button>'
+    +   '<button type="button" class="reject">Cancel</button>'
     + '</div>'
     + '</div>';
+}
+
+function renderLogs() {
+  if (!state.logsOpen) return '';
+  if (!state.logs) {
+    return '<div class="logs"><div class="logs-head"><span>execution logs</span></div><pre>Loading...</pre></div>';
+  }
+  const rows = state.logs.map((entry) => {
+    const source = shortChildId(entry.execution_id || '') + ' ' + shortFfqn(entry.ffqn || '');
+    const text = entry.type === 'stream' ? decodeStream(entry.payload) : String(entry.message || '');
+    const level = entry.level ? ' level-' + esc(entry.level) : '';
+    return '<span class="source">[' + esc(source.trim()) + ']</span> '
+      + '<span class="' + level.trim() + '">' + esc(text.replace(/\n$/, '')) + '</span>';
+  });
+  return '<div class="logs"><div class="logs-head"><span>execution logs · ' + rows.length
+    + ' entries</span><button type="button" id="logs-refresh">refresh</button></div><pre>'
+    + (rows.join('\n') || '(no logs yet)') + '</pre></div>';
+}
+
+function shortFfqn(ffqn) {
+  const slash = ffqn.lastIndexOf('/');
+  return slash === -1 ? ffqn : ffqn.substring(slash + 1);
+}
+
+function decodeStream(payload) {
+  try {
+    const bytes = Uint8Array.from(atob(payload || ''), (c) => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch (_) { return String(payload || ''); }
+}
+
+async function toggleLogs() {
+  state.logsOpen = !state.logsOpen;
+  updateLogsSlot();
+  if (state.logsOpen) await refreshLogs();
+}
+
+function updateLogsSlot() {
+  const slot = document.getElementById('logs-slot');
+  if (!slot) return;
+  slot.innerHTML = renderLogs();
+  slot.querySelector('#logs-refresh')?.addEventListener('click', refreshLogs);
+}
+
+async function refreshLogs() {
+  if (!state.selected) return;
+  try {
+    const r = await fetch('/api/logs/' + encodeURIComponent(state.selected), {
+      headers: { accept: 'application/json' },
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    state.logs = data.logs || [];
+  } catch (e) {
+    state.logs = [{ execution_id: state.selected, ffqn: '', level: 'error', message: String(e) }];
+  }
+  updateLogsSlot();
 }
 
 function renderDiffLines(lines) {
@@ -923,13 +1036,12 @@ async function submitAnswer(childId, answer) {
   }
 }
 
-async function sendConfirm(childId, approve, note) {
-  if (!approve && !confirm('Reject this hot reload?')) return;
+async function sendConfirm(childId, approve) {
   try {
     const r = await fetch('/api/confirm/' + encodeURIComponent(childId), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ approve, note }),
+      body: JSON.stringify({ approve }),
     });
     if (!r.ok) {
       const e = await r.json().catch(() => ({}));
