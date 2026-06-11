@@ -89,6 +89,12 @@ async function main() {
   } catch (_) {
     log(`socket unlink skipped socket=${socketPath}`);
   }
+  try {
+    fs.unlinkSync(`${socketPath}.system-prompt.md`);
+    log(`system prompt unlinked socket=${socketPath}`);
+  } catch (_) {
+    log(`system prompt unlink skipped socket=${socketPath}`);
+  }
 
   writeOk(null);
 }

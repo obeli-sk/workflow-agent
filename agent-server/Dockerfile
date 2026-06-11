@@ -15,7 +15,7 @@ ARG CODEX_VERSION=latest
 RUN npm install -g @openai/codex@${CODEX_VERSION}
 
 COPY package.json ./
-COPY server.js entrypoint.sh system-prompt.md ./
+COPY server.js entrypoint.sh ./
 RUN chmod +x /app/entrypoint.sh
 
 ENV HOME=/tmp

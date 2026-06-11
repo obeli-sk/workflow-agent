@@ -2,11 +2,19 @@
 # Both point to the same agent-start.js; the AGENT_BACKEND env picks the auth
 # mount + backend, and server.js inside the container spawns the right CLI.
 
+[[activity_js]]
+name = "agent_system_prompt"
+ffqn = "obelisk-agent:agent/prompt.load-system-prompt"
+params = []
+return_type = "string"
+location = "${DEPLOYMENT_DIR}/activity/agent-system-prompt.js"
+
 [[activity_exec]]
 ffqn = "obelisk-agent:agent/claude.start"
 params = [
   { name = "container-name", type = "string" },
   { name = "socket", type = "string" },
+  { name = "system-prompt", type = "string" },
 ]
 return_type = "result<record { container: string, image: string, socket: string, id: string }, string>"
 location = "${DEPLOYMENT_DIR}/activity/agent-start.js"
@@ -27,6 +35,7 @@ ffqn = "obelisk-agent:agent/codex.start"
 params = [
   { name = "container-name", type = "string" },
   { name = "socket", type = "string" },
+  { name = "system-prompt", type = "string" },
 ]
 return_type = "result<record { container: string, image: string, socket: string, id: string }, string>"
 location = "${DEPLOYMENT_DIR}/activity/agent-start.js"

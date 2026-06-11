@@ -95,8 +95,10 @@ function waitForSocket(containerName, socketPath) {
 async function main() {
   const containerName = parseJsonArg(2, "container-name");
   const socketPath = parseJsonArg(3, "socket");
+  const systemPrompt = parseJsonArg(4, "system-prompt");
   if (!containerName) failPermanent("container-name must not be empty");
   if (!socketPath) failPermanent("socket must not be empty");
+  if (!systemPrompt) failPermanent("system-prompt must not be empty");
 
   // Each backend keeps its auth in a host config dir that we bind-mount into
   // the container. The entrypoint then points the backend CLI at the mount.
@@ -122,6 +124,8 @@ async function main() {
   fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
   fs.chmodSync(socketDir, 0o700);
   try { fs.unlinkSync(socketPath); } catch (_) {}
+  const promptPath = `${socketPath}.system-prompt.md`;
+  fs.writeFileSync(promptPath, systemPrompt, { encoding: "utf8", mode: 0o600 });
 
   const cleanup = runDocker(["rm", "-f", containerName], { allowFailure: true });
   if (cleanup.status !== 0 && !isMissingContainer(cleanup)) {
@@ -129,6 +133,7 @@ async function main() {
   }
 
   const containerSocket = `${CONTAINER_SOCKET_DIR}/${socketBase}`;
+  const containerPrompt = `${containerSocket}.system-prompt.md`;
   // Mount the host's auth dir read-write (so token refresh / sessions persist)
   // at the backend's mount point. The entrypoint hand-picks which files the CLI
   // actually sees.
@@ -143,6 +148,7 @@ async function main() {
     "-e", `AGENT_BACKEND=${backend}`,
     "-e", `AGENT_MODEL=${process.env.AGENT_MODEL || ""}`,
     "-e", `AGENT_EXTRA_ARGS=${process.env.AGENT_EXTRA_ARGS || ""}`,
+    "-e", `AGENT_SYSTEM_PROMPT_PATH=${containerPrompt}`,
     IMAGE_NAME,
     containerSocket,
   ];

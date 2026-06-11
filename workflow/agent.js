@@ -1,5 +1,6 @@
 import * as claude from "obelisk-agent:agent/claude";
 import * as codex from "obelisk-agent:agent/codex";
+import * as agentPrompt from "obelisk-agent:agent/prompt";
 import * as session from "obelisk-agent:agent/session";
 import * as webapi from "obelisk-agent:tools/webapi";
 import * as askUser from "obelisk-agent:tools/input";
@@ -25,7 +26,7 @@ export default function run(prompt, backend) {
 
     let workflowError = null;
     try {
-        const startInfo = start(containerName, socketPath);
+        const startInfo = start(containerName, socketPath, agentPrompt.loadSystemPrompt());
         console.log(`Started ${which} agent ${startInfo.container} from ${startInfo.image}`);
 
         // agent-input variant: { prompt } for the first turn, then { tool_results }.

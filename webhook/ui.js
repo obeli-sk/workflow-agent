@@ -333,10 +333,10 @@ function lineDiff(oldText, newText) {
 //     ({ final } | { tool_calls: [{ name, arguments_json }] })
 //   - toolChildren: per-tool-call child execution records, in dispatch order
 // The workflow's join_set_id encodes the activity it dispatched (the function
-// name: `start`, `send`, `recv`, `cleanup`). We treat those as infrastructure
+// name: `load-system-prompt`, `start`, `send`, `recv`, `cleanup`). We treat those as infrastructure
 // and everything else as a workflow-visible tool call. The `recv` activity now
 // returns a typed turn-outcome, so there is no LLM JSON left to parse here.
-const INFRA_NAMES = new Set(["start", "send", "recv", "cleanup"]);
+const INFRA_NAMES = new Set(["load-system-prompt", "start", "send", "recv", "cleanup"]);
 
 async function loadResponses(execId) {
     const replies = [];

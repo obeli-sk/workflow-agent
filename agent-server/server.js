@@ -48,7 +48,11 @@ if (!SOCKET_PATH) {
 const BACKEND = process.env.AGENT_BACKEND || "claude";
 const MODEL = process.env.AGENT_MODEL || "";
 const EXTRA = (process.env.AGENT_EXTRA_ARGS || "").trim();
-const SYSTEM_PROMPT_PATH = process.env.AGENT_SYSTEM_PROMPT_PATH || "/app/system-prompt.md";
+const SYSTEM_PROMPT_PATH = process.env.AGENT_SYSTEM_PROMPT_PATH;
+if (!SYSTEM_PROMPT_PATH) {
+  console.error("AGENT_SYSTEM_PROMPT_PATH is required");
+  process.exit(2);
+}
 
 // ---- shared event buffer ----------------------------------------------------
 

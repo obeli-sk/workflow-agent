@@ -11,7 +11,7 @@ set -euo pipefail
 #   AGENT_MODEL                 model id (empty => backend/config default)
 #   AGENT_WORKDIR               cwd for the LLM CLI, default /tmp/work
 #   AGENT_EXTRA_ARGS            extra args appended to the CLI invocation
-#   AGENT_SYSTEM_PROMPT_PATH    overrides /app/system-prompt.md
+#   AGENT_SYSTEM_PROMPT_PATH    deployment-provided prompt file
 #   AGENT_HOST_CLAUDE_DIR       claude config mount (default /host-claude)
 #   AGENT_HOST_CODEX_DIR        codex config mount (default /host-codex)
 
@@ -42,7 +42,7 @@ fi
 # Inline the Obelisk llms.txt into the system prompt so the model has a
 # concrete reference without spending a tool call on it. The fetch failing
 # leaves the static prompt as-is (functional, just less Obelisk-aware).
-PROMPT_BASE="${AGENT_SYSTEM_PROMPT_PATH:-/app/system-prompt.md}"
+PROMPT_BASE="${AGENT_SYSTEM_PROMPT_PATH:?system prompt path is required}"
 PROMPT_OUT=/tmp/system-prompt.md
 LLMS_URL="${AGENT_LLMS_TXT_URL:-https://obeli.sk/docs/latest/llms.txt}"
 cp "$PROMPT_BASE" "$PROMPT_OUT"
