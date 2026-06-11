@@ -8,6 +8,9 @@ ffqn = "obelisk-agent:agent/prompt.load-system-prompt"
 params = []
 return_type = "result<string, string>"
 location = "${DEPLOYMENT_DIR}/activity/agent-system-prompt.js"
+[[activity_js.allowed_host]]
+pattern = "https://obeli.sk"
+methods = ["GET"]
 
 [[activity_exec]]
 ffqn = "obelisk-agent:agent/claude.start"

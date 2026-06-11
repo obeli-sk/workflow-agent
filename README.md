@@ -163,7 +163,8 @@ into `agent-start.js` through the `AGENT_IMAGE` env var (defaulted in
 `deployment.toml`). The system prompt is deployment-owned: the
 `agent/prompt.load-system-prompt` JS activity supplies it to `agent.start`,
 which writes it beside the session socket for the container to read. Prompt
-changes therefore do not require an image rebuild.
+changes therefore do not require an image rebuild. The activity appends the
+current Obelisk LLM reference from `https://obeli.sk/docs/latest/llms.txt/`.
 
 ## Authenticate claude-code
 
