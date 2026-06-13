@@ -6,9 +6,12 @@
 // one child execution per poll.
 //
 // Return type (deployment.toml):
-//   result<variant { working, reply(variant {
-//            final(string),
-//            tool-calls(list<record { name: string, arguments-json: string }>),
+//   result<variant { working, reply(record {
+//            reply: variant {
+//              final(string),
+//              tool-calls(list<record { name: string, arguments-json: string }>),
+//            },
+//            narration: string,
 //          }) },
 //          variant {
 //            permanent-rate-limited(record { retry-after-seconds: u32, message: string }),
@@ -87,9 +90,10 @@ async function main() {
       case "working":
         continue;
       case "reply":
-        // turn-outcome::reply(agent-reply); server.js already shaped reply as
-        // { final } | { tool_calls: [{ name, arguments_json }] }
-        return writeOk({ reply: response.reply });
+        // turn-outcome::reply(record { reply, narration }); server.js shaped
+        // reply as { final } | { tool_calls: [{ name, arguments_json }] } and
+        // narration as the model's prose/thinking for this turn.
+        return writeOk({ reply: { reply: response.reply, narration: response.narration || "" } });
       case "rate_limited": {
         const rl = response.rate_limit || {};
         return emitErr(

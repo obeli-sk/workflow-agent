@@ -28,7 +28,13 @@ export default function run(prompt, backend) {
 
     let workflowError = null;
     try {
-        const startInfo = start(containerName, socketPath, agentPrompt.loadSystemPrompt());
+        const systemPrompt = `${agentPrompt.loadSystemPrompt()}
+
+# This execution
+
+Your own workflow execution id is \`${obelisk.executionIdCurrent()}\`. Pass it to
+obelisk.get_execution / obelisk.get_logs to inspect your own run.`;
+        const startInfo = start(containerName, socketPath, systemPrompt);
         console.log(`Started ${which} agent ${startInfo.container} from ${startInfo.image}`);
 
         // agent-input variant: { prompt } for the first turn, then { tool_results }.
@@ -150,8 +156,12 @@ function correctionPrompt(detail) {
 // it completes. Failures are thrown as the agent-error variant payload.
 function drainTurn(socketPath) {
     const outcome = session.recv(socketPath, RECV_TIMEOUT_MS);
+    // turn-outcome::reply is now a record { reply: agent-reply, narration }; the
+    // workflow only needs the agent-reply (narration is for the UI). Tolerate the
+    // old bare-agent-reply shape from results persisted before this change.
     if (outcome && typeof outcome === "object" && outcome.reply) {
-        return outcome.reply;
+        const r = outcome.reply;
+        return (r && typeof r === "object" && "reply" in r) ? r.reply : r;
     }
     throw `unexpected recv outcome: ${JSON.stringify(outcome)}`;
 }

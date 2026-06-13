@@ -83,9 +83,9 @@ params = [
   { name = "socket", type = "string" },
   { name = "timeout-ms", type = "u32" },
 ]
-return_type = "result<variant { working, reply(variant { final(string), tool-calls(list<record { name: string, arguments-json: string }>) }) }, variant { permanent-rate-limited(record { retry-after-seconds: u32, message: string }), permanent-malformed-reply(string), permanent-agent-exited(string), permanent-error(string), transient-error(string), execution-failed }>"
+return_type = "result<variant { working, reply(record { reply: variant { final(string), tool-calls(list<record { name: string, arguments-json: string }>) }, narration: string }) }, variant { permanent-rate-limited(record { retry-after-seconds: u32, message: string }), permanent-malformed-reply(string), permanent-agent-exited(string), permanent-error(string), transient-error(string), execution-failed }>"
 location = "${DEPLOYMENT_DIR}/activity/agent-recv.js"
-exec.lock_expiry.hours = 1
+exec.lock_expiry.minutes = 10
 max_output_bytes = 1048576   # 1 MiB; default 4 KiB overflows on bigger claude replies
 max_retries = 3
 env_vars = ["PATH"]
@@ -98,6 +98,20 @@ params = [
 ]
 return_type = "result<_, string>"
 location = "${DEPLOYMENT_DIR}/activity/agent-cleanup.js"
+exec.lock_expiry.seconds = 30
+max_retries = 3
+env_vars = ["PATH"]
+
+# Operator-injected message: queue text into a running session's container so it
+# is merged into the agent's next turn. Scheduled by the web UI's /api/say.
+[[activity_exec]]
+ffqn = "obelisk-agent:agent/session.inject"
+params = [
+  { name = "socket", type = "string" },
+  { name = "text", type = "string" },
+]
+return_type = "result<u32, string>"
+location = "${DEPLOYMENT_DIR}/activity/agent-inject.js"
 exec.lock_expiry.seconds = 30
 max_retries = 3
 env_vars = ["PATH"]
@@ -286,6 +300,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "${DEPLOYMENT_DIR}/activity/tools/deployment-edit.js"
+exec.lock_expiry.minutes = 1
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "POST"]
@@ -351,6 +366,10 @@ routes = [
   { methods = ["POST"], route = "/api/submit" },
   { methods = ["POST"], route = "/api/answer/:child-id" },
   { methods = ["POST"], route = "/api/confirm/:child-id" },
+  { methods = ["POST"], route = "/api/pause/:execution-id" },
+  { methods = ["POST"], route = "/api/unpause/:execution-id" },
+  { methods = ["POST"], route = "/api/say/:execution-id" },
+  { methods = ["POST"], route = "/api/fork/:execution-id" },
 ]
 env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },

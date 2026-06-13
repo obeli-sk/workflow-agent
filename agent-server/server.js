@@ -24,7 +24,9 @@
 //      Polls the current turn. Returns { "ok": true, "outcome": ..., "raw": [...] }
 //      where outcome is one of:
 //        "working"                                  turn still streaming
-//        "reply",      reply: {final}|{tool_calls}  turn complete, parsed reply
+//        "reply",      reply: {final}|{tool_calls}, narration: string
+//                                                   turn complete, parsed reply
+//                                                   plus the model's prose/thinking
 //        "rate_limited", rate_limit: {retry_after_seconds, message}
 //        "exited",     error: string                backend died mid-turn
 //        "malformed",  error: string                reply did not match envelope
@@ -32,6 +34,9 @@
 //        "error",      error: string                backend reported a turn failure
 //      "raw" carries the native events seen since the last poll, for the
 //      activity to echo to its stderr (debugging only; not in the typed return).
+//
+//   { "op": "inject", "text": "..." }
+//      Queue an operator message; merged into the next user turn (steer/interrupt).
 //
 //   { "op": "status" }    Diagnostics.
 //   { "op": "shutdown" }  Best-effort graceful shutdown.
@@ -68,6 +73,11 @@ let turnStart = 0;
 // Number of turns sent so far (the codex backend prepends the system prompt on
 // turn 0 and switches to `exec resume` afterward).
 let turnCount = 0;
+
+// Operator messages queued via the `inject` op. They are merged into the next
+// user turn (appended after the prompt / tool-results) so an operator can steer
+// or interrupt a running agent; delivery happens at the next send boundary.
+const injectQueue = [];
 
 // Parse a child's stdout as newline-delimited JSON, pushing each event onto the
 // shared buffer. `onEvent` lets a backend react to events as they arrive.
@@ -227,6 +237,48 @@ function findMatchingBrace(s, start) {
   return -1;
 }
 
+// Remove balanced {tool_calls|final} envelope objects from assistant prose,
+// keeping any other text/JSON. Used to derive narration (what the model said
+// around its structured intent) without echoing the envelope itself.
+function stripEnvelopes(text) {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== "{") { out += text[i]; i += 1; continue; }
+    const end = findMatchingBrace(text, i);
+    if (end === -1) { out += text.slice(i); break; }
+    const slice = text.slice(i, end + 1);
+    let isEnvelope = false;
+    try {
+      const obj = JSON.parse(slice);
+      if (obj && typeof obj === "object"
+        && (Array.isArray(obj.tool_calls) || typeof obj.final === "string")) isEnvelope = true;
+    } catch (_) {}
+    if (!isEnvelope) out += slice;
+    i = end + 1;
+  }
+  // Drop now-empty code fences left behind by a removed envelope.
+  return out.replace(/```(?:json)?\s*```/g, "");
+}
+
+// Bound narration so a verbose turn cannot bloat the recv result. It rides back
+// on recv stdout only (never re-sent to the model), so this is just hygiene.
+const MAX_NARRATION_BYTES = 16 * 1024;
+function boundNarration(text) {
+  const t = (text || "").trim();
+  return t.length > MAX_NARRATION_BYTES ? t.slice(0, MAX_NARRATION_BYTES) + "\n[...truncated]" : t;
+}
+
+// On a final turn the answer is plain prose, so it lands in the collected text
+// too. Remove it so narration carries only thinking/reasoning, never a copy of
+// the answer the UI already shows as the final bubble.
+function dropFinalAnswer(text, reply) {
+  if (reply && typeof reply.final === "string" && reply.final) {
+    return text.split(reply.final).join("");
+  }
+  return text;
+}
+
 // Concatenated text of the last claude assistant message in a turn slice.
 function lastAssistantText(turnSlice) {
   for (let i = turnSlice.length - 1; i >= 0; i -= 1) {
@@ -336,6 +388,23 @@ function makeClaudeBackend() {
       if (!reply) return { kind: "malformed", error: `reply did not match envelope: ${text.slice(0, 500)}` };
       return { kind: "reply", reply };
     },
+    // The model's prose + thinking for this turn, minus the envelope, so the UI
+    // can show what the agent reasoned (not just the tool calls it emitted). On a
+    // final turn the prose *is* the answer, so drop it: only thinking remains.
+    narrate(turnSlice, reply) {
+      const parts = [];
+      for (const e of turnSlice) {
+        if (!e || e.type !== "assistant") continue;
+        const content = e.message && e.message.content;
+        if (!Array.isArray(content)) continue;
+        for (const b of content) {
+          if (!b) continue;
+          if (b.type === "thinking" && typeof b.thinking === "string") parts.push(b.thinking);
+          else if (b.type === "text" && typeof b.text === "string") parts.push(stripEnvelopes(b.text));
+        }
+      }
+      return boundNarration(dropFinalAnswer(parts.join("\n"), reply));
+    },
     isFatallyExited() { return exited; },
     exitInfo() { return exitInfo; },
     shutdown() { try { child.stdin.end(); } catch (_) {} try { child.kill("SIGTERM"); } catch (_) {} },
@@ -428,6 +497,25 @@ function makeCodexBackend() {
       if (!reply) return { kind: "malformed", error: `reply did not match envelope: ${(text || "").slice(0, 500)}` };
       return { kind: "reply", reply };
     },
+    // Reasoning items + any preamble agent_messages (the last agent_message is
+    // the envelope, so it is excluded).
+    narrate(turnSlice, reply) {
+      let lastAgentIdx = -1;
+      for (let i = 0; i < turnSlice.length; i += 1) {
+        const e = turnSlice[i];
+        if (e && e.type === "item.completed" && e.item && e.item.type === "agent_message") lastAgentIdx = i;
+      }
+      const parts = [];
+      for (let i = 0; i < turnSlice.length; i += 1) {
+        const e = turnSlice[i];
+        if (!e || e.type !== "item.completed" || !e.item) continue;
+        const it = e.item;
+        const itText = typeof it.text === "string" ? it.text : (typeof it.summary === "string" ? it.summary : "");
+        if (it.type === "reasoning" && itText) parts.push(itText);
+        else if (it.type === "agent_message" && itText && i !== lastAgentIdx) parts.push(stripEnvelopes(itText));
+      }
+      return boundNarration(dropFinalAnswer(parts.join("\n"), reply));
+    },
     // Per-turn process exits are normal; only an unterminated turn is fatal, and
     // that is surfaced via the synthetic turn.failed event above.
     isFatallyExited() { return false; },
@@ -443,8 +531,13 @@ backend.init();
 // ---- socket ops -------------------------------------------------------------
 
 async function opSend({ input }) {
-  const text = renderUserText(input);
+  let text = renderUserText(input);
   if (text === null) return { ok: false, error: "input must be { prompt } or { tool_results }" };
+  // Merge any operator messages queued since the last send.
+  if (injectQueue.length > 0) {
+    const ops = injectQueue.splice(0);
+    text += "\n\n" + ops.map((m) => `[Operator message]: ${m}`).join("\n\n");
+  }
   try {
     turnStart = events.length; // a new turn's events accumulate from here
     await backend.send(text, turnCount);
@@ -488,7 +581,8 @@ async function opRecv({ timeout_ms }) {
     if (c.kind === "rate_limited") return { ok: true, outcome: "rate_limited", rate_limit: c.rate_limit, raw };
     if (c.kind === "malformed") return { ok: true, outcome: "malformed", error: c.error, raw };
     if (c.kind === "error") return { ok: true, outcome: "error", error: c.error, raw };
-    return { ok: true, outcome: "reply", reply: c.reply, raw };
+    const narration = backend.narrate ? backend.narrate(turnSlice, c.reply) : "";
+    return { ok: true, outcome: "reply", reply: c.reply, narration, raw };
   }
 
   if (backend.isFatallyExited()) {
@@ -496,6 +590,12 @@ async function opRecv({ timeout_ms }) {
     return { ok: true, outcome: "exited", error: `agent process exited mid-turn: ${detail}`, raw };
   }
   return { ok: true, outcome: "working", raw };
+}
+
+function opInject({ text }) {
+  if (typeof text !== "string" || !text.trim()) return { ok: false, error: "text is required" };
+  injectQueue.push(text.trim());
+  return { ok: true, queued: injectQueue.length };
 }
 
 function opStatus() {
@@ -526,6 +626,7 @@ async function dispatch(line) {
   switch (cmd.op) {
     case "send": return await opSend(cmd);
     case "recv": return await opRecv(cmd);
+    case "inject": return opInject(cmd);
     case "status": return opStatus();
     case "shutdown": return await opShutdown();
     default: return { ok: false, error: `unknown op: ${cmd.op}` };

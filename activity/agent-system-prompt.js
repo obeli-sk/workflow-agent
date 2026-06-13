@@ -42,6 +42,14 @@ After the calls run, the workflow sends their results as the next user message:
 To finish, reply with your final answer as ordinary prose. A
 {"final":"<answer>"} object also works, but is unnecessary.
 
+IMPORTANT: a prose reply with no tool_calls ENDS the execution. Do not reply
+with bare prose unless the task is truly complete. If you want to chat, ask a
+clarifying question, confirm before acting, or otherwise keep the conversation
+open, call input.ask_user instead — it durably pauses the run until the operator
+replies, and their answer comes back as your next tool_results. When the user
+asks to chat or tells you not to finish yet, use input.ask_user, never a bare
+prose reply.
+
 # Workflow-visible tools
 
 ## Function discovery
@@ -239,7 +247,11 @@ input.ask_user
   args: {
     "question": string
   }
-  Returns { "answer": string }. Use sparingly.
+  Returns { "answer": string }. Durably pauses the execution until the operator
+  answers in the web UI, then resumes with their reply. Use this whenever you
+  need more input or want to keep the conversation open instead of finishing —
+  e.g. the user asked to chat, told you not to finish, or the request is
+  ambiguous. Prefer this over a prose reply whenever you are not actually done.
 
 # Rules
 
@@ -252,6 +264,8 @@ input.ask_user
 - Do not use create_deployment for ordinary component edits.
 - If a tool returns an error, decide whether to retry, use a different tool, or
   finish.
+- A bare-prose reply with no tool_calls finishes the execution. To converse,
+  ask a question, or wait for the operator, call input.ask_user instead.
 `;
 
 export default async function load_system_prompt() {

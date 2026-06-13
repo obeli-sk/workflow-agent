@@ -16,6 +16,7 @@
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run";
 const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
 const CONFIRM_FFQN = "obelisk-agent:tools/deploy.confirm-apply";
+const INJECT_FFQN = "obelisk-agent:agent/session.inject";
 
 export default async function handle(request) {
     const url = new URL(request.url);
@@ -36,6 +37,18 @@ export default async function handle(request) {
             return jsonResponse(await loadExecutionTreeLogs(id));
         }
         if (method === "POST" && path === "/api/submit") return await submit(request);
+        if (method === "POST" && path.startsWith("/api/pause/")) {
+            return await pauseExecution(decodeURIComponent(path.substring("/api/pause/".length)), false);
+        }
+        if (method === "POST" && path.startsWith("/api/unpause/")) {
+            return await pauseExecution(decodeURIComponent(path.substring("/api/unpause/".length)), true);
+        }
+        if (method === "POST" && path.startsWith("/api/say/")) {
+            return await sayToAgent(request, decodeURIComponent(path.substring("/api/say/".length)));
+        }
+        if (method === "POST" && path.startsWith("/api/fork/")) {
+            return await forkRun(request, decodeURIComponent(path.substring("/api/fork/".length)));
+        }
         if (method === "POST" && path.startsWith("/api/answer/")) {
             const childId = decodeURIComponent(path.substring("/api/answer/".length));
             return await answerStub(request, childId);
@@ -89,6 +102,7 @@ async function listRuns() {
         created_at: e.created_at || "",
         status: e.pending_state?.status || "unknown",
         result_kind: e.pending_state?.result_kind ?? null,
+        join_name: parseJoinName(e.pending_state?.join_set_id),
         prompt_preview: await loadPromptPreview(e.execution_id),
     })));
     return { runs };
@@ -102,9 +116,9 @@ async function loadPromptPreview(execId) {
 // ----- detail -----------------------------------------------------------
 
 async function detailRun(id) {
-    const [status, prompt, walk, sentResults, finalResult, pendingAsks, pendingConfirms] = await Promise.all([
+    const [status, created, walk, sentResults, finalResult, pendingAsks, pendingConfirms] = await Promise.all([
         loadStatus(id),
-        loadPrompt(id),
+        loadCreated(id),
         loadResponses(id),
         loadSentResults(id),
         loadFinalResult(id),
@@ -115,8 +129,10 @@ async function detailRun(id) {
         id,
         status: status?.pending_state?.status || "unknown",
         result_kind: status?.pending_state?.result_kind ?? null,
+        join_name: parseJoinName(status?.pending_state?.join_set_id),
         created_at: status?.created_at || "",
-        prompt,
+        prompt: created?.prompt ?? null,
+        backend: created?.backend ?? null,
         turns: buildTurns(walk.replies, walk.toolChildren, sentResults),
         final_result: finalResult,
         pending_asks: pendingAsks,
@@ -129,17 +145,25 @@ async function loadStatus(id) {
     catch (_) { return null; }
 }
 
-async function loadPrompt(id) {
+// The workflow.run creation params are [prompt, backend]. version 0 is the
+// `created` event; without including_cursor=true the server skips it and returns
+// the `locked` event at version 1, which has no params.
+async function loadCreated(id) {
     try {
-        // version 0 is the `created` event; without including_cursor=true the
-        // server skips it and returns the `locked` event at version 1, which
-        // has no params.
         const payload = await obeliskJson(
             `/v1/executions/${encodeURIComponent(id)}/events?version_from=0&including_cursor=true&length=1`,
         );
         const params = payload.events?.[0]?.event?.created?.params;
-        return Array.isArray(params) && typeof params[0] === "string" ? params[0] : null;
+        if (!Array.isArray(params)) return null;
+        return {
+            prompt: typeof params[0] === "string" ? params[0] : null,
+            backend: typeof params[1] === "string" ? params[1] : null,
+        };
     } catch (_) { return null; }
+}
+
+async function loadPrompt(id) {
+    return (await loadCreated(id))?.prompt ?? null;
 }
 
 async function loadFinalResult(id) {
@@ -359,10 +383,16 @@ async function loadResponses(execId) {
             const joinName = parseJoinName(wrapped.join_set_id);
 
             if (joinName === "recv") {
-                // turn-outcome: "working" (string) or { reply: agent-reply }.
+                // turn-outcome: "working" (string) or { reply: { reply, narration } }.
+                // Tolerate the old shape where reply was the bare agent-reply.
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
                 if (value && typeof value === "object" && value.reply) {
-                    replies.push(value.reply);
+                    const r = value.reply;
+                    if (r && typeof r === "object" && "reply" in r) {
+                        replies.push({ reply: r.reply, narration: typeof r.narration === "string" ? r.narration : "" });
+                    } else {
+                        replies.push({ reply: r, narration: "" });
+                    }
                 }
             } else if (!INFRA_NAMES.has(joinName)) {
                 toolChildren.push({
@@ -468,10 +498,12 @@ function unwrapTypedResult(result) {
 function buildTurns(replies, toolChildren, sentResults) {
     const turns = [];
     let toolCursor = 0;
-    for (const reply of replies) {
+    for (const item of replies) {
+        const reply = item && item.reply;
+        const narration = (item && typeof item.narration === "string") ? item.narration : "";
         if (!reply || typeof reply !== "object") continue;
         if (typeof reply.final === "string") {
-            turns.push({ kind: "final", text: reply.final });
+            turns.push({ kind: "final", text: reply.final, narration });
         } else if (Array.isArray(reply.tool_calls)) {
             const calls = reply.tool_calls.map((c) => {
                 const child = toolChildren[toolCursor];
@@ -489,7 +521,7 @@ function buildTurns(replies, toolChildren, sentResults) {
                 }
                 return base;
             });
-            turns.push({ kind: "tool_calls", calls });
+            turns.push({ kind: "tool_calls", calls, narration });
         }
     }
     return turns;
@@ -518,6 +550,69 @@ async function submit(request) {
     const execId = obelisk.executionIdGenerate();
     try { obelisk.schedule(execId, WORKFLOW_FFQN, [prompt, backend]); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
+    return jsonResponse({ execution_id: execId });
+}
+
+// Pause or unpause a run via the native execution endpoints. A paused execution
+// reports pending_state.status == "paused".
+async function pauseExecution(id, unpause) {
+    if (!id) return jsonError(400, "missing run id");
+    const verb = unpause ? "unpause" : "pause";
+    const resp = await fetch(
+        `${apiBase()}/v1/executions/${encodeURIComponent(id)}/${verb}`,
+        { method: "PUT" },
+    );
+    if (!resp.ok) {
+        return jsonError(502, `${verb} failed: HTTP ${resp.status} ${await resp.text()}`);
+    }
+    return jsonResponse({ ok: true });
+}
+
+// The workflow derives its session socket from the (sanitized) run id; mirror
+// that formula so an operator message reaches the right container.
+function sessionSocketPath(runId) {
+    const sessionId = String(runId).replace(/[^A-Za-z0-9_.-]/g, "-");
+    return `/tmp/obelisk-agent/${sessionId}.sock`;
+}
+
+// Queue an operator message into a running session. We schedule the inject
+// activity (only host activities can reach the container's unix socket); it is
+// merged into the agent's next turn by server.js.
+async function sayToAgent(request, runId) {
+    if (!runId) return jsonError(400, "missing run id");
+    let payload;
+    try { payload = JSON.parse(await request.text()); }
+    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
+    const text = payload?.text;
+    if (typeof text !== "string" || !text.trim()) return jsonError(400, "text is required");
+    const execId = obelisk.executionIdGenerate();
+    try { obelisk.schedule(execId, INJECT_FFQN, [sessionSocketPath(runId), text]); }
+    catch (e) { return jsonError(502, `inject schedule failed: ${String(e)}`); }
+    return jsonResponse({ execution_id: execId });
+}
+
+// Fork a finished run into a fresh session. The new run's prompt instructs the
+// agent to read the original run's prompt + result (via its own tools), then
+// continue with the operator's new instruction.
+async function forkRun(request, runId) {
+    if (!runId) return jsonError(400, "missing run id");
+    let payload;
+    try { payload = JSON.parse(await request.text()); }
+    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
+    const text = typeof payload?.text === "string" ? payload.text.trim() : "";
+    const created = await loadCreated(runId);
+    // Prefer an explicitly chosen backend, else inherit the original run's.
+    const chosen = (typeof payload?.backend === "string" && payload.backend) ? payload.backend : null;
+    const backend = chosen || ((typeof created?.backend === "string" && created.backend) ? created.backend : null);
+    const prompt = [
+        `You are continuing from a previous agent run ${runId}.`,
+        `First call obelisk.get_execution and obelisk.get_result with execution_id "${runId}"`,
+        `to read its original prompt and final result.`,
+        text ? `Then: ${text}` : `Then continue that work.`,
+    ].join(" ");
+    const execId = obelisk.executionIdGenerate();
+    try { obelisk.schedule(execId, WORKFLOW_FFQN, [prompt, backend]); }
+    catch (e) { return jsonError(502, `fork schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }
 
@@ -622,6 +717,9 @@ const SHELL_HTML = `<!doctype html>
   .run-meta .status { font-weight: 600; }
   .run-meta .status.finished { color: var(--ok); }
   .run-meta .status.pending_now, .run-meta .status.locked, .run-meta .status.unfinished { color: var(--warn); }
+  .run-meta .status.paused, .meta .status.paused { color: var(--accent); }
+  .run-meta .status.working, .meta .status.working { color: var(--warn); }
+  .run-meta .status.awaiting, .meta .status.awaiting { color: var(--accent); font-weight: 700; }
   .run-meta .status.timeout, .run-meta .status.permanently_failed, .run-meta .status.permanently_timed_out, .run-meta .status.err { color: var(--err); }
   main .empty { color: var(--muted); margin-top: 4rem; text-align: center; }
   main h2 { margin: 0 0 0.5rem; font-size: 1.05rem; font-weight: 600; }
@@ -630,6 +728,9 @@ const SHELL_HTML = `<!doctype html>
   .bubble { padding: 0.8em 1em; border-radius: 8px; margin: 0.6em 0; max-width: 720px; }
   .bubble.user { background: var(--accent-bg); border: 1px solid #d0deef; }
   .bubble.final { background: var(--ok-bg); border: 1px solid #c6e0ce; }
+  .bubble.thinking { background: #faf7ff; border: 1px solid #e0d6f0; color: #4a4458; }
+  .bubble.thinking .label { color: #7a5ea8; }
+  .bubble.thinking pre { font-style: italic; }
   .bubble pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
   .label { font-size: 0.75em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.25em; }
   .turn { margin: 1em 0; }
@@ -651,7 +752,7 @@ const SHELL_HTML = `<!doctype html>
   .call .args, .call .result { padding: 0 0.8em 0.6em; }
   .call pre { margin: 0; padding: 0.5em 0.8em; background: #f7f7f7; border-radius: 4px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; max-height: 14em; overflow-y: auto; }
   .call .args .key, .call .result .key { color: var(--muted); font-size: 0.8em; margin: 0.5em 0 0.2em; }
-  form.ask { background: #fffaf2; border: 1px solid #f0d8a8; border-radius: 6px; padding: 0.8em 1em; margin: 1em 0; }
+  form.ask { background: #fffaf2; border: 1px solid #f0d8a8; border-radius: 6px; padding: 0.8em 1em; margin: 1.4em 0; max-width: 720px; }
   form.ask p { margin: 0 0 0.5em; font-weight: 600; }
   form.ask textarea { width: 100%; min-height: 4em; padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
   form.ask button { margin-top: 0.4em; }
@@ -678,6 +779,15 @@ const SHELL_HTML = `<!doctype html>
   .logs .source { color: #8eaccf; }
   .logs .level-error { color: #ff9b9b; }
   .logs .level-warn { color: #ffd27d; }
+  .interact { max-width: 720px; margin: 1.4em 0; padding: 0.8em 1em; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  .interact.fork { background: #f6f8fc; border-color: #d0deef; }
+  .interact textarea { width: 100%; resize: vertical; min-height: 3em; padding: 0.4em 0.6em; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+  .interact button { margin-top: 0.4em; padding: 0.4em 0.9em; font: inherit; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: white; border-radius: 4px; }
+  .interact .fork-row { display: flex; gap: 0.4em; align-items: center; margin-top: 0.4em; }
+  .interact .fork-row button { margin-top: 0; }
+  .interact select { padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--panel); }
+  .meta #pause-btn, .meta #unpause-btn { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
+  .meta #pause-btn:hover, .meta #unpause-btn:hover { text-decoration: underline; }
   .err-box { background: var(--err-bg); border: 1px solid #f4c0c0; color: var(--err); padding: 0.6em 0.9em; border-radius: 4px; margin: 1em 0; }
   .ago { color: var(--muted); font-size: 0.8em; }
 </style>
@@ -737,6 +847,28 @@ function statusLabel(status, result_kind) {
   return 'finished';
 }
 
+// A blocked run is waiting on a join set whose name suffix is the function it
+// dispatched (e.g. "o:20-ask-user"). Translate that into a specific label + a
+// css class so the sidebar/detail say what the run is actually doing.
+const JOIN_LABELS = {
+  'ask-user': ['awaiting reply', 'awaiting'],
+  'confirm-apply': ['awaiting approval', 'awaiting'],
+  'recv': ['thinking', 'working'],
+  'start': ['starting', 'working'],
+  'send': ['sending', 'working'],
+  'cleanup': ['finishing', 'working'],
+};
+function describeStatus(status, result_kind, joinName) {
+  if (status === 'blocked_by_join_set') {
+    const hit = JOIN_LABELS[joinName];
+    if (hit) return { label: hit[0], cls: hit[1] };
+    if (joinName) return { label: joinName.replaceAll('-', ' '), cls: 'working' };
+    return { label: 'blocked', cls: 'working' };
+  }
+  const label = statusLabel(status, result_kind);
+  return { label, cls: label.replaceAll(' ', '_') };
+}
+
 function readSelectedFromUrl() {
   const m = window.location.search.match(/[?&]run=([^&]+)/);
   state.selected = m ? decodeURIComponent(m[1]) : null;
@@ -771,8 +903,7 @@ function renderSidebar() {
     return;
   }
   box.innerHTML = state.runs.map((r) => {
-    const label = statusLabel(r.status, r.result_kind);
-    const cls = label.replaceAll(' ', '_');
+    const { label, cls } = describeStatus(r.status, r.result_kind, r.join_name);
     return '<a class="run-item' + (r.id === state.selected ? ' active' : '') + '" href="?run=' + encodeURIComponent(r.id) + '" data-id="' + esc(r.id) + '">'
       + '<div class="run-prompt">' + esc(r.prompt_preview || '(no prompt)') + '</div>'
       + '<div class="run-meta"><span class="status ' + esc(cls) + '">' + esc(label) + '</span><span class="ago">' + esc(ago(r.created_at)) + '</span></div>'
@@ -810,8 +941,8 @@ function renderDetail() {
   // Skip rendering when nothing changed - otherwise the 2 s poll trashes any
   // <details> the user opened.
   const sig = JSON.stringify({
-    id: d.id, status: d.status, result_kind: d.result_kind,
-    prompt: d.prompt, turns: d.turns, final_result: d.final_result,
+    id: d.id, status: d.status, result_kind: d.result_kind, join_name: d.join_name,
+    prompt: d.prompt, backend: d.backend, turns: d.turns, final_result: d.final_result,
     pending_asks: d.pending_asks, pending_confirms: d.pending_confirms,
   });
   if (sig === state.lastSig) return;
@@ -821,10 +952,14 @@ function renderDetail() {
   for (const el of main.querySelectorAll('details.call[open]')) {
     if (el.dataset.key) openKeys.add(el.dataset.key);
   }
+  // Preserve in-progress text in the say/fork boxes across the poll re-render.
+  const sayDraft = main.querySelector('#say-input')?.value || '';
+  const forkDraft = main.querySelector('#fork-input')?.value || '';
 
   state.lastSig = sig;
 
-  const label = statusLabel(d.status, d.result_kind);
+  const phase = runPhase(d.status);
+  const { label, cls: statusCls } = describeStatus(d.status, d.result_kind, d.join_name);
   const turnsHtml = d.turns.length === 0
     ? '<p style="color: var(--muted)">Agent is starting up...</p>'
     : d.turns.map((t, i) => renderTurn(t, i)).join('');
@@ -841,21 +976,26 @@ function renderDetail() {
     ? d.pending_confirms.map(renderConfirm).join('') : '';
 
   const finalHtml = renderFinal(d);
+  const pauseBtn = phase === 'active'
+    ? ' &middot; <button type="button" id="pause-btn">pause</button>'
+    : (phase === 'paused' ? ' &middot; <button type="button" id="unpause-btn">unpause</button>' : '');
 
   main.innerHTML = ''
     + '<h2>' + esc(d.prompt ? truncate(d.prompt, 80) : 'Run') + '</h2>'
     + '<div class="meta">'
     +   '<a href="' + esc(execLink(d.id)) + '" target="_blank" rel="noopener"><code>' + esc(d.id) + '</code></a>'
-    +   ' &middot; <span class="status ' + esc(label.replaceAll(' ', '_')) + '">' + esc(label) + '</span>'
+    +   ' &middot; <span class="status ' + esc(statusCls) + '">' + esc(label) + '</span>'
     +   ' &middot; ' + esc(ago(d.created_at))
     +   ' &middot; <button type="button" id="logs-toggle">logs (including nested)</button>'
+    +   pauseBtn
     + '</div>'
     + '<div id="logs-slot">' + renderLogs() + '</div>'
     + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div><pre>' + esc(d.prompt) + '</pre></div>' : '')
     + confirmsHtml
-    + asksHtml
     + turnsHtml
-    + finalHtml;
+    + finalHtml
+    + asksHtml
+    + renderInteraction(phase, Boolean(d.pending_asks && d.pending_asks.length));
 
   for (const el of main.querySelectorAll('details.call')) {
     if (el.dataset.key && openKeys.has(el.dataset.key)) el.open = true;
@@ -874,6 +1014,58 @@ function renderDetail() {
     card.querySelector('button.reject')?.addEventListener('click', () => sendConfirm(child, false));
   }
   main.querySelector('#logs-toggle')?.addEventListener('click', toggleLogs);
+  main.querySelector('#pause-btn')?.addEventListener('click', () => setPaused(state.selected, false));
+  main.querySelector('#unpause-btn')?.addEventListener('click', () => setPaused(state.selected, true));
+
+  const say = main.querySelector('#say-form');
+  if (say) {
+    say.querySelector('#say-input').value = sayDraft;
+    say.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      sendToAgent(state.selected, say.querySelector('#say-input').value);
+    });
+  }
+  const fork = main.querySelector('#fork-form');
+  if (fork) {
+    fork.querySelector('#fork-input').value = forkDraft;
+    fork.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      forkSession(state.selected, fork.querySelector('#fork-input').value, fork.querySelector('#fork-backend')?.value);
+    });
+  }
+}
+
+// Status -> control phase. Terminal runs offer Fork; paused/active runs offer
+// pause/unpause and the live "send to agent" box.
+function runPhase(status) {
+  if (status === 'finished' || /^permanently/.test(status)) return 'terminal';
+  if (status === 'paused') return 'paused';
+  return 'active';
+}
+
+// Bottom-of-transcript controls: a chat box to steer a running agent, or a fork
+// box to continue a finished run in a fresh session. While the agent is parked
+// on an ask_user prompt, the ask form (rendered just above) is the input, so the
+// steer box is suppressed to avoid two competing text boxes.
+function renderInteraction(phase, hasPendingAsks) {
+  if (phase === 'terminal') {
+    const orig = state.detail && state.detail.backend === 'codex' ? 'codex' : 'claude';
+    const opt = (v) => '<option value="' + v + '"' + (v === orig ? ' selected' : '') + '>' + v + '</option>';
+    return '<form id="fork-form" class="interact fork">'
+      + '<div class="label">fork to new session</div>'
+      + '<textarea id="fork-input" placeholder="Continue from this run with... (optional)"></textarea>'
+      + '<div class="fork-row">'
+      +   '<select id="fork-backend" title="agent backend">' + opt('claude') + opt('codex') + '</select>'
+      +   '<button type="submit">Fork to new session</button>'
+      + '</div>'
+      + '</form>';
+  }
+  if (hasPendingAsks) return '';
+  return '<form id="say-form" class="interact say">'
+    + '<div class="label">' + (phase === 'paused' ? 'send to agent (queued until unpaused)' : 'send to agent') + '</div>'
+    + '<textarea id="say-input" placeholder="Steer or interrupt the agent... (delivered next turn)" required></textarea>'
+    + '<button type="submit">Send to agent</button>'
+    + '</form>';
 }
 
 // One pending hot-reload confirmation: agent summary, target deployment, the
@@ -982,6 +1174,13 @@ function renderDiffLines(lines) {
   }).join('');
 }
 
+// The agent's prose/thinking for a turn (its reasoning around the tool calls),
+// rendered as a distinct bubble so it reads apart from the structured output.
+function thinkingHtml(narration) {
+  if (!narration || !String(narration).trim()) return '';
+  return '<div class="bubble thinking"><div class="label">thinking</div><pre>' + esc(narration) + '</pre></div>';
+}
+
 function renderTurn(t, i) {
   if (t.kind === 'final') return ''; // rendered separately at the bottom
   if (t.kind !== 'tool_calls') return '';
@@ -994,6 +1193,7 @@ function renderTurn(t, i) {
   const items = t.calls.map((c, k) => renderCall(c, i, k)).join('');
   return '<div class="turn">'
     + '<div class="turn-header">Turn ' + turnNo + ' &middot; ' + t.calls.length + ' tool call' + (t.calls.length === 1 ? '' : 's') + '</div>'
+    + thinkingHtml(t.narration)
     + '<div class="calls">' + items + '</div>'
     + '</div>';
 }
@@ -1036,7 +1236,12 @@ function renderFinal(d) {
   // Prefer the model's emitted final turn, fall back to the workflow result.
   const finalTurn = [...d.turns].reverse().find((t) => t.kind === 'final');
   if (finalTurn) {
-    return '<div class="bubble final"><div class="label">final</div><pre>' + esc(finalTurn.text) + '</pre></div>';
+    // The final answer is prose, so a backend may report it as narration too;
+    // suppress the thinking bubble when it just duplicates the answer.
+    const narr = (finalTurn.narration || '').trim();
+    const dup = narr === (finalTurn.text || '').trim();
+    return (dup ? '' : thinkingHtml(finalTurn.narration))
+      + '<div class="bubble final"><div class="label">final</div><pre>' + esc(finalTurn.text) + '</pre></div>';
   }
   if (d.status !== 'finished') return '';
   const r = d.final_result;
@@ -1107,6 +1312,55 @@ async function sendConfirm(childId, approve) {
     await refreshDetail();
   } catch (e) {
     alert((approve ? 'Approve' : 'Reject') + ' failed: ' + String(e));
+  }
+}
+
+async function setPaused(runId, unpause) {
+  try {
+    const r = await fetch('/api/' + (unpause ? 'unpause' : 'pause') + '/' + encodeURIComponent(runId), { method: 'POST' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    state.lastSig = null;
+    await refreshDetail();
+    await refreshSidebar();
+  } catch (e) {
+    alert((unpause ? 'Unpause' : 'Pause') + ' failed: ' + String(e));
+  }
+}
+
+async function sendToAgent(runId, text) {
+  const t = (text || '').trim();
+  if (!t) return;
+  try {
+    const r = await fetch('/api/say/' + encodeURIComponent(runId), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: t }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    const box = document.getElementById('say-input');
+    if (box) box.value = '';
+  } catch (e) {
+    alert('Send failed: ' + String(e));
+  }
+}
+
+async function forkSession(runId, text, backend) {
+  try {
+    const r = await fetch('/api/fork/' + encodeURIComponent(runId), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: text || '', backend: backend || undefined }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    await refreshSidebar();
+    setSelected(data.execution_id);
+  } catch (e) {
+    alert('Fork failed: ' + String(e));
   }
 }
 
