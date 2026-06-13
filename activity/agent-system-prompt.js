@@ -153,16 +153,18 @@ obelisk.get_deployment
 obelisk.get_component_source
   args: {
     "deployment_id": string,
-    "kind": "js_activity" | "js_workflow" | "js_webhook",
-    "id": string,
+    "component": string,
     "offset"?: number,
     "length"?: number
   }
-  The ID is the FFQN for activities and workflows, or the name for webhooks.
+  The component selector may be a full ComponentId
+  ("component_type:name:component_digest"), a function FFQN, or an unambiguous
+  component name such as "workflow.run" or "ui".
   Returns one component's source, paginated by character offset. The JSON
-  contains file_name, source_bytes, offset, length, next_offset, and a body
-  marker. The source follows the JSON verbatim inside that marker. Continue
-  with next_offset until it is null.
+  identifies the matched kind, component ID, and FFQN, and contains file_name,
+  source_bytes, offset, length, next_offset, and a body marker. The source
+  follows the JSON verbatim inside that marker. Continue with next_offset until
+  it is null.
 
 obelisk.create_deployment
   args: {

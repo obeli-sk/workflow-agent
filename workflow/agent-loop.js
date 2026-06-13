@@ -250,8 +250,7 @@ function dispatch(call, draft) {
                 // Sliced server-side so the child result is just the requested page.
                 return ok(name, webapi.getComponentSource(
                     requireString(args.deployment_id, "deployment_id"),
-                    requireString(args.kind, "kind"),
-                    requireString(args.id, "id"),
+                    requireString(args.component, "component"),
                     args.offset | 0,
                     args.length | 0,
                 ));

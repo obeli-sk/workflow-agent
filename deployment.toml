@@ -258,8 +258,7 @@ name = "tool_get_component_source"
 ffqn = "obelisk-agent:tools/webapi.get-component-source"
 params = [
   { name = "deployment-id", type = "string" },
-  { name = "kind", type = "string" },
-  { name = "id", type = "string" },
+  { name = "component", type = "string" },
   { name = "offset", type = "u32" },
   { name = "length", type = "u32" },
 ]
