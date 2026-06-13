@@ -10,9 +10,10 @@
 //   POST /api/answer/:childId       body: {answer} -> {ok: true}
 //   POST /api/cleanup/:id           stop and remove an active run's container
 //
-// The SPA polls /api/runs every 3s and the open run every 2s, so refreshes
-// happen without page reloads. Layout is two-pane: sidebar = prompt list +
-// new-prompt form, right pane = chat-style transcript.
+// The SPA polls the run list every 10s and active open runs every 3s, so
+// refreshes happen without page reloads. Terminal runs stop polling. Layout is
+// two-pane: sidebar = prompt list + new-prompt form, right pane = chat-style
+// transcript.
 
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run";
 const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop";
@@ -1089,6 +1090,13 @@ const SHELL_HTML = `<!doctype html>
 <script>
 const OBELISK_UI_URL = "__OBELISK_UI_URL__";
 const state = { selected: null, runs: [], detail: null, lastSig: null, logs: null, logsOpen: false };
+const SIDEBAR_POLL_MS = 10000;
+const DETAIL_POLL_MS = 3000;
+let sidebarTimer = null;
+let detailTimer = null;
+let sidebarRequest = null;
+let detailRequest = null;
+let detailAbort = null;
 
 function execLink(id) {
   return OBELISK_UI_URL + '/execution/' + encodeURIComponent(id);
@@ -1149,10 +1157,13 @@ function readSelectedFromUrl() {
 }
 
 function setSelected(id) {
+  if (id !== state.selected && detailAbort) detailAbort.abort();
   state.selected = id;
+  state.detail = null;
   state.lastSig = null;
   state.logs = null;
   state.logsOpen = false;
+  clearTimeout(detailTimer);
   const u = new URL(window.location.href);
   if (id) u.searchParams.set('run', id); else u.searchParams.delete('run');
   window.history.replaceState({}, '', u.toString());
@@ -1160,14 +1171,29 @@ function setSelected(id) {
   refreshDetail();
 }
 
-async function refreshSidebar() {
-  try {
-    const r = await fetch('/api/runs', { headers: { accept: 'application/json' } });
-    if (!r.ok) return;
-    const data = await r.json();
-    state.runs = data.runs || [];
-    renderSidebar();
-  } catch (_) {}
+function scheduleSidebarRefresh() {
+  clearTimeout(sidebarTimer);
+  if (document.hidden) return;
+  sidebarTimer = setTimeout(refreshSidebar, SIDEBAR_POLL_MS);
+}
+
+function refreshSidebar() {
+  if (sidebarRequest) return sidebarRequest;
+  clearTimeout(sidebarTimer);
+  sidebarRequest = (async () => {
+    try {
+      const r = await fetch('/api/runs', { headers: { accept: 'application/json' } });
+      if (!r.ok) return;
+      const data = await r.json();
+      state.runs = data.runs || [];
+      renderSidebar();
+    } catch (_) {
+    } finally {
+      sidebarRequest = null;
+      scheduleSidebarRefresh();
+    }
+  })();
+  return sidebarRequest;
 }
 
 function renderSidebar() {
@@ -1188,23 +1214,53 @@ function renderSidebar() {
   }
 }
 
-async function refreshDetail() {
+function scheduleDetailRefresh() {
+  clearTimeout(detailTimer);
+  if (document.hidden || !state.selected || runPhase(state.detail?.status) === 'terminal') return;
+  detailTimer = setTimeout(refreshDetail, DETAIL_POLL_MS);
+}
+
+function refreshDetail() {
   const main = document.getElementById('detail');
   if (!state.selected) {
     main.innerHTML = '<p class="empty">Pick a run from the sidebar, or submit a new prompt.</p>';
-    return;
+    return Promise.resolve();
   }
-  try {
-    const r = await fetch('/api/runs/' + encodeURIComponent(state.selected), { headers: { accept: 'application/json' } });
-    if (!r.ok) {
-      main.innerHTML = '<div class="err-box">Failed to load run: HTTP ' + r.status + '</div>';
-      return;
+  const selected = state.selected;
+  if (detailRequest) {
+    if (detailRequest.id === selected) return detailRequest.promise;
+    detailAbort?.abort();
+  }
+  clearTimeout(detailTimer);
+  const controller = new AbortController();
+  detailAbort = controller;
+  const promise = (async () => {
+    try {
+      const r = await fetch('/api/runs/' + encodeURIComponent(selected), {
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
+      });
+      if (selected !== state.selected) return;
+      if (!r.ok) {
+        main.innerHTML = '<div class="err-box">Failed to load run: HTTP ' + r.status + '</div>';
+        return;
+      }
+      state.detail = await r.json();
+      if (selected === state.selected) renderDetail();
+    } catch (e) {
+      if (e.name !== 'AbortError' && selected === state.selected) {
+        main.innerHTML = '<div class="err-box">' + esc(String(e)) + '</div>';
+      }
+    } finally {
+      if (detailRequest?.promise === promise) {
+        detailRequest = null;
+        detailAbort = null;
+        scheduleDetailRefresh();
+      }
     }
-    state.detail = await r.json();
-    renderDetail();
-  } catch (e) {
-    main.innerHTML = '<div class="err-box">' + esc(String(e)) + '</div>';
-  }
+  })();
+  detailRequest = { id: selected, promise };
+  return promise;
 }
 
 function renderDetail() {
@@ -1726,8 +1782,15 @@ document.getElementById('new-form').addEventListener('submit', (ev) => {
 readSelectedFromUrl();
 refreshSidebar();
 refreshDetail();
-setInterval(refreshSidebar, 3000);
-setInterval(refreshDetail, 2000);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearTimeout(sidebarTimer);
+    clearTimeout(detailTimer);
+    return;
+  }
+  refreshSidebar();
+  refreshDetail();
+});
 </script>
 </body>
 </html>`;
