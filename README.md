@@ -17,7 +17,8 @@ activity/
   agent-recv.js      drain one turn; return a typed turn-outcome (session.recv)
   agent-cleanup.js   shut the server down, docker rm (session.cleanup)
 workflow/
-  agent.js           start -> send(prompt) -> recv(reply) -> cleanup
+  agent.js           start -> race(agent-loop, teardown) -> cleanup
+  agent-loop.js      send(prompt) -> recv(reply) -> tools
 deployment.toml      FFQNs, common agent schema, and lock_expiry per activity
 ```
 
@@ -32,7 +33,7 @@ never parse LLM JSON.
 ```
 agent-input  (workflow -> agent)   variant { prompt(string),
                                              tool-results(list<{name, outcome}>) }
-agent-reply  (agent -> workflow)   variant { final(string),
+agent-reply  (agent -> workflow)   variant { final(string), error(string),
                                              tool-calls(list<{name, arguments-json}>) }
 turn-outcome (recv ok)             variant { working, reply(agent-reply) }
 agent-error  (recv err)            variant { permanent-rate-limited({retry-after-seconds, message}),
@@ -65,7 +66,8 @@ session-limit detection, exit detection all live here). The raw stream-json is
 echoed to each activity's stderr for debugging but never appears in the typed
 return. Adding codex means branching on `AGENT_BACKEND` in `server.js` plus a
 `codex.start` activity. The system prompt still instructs claude to emit the
-`{"final": …}` / `{"tool_calls": […]}` envelope, which `server.js` parses.
+`{"final": …}` / `{"error": …}` / `{"tool_calls": […]}` envelope, which
+`server.js` parses.
 
 ## Agent loop (in the workflow)
 
@@ -74,7 +76,7 @@ The workflow, not claude, is the agent. Each turn:
 1. `session.send` sends the next `agent-input` (`{prompt}` on the first turn, or
    `{tool_results}` from the previous turn).
 2. `session.recv` polls until the `turn-outcome` is a `reply`.
-3. If the reply is `final`, return it.
+3. If the reply is `final`, return it; if it is `error`, throw it.
 4. If the reply is `tool-calls`, dispatch each call to its activity and send the
    aggregated `tool-results` back as the next input.
 

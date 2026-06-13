@@ -83,7 +83,7 @@ params = [
   { name = "socket", type = "string" },
   { name = "timeout-ms", type = "u32" },
 ]
-return_type = "result<variant { working, reply(record { reply: variant { final(string), tool-calls(list<record { name: string, arguments-json: string }>) }, narration: string }) }, variant { permanent-rate-limited(record { retry-after-seconds: u32, message: string }), permanent-malformed-reply(string), permanent-agent-exited(string), permanent-error(string), transient-error(string), execution-failed }>"
+return_type = "result<variant { working, reply(record { reply: variant { final(string), error(string), tool-calls(list<record { name: string, arguments-json: string }>) }, presentation: string, narration: string }) }, variant { permanent-rate-limited(record { retry-after-seconds: u32, message: string }), permanent-malformed-reply(string), permanent-agent-exited(string), permanent-error(string), transient-error(string), execution-failed }>"
 location = "${DEPLOYMENT_DIR}/activity/agent-recv.js"
 exec.lock_expiry.minutes = 10
 max_output_bytes = 1048576   # 1 MiB; default 4 KiB overflows on bigger claude replies
@@ -343,8 +343,27 @@ params = [
 ]
 return_type = "result<_, string>"
 
+# Long-lived supervisor control child. The web UI cancels this stub to request
+# teardown; the root workflow races it against the complete agent-loop workflow.
+[[activity_stub]]
+name = "session_teardown_signal"
+ffqn = "obelisk-agent:agent/session.teardown-signal"
+params = []
+return_type = "result<_, string>"
+
 # --- Workflow -----------------------------------------------------------------
 
+[[workflow_js]]
+ffqn = "obelisk-agent:workflow/workflow.agent-loop"
+params = [
+  { name = "prompt",      type = "string" },
+  { name = "socket-path", type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/workflow/agent-loop.js"
+
+# Public supervisor workflow. It owns the container lifecycle and races the
+# nested agent-loop workflow against the operator teardown signal.
 [[workflow_js]]
 ffqn = "obelisk-agent:workflow/workflow.run"
 params = [
@@ -369,6 +388,7 @@ routes = [
   { methods = ["POST"], route = "/api/pause/:execution-id" },
   { methods = ["POST"], route = "/api/unpause/:execution-id" },
   { methods = ["POST"], route = "/api/say/:execution-id" },
+  { methods = ["POST"], route = "/api/cleanup/:execution-id" },
   { methods = ["POST"], route = "/api/fork/:execution-id" },
 ]
 env_vars = [

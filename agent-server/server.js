@@ -24,7 +24,7 @@
 //      Polls the current turn. Returns { "ok": true, "outcome": ..., "raw": [...] }
 //      where outcome is one of:
 //        "working"                                  turn still streaming
-//        "reply",      reply: {final}|{tool_calls}, narration: string
+//        "reply",      reply: {final}|{error}|{tool_calls}, narration: string
 //                                                   turn complete, parsed reply
 //                                                   plus the model's prose/thinking
 //        "rate_limited", rate_limit: {retry_after_seconds, message}
@@ -154,12 +154,14 @@ function renderUserText(input) {
 }
 
 // Parse a turn's final assistant text into the common agent-reply shape:
-//   { tool_calls: [{ name, arguments_json }] } | { final: string }, or null.
+//   { tool_calls: [{ name, arguments_json }] } | { final: string } |
+//   { error: string }, or null.
 //
 // The model is free to think and narrate; we only fish the structured intent
 // out of its prose:
 //   - any {"tool_calls":[...]} object (bare or fenced, one or several) becomes
 //     a single ordered tool_calls batch;
+//   - a clean {"error":"..."} envelope requests an Err workflow result;
 //   - otherwise the message *is* the final answer (prose), unwrapping a clean
 //     {"final":"..."} envelope if that is all the model sent;
 //   - null is returned only when the model clearly attempted a tool_calls
@@ -184,8 +186,11 @@ function extractReply(text) {
   // A tool-call was intended but did not parse: signal malformed so we re-prompt.
   if (/"tool_calls"\s*:/.test(trimmed)) return null;
 
+  const requestedError = unwrapStringEnvelope(trimmed, "error");
+  if (requestedError !== null) return { error: requestedError };
+
   // Final answer: unwrap a clean {"final":"..."} envelope, else use prose as-is.
-  const unwrapped = unwrapFinal(trimmed);
+  const unwrapped = unwrapStringEnvelope(trimmed, "final");
   return { final: unwrapped !== null ? unwrapped : trimmed };
 }
 
@@ -208,16 +213,17 @@ function scanJsonObjects(text) {
   return objs;
 }
 
-// If the whole message is exactly a {"final":"..."} envelope (optionally wrapped
-// in one ```...``` fence), return the string; otherwise null (treat as prose).
-function unwrapFinal(text) {
+// If the whole message is exactly a single string-valued action envelope
+// (optionally wrapped in one ```...``` fence), return the string.
+function unwrapStringEnvelope(text, key) {
   let body = text.trim();
   const fence = body.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/);
   if (fence) body = fence[1].trim();
   try {
     const obj = JSON.parse(body);
-    if (obj && typeof obj === "object" && typeof obj.final === "string" && !Array.isArray(obj.tool_calls)) {
-      return obj.final;
+    if (obj && typeof obj === "object" && typeof obj[key] === "string"
+      && Object.keys(obj).length === 1) {
+      return obj[key];
     }
   } catch (_) {}
   return null;
@@ -237,7 +243,7 @@ function findMatchingBrace(s, start) {
   return -1;
 }
 
-// Remove balanced {tool_calls|final} envelope objects from assistant prose,
+// Remove balanced {tool_calls|final|error} envelope objects from assistant prose,
 // keeping any other text/JSON. Used to derive narration (what the model said
 // around its structured intent) without echoing the envelope itself.
 function stripEnvelopes(text) {
@@ -252,7 +258,8 @@ function stripEnvelopes(text) {
     try {
       const obj = JSON.parse(slice);
       if (obj && typeof obj === "object"
-        && (Array.isArray(obj.tool_calls) || typeof obj.final === "string")) isEnvelope = true;
+        && (Array.isArray(obj.tool_calls) || typeof obj.final === "string"
+          || typeof obj.error === "string")) isEnvelope = true;
     } catch (_) {}
     if (!isEnvelope) out += slice;
     i = end + 1;

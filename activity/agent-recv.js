@@ -9,8 +9,10 @@
 //   result<variant { working, reply(record {
 //            reply: variant {
 //              final(string),
+//              error(string),
 //              tool-calls(list<record { name: string, arguments-json: string }>),
 //            },
+//            presentation: string,
 //            narration: string,
 //          }) },
 //          variant {
@@ -28,6 +30,73 @@
 // retried by Obelisk.
 
 import net from "node:net";
+
+function findMatchingBrace(text, start) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (char === "\\") { escaped = true; continue; }
+    if (char === "\"") { inString = !inString; continue; }
+    if (inString) continue;
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function stripActionEnvelopes(text) {
+  let output = "";
+  let cursor = 0;
+  while (cursor < text.length) {
+    if (text[cursor] !== "{") {
+      output += text[cursor];
+      cursor += 1;
+      continue;
+    }
+    const end = findMatchingBrace(text, cursor);
+    if (end === -1) {
+      output += text.slice(cursor);
+      break;
+    }
+    const slice = text.slice(cursor, end + 1);
+    let isEnvelope = false;
+    try {
+      const value = JSON.parse(slice);
+      isEnvelope = value && typeof value === "object"
+        && (Array.isArray(value.tool_calls) || typeof value.final === "string"
+          || typeof value.error === "string");
+    } catch (_) {}
+    if (!isEnvelope) output += slice;
+    cursor = end + 1;
+  }
+  return output.replace(/```(?:json)?\s*```/g, "").trim();
+}
+
+// Older agent-server images know only final/tool_calls and therefore classify
+// a clean {"error":"..."} envelope as final prose. Normalize that shape here
+// so the typed workflow protocol can be upgraded before every runner image is.
+function normalizeReply(reply) {
+  if (!reply || typeof reply !== "object" || typeof reply.final !== "string") {
+    return reply;
+  }
+  let body = reply.final.trim();
+  const fence = body.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/);
+  if (fence) body = fence[1].trim();
+  try {
+    const value = JSON.parse(body);
+    if (value && typeof value === "object" && typeof value.error === "string"
+      && Object.keys(value).length === 1) {
+      return { error: value.error };
+    }
+  } catch (_) {}
+  return reply;
+}
 
 function parseJsonArg(index, name) {
   const raw = process.argv[index];
@@ -77,13 +146,20 @@ async function main() {
     failPermanent("timeout-ms must be a non-negative number");
   }
 
+  let finalAgentMessage = "";
   while (true) {
     const response = await request(socketPath, { op: "recv", timeout_ms: timeoutMs });
     if (!response.ok) fail(response.error || "recv failed");
 
     // Persist native events as they arrive so the UI can show live progress.
     if (Array.isArray(response.raw)) {
-      for (const ev of response.raw) console.error(`[raw] ${JSON.stringify(ev)}`);
+      for (const ev of response.raw) {
+        console.error(`[raw] ${JSON.stringify(ev)}`);
+        if (ev?.type === "item.completed" && ev.item?.type === "agent_message"
+          && typeof ev.item.text === "string") {
+          finalAgentMessage = ev.item.text;
+        }
+      }
     }
 
     switch (response.outcome) {
@@ -91,9 +167,18 @@ async function main() {
         continue;
       case "reply":
         // turn-outcome::reply(record { reply, narration }); server.js shaped
-        // reply as { final } | { tool_calls: [{ name, arguments_json }] } and
+        // reply as { final } | { error } |
+        // { tool_calls: [{ name, arguments_json }] } and
         // narration as the model's prose/thinking for this turn.
-        return writeOk({ reply: { reply: response.reply, narration: response.narration || "" } });
+        return writeOk({
+          reply: {
+            reply: normalizeReply(response.reply),
+            presentation: Array.isArray(response.reply?.tool_calls)
+              ? stripActionEnvelopes(finalAgentMessage)
+              : "",
+            narration: response.narration || "",
+          },
+        });
       case "rate_limited": {
         const rl = response.rate_limit || {};
         return emitErr(

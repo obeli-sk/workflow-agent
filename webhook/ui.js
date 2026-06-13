@@ -8,15 +8,18 @@
 //   GET  /api/logs/:id              logs from the run and all derived executions
 //   POST /api/submit                body: {prompt} -> {execution_id}
 //   POST /api/answer/:childId       body: {answer} -> {ok: true}
+//   POST /api/cleanup/:id           stop and remove an active run's container
 //
 // The SPA polls /api/runs every 3s and the open run every 2s, so refreshes
 // happen without page reloads. Layout is two-pane: sidebar = prompt list +
 // new-prompt form, right pane = chat-style transcript.
 
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run";
+const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop";
 const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
 const CONFIRM_FFQN = "obelisk-agent:tools/deploy.confirm-apply";
 const INJECT_FFQN = "obelisk-agent:agent/session.inject";
+const TEARDOWN_SIGNAL_FFQN = "obelisk-agent:agent/session.teardown-signal";
 
 export default async function handle(request) {
     const url = new URL(request.url);
@@ -45,6 +48,9 @@ export default async function handle(request) {
         }
         if (method === "POST" && path.startsWith("/api/say/")) {
             return await sayToAgent(request, decodeURIComponent(path.substring("/api/say/".length)));
+        }
+        if (method === "POST" && path.startsWith("/api/cleanup/")) {
+            return await cleanupSession(decodeURIComponent(path.substring("/api/cleanup/".length)));
         }
         if (method === "POST" && path.startsWith("/api/fork/")) {
             return await forkRun(request, decodeURIComponent(path.substring("/api/fork/".length)));
@@ -116,14 +122,16 @@ async function loadPromptPreview(execId) {
 // ----- detail -----------------------------------------------------------
 
 async function detailRun(id) {
-    const [status, created, walk, sentResults, finalResult, pendingAsks, pendingConfirms] = await Promise.all([
+    const agentLoopId = await loadAgentLoopExecution(id);
+    const [status, created, walk, sentResults, finalResult, pendingAsks, pendingConfirms, teardownSignalId] = await Promise.all([
         loadStatus(id),
         loadCreated(id),
-        loadResponses(id),
-        loadSentResults(id),
+        loadResponses(agentLoopId || id),
+        loadSentResults(agentLoopId || id),
         loadFinalResult(id),
         loadPendingAsks(id),
         loadPendingConfirms(id),
+        loadTeardownSignal(id),
     ]);
     return {
         id,
@@ -137,7 +145,21 @@ async function detailRun(id) {
         final_result: finalResult,
         pending_asks: pendingAsks,
         pending_confirms: pendingConfirms,
+        teardown_signal_id: teardownSignalId,
     };
+}
+
+async function loadAgentLoopExecution(workflowId) {
+    let candidates;
+    try {
+        candidates = await obeliskJson(
+            `/v1/executions?ffqn_prefix=${encodeURIComponent(AGENT_LOOP_FFQN)}`
+            + `&execution_id_prefix=${encodeURIComponent(workflowId)}&show_derived=true&length=10`,
+        );
+    } catch (_) { return null; }
+    const mine = candidates.filter((e) => typeof e.execution_id === "string"
+        && e.execution_id.startsWith(workflowId + "."));
+    return mine.length > 0 ? mine[mine.length - 1].execution_id : null;
 }
 
 async function loadStatus(id) {
@@ -228,6 +250,20 @@ async function loadPendingAsks(workflowId) {
         } catch (_) {}
         return { id: e.execution_id, question };
     }));
+}
+
+async function loadTeardownSignal(workflowId) {
+    let candidates;
+    try {
+        candidates = await obeliskJson(
+            `/v1/executions?ffqn_prefix=${encodeURIComponent(TEARDOWN_SIGNAL_FFQN)}`
+            + `&execution_id_prefix=${encodeURIComponent(workflowId)}`
+            + "&show_derived=true&hide_finished=true&length=10",
+        );
+    } catch (_) { return null; }
+    const mine = candidates.filter((e) => typeof e.execution_id === "string"
+        && e.execution_id.startsWith(workflowId + "."));
+    return mine.length > 0 ? mine[mine.length - 1].execution_id : null;
 }
 
 // Pending hot-reload confirmations: confirm-apply stub children of this
@@ -383,15 +419,25 @@ async function loadResponses(execId) {
             const joinName = parseJoinName(wrapped.join_set_id);
 
             if (joinName === "recv") {
-                // turn-outcome: "working" (string) or { reply: { reply, narration } }.
+                // turn-outcome: "working" (string) or
+                // { reply: { reply, presentation, blocks, narration } }.
                 // Tolerate the old shape where reply was the bare agent-reply.
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
                 if (value && typeof value === "object" && value.reply) {
                     const r = value.reply;
                     if (r && typeof r === "object" && "reply" in r) {
-                        replies.push({ reply: r.reply, narration: typeof r.narration === "string" ? r.narration : "" });
+                        let presentation = typeof r.presentation === "string" ? r.presentation : "";
+                        if (!presentation && Array.isArray(r.reply?.tool_calls)) {
+                            presentation = await loadRecvPresentation(ev.child_execution_id);
+                        }
+                        replies.push({
+                            reply: r.reply,
+                            presentation,
+                            blocks: Array.isArray(r.blocks) ? r.blocks : [],
+                            narration: typeof r.narration === "string" ? r.narration : "",
+                        });
                     } else {
-                        replies.push({ reply: r, narration: "" });
+                        replies.push({ reply: r, presentation: "", blocks: [], narration: "" });
                     }
                 }
             } else if (!INFRA_NAMES.has(joinName)) {
@@ -407,6 +453,81 @@ async function loadResponses(execId) {
         including = false;
     }
     return { replies, toolChildren };
+}
+
+async function loadRecvPresentation(executionId) {
+    try {
+        const logs = await obeliskJson(`/v1/executions/${encodeURIComponent(executionId)}/logs`);
+        let finalMessage = "";
+        for (const entry of logs) {
+            if (entry?.type !== "stream" || entry.stream_type !== "stderr") continue;
+            let text;
+            try {
+                const bytes = Uint8Array.from(atob(entry.payload || ""), (char) => char.charCodeAt(0));
+                text = new TextDecoder().decode(bytes);
+            } catch (_) { continue; }
+            for (const line of text.split("\n")) {
+                if (!line.startsWith("[raw] ")) continue;
+                try {
+                    const event = JSON.parse(line.substring(6));
+                    if (event?.type === "item.completed" && event.item?.type === "agent_message"
+                        && typeof event.item.text === "string") {
+                        finalMessage = event.item.text;
+                    }
+                } catch (_) {}
+            }
+        }
+        return stripActionEnvelopes(finalMessage);
+    } catch (_) {
+        return "";
+    }
+}
+
+function stripActionEnvelopes(text) {
+    let output = "";
+    let cursor = 0;
+    while (cursor < text.length) {
+        if (text[cursor] !== "{") {
+            output += text[cursor];
+            cursor += 1;
+            continue;
+        }
+        const end = findMatchingBrace(text, cursor);
+        if (end === -1) {
+            output += text.slice(cursor);
+            break;
+        }
+        const slice = text.slice(cursor, end + 1);
+        let isEnvelope = false;
+        try {
+            const value = JSON.parse(slice);
+            isEnvelope = value && typeof value === "object"
+                && (Array.isArray(value.tool_calls) || typeof value.final === "string"
+                    || typeof value.error === "string");
+        } catch (_) {}
+        if (!isEnvelope) output += slice;
+        cursor = end + 1;
+    }
+    return output.replace(/```(?:json)?\s*```/g, "").trim();
+}
+
+function findMatchingBrace(text, start) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i += 1) {
+        const char = text[i];
+        if (escaped) { escaped = false; continue; }
+        if (char === "\\") { escaped = true; continue; }
+        if (char === "\"") { inString = !inString; continue; }
+        if (inString) continue;
+        if (char === "{") depth += 1;
+        else if (char === "}") {
+            depth -= 1;
+            if (depth === 0) return i;
+        }
+    }
+    return -1;
 }
 
 // The tool responses *as the model received them* are the `tool_results` the
@@ -459,8 +580,10 @@ function normalizeSent(entry) {
 }
 
 function parseJoinName(joinSetId) {
-    // join_set_id format: "o:<ordinal>-<name>"
+    // One-off join sets use "o:<ordinal>-<name>"; explicitly named join sets
+    // use "n:<name>".
     if (typeof joinSetId !== "string") return "";
+    if (joinSetId.startsWith("n:")) return joinSetId.substring(2);
     const dash = joinSetId.indexOf("-");
     return dash === -1 ? "" : joinSetId.substring(dash + 1);
 }
@@ -487,8 +610,9 @@ function unwrapTypedResult(result) {
 }
 
 // Build a clean turn list from the typed agent-replies. We emit:
-//   { kind: "tool_calls", calls: [{name, args, child_id?, ok?|err?}] }
-//   { kind: "final", text }
+//   { kind: "tool_calls", blocks, calls: [{name, args, child_id?, ok?|err?}] }
+//   { kind: "final", blocks, text }
+//   { kind: "error", blocks, text }
 //
 // Tool calls, child executions, and sent tool_results are all in dispatch order,
 // so a single cursor aligns them 1:1. The displayed response is what was sent to
@@ -501,9 +625,13 @@ function buildTurns(replies, toolChildren, sentResults) {
     for (const item of replies) {
         const reply = item && item.reply;
         const narration = (item && typeof item.narration === "string") ? item.narration : "";
+        const presentation = (item && typeof item.presentation === "string") ? item.presentation : "";
+        const blocks = normalizeBlocks(item?.blocks, presentation, narration, reply);
         if (!reply || typeof reply !== "object") continue;
         if (typeof reply.final === "string") {
-            turns.push({ kind: "final", text: reply.final, narration });
+            turns.push({ kind: "final", text: reply.final, blocks });
+        } else if (typeof reply.error === "string") {
+            turns.push({ kind: "error", text: reply.error, blocks });
         } else if (Array.isArray(reply.tool_calls)) {
             const calls = reply.tool_calls.map((c) => {
                 const child = toolChildren[toolCursor];
@@ -521,10 +649,57 @@ function buildTurns(replies, toolChildren, sentResults) {
                 }
                 return base;
             });
-            turns.push({ kind: "tool_calls", calls, narration });
+            turns.push({ kind: "tool_calls", calls, blocks });
         }
     }
     return turns;
+}
+
+function normalizeBlocks(blocks, presentation, narration, reply) {
+    const out = [];
+    if (Array.isArray(blocks)) {
+        for (const block of blocks) {
+            const kind = block?.kind === "mermaid"
+                ? "mermaid"
+                : (block?.kind === "thinking" ? "thinking" : "markdown");
+            if (typeof block?.content === "string" && block.content.trim()) {
+                out.push({ kind, content: block.content });
+            }
+        }
+    }
+    if (presentation.trim()) {
+        out.push(...splitMermaidBlocks(presentation, "markdown"));
+    }
+    if (narration.trim()) {
+        out.push(...splitMermaidBlocks(narration, "thinking"));
+    }
+    // Backward compatibility for final executions persisted before display
+    // fields were introduced.
+    if (out.length === 0 && typeof reply?.final === "string") {
+        out.push(...splitMermaidBlocks(reply.final, "markdown"));
+    }
+    return out;
+}
+
+function splitMermaidBlocks(text, proseKind) {
+    const source = String(text || "").replace(
+        /```markdown\s*\n([\s\S]*?)\nmermaid\s*\n([\s\S]*?)```/gi,
+        (_, prose, diagram) => `${prose.trim()}\n\n\`\`\`mermaid\n${diagram.trim()}\n\`\`\``,
+    );
+    const blocks = [];
+    const pattern = /```mermaid\s*\n([\s\S]*?)```/gi;
+    let cursor = 0;
+    let match;
+    while ((match = pattern.exec(source)) !== null) {
+        const prose = source.slice(cursor, match.index).trim();
+        if (prose) blocks.push({ kind: proseKind, content: prose });
+        const diagram = match[1].trim();
+        if (diagram) blocks.push({ kind: "mermaid", content: diagram });
+        cursor = pattern.lastIndex;
+    }
+    const tail = source.slice(cursor).trim();
+    if (tail) blocks.push({ kind: proseKind, content: tail });
+    return blocks;
 }
 
 function parseArgs(json) {
@@ -573,6 +748,85 @@ async function pauseExecution(id, unpause) {
 function sessionSocketPath(runId) {
     const sessionId = String(runId).replace(/[^A-Za-z0-9_.-]/g, "-");
     return `/tmp/obelisk-agent/${sessionId}.sock`;
+}
+
+function isTerminalStatus(status) {
+    return status === "finished" || /^permanently/.test(status || "");
+}
+
+// Cancel the supervisor-owned teardown stub. The supervisor races this child
+// against the complete nested agent workflow, then closes the child branch and
+// cleans up its container.
+async function cleanupSession(runId) {
+    if (!runId) return jsonError(400, "missing run id");
+    const status = await loadStatus(runId);
+    if (!status) return jsonError(404, "run not found");
+    const executionStatus = status.pending_state?.status || "unknown";
+    if (isTerminalStatus(executionStatus)) {
+        return jsonError(409, "run is already finished");
+    }
+
+    const signalId = await loadTeardownSignal(runId);
+    if (!signalId) return jsonError(409, "teardown signal is not ready");
+    const resp = await fetch(
+        `${apiBase()}/v1/executions/${encodeURIComponent(signalId)}/cancel`,
+        { method: "PUT" },
+    );
+    if (!resp.ok) {
+        return jsonError(502, `teardown signal failed: HTTP ${resp.status} ${await resp.text()}`);
+    }
+    if (executionStatus === "paused") {
+        const unpause = await fetch(
+            `${apiBase()}/v1/executions/${encodeURIComponent(runId)}/unpause`,
+            { method: "PUT" },
+        );
+        if (!unpause.ok) {
+            return jsonError(502, `teardown signalled but unpause failed: HTTP ${unpause.status} ${await unpause.text()}`);
+        }
+    }
+
+    // Obelisk closes a join set by cancelling activities and delays, but it
+    // waits for child workflows. Wait until the supervisor has run container
+    // cleanup and entered join-set closing, then cancel pending leaf activities
+    // so the nested workflow can unwind instead of remaining on a human stub.
+    await waitForSupervisorClosing(runId);
+    const cancelled = await cancelPendingDescendants(runId, signalId);
+    return jsonResponse({ ok: true, signal_execution_id: signalId, cancelled });
+}
+
+async function waitForSupervisorClosing(runId) {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+        const status = await loadStatus(runId);
+        const pending = status?.pending_state;
+        if (isTerminalStatus(pending?.status) || pending?.closing === true) return;
+    }
+}
+
+async function cancelPendingDescendants(runId, signalId) {
+    let executions;
+    try {
+        executions = await obeliskJson(
+            `/v1/executions?execution_id_prefix=${encodeURIComponent(runId)}`
+            + "&show_derived=true&hide_finished=true&length=200",
+        );
+    } catch (_) { return []; }
+
+    const cancellable = executions.filter((execution) => {
+        if (execution?.execution_id === signalId) return false;
+        if (execution?.ffqn === "obelisk-agent:agent/session.cleanup") return false;
+        return execution?.component_type === "activity"
+            || execution?.component_type === "activity_stub";
+    });
+    const cancelled = [];
+    for (const execution of cancellable) {
+        const id = execution.execution_id;
+        const response = await fetch(
+            `${apiBase()}/v1/executions/${encodeURIComponent(id)}/cancel`,
+            { method: "PUT" },
+        );
+        if (response.ok) cancelled.push(id);
+    }
+    return cancelled;
 }
 
 // Queue an operator message into a running session. We schedule the inject
@@ -728,10 +982,19 @@ const SHELL_HTML = `<!doctype html>
   .bubble { padding: 0.8em 1em; border-radius: 8px; margin: 0.6em 0; max-width: 720px; }
   .bubble.user { background: var(--accent-bg); border: 1px solid #d0deef; }
   .bubble.final { background: var(--ok-bg); border: 1px solid #c6e0ce; }
+  .bubble.error { background: var(--err-bg); border: 1px solid #e5b8b8; color: var(--err); }
   .bubble.thinking { background: #faf7ff; border: 1px solid #e0d6f0; color: #4a4458; }
   .bubble.thinking .label { color: #7a5ea8; }
   .bubble.thinking pre { font-style: italic; }
   .bubble pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
+  .bubble.markdown { background: var(--panel); border: 1px solid var(--line); }
+  .bubble.markdown > :first-child { margin-top: 0; }
+  .bubble.markdown > :last-child { margin-bottom: 0; }
+  .bubble.markdown pre { padding: 0.6em; background: #f7f7f7; border-radius: 4px; overflow-x: auto; font: 12px/1.45 ui-monospace, monospace; }
+  .bubble.markdown code { font-family: ui-monospace, monospace; }
+  .bubble.mermaid-block { max-width: 960px; overflow-x: auto; background: white; border: 1px solid var(--line); }
+  .bubble.mermaid-block svg { max-width: 100%; height: auto; }
+  .bubble.mermaid-block .render-error { color: var(--err); white-space: pre-wrap; }
   .label { font-size: 0.75em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.25em; }
   .turn { margin: 1em 0; }
   .turn-header { font-weight: 600; color: var(--muted); font-size: 0.85em; margin-bottom: 0.3em; }
@@ -788,9 +1051,21 @@ const SHELL_HTML = `<!doctype html>
   .interact select { padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--panel); }
   .meta #pause-btn, .meta #unpause-btn { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
   .meta #pause-btn:hover, .meta #unpause-btn:hover { text-decoration: underline; }
+  .meta #cleanup-btn { color: var(--err); }
+  .meta #cleanup-btn.confirming { font-weight: 600; text-decoration: underline; }
+  .meta #cleanup-btn:disabled { color: var(--muted); cursor: wait; text-decoration: none; }
   .err-box { background: var(--err-bg); border: 1px solid #f4c0c0; color: var(--err); padding: 0.6em 0.9em; border-radius: 4px; margin: 1em 0; }
   .ago { color: var(--muted); font-size: 0.8em; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
+  window.renderMermaidBlocks = async (nodes) => {
+    await mermaid.run({ nodes, suppressErrors: false });
+  };
+</script>
 </head>
 <body>
 <aside>
@@ -944,6 +1219,7 @@ function renderDetail() {
     id: d.id, status: d.status, result_kind: d.result_kind, join_name: d.join_name,
     prompt: d.prompt, backend: d.backend, turns: d.turns, final_result: d.final_result,
     pending_asks: d.pending_asks, pending_confirms: d.pending_confirms,
+    teardown_signal_id: d.teardown_signal_id,
   });
   if (sig === state.lastSig) return;
 
@@ -979,6 +1255,9 @@ function renderDetail() {
   const pauseBtn = phase === 'active'
     ? ' &middot; <button type="button" id="pause-btn">pause</button>'
     : (phase === 'paused' ? ' &middot; <button type="button" id="unpause-btn">unpause</button>' : '');
+  const cleanupBtn = phase !== 'terminal' && d.teardown_signal_id
+    ? ' &middot; <button type="button" id="cleanup-btn">tear down</button>'
+    : '';
 
   main.innerHTML = ''
     + '<h2>' + esc(d.prompt ? truncate(d.prompt, 80) : 'Run') + '</h2>'
@@ -988,6 +1267,7 @@ function renderDetail() {
     +   ' &middot; ' + esc(ago(d.created_at))
     +   ' &middot; <button type="button" id="logs-toggle">logs (including nested)</button>'
     +   pauseBtn
+    +   cleanupBtn
     + '</div>'
     + '<div id="logs-slot">' + renderLogs() + '</div>'
     + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div><pre>' + esc(d.prompt) + '</pre></div>' : '')
@@ -996,6 +1276,8 @@ function renderDetail() {
     + finalHtml
     + asksHtml
     + renderInteraction(phase, Boolean(d.pending_asks && d.pending_asks.length));
+
+  hydrateDisplayBlocks(main);
 
   for (const el of main.querySelectorAll('details.call')) {
     if (el.dataset.key && openKeys.has(el.dataset.key)) el.open = true;
@@ -1016,6 +1298,15 @@ function renderDetail() {
   main.querySelector('#logs-toggle')?.addEventListener('click', toggleLogs);
   main.querySelector('#pause-btn')?.addEventListener('click', () => setPaused(state.selected, false));
   main.querySelector('#unpause-btn')?.addEventListener('click', () => setPaused(state.selected, true));
+  main.querySelector('#cleanup-btn')?.addEventListener('click', (event) => {
+    const btn = event.currentTarget;
+    if (!btn.classList.contains('confirming')) {
+      btn.classList.add('confirming');
+      btn.textContent = 'confirm tear down';
+      return;
+    }
+    cleanupAgentSession(state.selected, btn);
+  });
 
   const say = main.querySelector('#say-form');
   if (say) {
@@ -1174,15 +1465,61 @@ function renderDiffLines(lines) {
   }).join('');
 }
 
-// The agent's prose/thinking for a turn (its reasoning around the tool calls),
-// rendered as a distinct bubble so it reads apart from the structured output.
-function thinkingHtml(narration) {
-  if (!narration || !String(narration).trim()) return '';
-  return '<div class="bubble thinking"><div class="label">thinking</div><pre>' + esc(narration) + '</pre></div>';
+function displayBlocksHtml(blocks) {
+  return (blocks || []).map((block) => {
+    const source = encodeURIComponent(block.content || '');
+    if (block.kind === 'thinking') {
+      return '<div class="bubble thinking"><div class="label">thinking</div><pre>' + esc(block.content) + '</pre></div>';
+    }
+    if (block.kind === 'mermaid') {
+      return '<div class="bubble mermaid-block"><div class="label">diagram</div>'
+        + '<div class="mermaid-source" data-source="' + esc(source) + '"></div></div>';
+    }
+    return '<div class="bubble markdown" data-source="' + esc(source) + '"></div>';
+  }).join('');
+}
+
+function hydrateDisplayBlocks(root) {
+  for (const el of root.querySelectorAll('.bubble.markdown[data-source]')) {
+    const source = decodeURIComponent(el.dataset.source || '');
+    if (window.marked && window.DOMPurify) {
+      el.innerHTML = window.DOMPurify.sanitize(window.marked.parse(source));
+    } else {
+      el.innerHTML = '<pre>' + esc(source) + '</pre>';
+    }
+    el.removeAttribute('data-source');
+  }
+  const diagrams = [];
+  for (const el of root.querySelectorAll('.mermaid-source[data-source]')) {
+    el.textContent = decodeURIComponent(el.dataset.source || '');
+    el.classList.add('mermaid');
+    el.removeAttribute('data-source');
+    diagrams.push(el);
+  }
+  if (diagrams.length) renderMermaidWhenReady(diagrams, 0);
+}
+
+function renderMermaidWhenReady(nodes, attempt) {
+  if (typeof window.renderMermaidBlocks === 'function') {
+    window.renderMermaidBlocks(nodes).catch((error) => {
+      for (const el of nodes) {
+        if (!el.querySelector('svg')) {
+          el.className = 'render-error';
+          el.textContent = 'Mermaid render failed: ' + String(error);
+        }
+      }
+    });
+  } else if (attempt < 20) {
+    setTimeout(() => renderMermaidWhenReady(nodes, attempt + 1), 100);
+  }
 }
 
 function renderTurn(t, i) {
-  if (t.kind === 'final') return ''; // rendered separately at the bottom
+  if (t.kind === 'final') return displayBlocksHtml(t.blocks);
+  if (t.kind === 'error') {
+    return displayBlocksHtml(t.blocks)
+      + '<div class="bubble error"><div class="label">error</div><pre>' + esc(t.text) + '</pre></div>';
+  }
   if (t.kind !== 'tool_calls') return '';
 
   // Turn numbering = index among tool_calls turns + 1.
@@ -1193,7 +1530,7 @@ function renderTurn(t, i) {
   const items = t.calls.map((c, k) => renderCall(c, i, k)).join('');
   return '<div class="turn">'
     + '<div class="turn-header">Turn ' + turnNo + ' &middot; ' + t.calls.length + ' tool call' + (t.calls.length === 1 ? '' : 's') + '</div>'
-    + thinkingHtml(t.narration)
+    + displayBlocksHtml(t.blocks)
     + '<div class="calls">' + items + '</div>'
     + '</div>';
 }
@@ -1233,16 +1570,10 @@ function shortChildId(id) {
 }
 
 function renderFinal(d) {
-  // Prefer the model's emitted final turn, fall back to the workflow result.
+  // Model-emitted final blocks are rendered with their turn. Fall back to the
+  // workflow result only for old executions with no persisted final turn.
   const finalTurn = [...d.turns].reverse().find((t) => t.kind === 'final');
-  if (finalTurn) {
-    // The final answer is prose, so a backend may report it as narration too;
-    // suppress the thinking bubble when it just duplicates the answer.
-    const narr = (finalTurn.narration || '').trim();
-    const dup = narr === (finalTurn.text || '').trim();
-    return (dup ? '' : thinkingHtml(finalTurn.narration))
-      + '<div class="bubble final"><div class="label">final</div><pre>' + esc(finalTurn.text) + '</pre></div>';
-  }
+  if (finalTurn) return '';
   if (d.status !== 'finished') return '';
   const r = d.final_result;
   if (!r) return '';
@@ -1327,6 +1658,28 @@ async function setPaused(runId, unpause) {
     await refreshSidebar();
   } catch (e) {
     alert((unpause ? 'Unpause' : 'Pause') + ' failed: ' + String(e));
+  }
+}
+
+async function cleanupAgentSession(runId, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'tearing down...';
+  }
+  try {
+    const r = await fetch('/api/cleanup/' + encodeURIComponent(runId), { method: 'POST' });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    state.lastSig = null;
+    await refreshDetail();
+    await refreshSidebar();
+  } catch (e) {
+    alert('Tear down failed: ' + String(e));
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove('confirming');
+      btn.textContent = 'tear down';
+    }
   }
 }
 
