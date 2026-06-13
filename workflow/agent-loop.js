@@ -7,18 +7,23 @@ const RECV_TIMEOUT_MS = 30000;
 const MAX_TURNS = 30;          // hard cap on agent loop turns
 const MAX_CORRECTIONS = 3;     // re-prompts allowed per turn for a malformed reply
 const MAX_TOOL_RESULT_BYTES = 96 * 1024;  // encoded-size cap per tool_result (argv-safe)
+const INJECTION_FFQN = "obelisk-agent:agent/session.injection";
 
-export default function agentLoop(prompt, socketPath) {
+export default function agentLoop(prompt, socketPath, executionId) {
     if (typeof prompt !== "string" || !prompt.trim()) {
         throw "prompt is required";
     }
     if (typeof socketPath !== "string" || !socketPath) {
         throw "socket path is required";
     }
+    if (typeof executionId !== "string" || !executionId) {
+        throw "execution id is required";
+    }
 
     // agent-input variant: { prompt } for the first turn, then { tool_results }.
     let nextInput = { prompt };
     let finalAnswer = null;
+    let injection = null;
     const deploymentDraft = {
         config: null,
         baseDeploymentId: null,
@@ -27,47 +32,93 @@ export default function agentLoop(prompt, socketPath) {
         shownRevision: -1,
     };
 
-    for (let turn = 0; turn < MAX_TURNS; turn += 1) {
-        console.log(`--- turn ${turn} ---`);
-        const reply = sendAndDrain(socketPath, nextInput);
+    try {
+        for (let turn = 0; turn < MAX_TURNS; turn += 1) {
+            console.log(`--- turn ${turn} ---`);
+            injection = prepareInjection(injection, executionId);
+            const reply = sendAndDrain(socketPath, nextInput);
 
-        if (typeof reply.final === "string") {
-            finalAnswer = reply.final;
-            console.log(`final after ${turn + 1} turns`);
-            break;
-        }
-        if (typeof reply.error === "string") {
-            console.log(`agent requested error after ${turn + 1} turns`);
-            throw reply.error;
-        }
-        if (Array.isArray(reply.tool_calls) && reply.tool_calls.length > 0) {
-            console.log(`dispatching ${reply.tool_calls.length} tool call(s)`);
-            const results = reply.tool_calls.map((call) => {
-                const result = dispatch(call, deploymentDraft);
-                console.log(`  ${call?.name}: ${"ok" in result.outcome ? "ok" : `err=${result.outcome.err}`}`);
-                return result;
-            });
-            const applyIndex = reply.tool_calls.findIndex((call) => call?.name === "obelisk.apply_deployment");
-            if (applyIndex !== -1) {
-                const applyResult = results[applyIndex];
-                if ("ok" in applyResult.outcome) {
-                    finalAnswer = `Deployment hot reload approved and scheduled: ${applyResult.outcome.ok}`;
-                } else {
-                    finalAnswer = `Deployment hot reload was not scheduled: ${applyResult.outcome.err}`;
-                }
-                console.log("apply_deployment is terminal; finishing workflow before switch");
+            if (typeof reply.final === "string") {
+                finalAnswer = reply.final;
+                console.log(`final after ${turn + 1} turns`);
                 break;
             }
-            nextInput = { tool_results: results };
-            continue;
+            if (typeof reply.error === "string") {
+                console.log(`agent requested error after ${turn + 1} turns`);
+                throw reply.error;
+            }
+            if (Array.isArray(reply.tool_calls) && reply.tool_calls.length > 0) {
+                // Explicit human gates own the input UI while blocked. Cancel the
+                // generic injection offer before entering either stub activity.
+                if (reply.tool_calls.some(isBlockingHumanTool)) {
+                    closeInjection(injection);
+                    injection = null;
+                }
+                console.log(`dispatching ${reply.tool_calls.length} tool call(s)`);
+                const results = reply.tool_calls.map((call) => {
+                    const result = dispatch(call, deploymentDraft);
+                    console.log(`  ${call?.name}: ${"ok" in result.outcome ? "ok" : `err=${result.outcome.err}`}`);
+                    return result;
+                });
+                const applyIndex = reply.tool_calls.findIndex((call) => call?.name === "obelisk.apply_deployment");
+                if (applyIndex !== -1) {
+                    const applyResult = results[applyIndex];
+                    if ("ok" in applyResult.outcome) {
+                        finalAnswer = `Deployment hot reload approved and scheduled: ${applyResult.outcome.ok}`;
+                    } else {
+                        finalAnswer = `Deployment hot reload was not scheduled: ${applyResult.outcome.err}`;
+                    }
+                    console.log("apply_deployment is terminal; finishing workflow before switch");
+                    break;
+                }
+                nextInput = { tool_results: results };
+                continue;
+            }
+            throw `agent reply had no final answer and no tool calls: ${JSON.stringify(reply).slice(0, 500)}`;
         }
-        throw `agent reply had no final answer and no tool calls: ${JSON.stringify(reply).slice(0, 500)}`;
+    } finally {
+        closeInjection(injection);
     }
 
     if (finalAnswer === null) {
         throw `exceeded MAX_TURNS=${MAX_TURNS} without a final answer`;
     }
     return finalAnswer;
+}
+
+// Keep exactly one durable operator-input stub outstanding while the agent can
+// accept generic steering. A completed response is consumed at a send boundary,
+// queued into the concrete container by a normal derived activity, and replaced
+// with a fresh stub before the next agent turn starts.
+function prepareInjection(injection, executionId) {
+    let current = injection || openInjection();
+    const text = current.joinSet.joinNextTry();
+    if (text === undefined) return current;
+    if (typeof text !== "string" || !text.trim()) {
+        throw "injection text must be a non-empty string";
+    }
+    session.inject(executionId, text);
+    console.log(`queued operator injection from ${current.executionId}`);
+    current.joinSet.close();
+    current = openInjection();
+    return current;
+}
+
+function openInjection() {
+    const joinSet = obelisk.createJoinSet();
+    const executionId = joinSet.submit(INJECTION_FFQN, []);
+    console.log(`opened operator injection ${executionId}`);
+    return { joinSet, executionId };
+}
+
+function closeInjection(injection) {
+    if (injection === null) return;
+    try { injection.joinSet.close(); }
+    catch (error) { console.log(`injection close failed: ${String(error)}`); }
+}
+
+function isBlockingHumanTool(call) {
+    return call?.name === "input.ask_user" || call?.name === "obelisk.apply_deployment";
 }
 
 // Send one agent-input and drain the turn into a typed agent-reply

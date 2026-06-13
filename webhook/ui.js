@@ -19,7 +19,7 @@ const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run";
 const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop";
 const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
 const CONFIRM_FFQN = "obelisk-agent:tools/deploy.confirm-apply";
-const INJECT_FFQN = "obelisk-agent:agent/session.inject";
+const INJECTION_FFQN = "obelisk-agent:agent/session.injection";
 const TEARDOWN_SIGNAL_FFQN = "obelisk-agent:agent/session.teardown-signal";
 
 export default async function handle(request) {
@@ -124,7 +124,7 @@ async function loadPromptPreview(execId) {
 
 async function detailRun(id) {
     const agentLoopId = await loadAgentLoopExecution(id);
-    const [status, created, walk, sentResults, finalResult, pendingAsks, pendingConfirms, teardownSignalId] = await Promise.all([
+    const [status, created, walk, sentResults, finalResult, pendingAsks, pendingConfirms, pendingInjection, teardownSignalId] = await Promise.all([
         loadStatus(id),
         loadCreated(id),
         loadResponses(agentLoopId || id),
@@ -132,6 +132,7 @@ async function detailRun(id) {
         loadFinalResult(id),
         loadPendingAsks(id),
         loadPendingConfirms(id),
+        loadPendingInjection(id),
         loadTeardownSignal(id),
     ]);
     return {
@@ -146,6 +147,7 @@ async function detailRun(id) {
         final_result: finalResult,
         pending_asks: pendingAsks,
         pending_confirms: pendingConfirms,
+        pending_injection: pendingInjection,
         teardown_signal_id: teardownSignalId,
     };
 }
@@ -265,6 +267,22 @@ async function loadTeardownSignal(workflowId) {
     const mine = candidates.filter((e) => typeof e.execution_id === "string"
         && e.execution_id.startsWith(workflowId + "."));
     return mine.length > 0 ? mine[mine.length - 1].execution_id : null;
+}
+
+async function loadPendingInjection(workflowId) {
+    let candidates;
+    try {
+        candidates = await obeliskJson(
+            `/v1/executions?ffqn_prefix=${encodeURIComponent(INJECTION_FFQN)}`
+            + `&execution_id_prefix=${encodeURIComponent(workflowId)}`
+            + "&show_derived=true&hide_finished=true&length=10",
+        );
+    } catch (_) { return null; }
+    const mine = candidates.filter((e) => e?.ffqn === INJECTION_FFQN
+        && typeof e.execution_id === "string"
+        && e.execution_id.startsWith(workflowId + "."));
+    if (mine.length === 0) return null;
+    return { id: mine[mine.length - 1].execution_id };
 }
 
 // Pending hot-reload confirmations: confirm-apply stub children of this
@@ -744,13 +762,6 @@ async function pauseExecution(id, unpause) {
     return jsonResponse({ ok: true });
 }
 
-// The workflow derives its session socket from the (sanitized) run id; mirror
-// that formula so an operator message reaches the right container.
-function sessionSocketPath(runId) {
-    const sessionId = String(runId).replace(/[^A-Za-z0-9_.-]/g, "-");
-    return `/tmp/obelisk-agent/${sessionId}.sock`;
-}
-
 function isTerminalStatus(status) {
     return status === "finished" || /^permanently/.test(status || "");
 }
@@ -830,9 +841,9 @@ async function cancelPendingDescendants(runId, signalId) {
     return cancelled;
 }
 
-// Queue an operator message into a running session. We schedule the inject
-// activity (only host activities can reach the container's unix socket); it is
-// merged into the agent's next turn by server.js.
+// Fulfil the concrete pending injection stub owned by this workflow. The
+// workflow consumes the response at its next send boundary and performs the
+// socket write as a derived activity.
 async function sayToAgent(request, runId) {
     if (!runId) return jsonError(400, "missing run id");
     let payload;
@@ -840,10 +851,20 @@ async function sayToAgent(request, runId) {
     catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
     const text = payload?.text;
     if (typeof text !== "string" || !text.trim()) return jsonError(400, "text is required");
-    const execId = obelisk.executionIdGenerate();
-    try { obelisk.schedule(execId, INJECT_FFQN, [sessionSocketPath(runId), text]); }
-    catch (e) { return jsonError(502, `inject schedule failed: ${String(e)}`); }
-    return jsonResponse({ execution_id: execId });
+    const injection = await loadPendingInjection(runId);
+    if (!injection) return jsonError(409, "agent is not currently accepting an injected message");
+    const resp = await fetch(
+        `${apiBase()}/v1/executions/${encodeURIComponent(injection.id)}/stub`,
+        {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ok: text.trim() }),
+        },
+    );
+    if (!resp.ok) {
+        return jsonError(502, `injection fulfil failed: HTTP ${resp.status} ${await resp.text()}`);
+    }
+    return jsonResponse({ child_execution_id: injection.id });
 }
 
 // Fork a finished run into a fresh session. The new run's prompt instructs the
@@ -1274,6 +1295,7 @@ function renderDetail() {
     id: d.id, status: d.status, result_kind: d.result_kind, join_name: d.join_name,
     prompt: d.prompt, backend: d.backend, turns: d.turns, final_result: d.final_result,
     pending_asks: d.pending_asks, pending_confirms: d.pending_confirms,
+    pending_injection: d.pending_injection,
     teardown_signal_id: d.teardown_signal_id,
   });
   if (sig === state.lastSig) return;
@@ -1330,7 +1352,12 @@ function renderDetail() {
     + turnsHtml
     + finalHtml
     + asksHtml
-    + renderInteraction(phase, Boolean(d.pending_asks && d.pending_asks.length));
+    + renderInteraction(
+      phase,
+      d.pending_injection,
+      Boolean((d.pending_asks && d.pending_asks.length)
+        || (d.pending_confirms && d.pending_confirms.length)),
+    );
 
   hydrateDisplayBlocks(main);
 
@@ -1390,10 +1417,10 @@ function runPhase(status) {
 }
 
 // Bottom-of-transcript controls: a chat box to steer a running agent, or a fork
-// box to continue a finished run in a fresh session. While the agent is parked
-// on an ask_user prompt, the ask form (rendered just above) is the input, so the
-// steer box is suppressed to avoid two competing text boxes.
-function renderInteraction(phase, hasPendingAsks) {
+// box to continue a finished run in a fresh session. The live box exists only
+// while the workflow has a concrete pending injection stub. Explicit ask/confirm
+// gates own the input UI and suppress generic steering.
+function renderInteraction(phase, pendingInjection, hasHumanGate) {
   if (phase === 'terminal') {
     const orig = state.detail && state.detail.backend === 'codex' ? 'codex' : 'claude';
     const opt = (v) => '<option value="' + v + '"' + (v === orig ? ' selected' : '') + '>' + v + '</option>';
@@ -1406,7 +1433,7 @@ function renderInteraction(phase, hasPendingAsks) {
       + '</div>'
       + '</form>';
   }
-  if (hasPendingAsks) return '';
+  if (hasHumanGate || !pendingInjection) return '';
   return '<form id="say-form" class="interact say">'
     + '<div class="label">' + (phase === 'paused' ? 'send to agent (queued until unpaused)' : 'send to agent') + '</div>'
     + '<textarea id="say-input" placeholder="Steer or interrupt the agent... (delivered next turn)" required></textarea>'
@@ -1752,6 +1779,9 @@ async function sendToAgent(runId, text) {
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
     const box = document.getElementById('say-input');
     if (box) box.value = '';
+    if (state.detail) state.detail.pending_injection = null;
+    state.lastSig = null;
+    renderDetail();
   } catch (e) {
     alert('Send failed: ' + String(e));
   }

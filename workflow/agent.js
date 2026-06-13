@@ -34,7 +34,7 @@ obelisk.get_execution / obelisk.get_logs to inspect your own run.`;
         console.log(`Started ${which} agent ${startInfo.container} from ${startInfo.image}`);
 
         race = obelisk.createJoinSet({ name: "session" });
-        const childId = race.submit(AGENT_LOOP_FFQN, [prompt, socketPath]);
+        const childId = race.submit(AGENT_LOOP_FFQN, [prompt, socketPath, executionId]);
         const teardownSignalId = race.submit(TEARDOWN_SIGNAL_FFQN, []);
         const completed = race.joinNext();
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-// Adapter over the agent-server socket: queue an operator message into a running
-// session's container. server.js merges queued messages into the agent's next
-// user turn, so an operator can steer or interrupt a running agent. Delivery
-// happens at the next send boundary (not truly mid-LLM-response).
+// Queue an operator message into one concrete workflow execution's container.
+// Each workflow derives a unique socket from its execution ID, so concurrent
+// containers remain isolated. server.js merges queued messages into the agent's
+// next user turn. This activity is called by workflow.agent-loop after it
+// consumes the durable session.injection stub; the UI never calls it directly.
 //
 // Return type (deployment.toml): result<u32, string> - ok = queue depth.
 //
@@ -11,6 +12,11 @@
 // stdout JSON is the err value.
 
 import net from "node:net";
+
+function sessionSocketPath(executionId) {
+  const sessionId = String(executionId).replace(/[^A-Za-z0-9_.-]/g, "-");
+  return `/tmp/obelisk-agent/${sessionId}.sock`;
+}
 
 function parseJsonArg(index, name) {
   const raw = process.argv[index];
@@ -46,10 +52,14 @@ function request(socketPath, payload) {
 }
 
 async function main() {
-  const socketPath = parseJsonArg(2, "socket");
+  const executionId = parseJsonArg(2, "execution-id");
   const text = parseJsonArg(3, "text");
+  if (typeof executionId !== "string" || !executionId.trim()) {
+    failPermanent("execution-id must be a non-empty string");
+  }
   if (typeof text !== "string" || !text.trim()) failPermanent("text must be a non-empty string");
 
+  const socketPath = sessionSocketPath(executionId);
   const response = await request(socketPath, { op: "inject", text });
   if (!response.ok) fail(response.error || "inject failed");
   writeOk((response.queued | 0) || 0);

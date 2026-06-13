@@ -102,12 +102,12 @@ exec.lock_expiry.seconds = 30
 max_retries = 3
 env_vars = ["PATH"]
 
-# Operator-injected message: queue text into a running session's container so it
-# is merged into the agent's next turn. Scheduled by the web UI's /api/say.
+# Queue a workflow-consumed operator message into a running session's container.
+# The execution ID selects the unique per-run container/socket.
 [[activity_exec]]
 ffqn = "obelisk-agent:agent/session.inject"
 params = [
-  { name = "socket", type = "string" },
+  { name = "execution-id", type = "string" },
   { name = "text", type = "string" },
 ]
 return_type = "result<u32, string>"
@@ -350,13 +350,23 @@ ffqn = "obelisk-agent:agent/session.teardown-signal"
 params = []
 return_type = "result<_, string>"
 
+# One generic operator-message offer owned by workflow.agent-loop. The UI may
+# fulfil it only while this concrete stub execution is pending. The workflow
+# consumes it at the next send boundary and immediately opens another offer.
+[[activity_stub]]
+name = "session_injection"
+ffqn = "obelisk-agent:agent/session.injection"
+params = []
+return_type = "result<string, string>"
+
 # --- Workflow -----------------------------------------------------------------
 
 [[workflow_js]]
 ffqn = "obelisk-agent:workflow/workflow.agent-loop"
 params = [
-  { name = "prompt",      type = "string" },
-  { name = "socket-path", type = "string" },
+  { name = "prompt",       type = "string" },
+  { name = "socket-path",  type = "string" },
+  { name = "execution-id", type = "string" },
 ]
 return_type = "result<string, string>"
 location = "${DEPLOYMENT_DIR}/workflow/agent-loop.js"

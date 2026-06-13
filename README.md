@@ -15,6 +15,7 @@ activity/
   agent-start.js     spawn the docker container, wait for the socket (claude.start)
   agent-send.js      send one agent-input (prompt | tool-results) (session.send)
   agent-recv.js      drain one turn; return a typed turn-outcome (session.recv)
+  agent-inject.js    workflow-owned adapter that queues a fulfilled injection
   agent-cleanup.js   shut the server down, docker rm (session.cleanup)
 workflow/
   agent.js           start -> race(agent-loop, teardown) -> cleanup
