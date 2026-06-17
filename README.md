@@ -113,7 +113,8 @@ inspectable):
 | `obelisk.get_logs`         | `obelisk-agent:tools/webapi.get-logs`            |
 | `obelisk.submit`           | `obelisk-agent:tools/webapi.submit-json`         |
 | `obelisk.get_result`       | `obelisk-agent:tools/webapi.get-result-json`     |
-| `obelisk.deployment_edit_*`| `obelisk-agent:tools/webapi.deployment-edit`     |
+| `obelisk.deployment_checkout` | `obelisk-agent:tools/webapi.deployment-checkout` |
+| `obelisk.deployment_push`  | `obelisk-agent:tools/webapi.deployment-submit` + `…switch` / `…apply-deployment` |
 | `http.get`                 | `obelisk-agent:tools/http.get`                   |
 | `input.ask_user`           | `obelisk-agent:tools/input.ask-user` *(stub)*    |
 
@@ -121,11 +122,11 @@ Execution and deployment list tools expose the REST API pagination cursors.
 `obelisk.get_logs` also supports nested executions, log/stream filters, and
 cursor pagination. `obelisk.get_deployment` returns the complete compact
 deployment when it fits, with `config` as structured JSON and embedded source
-bodies removed. WASM `frame_files_to_sources` maps are omitted; raw deployment
-creation restores the canonical empty maps, while source records for unchanged
-component digests remain stored. Oversized deployments are trimmed by config
-component array and include continuation offsets. A specific array can be
-requested with `component_type`, `offset`, and `length`.
+bodies removed. WASM `frame_files_to_sources` maps are omitted. Oversized
+deployments are trimmed by config component array and include continuation
+offsets. A specific array can be requested with `component_type`, `offset`, and
+`length`. This is a read-only inspector; to *edit* a deployment, use the
+checkout/push tools below.
 
 `input.ask_user` is configured as `activity_stub`: it parks the workflow and
 waits for an operator to PUT a response. The web UI surfaces pending asks on
@@ -139,25 +140,36 @@ curl -X PUT http://127.0.0.1:5005/v1/executions/<child-id>/stub \
 Cancelling the stub child surfaces as an err tool_result; the LLM can react
 or emit `{"final": "Cancelled by user."}`.
 
-## Deployment edit transactions
+## Editing a deployment: checkout -> edit files -> push
 
-Component changes use one workflow-local draft instead of sending the full
-deployment through the model on every edit:
+Editing mirrors `obelisk deployment get`: instead of pushing the giant canonical
+config through the model, the workflow holds a working copy and exposes its
+source bodies as individual files.
 
-1. `obelisk.deployment_edit_begin` captures the active deployment, or an
-   explicitly selected base deployment.
-2. Any number of idempotent JS activity, workflow, or webhook upserts and
-   component deletes mutate that durable draft in order.
-3. `obelisk.deployment_edit_show` stores the complete canonical draft in its
-   child execution result for UI inspection, returns compact metadata to the
-   model, and marks its current revision as reviewed.
-4. `obelisk.deployment_edit_submit` creates one inactive deployment. It refuses
-   unreviewed changes and detects an active-deployment change since begin.
-5. `obelisk.apply_deployment` presents the source diff and waits for OK/Cancel.
+1. `obelisk.deployment_checkout` fetches a deployment (the active one by default)
+   via `webapi.deployment-checkout`, which returns the **full** canonical config
+   including inline sources. The workflow externalizes every owned script
+   `location.content` into a file at its `file_name`, deduped by path (components
+   with identical content share one file), exactly as `deployment_canonical_to_toml`
+   collects side files. WASM `frame_files_to_sources` sources are exposed
+   read-only; `deployment.toml` is a read-only structural view rendered from the
+   canonical config.
+2. `obelisk.deployment_read_file` / `deployment_write_file` read and replace one
+   file at a time (a shared file updates every referencing component).
+   `deployment_add_component` / `deployment_remove_component` change the set of
+   components and their structural fields. All edits stay in workflow memory.
+3. `obelisk.deployment_push` reassembles the working copy (re-inlining each file,
+   clearing recomputable digests) and submits it as a new deployment with a
+   `description`. `mode` is `submit` (inactive), `enqueue` (active next restart,
+   via `webapi.deployment-switch`), or `apply` (hot redeploy now).
+4. `apply` parks on the `deploy.confirm-apply` operator gate, then schedules the
+   hot switch out of process (`webapi.apply-deployment`); a synchronous switch
+   from inside the activity would deadlock the executor. It is terminal and must
+   be the final tool call.
 
-`obelisk.deployment_edit_abort` discards the draft without creating a
-deployment. Repeating an identical upsert returns `unchanged`; deleting a
-missing component returns `already_absent`.
+Removing a missing component is a no-op (`already_absent`). Because the working
+copy is plain workflow memory derived from the durable checkout result, it is
+fully replayable without any per-session filesystem or container.
 
 ## Build the image
 

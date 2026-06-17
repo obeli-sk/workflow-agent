@@ -264,32 +264,51 @@ location = "${DEPLOYMENT_DIR}/activity/tools/current-deployment.js"
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 
+# --- Deployment editing: checkout -> edit files -> push -----------------------
+# The workflow holds the checked-out canonical config in memory and exposes its
+# source bodies as editable files (see workflow/agent-loop.js). These activities
+# are the durable I/O boundary: fetch the deployment, submit the reassembled
+# config, and enqueue it. A hot redeploy goes through tool_apply_deployment.
+
 [[activity_js]]
-name = "tool_create_deployment"
-ffqn = "obelisk-agent:tools/webapi.create-deployment"
+name = "tool_deployment_checkout"
+ffqn = "obelisk-agent:tools/webapi.deployment-checkout"
 params = [
-  { name = "config-json", type = "string" },
-  { name = "verify", type = "bool" },
+  { name = "deployment-id", type = "option<string>" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/create-deployment.js"
+location = "${DEPLOYMENT_DIR}/activity/tools/deployment-checkout.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
+name = "tool_deployment_submit"
+ffqn = "obelisk-agent:tools/webapi.deployment-submit"
+params = [
+  { name = "config-json",   type = "string" },
+  { name = "description",    type = "string" },
+  { name = "verify",        type = "bool" },
+  { name = "deployment-id",  type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/deployment-submit.js"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["POST"]
 
 [[activity_js]]
-name = "tool_deployment_edit"
-ffqn = "obelisk-agent:tools/webapi.deployment-edit"
+name = "tool_deployment_switch"
+ffqn = "obelisk-agent:tools/webapi.deployment-switch"
 params = [
-  { name = "operation",    type = "string" },
-  { name = "payload-json", type = "string" },
+  { name = "deployment-id", type = "string" },
+  { name = "verify",       type = "bool" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/deployment-edit.js"
-exec.lock_expiry.minutes = 1
+location = "${DEPLOYMENT_DIR}/activity/tools/deployment-switch.js"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "POST"]
+methods = ["PUT"]
 
 [[activity_exec]]
 name = "tool_apply_deployment"
@@ -317,9 +336,9 @@ params = [
 return_type = "result<string, string>"
 
 # confirm-apply: the human gate before a hot reload goes live. The workflow
-# parks on this stub when the agent requests obelisk.apply_deployment; the web
-# UI surfaces it as an OK/Cancel card (with a source diff vs the active
-# deployment). ok => approved (apply proceeds), err => cancelled (apply skipped).
+# parks on this stub when the agent calls obelisk.deployment_push with
+# mode="apply"; the web UI surfaces it as an OK/Cancel card (with a source diff
+# vs the active deployment). ok => approved (apply proceeds), err => cancelled.
 [[activity_stub]]
 name = "tool_confirm_apply"
 ffqn = "obelisk-agent:tools/deploy.confirm-apply"

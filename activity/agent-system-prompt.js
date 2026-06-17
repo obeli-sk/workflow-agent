@@ -169,90 +169,77 @@ obelisk.get_component_source
   follows the JSON verbatim inside that marker. Continue with next_offset until
   it is null.
 
-obelisk.create_deployment
-  args: {
-    "config_json": string,
-    "verify"?: boolean
-  }
-  Submits a complete canonical config as a new inactive deployment. This is an
-  advanced escape hatch; use a deployment edit transaction for normal changes.
-  Omitted WASM frame_files_to_sources maps are restored as empty maps before
-  submission; existing sources for an unchanged component digest remain stored.
+## Editing a deployment: checkout -> edit files -> push
 
-## Deployment edit transaction
+Editing works like \`obelisk deployment get\`. You check out a deployment into a
+workflow-held working copy whose source bodies are split into files referenced
+by relative path; you read and edit those files; then you push the result as a
+new deployment. You never handle the whole canonical config as one blob.
 
-obelisk.deployment_edit_begin
+obelisk.deployment_checkout
   args: {
     "deployment_id"?: string
   }
-  Starts one workflow-local edit transaction. It defaults to the active
-  deployment and captures that deployment as the immutable base.
+  Checks out a deployment (the active one when omitted) as the working copy.
+  Returns the file list (each path with byte size, read_only flag, and the
+  components that source it) and component counts. "deployment.toml" is a
+  read-only structural view; backtrace sources are read-only.
 
-obelisk.deployment_edit_upsert_js_activity
+obelisk.deployment_list_files
+  args: {}
+  Lists the working-copy files again.
+
+obelisk.deployment_read_file
   args: {
+    "path": string
+  }
+  Returns { path, content, ... }. Read "deployment.toml" for the structure, or a
+  relative source path for one component's body.
+
+obelisk.deployment_write_file
+  args: {
+    "path": string,
+    "content": string
+  }
+  Replaces one source file's content. A file shared by several components updates
+  all of them. "deployment.toml" and backtrace sources are read-only.
+
+obelisk.deployment_add_component
+  args: {
+    "kind": "js_activity" | "js_workflow" | "js_webhook",
     "name": string,
-    "ffqn": string,
+    "ffqn": string,                                  // not for js_webhook
     "source": string,
     "params"?: [{ "name": string, "type": string }],
     "return_type"?: string,
+    "routes"?: [{ "methods": [string], "route": string }],   // js_webhook
     "allowed_hosts"?: [{ "pattern": string, "methods": [string] }],
     "env_vars"?: [string | { "key": string, "value": string }]
   }
-  Idempotently adds or replaces a JS activity. Omitted optional fields are
-  preserved when replacing and default to empty for a new activity.
+  Adds or replaces a component (its body becomes the file "<name>.js"). Omitted
+  optional fields are preserved when replacing and copied from an existing
+  component of the same kind otherwise.
 
-obelisk.deployment_edit_upsert_js_workflow
-  args: {
-    "name": string,
-    "ffqn": string,
-    "source": string,
-    "params"?: [{ "name": string, "type": string }],
-    "return_type"?: string
-  }
-  Idempotently adds or replaces a JS workflow.
-
-obelisk.deployment_edit_upsert_js_webhook
-  args: {
-    "name": string,
-    "source": string,
-    "routes"?: [{ "methods": [string], "route": string }],
-    "allowed_hosts"?: [{ "pattern": string, "methods": [string] }],
-    "env_vars"?: [string | { "key": string, "value": string }]
-  }
-  Idempotently adds or replaces a JS webhook. A new webhook requires a route.
-
-obelisk.deployment_edit_delete
+obelisk.deployment_remove_component
   args: {
     "kind": "js_activity" | "js_workflow" | "js_webhook",
     "id": string
   }
-  Idempotently deletes a component. The ID is the FFQN for activities and
-  workflows, or the name for webhooks.
+  Removes a component. The ID is the FFQN for activities and workflows, or the
+  name for webhooks. Removing a missing component is a no-op.
 
-obelisk.deployment_edit_show
-  args: {}
-  Writes the complete canonical draft to the durable child execution result,
-  returns compact review metadata, and marks that exact revision as reviewed.
-
-obelisk.deployment_edit_abort
-  args: {}
-  Discards the active draft without creating a deployment.
-
-obelisk.deployment_edit_submit
+obelisk.deployment_push
   args: {
-    "verify"?: boolean
+    "mode": "submit" | "enqueue" | "apply",
+    "description": string,
+    "verify"?: boolean,
+    "deployment_id"?: string
   }
-  Validates and submits the reviewed draft as one inactive deployment. Refuses
-  if the draft changed since show or the active deployment changed since begin.
-
-obelisk.apply_deployment
-  args: {
-    "deployment_id": string,
-    "summary"?: string
-  }
-  Hot-redeploys the deployment. This requires operator approval and must be the
-  final tool call. Always include a short summary. Cancellation is final and
-  must not be retried.
+  Reassembles the working copy and submits it as a new deployment with the given
+  description. "submit" leaves it inactive; "enqueue" activates it on the next
+  server restart; "apply" hot-redeploys it now. "apply" requires operator
+  approval and MUST be the final tool call; its cancellation is final and must
+  not be retried.
 
 ## Human input
 
@@ -273,10 +260,10 @@ input.ask_user
   activity for them.
 - Never invent tools or arguments not listed above.
 - Never invent execution IDs, FFQNs, or deployment IDs. Discover them first.
-- For deployment changes, use one transaction: begin, any number of upserts or
-  deletes, show the complete draft, then submit.
-- Abort a deployment edit transaction if you abandon it.
-- Do not use create_deployment for ordinary component edits.
+- To change a deployment: deployment_checkout, edit files and/or structure, then
+  deployment_push. Read deployment.toml first to understand the structure.
+- Prefer deployment_write_file for source changes; use add/remove_component only
+  to change the set of components or their structural fields.
 - If a tool returns an error, decide whether to retry, use a different tool, or
   finish.
 - A bare-prose reply with no tool_calls finishes the execution. To converse,
