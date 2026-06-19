@@ -7,7 +7,8 @@ name = "agent_system_prompt"
 ffqn = "obelisk-agent:agent/prompt.load-system-prompt"
 params = []
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/agent-system-prompt.js"
+location = "activity/agent-system-prompt.js"
+content_digest = "sha256:e526e87b8db22d86be70cd0f846ae3c29c90819edf89356d2c4e6c6923c9910e"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -20,7 +21,7 @@ params = [
   { name = "system-prompt", type = "string" },
 ]
 return_type = "result<record { container: string, image: string, socket: string, id: string }, string>"
-location = "${DEPLOYMENT_DIR}/activity/agent-start.js"
+location = "activity/agent-start.js"
 exec.lock_expiry.minutes = 2
 max_retries = 1
 env_vars = [
@@ -32,6 +33,7 @@ env_vars = [
   { key = "AGENT_EXTRA_ARGS",       value = "${AGENT_EXTRA_ARGS:-}" },
   { key = "AGENT_HOST_CLAUDE_DIR",  value = "${AGENT_HOST_CLAUDE_DIR:-${HOME}/.claude}" },
 ]
+content_digest = "sha256:84a521ee8e30dd2dc2c3f4ef703b297332aabad06ce35656bd2a16752996fde5"
 
 [[activity_exec]]
 ffqn = "obelisk-agent:agent/codex.start"
@@ -41,7 +43,7 @@ params = [
   { name = "system-prompt", type = "string" },
 ]
 return_type = "result<record { container: string, image: string, socket: string, id: string }, string>"
-location = "${DEPLOYMENT_DIR}/activity/agent-start.js"
+location = "activity/agent-start.js"
 exec.lock_expiry.minutes = 2
 max_retries = 1
 env_vars = [
@@ -53,6 +55,7 @@ env_vars = [
   { key = "AGENT_EXTRA_ARGS",      value = "${AGENT_CODEX_EXTRA_ARGS:-}" },
   { key = "AGENT_HOST_CODEX_DIR",  value = "${AGENT_HOST_CODEX_DIR:-${HOME}/.codex}" },
 ]
+content_digest = "sha256:84a521ee8e30dd2dc2c3f4ef703b297332aabad06ce35656bd2a16752996fde5"
 
 # --- Agent session: provider-agnostic send / recv / cleanup -------------------
 #
@@ -69,10 +72,12 @@ params = [
   { name = "operator-messages", type = "list<string>" },
 ]
 return_type = "result<_, string>"
-location = "${DEPLOYMENT_DIR}/activity/agent-send.js"
+location = "activity/agent-send.js"
+params_via_stdin = true
 exec.lock_expiry.seconds = 30
 max_retries = 3
 env_vars = ["PATH"]
+content_digest = "sha256:536a62d943260b22abcd501467cc819534b18a9cc930e238f0103afdc3e5bac4"
 
 # turn-outcome (ok): the activity polls internally and returns when the turn
 # produces a parsed agent-reply. Native events stream to its persisted stderr.
@@ -85,11 +90,12 @@ params = [
   { name = "timeout-ms", type = "u32" },
 ]
 return_type = "result<variant { working, reply(record { reply: variant { final(string), error(string), tool-calls(list<record { name: string, arguments-json: string }>) }, presentation: string, narration: string }) }, variant { permanent-rate-limited(record { retry-after-seconds: u32, message: string }), permanent-malformed-reply(string), permanent-agent-exited(string), permanent-error(string), transient-error(string), execution-failed }>"
-location = "${DEPLOYMENT_DIR}/activity/agent-recv.js"
+location = "activity/agent-recv.js"
 exec.lock_expiry.minutes = 10
 max_output_bytes = 1048576   # 1 MiB; default 4 KiB overflows on bigger claude replies
 max_retries = 3
 env_vars = ["PATH"]
+content_digest = "sha256:b1a0cb695e54841f4c3cbe1c2ed28f944c0321a0ee9bf6e552a8360fa74fba86"
 
 [[activity_exec]]
 ffqn = "obelisk-agent:agent/session.cleanup"
@@ -98,10 +104,11 @@ params = [
   { name = "socket", type = "string" },
 ]
 return_type = "result<_, string>"
-location = "${DEPLOYMENT_DIR}/activity/agent-cleanup.js"
+location = "activity/agent-cleanup.js"
 exec.lock_expiry.seconds = 30
 max_retries = 3
 env_vars = ["PATH"]
+content_digest = "sha256:29350a3896ee19e9cf005669bfd2e60d6483f7178d33142a2689c8d5480dc2d6"
 
 # --- LLM-facing tools ---------------------------------------------------------
 
@@ -113,7 +120,8 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/list-functions.js"
+location = "activity/tools/list-functions.js"
+content_digest = "sha256:ec77bca5b6bc1dd9a3f8c51718855cf86962f027a3ccd1e752735e82c3ca75e9"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -125,7 +133,8 @@ params = [
   { name = "ffqn", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/get-function-wit.js"
+location = "activity/tools/get-function-wit.js"
+content_digest = "sha256:2ba62b4293942ce43eb602d1e561e5794caa9364a1fe42ed7d2a965dd83bee19"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -146,7 +155,8 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/list-executions.js"
+location = "activity/tools/list-executions.js"
+content_digest = "sha256:b2578bda2f4030eb9ed98af6569ffc8f40abc483b824c40bf6e32ddd0dd99d19"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -158,7 +168,8 @@ params = [
   { name = "execution-id", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/get-execution.js"
+location = "activity/tools/get-execution.js"
+content_digest = "sha256:789db1a9351284af31f96ca1d64a67b314d84c92e7822209eef5da77cdcd9fbb"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -179,7 +190,8 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/get-logs.js"
+location = "activity/tools/get-logs.js"
+content_digest = "sha256:7d8aa25cc1766e98b07c6cb95943cb2296414fbe41732e26ff45171e646568f8"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -192,7 +204,8 @@ params = [
   { name = "params-json", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/submit.js"
+location = "activity/tools/submit.js"
+content_digest = "sha256:9cd2362da8197e12930b3e700d04fea71ca1ef915644541ec3f3dc7b9fe744bb"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["POST"]
@@ -204,8 +217,9 @@ params = [
   { name = "execution-id", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/get-result.js"
+location = "activity/tools/get-result.js"
 exec.lock_expiry.minutes = 10
+content_digest = "sha256:ff8841a005dcccfe60c72ee4dc031dc224fe486509904e5efe939c449822f284"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -219,7 +233,8 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/list-deployments.js"
+location = "activity/tools/list-deployments.js"
+content_digest = "sha256:904c1e298892bf46c5e93769867b5be4c7d67bc52292ad918cde5733f6e4ae2a"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -235,7 +250,8 @@ params = [
   { name = "max-bytes", type = "option<u32>" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/get-deployment.js"
+location = "activity/tools/get-deployment.js"
+content_digest = "sha256:114221dcc1839e544515d604540fb750348407b79acdf5d8f64140b473cc4cec"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -250,7 +266,8 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/get-component-source.js"
+location = "activity/tools/get-component-source.js"
+content_digest = "sha256:2fa9a06574929ed371d616f556982784a99b67f44571a329319a7fe9741ae716"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -259,7 +276,8 @@ methods = ["GET"]
 name = "tool_current_deployment"
 ffqn = "obelisk-agent:tools/webapi.current-deployment-id"
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/current-deployment.js"
+location = "activity/tools/current-deployment.js"
+content_digest = "sha256:1d72a191a660a02247c3f338611793a7f02d4d4dc5cb7547de97727b5f96fc81"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -279,7 +297,8 @@ params = [
   { name = "deployment-id", type = "option<string>" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/deployment-checkout.js"
+location = "activity/tools/deployment-checkout.js"
+content_digest = "sha256:553308b4956fc3b4042bcc39bc1ccda0160179437f69073ef56cf6889f9203ca"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -291,7 +310,8 @@ params = [
   { name = "digest", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/deployment-read-blob.js"
+location = "activity/tools/deployment-read-blob.js"
+content_digest = "sha256:6acfc28f4a031149c6534b41402504e89d6d9a852cb677f6d9cde9c9fddddaf3"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -311,7 +331,8 @@ return_type = "result<string, string>"
 # persisting, which far exceeds the 1s default lock.
 exec.lock_expiry.minutes = 5
 max_retries = 0
-location = "${DEPLOYMENT_DIR}/activity/tools/deployment-submit.js"
+location = "activity/tools/deployment-submit.js"
+content_digest = "sha256:21c6ec22f5e23d5723d67b14f33ba72bcf350d9defc5e17564998b509ec7fd8f"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["POST"]
@@ -326,7 +347,8 @@ params = [
 return_type = "result<string, string>"
 # A cold switch re-verifies (compile + link) before enqueuing.
 exec.lock_expiry.minutes = 5
-location = "${DEPLOYMENT_DIR}/activity/tools/deployment-switch.js"
+location = "activity/tools/deployment-switch.js"
+content_digest = "sha256:c99b3e55990fdb02fe596eb109819a2e30aa4fcb620a004e8431c13e7cd32fb6"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["PUT"]
@@ -338,13 +360,14 @@ params = [
   { name = "deployment-id", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/activity/tools/apply-deployment.js"
+location = "activity/tools/apply-deployment.js"
 exec.lock_expiry.seconds = 30
 max_retries = 1
 env_vars = [
   "PATH",
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
 ]
+content_digest = "sha256:0f75010318bb5db982c507a4a0f1594e30ab824fa03cdc2f694910ce6b74359d"
 
 # --- Stub activity: human-in-the-loop -----------------------------------------
 
@@ -395,7 +418,8 @@ params = [
   { name = "socket-path",  type = "string" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/workflow/agent-loop.js"
+location = "workflow/agent-loop.js"
+content_digest = "sha256:0b47fcb5d09966494d128a702ca9d0947b46732ae464164dbb95bd7c6729d95b"
 
 # Public supervisor workflow. It owns the container lifecycle and races the
 # nested agent-loop workflow against the operator teardown signal.
@@ -407,11 +431,12 @@ params = [
   { name = "backend", type = "option<string>" },
 ]
 return_type = "result<string, string>"
-location = "${DEPLOYMENT_DIR}/workflow/agent.js"
+location = "workflow/agent.js"
+content_digest = "sha256:d08dbd23903cfab5f3b4da768da819519baf1397106c3dc6cd8ef547102d8492"
 
 [[webhook_endpoint_js]]
 name = "ui"
-location = "${DEPLOYMENT_DIR}/webhook/ui.js"
+location = "webhook/ui.js"
 routes = [
   { methods = ["GET"], route = "/" },
   { methods = ["GET"], route = "/api/runs" },
@@ -430,6 +455,100 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://localhost:8080}" },
 ]
+content_digest = "sha256:2777ef92ce7d72a26b3717202311a86118ec0383722b613eb0ab7b99f85fad33"
 [[webhook_endpoint_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
+
+# --- agent-herder GitHub export ----------------------------------------------
+# Activities for pushing the live deployment manifest + owned sources into a
+# GitHub repo. Each is invoked by workflow.push-deployment; the commit chain is
+# driven from the workflow (one file per commit) so each step is durable and
+# replayable. Secret AGENT_HERDER_GITHUB_TOKEN is exposed as an outbound HTTP
+# secret and replaced only in approved GitHub request headers.
+
+[[activity_js]]
+name = "github_create_branch"
+ffqn = "agent-herder:github/repo.create-branch"
+params = [
+  { name = "owner",       type = "string" },
+  { name = "repo",        type = "string" },
+  { name = "base-branch", type = "string" },
+  { name = "new-branch",  type = "string" },
+]
+return_type = "result<string, string>"
+location = "activity/github/create-branch.js"
+exec.lock_expiry.seconds = 30
+content_digest = "sha256:0f1d3a58f43403ea7be5a1973b6392f71bfe702ca1fe388abaa3020fb852259e"
+[[activity_js.allowed_host]]
+pattern = "https://api.github.com"
+methods = ["GET", "POST"]
+[activity_js.allowed_host.secrets]
+env_vars = ["AGENT_HERDER_GITHUB_TOKEN"]
+replace_in = ["headers"]
+
+
+[[activity_js]]
+name = "github_push_file"
+ffqn = "agent-herder:github/repo.push-file"
+params = [
+  { name = "owner",             type = "string" },
+  { name = "repo",              type = "string" },
+  { name = "branch",            type = "string" },
+  { name = "expected-head-oid", type = "string" },
+  { name = "path",              type = "string" },
+  { name = "content",           type = "string" },
+  { name = "headline",          type = "string" },
+  { name = "body",              type = "string" },
+]
+return_type = "result<string, string>"
+location = "activity/github/push-file.js"
+exec.lock_expiry.seconds = 60
+max_retries = 0
+content_digest = "sha256:95d7ef54ab311a714a90cf25b4c21cdc1c58732ce950e0a3b6a52d8f6772f04f"
+[[activity_js.allowed_host]]
+pattern = "https://api.github.com"
+methods = ["POST"]
+[activity_js.allowed_host.secrets]
+env_vars = ["AGENT_HERDER_GITHUB_TOKEN"]
+replace_in = ["headers"]
+
+
+[[activity_js]]
+name = "github_create_pr"
+ffqn = "agent-herder:github/repo.create-pr"
+params = [
+  { name = "owner",        type = "string" },
+  { name = "repo",         type = "string" },
+  { name = "head-branch",  type = "string" },
+  { name = "base-branch",  type = "string" },
+  { name = "title",        type = "string" },
+  { name = "body",         type = "string" },
+]
+return_type = "result<string, string>"
+location = "activity/github/create-pr.js"
+exec.lock_expiry.seconds = 30
+content_digest = "sha256:3c3882760926142c7449146900865d1635b4307cbf4de9146a6a8b5eb435d601"
+[[activity_js.allowed_host]]
+pattern = "https://api.github.com"
+methods = ["GET", "POST"]
+[activity_js.allowed_host.secrets]
+env_vars = ["AGENT_HERDER_GITHUB_TOKEN"]
+replace_in = ["headers"]
+
+# --- agent-herder GitHub export: orchestrator workflow ------------------------
+# Pulls the live deployment's manifest + every owned source via the existing
+# webapi.* activities, then drives the GitHub activities to create a branch,
+# commit each file (chaining the head OID), and open a PR. Each per-file commit
+# is its own activity invocation so the chain is durable and replayable.
+
+[[workflow_js]]
+ffqn = "agent-herder:export/workflow.push-deployment"
+params = [
+  { name = "branch-name", type = "string" },
+  { name = "pr-title",    type = "string" },
+  { name = "pr-body",     type = "string" },
+]
+return_type = "result<string, string>"
+location = "workflow/push-deployment.js"
+content_digest = "sha256:e4935796ed9bae91a6d481df2056546d7430a2cd68e0b9671ecb3874bd3be47b"

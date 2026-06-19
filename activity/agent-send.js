@@ -2,11 +2,43 @@
 
 import net from "node:net";
 
+async function readParams() {
+  if (process.argv.length > 2) {
+    return [
+      parseJsonArg(2, "socket"),
+      parseJsonArg(3, "input"),
+      parseJsonArg(4, "operator-messages"),
+    ];
+  }
+  const raw = await readStdin();
+  if (!raw.trim()) failPermanent("missing stdin params envelope");
+  let envelope;
+  try { envelope = JSON.parse(raw); }
+  catch (e) { failPermanent(`invalid JSON stdin params envelope: ${e.message}`); }
+  if (!envelope || !Array.isArray(envelope.params)) {
+    failPermanent('stdin params envelope must be {"params":[...]}');
+  }
+  if (envelope.params.length !== 3) {
+    failPermanent(`expected 3 params, got ${envelope.params.length}`);
+  }
+  return envelope.params;
+}
+
 function parseJsonArg(index, name) {
   const raw = process.argv[index];
   if (raw === undefined) failPermanent(`missing argument: ${name}`);
   try { return JSON.parse(raw); }
   catch (e) { failPermanent(`invalid JSON argument for ${name}: ${e.message}`); }
+}
+
+function readStdin() {
+  return new Promise((resolve, reject) => {
+    let buf = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { buf += chunk; });
+    process.stdin.on("end", () => resolve(buf));
+    process.stdin.on("error", reject);
+  });
 }
 
 function writeOk(value) { process.stdout.write(JSON.stringify(value)); }
@@ -40,10 +72,11 @@ function request(socketPath, payload) {
 }
 
 async function main() {
-  const socketPath = parseJsonArg(2, "socket");
+  const [socketPath, input, operatorMessages] = await readParams();
+  if (typeof socketPath !== "string" || !socketPath) {
+    failPermanent("socket must be a non-empty string");
+  }
   // input is the common agent-input variant: { prompt } | { tool_results }.
-  const input = parseJsonArg(3, "input");
-  const operatorMessages = parseJsonArg(4, "operator-messages");
   const valid = input && typeof input === "object" &&
     (typeof input.prompt === "string" || Array.isArray(input.tool_results));
   if (!valid) failPermanent("input must be { prompt } or { tool_results }");
