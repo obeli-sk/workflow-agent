@@ -708,5 +708,13 @@ routes = [
 ]
 env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
+  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
 ]
-content_digest = "sha256:505dcea166e2718296a25509d6451f39f9b66cf37d96789e7c0d030a781af3ec"
+content_digest = "sha256:0ec6216dc7a0464df09a8850c8827e9225abda4eae30d4dfb0b95c08f12a446f"
+# Read-only API access for the polling UI (statuses, responses, events, logs,
+# deployments, files). These run as direct fetches from the webhook instead of
+# one child activity per call.
+[[webhook_endpoint_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/)"

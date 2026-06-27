@@ -84,79 +84,97 @@ function activityJson(label, text) {
     catch (e) { throw new Error(`${label}: non-JSON activity result: ${e.message}`); }
 }
 
-function listExecutions(
+// Read-only API access. The UI polls statuses, responses and logs every few
+// seconds; routing every read through a child activity (one execution per call)
+// flooded the server with thousands of short executions. A webhook can speak to
+// the Obelisk REST API directly, so these GETs run as plain fetches. Mutations
+// (pause/unpause/cancel/stub/submit) stay as durable activities below.
+const API_BASE = (process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005").replace(/\/$/, "");
+
+async function apiGet(label, path, accept = "application/json") {
+    let resp;
+    try {
+        resp = await fetch(`${API_BASE}${path}`, { headers: { accept } });
+    } catch (e) {
+        throw new Error(`${label}: ${String(e)}`);
+    }
+    const text = await resp.text();
+    if (!resp.ok) throw new Error(`${label}: HTTP ${resp.status}: ${text}`);
+    return text;
+}
+
+async function apiGetJson(label, path) {
+    return activityJson(label, await apiGet(label, path));
+}
+
+async function listExecutions(
     ffqnPrefix,
     executionIdPrefix,
     showDerived,
     hideFinished,
     length,
 ) {
-    return activityJson("list-executions", webapi.listExecutions(
-        ffqnPrefix || "",
-        executionIdPrefix || "",
-        Boolean(showDerived),
-        Boolean(hideFinished),
-        "",
-        "",
-        "",
-        "",
-        false,
-        length || 20,
-    ));
+    const params = [];
+    if (ffqnPrefix) params.push(`ffqn_prefix=${encodeURIComponent(ffqnPrefix)}`);
+    if (executionIdPrefix) params.push(`execution_id_prefix=${encodeURIComponent(executionIdPrefix)}`);
+    if (showDerived) params.push("show_derived=true");
+    if (hideFinished) params.push("hide_finished=true");
+    params.push(`length=${encodeURIComponent(String(length || 20))}`);
+    return apiGetJson("list-executions", `/v1/executions?${params.join("&")}`);
 }
 
-function getExecutionStatus(id) {
-    return activityJson(`get-execution ${id}`, webapi.getExecution(id));
+async function getExecutionStatus(id) {
+    return apiGetJson(`get-execution ${id}`, `/v1/executions/${encodeURIComponent(id)}/status`);
 }
 
-function getExecutionRecord(id) {
-    return activityJson(`get-execution-record ${id}`, webapi.getExecutionRecord(id));
+async function getExecutionRecord(id) {
+    return apiGetJson(`get-execution-record ${id}`, `/v1/executions/${encodeURIComponent(id)}`);
 }
 
-function getExecutionEvents(id, cursorKind, cursor, includingCursor, length) {
-    return activityJson(`get-events ${id}`, webapi.getEvents(
-        id,
-        cursorKind,
-        cursor,
-        Boolean(includingCursor),
-        length || 200,
-    ));
+async function getExecutionEvents(id, cursorKind, cursor, includingCursor, length) {
+    const kind = cursorKind === "version_from" ? "version_from" : "version";
+    const version = Number.isFinite(cursor) && cursor > 0 ? Math.trunc(cursor) : 0;
+    const params = [
+        `${kind}=${encodeURIComponent(String(version))}`,
+        `including_cursor=${includingCursor ? "true" : "false"}`,
+        `length=${encodeURIComponent(String(length || 200))}`,
+    ];
+    return apiGetJson(`get-events ${id}`, `/v1/executions/${encodeURIComponent(id)}/events?${params.join("&")}`);
 }
 
-function getExecutionResponses(id, cursor, includingCursor, length) {
-    return activityJson(`get-responses ${id}`, webapi.getResponses(
-        id,
-        cursor,
-        Boolean(includingCursor),
-        length || 200,
-    ));
+async function getExecutionResponses(id, cursor, includingCursor, length) {
+    const current = Number.isFinite(cursor) && cursor > 0 ? Math.trunc(cursor) : 0;
+    const params = [
+        `cursor=${encodeURIComponent(String(current))}`,
+        `including_cursor=${includingCursor ? "true" : "false"}`,
+        `length=${encodeURIComponent(String(length || 200))}`,
+    ];
+    return apiGetJson(`get-responses ${id}`, `/v1/executions/${encodeURIComponent(id)}/responses?${params.join("&")}`);
 }
 
-function getExecutionLogs(id, showDerived, cursor, includingCursor, length) {
-    return activityJson(`get-logs ${id}`, webapi.getLogs(
-        id,
-        Boolean(showDerived),
-        true,
-        true,
-        [],
-        [],
-        cursor || "",
-        "newer",
-        Boolean(includingCursor),
-        length || 200,
-    ));
+async function getExecutionLogs(id, showDerived, cursor, includingCursor, length) {
+    const params = [
+        `show_derived=${showDerived ? "true" : "false"}`,
+        "show_logs=true",
+        "show_streams=true",
+    ];
+    if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
+    params.push("direction=newer");
+    if (includingCursor) params.push("including_cursor=true");
+    params.push(`length=${encodeURIComponent(String(length || 200))}`);
+    return apiGetJson(`get-logs ${id}`, `/v1/executions/${encodeURIComponent(id)}/logs?${params.join("&")}`);
 }
 
-function getDeployment(id) {
-    return activityJson(`get-deployment ${id}`, webapi.getDeployment(id, null, null, null, null));
+async function getDeployment(id) {
+    return apiGetJson(`get-deployment ${id}`, `/v1/deployments/${encodeURIComponent(id)}`);
 }
 
-function currentDeploymentId() {
-    return activityJson("current-deployment-id", webapi.currentDeploymentId());
+async function currentDeploymentId() {
+    return apiGetJson("current-deployment-id", "/v1/deployment-id");
 }
 
-function readBlob(digest) {
-    return webapi.deploymentReadBlob(digest);
+async function readBlob(digest) {
+    return apiGet(`read-blob ${digest}`, `/v1/files/${encodeURIComponent(digest)}`, "text/plain");
 }
 
 function pauseObeliskExecution(id) {
@@ -176,7 +194,7 @@ function stubObeliskExecution(id, result) {
 }
 
 function submitWorkflowExecution(id, prompt, backend) {
-    return activitsubmit - workflow - executionyJson(`submit-workflow-execution ${id}`, webapi.submitWorkflowExecution(id, prompt, backend));
+    return activityJson(`submit-workflow-execution ${id}`, webapi.submitWorkflowExecution(id, prompt, backend));
 }
 
 function jsonResponse(value, status = 200) {
@@ -223,7 +241,7 @@ function nonNegativeInteger(value) {
 // ----- list -------------------------------------------------------------
 
 async function listRuns() {
-    const executions = listExecutions(WORKFLOW_FFQN, "", false, false, 50);
+    const executions = await listExecutions(WORKFLOW_FFQN, "", false, false, 50);
     const runs = await Promise.all(executions.map(async (e) => ({
         id: e.execution_id,
         created_at: e.created_at || "",
@@ -287,7 +305,7 @@ async function detailRun(id, cursorState) {
 async function loadAgentLoopExecution(workflowId) {
     let candidates;
     try {
-        candidates = listExecutions(AGENT_LOOP_FFQN, workflowId, true, false, 10);
+        candidates = await listExecutions(AGENT_LOOP_FFQN, workflowId, true, false, 10);
     } catch (_) { return null; }
     const mine = candidates.filter((e) => typeof e.execution_id === "string"
         && e.execution_id.startsWith(workflowId + "."));
@@ -295,7 +313,7 @@ async function loadAgentLoopExecution(workflowId) {
 }
 
 async function loadStatus(id) {
-    try { return getExecutionStatus(id); }
+    try { return await getExecutionStatus(id); }
     catch (_) { return null; }
 }
 
@@ -304,7 +322,7 @@ async function loadStatus(id) {
 // the `locked` event at version 1, which has no params.
 async function loadCreated(id) {
     try {
-        const payload = getExecutionEvents(id, "version_from", 0, true, 1);
+        const payload = await getExecutionEvents(id, "version_from", 0, true, 1);
         const params = payload.events?.[0]?.event?.created?.params;
         if (!Array.isArray(params)) return null;
         return {
@@ -320,9 +338,9 @@ async function loadPrompt(id) {
 
 async function loadFinalResult(id) {
     try {
-        const status = getExecutionStatus(id);
+        const status = await getExecutionStatus(id);
         if (status?.pending_state?.status !== "finished") return null;
-        return getExecutionRecord(id);
+        return await getExecutionRecord(id);
     } catch (e) { return { error: String(e) }; }
 }
 
@@ -336,7 +354,7 @@ async function loadExecutionTreeLogs(workflowId, startCursor) {
     while (true) {
         let page;
         try {
-            page = getExecutionLogs(workflowId, true, cursor, including, 200);
+            page = await getExecutionLogs(workflowId, true, cursor, including, 200);
         } catch (_) { break; }
         if (!Array.isArray(page) || page.length === 0) break;
         logs.push(...page);
@@ -352,14 +370,14 @@ async function loadExecutionTreeLogs(workflowId, startCursor) {
 async function loadPendingAsks(workflowId) {
     let candidates;
     try {
-        candidates = listExecutions(ASK_USER_FFQN, "", true, true, 50);
+        candidates = await listExecutions(ASK_USER_FFQN, "", true, true, 50);
     } catch (_) { return []; }
     const mine = candidates.filter((e) => typeof e.execution_id === "string"
         && e.execution_id.startsWith(workflowId + "."));
     return await Promise.all(mine.map(async (e) => {
         let question = null;
         try {
-            const evs = getExecutionEvents(e.execution_id, "version_from", 0, true, 1);
+            const evs = await getExecutionEvents(e.execution_id, "version_from", 0, true, 1);
             const p = evs.events?.[0]?.event?.created?.params;
             if (Array.isArray(p) && typeof p[0] === "string") question = p[0];
         } catch (_) { }
@@ -370,7 +388,7 @@ async function loadPendingAsks(workflowId) {
 async function loadTeardownSignal(workflowId) {
     let candidates;
     try {
-        candidates = listExecutions(TEARDOWN_SIGNAL_FFQN, workflowId, true, true, 10);
+        candidates = await listExecutions(TEARDOWN_SIGNAL_FFQN, workflowId, true, true, 10);
     } catch (_) { return null; }
     const mine = candidates.filter((e) => typeof e.execution_id === "string"
         && e.execution_id.startsWith(workflowId + "."));
@@ -380,7 +398,7 @@ async function loadTeardownSignal(workflowId) {
 async function loadPendingInjection(workflowId) {
     let candidates;
     try {
-        candidates = listExecutions(INJECTION_FFQN, workflowId, true, true, 10);
+        candidates = await listExecutions(INJECTION_FFQN, workflowId, true, true, 10);
     } catch (_) { return null; }
     const mine = candidates.filter((e) => e?.ffqn === INJECTION_FFQN
         && typeof e.execution_id === "string"
@@ -397,7 +415,7 @@ async function loadPendingInjection(workflowId) {
 async function loadPendingConfirms(workflowId) {
     let candidates;
     try {
-        candidates = listExecutions(CONFIRM_FFQN, "", true, true, 50);
+        candidates = await listExecutions(CONFIRM_FFQN, "", true, true, 50);
     } catch (_) { return []; }
     const mine = candidates.filter((e) => typeof e.execution_id === "string"
         && e.execution_id.startsWith(workflowId + "."));
@@ -410,7 +428,7 @@ async function loadPendingConfirms(workflowId) {
         let deploymentId = null;
         let summary = "";
         try {
-            const evs = getExecutionEvents(e.execution_id, "version_from", 0, true, 1);
+            const evs = await getExecutionEvents(e.execution_id, "version_from", 0, true, 1);
             const p = evs.events?.[0]?.event?.created?.params;
             if (Array.isArray(p)) {
                 if (typeof p[0] === "string") deploymentId = p[0];
@@ -421,7 +439,7 @@ async function loadPendingConfirms(workflowId) {
         let diff = null;
         if (deploymentId) {
             try {
-                const dep = getDeployment(deploymentId);
+                const dep = await getDeployment(deploymentId);
                 diff = diffSources(currentSources, await collectSources(dep.deployment_toml));
             } catch (err) { diff = { error: String(err) }; }
         }
@@ -434,9 +452,9 @@ async function loadPendingConfirms(workflowId) {
 // the active id as a JSON string; its manifest lives in the per-id GET.
 async function loadCurrentSources() {
     try {
-        const id = currentDeploymentId();
+        const id = await currentDeploymentId();
         if (!id || typeof id !== "string") return {};
-        const dep = getDeployment(id);
+        const dep = await getDeployment(id);
         return await collectSources(dep.deployment_toml);
     } catch (_) { return {}; }
 }
@@ -449,7 +467,7 @@ async function collectSources(deploymentToml) {
     if (typeof deploymentToml !== "string") return out;
     for (const ref of ownedScriptRefs(deploymentToml)) {
         try {
-            out[ref.location] = readBlob(ref.digest);
+            out[ref.location] = await readBlob(ref.digest);
         } catch (_) { /* skip an unreadable blob */ }
     }
     return out;
@@ -553,7 +571,7 @@ async function loadResponses(execId, startCursor = 0) {
     while (true) {
         let payload;
         try {
-            payload = getExecutionResponses(execId, cursor, including, 200);
+            payload = await getExecutionResponses(execId, cursor, including, 200);
         } catch (_) { break; }
         const responses = payload.responses || [];
         for (const r of responses) {
@@ -610,7 +628,7 @@ async function loadResponses(execId, startCursor = 0) {
 
 async function loadRecvPresentation(executionId) {
     try {
-        const logs = getExecutionLogs(executionId, false, "", false, 200);
+        const logs = await getExecutionLogs(executionId, false, "", false, 200);
         let finalMessage = "";
         for (const entry of logs) {
             if (entry?.type !== "stream" || entry.stream_type !== "stderr") continue;
@@ -697,7 +715,7 @@ async function loadSentResults(execId, startVersion = 0) {
     while (true) {
         let payload;
         try {
-            payload = getExecutionEvents(execId, "version", version, including, 200);
+            payload = await getExecutionEvents(execId, "version", version, including, 200);
         } catch (_) { break; }
         const events = payload.events || [];
         for (const e of events) {
@@ -824,7 +842,7 @@ async function pauseExecution(id, unpause) {
 async function childWorkflowIds(runId) {
     let executions;
     try {
-        executions = listExecutions("", runId, true, true, 200);
+        executions = await listExecutions("", runId, true, true, 200);
     } catch (_) { return []; }
     return executions
         .filter((e) => e?.execution_id !== runId && e?.component_type === "workflow")
@@ -876,7 +894,7 @@ async function waitForSupervisorClosing(runId) {
 async function cancelPendingDescendants(runId, signalId) {
     let executions;
     try {
-        executions = listExecutions("", runId, true, true, 200);
+        executions = await listExecutions("", runId, true, true, 200);
     } catch (_) { return []; }
 
     const cancellable = executions.filter((execution) => {
