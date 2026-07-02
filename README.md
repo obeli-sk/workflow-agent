@@ -1,124 +1,55 @@
 # obelisk-agent
 
-An Obelisk app that runs an LLM CLI (`claude-code` or `codex`) as a
-long-running external resource and drives it from a durable workflow.
+An Obelisk app in which **the workflow is the agent**. It drives an LLM over the
+standard OpenAI **Chat Completions** wire (`POST /v1/chat/completions`), dispatches
+the model's tool calls to real Obelisk activities, and feeds the results back,
+all as durable, replayable workflow state.
 
-The structure follows `apps/fio`: each workflow execution spawns a docker
-container that owns a Unix socket; short activities open the socket to send a
-prompt, drain stream-json output, and finally stop the container.
+There are **no exec activities and no docker here**. The model lives behind an
+HTTP endpoint (`LLM_BASE_URL`): point it at the sibling `agent-backed-llm-server`
+app (a Claude/Codex subscription in docker) or straight at OpenRouter, OpenAI,
+vLLM, Ollama, or anything OpenAI-compatible.
 
 ## Layout
 
 ```
-agent-server/        Docker image: node + claude-code + server.js (normalizer)
 activity/
-  agent-start.js     spawn the docker container, wait for the socket (claude.start)
-  agent-send.js      send one agent-input (prompt | tool-results) (session.send)
-  agent-recv.js      drain one turn; return a typed turn-outcome (session.recv)
-  agent-cleanup.js   shut the server down, docker rm (session.cleanup)
+  agent-system-prompt.js   load-system-prompt: system prompt + OpenAI tool schemas (one source of truth)
+  llm-chat.js              chat.completion: POST messages + tools to LLM_BASE_URL
+  tools/*                  the workflow-visible tools (each a real Obelisk activity)
+  github/*                 GitHub export activities
 workflow/
-  agent.js           start -> race(agent-loop, teardown) -> cleanup
-  agent-loop.js      send(prompt) -> recv(reply) -> tools
-deployment.toml      FFQNs, common agent schema, and lock_expiry per activity
+  agent.js                 workflow.run: load prompt/tools, race agent-loop vs teardown
+  agent-loop.js            workflow.agent-loop: durable messages[] + tool loop
+  push-deployment.js       GitHub export orchestrator
+webhook/
+  ui-api.js, ui.js         web UI + JSON API
+deployment.toml            FFQNs, tool activities, stubs, and the LLM allow-list
 ```
 
-## Common agent schema
+## The agent loop
 
-Talking to an agent is fully typed and provider-agnostic. The provider-specific
-piece is only the **start** activity (`claude.start`, with `codex.start` etc. to
-come); `session.{send,recv,cleanup}` are shared. The backend's native output is
-normalized **inside the container's `server.js`**, so the workflow and the UI
-never parse LLM JSON.
+`workflow.agent-loop` holds the full chat-completions `messages[]` in durable
+workflow state. Each turn:
 
-```
-agent-input  (workflow -> agent)   variant { prompt(string),
-                                             tool-results(list<{name, outcome}>) }
-session.send metadata              operator-messages(list<string>)
-agent-reply  (agent -> workflow)   variant { final(string), error(string),
-                                             tool-calls(list<{name, arguments-json}>) }
-turn-outcome (recv ok)             variant { working, reply(agent-reply) }
-agent-error  (recv err)            variant { permanent-rate-limited({retry-after-seconds, message}),
-                                             permanent-agent-exited(string),
-                                             permanent-error(string),
-                                             transient-error(string),
-                                             execution-failed }
-```
+1. Consume any pending operator injection (appended as a `user` message).
+2. `llm.completion(messages, tools, model)` POSTs the history to the endpoint and
+   returns the assistant turn: `content` + `tool_calls` (+ `finish_reason`), or a
+   `rate-limited` signal.
+3. On `rate-limited`, durably `obelisk.sleep` for the retry window and re-POST.
+4. Append the assistant message verbatim (so the next request and the backend's
+   history pairing see an identical, growing history).
+5. If there are `tool_calls`, dispatch each to its Obelisk activity, append one
+   `tool` message per result, and loop. Otherwise the assistant `content` is the
+   final answer.
 
-`arguments-json` and `tool-results[].outcome` stay JSON-string-encoded (tool
-args/results are inherently dynamic); everything else is a real variant/record.
+Tool calls are **native**: the agent sends OpenAI `tools` (function schemas built
+from `TOOL_SCHEMAS` in `agent-system-prompt.js`) and the model replies with
+`tool_calls`; a final answer is an assistant message with no `tool_calls`. No JSON
+envelope is parsed in the workflow. Each turn is one `llm.completion` activity
+whose result is persisted, so the loop is fully replayable.
 
-## Why activities are short
-
-The LLM lives inside the docker container as a persistent process; activities
-just speak to it over a socket. `session.send` renders one `agent-input` line
-and returns. `session.recv` stays alive for a complete turn, polls the container
-internally, and streams native events to its persisted stderr. It returns
-`reply` once the backend emits its terminal event, so Obelisk records one recv
-execution per turn while live progress remains available in logs.
-
-## stream-json protocol (claude backend)
-
-`agent-server/server.js` spawns `claude -p --input-format stream-json
---output-format stream-json --verbose --model "$AGENT_MODEL"
---append-system-prompt …` and is the **normalizer**: it renders `agent-input`
-into claude user messages, and translates claude's stream-json into the common
-`turn-outcome` / `agent-reply` / `agent-error` shapes (envelope extraction,
-session-limit detection, exit detection all live here). The raw stream-json is
-echoed to each activity's stderr for debugging but never appears in the typed
-return. Adding codex means branching on `AGENT_BACKEND` in `server.js` plus a
-`codex.start` activity. The system prompt still instructs claude to emit the
-`{"final": …}` / `{"error": …}` / `{"tool_calls": […]}` envelope, which
-`server.js` parses.
-
-## Agent loop (in the workflow)
-
-The workflow, not claude, is the agent. Each turn:
-
-1. `session.send` sends the next `agent-input` (`{prompt}` on the first turn, or
-   `{tool_results}` from the previous turn), plus any operator message consumed
-   from the durable injection stub at that send boundary.
-2. `session.recv` polls until the `turn-outcome` is a `reply`.
-3. If the reply is `final`, return it; if it is `error`, throw it.
-4. If the reply is `tool-calls`, dispatch each call to its activity and send the
-   aggregated `tool-results` back as the next input.
-
-No JSON parsing happens in the workflow: `server.js` already produced the typed
-`agent-reply`.
-
-## Session limit handling
-
-claude (subscription mode) eventually emits a stream-json `result` event with
-`is_error: true` and `api_error_status: 429`, e.g. `You've hit your session
-limit · resets 3:50pm (UTC)`. `server.js` detects that shape and `session.recv`
-returns the `permanent-rate-limited` arm of `agent-error`, carrying
-`retry-after-seconds` parsed from the reset time (one hour fallback if the time
-cannot be parsed). The `permanent-` prefix tells Obelisk not to retry the
-activity.
-
-The workflow catches that variant, durably `obelisk.sleep`s until the limit
-resets, then re-sends the same input and continues. The sleep is persistent, so
-it survives server restarts. An operator can cancel the sleep (which throws
-inside the workflow); the workflow catches the cancellation and resumes
-immediately instead of failing the run.
-
-## Operator controls (teardown and injection stubs)
-
-Two `activity_stub`s let an operator steer a live run through the web UI; both
-work by the UI completing or cancelling a pending stub execution:
-
-- `agent/session.teardown-signal` is a long-lived supervisor control child. The
-  public `workflow.run` races it against the entire nested `agent-loop` workflow
-  (`start -> race(agent-loop, teardown) -> cleanup`). Cancelling this stub (UI
-  `POST /api/cleanup`) wins the race, so the supervisor tears the container down
-  and returns instead of waiting for the agent to finish.
-- `agent/session.injection` is one generic operator-message offer owned by
-  `workflow.agent-loop`. The UI may fulfil it (`POST /api/say`) only while that
-  concrete stub execution is pending. When the workflow consumes a completed
-  offer it includes the text in the next `session.send` call and immediately
-  opens a fresh offer, so exactly one is outstanding at a time.
-
-Tools exposed to the LLM (each is a real Obelisk activity, fully durable and
-inspectable):
+Tools exposed to the LLM (each a real Obelisk activity, durable and inspectable):
 
 | Tool                       | FFQN                                             |
 |----------------------------|--------------------------------------------------|
@@ -127,194 +58,91 @@ inspectable):
 | `obelisk.list_executions`  | `obelisk-agent:tools/webapi.list-executions`     |
 | `obelisk.get_execution`    | `obelisk-agent:tools/webapi.get-execution`       |
 | `obelisk.get_logs`         | `obelisk-agent:tools/webapi.get-logs`            |
-| `obelisk.submit`           | `obelisk-agent:tools/webapi.submit-json`         |
+| `obelisk.call` / `obelisk.submit` | native call / join-set submit             |
 | `obelisk.get_result`       | `obelisk-agent:tools/webapi.get-result-json`     |
-| `obelisk.deployment_checkout` | `obelisk-agent:tools/webapi.deployment-checkout` (+ `…deployment-read-blob`) |
-| `obelisk.deployment_submit` | `obelisk-agent:tools/webapi.deployment-submit`   |
-| `obelisk.deployment_activate` | `obelisk-agent:tools/webapi.deployment-switch` / `…apply-deployment` |
-| `http.get`                 | `obelisk-agent:tools/http.get`                   |
+| `obelisk.deployment_checkout` / `_read_component` / `_put_component` / `_submit` / `_activate` | deployment editing |
 | `input.ask_user`           | `obelisk-agent:tools/input.ask-user` *(stub)*    |
 
-Execution and deployment list tools expose the REST API pagination cursors.
-`obelisk.get_logs` also supports nested executions, log/stream filters, and
-cursor pagination. `obelisk.get_deployment` returns the deployment record with
-its verbatim `deployment_toml` manifest; owned sources are referenced by
-`location` + `content_digest` and fetched separately with
-`obelisk.get_component_source` (from the content store). A large manifest is
-paged with `offset` / `length` (a byte window) and `manifest_window` carries the
-continuation offset. This is a read-only inspector; to *edit* a deployment, use
-the checkout/submit tools below.
-
-`input.ask_user` is configured as `activity_stub`: it parks the workflow and
-waits for an operator to PUT a response. The web UI surfaces pending asks on
-the detail page with an inline form. To answer from the shell instead:
-
-```sh
-curl -X PUT http://127.0.0.1:5005/v1/executions/<child-id>/stub \
-  -H content-type:application/json -d '{"ok": "the answer text"}'
-```
-
-Cancelling the stub child surfaces as an err tool_result; the LLM can react
-or emit `{"final": "Cancelled by user."}`.
+`input.ask_user` is an `activity_stub`: it parks the workflow until an operator
+PUTs a response (via the web UI, or `curl -X PUT .../stub`). The full tool set and
+argument schemas live in `activity/agent-system-prompt.js`.
 
 ## Editing a deployment: checkout -> change one component -> submit -> activate
 
-The stored `deployment.toml` is the source of truth. The workflow holds a
-working copy split into per-component TOML blocks and changes one component per
-intermediate deployment, so the server validates small diffs instead of one big
-reassembled config.
+The stored `deployment.toml` is the source of truth. The workflow holds a working
+copy split into per-component TOML blocks and changes one component per
+intermediate deployment, so the server validates small diffs.
 
-1. `obelisk.deployment_checkout` fetches a deployment (the active one by default)
-   via `webapi.deployment-checkout`, which returns the verbatim `deployment_toml`.
-   The workflow splits it into top-level component blocks (`[[activity_js]]`,
-   `[[workflow_wasm]]`, ...), preserved as exact text plus parsed metadata
-   (section, id, owned `location` / `content_digest`). `from_scratch` starts an
-   empty working copy.
-2. `obelisk.deployment_read_component` returns one component's verbatim TOML block
-   and, for owned JS/exec components, its script body (fetched from the content
-   store via `webapi.deployment-read-blob`). `obelisk.deployment_put_component`
-   adds or replaces one component from an edited TOML block (+ optional script);
-   `deployment_remove_component` drops one. Only one component may change per
-   deployment; all edits stay in workflow memory.
+1. `obelisk.deployment_checkout` fetches a deployment (active by default) and
+   splits its verbatim `deployment_toml` into component blocks. `from_scratch`
+   starts empty.
+2. `obelisk.deployment_read_component` returns one block (+ script for owned JS);
+   `obelisk.deployment_put_component` adds/replaces one; `_remove_component` drops
+   one. Only one component may change per deployment.
 3. `obelisk.deployment_submit` assembles the manifest, fills `content_digest` for
-   changed sources (sha256 computed in `deployment-submit.js`), and submits it as
-   a new **inactive** deployment via `webapi.deployment-submit`. It preflights a
-   JSON submit (no blobs — unchanged files already in the CAS are not re-uploaded)
-   and, on a `409` incomplete-package response, retries as a `multipart/form-data`
-   package attaching only the missing sources. `allow_missing_runtime_config`
-   tolerates absent env vars / secrets. The working copy then rebases onto the
-   submitted deployment so editing can continue.
-4. `obelisk.deployment_activate` makes a deployment live: `enqueue` (active next
-   restart, via `webapi.deployment-switch`) or `apply` (hot redeploy now). `apply`
-   parks on the `deploy.confirm-apply` operator gate, then schedules the hot
-   switch out of process (`webapi.apply-deployment`); a synchronous switch from
-   inside the activity would deadlock the executor. It is terminal and must be the
-   final tool call.
+   changed sources, and submits it as a new **inactive** deployment (JSON preflight,
+   then multipart with only the missing sources on a 409).
+4. `obelisk.deployment_activate` makes it live: `enqueue` (next restart) or `apply`
+   (hot redeploy now, after the `deploy.confirm-apply` operator gate). `apply` is
+   terminal and must be the final tool call.
 
-Removing a missing component is a no-op (`already_absent`). Because the working
-copy is plain workflow memory derived from the durable checkout result, it is
-fully replayable without any per-session filesystem or container.
+## Operator controls (teardown and injection stubs)
 
-## Build the image
+Two `activity_stub`s let an operator steer a live run from the web UI:
 
-```sh
-just build
-```
+- `agent/session.teardown-signal` is a supervisor control child. `workflow.run`
+  races it against the whole nested `agent-loop`. Cancelling it (UI `POST
+  /api/cleanup`) wins the race, so the run returns instead of continuing. (There is
+  no container to stop anymore; teardown just ends the loop.)
+- `agent/session.injection` is one generic operator-message offer owned by
+  `agent-loop`. The UI fulfils it (`POST /api/say`) while it is pending; the
+  workflow includes the text as the next `user` message and opens a fresh offer.
 
-Tags `ghcr.io/obeli-sk/obelisk-agent-server:latest`. The image name is wired
-into `agent-start.js` through the `AGENT_IMAGE` env var (defaulted in
-`deployment.toml`). The system prompt is deployment-owned: the
-`agent/prompt.load-system-prompt` JS activity supplies it to `agent.start`,
-which writes it beside the session socket for the container to read. Prompt
-changes therefore do not require an image rebuild. The activity appends the
-current Obelisk LLM reference from `https://obeli.sk/docs/latest/llms.txt/`.
+## Configure the LLM endpoint
 
-## Authenticate claude-code
+`llm-chat.js` reads:
 
-The activity bind-mounts your host's claude-code config dir into the container,
-so the container uses your existing Claude subscription. Log in once on the
-host:
+- `LLM_BASE_URL` — endpoint base (default `http://127.0.0.1:8080`, the local
+  `agent-backed-llm-server` webhook). Set `LLM_BASE_URL_REGEX` to the regex-escaped
+  form when pointing elsewhere so the `allowed_host` matches.
+- `LLM_MODEL` — default model / backend hint (default `claude`).
+- `LLM_API_KEY` — optional bearer token (unused for the subscription CLI backend;
+  for a real key-based provider, move it to `allowed_host.secrets`).
+
+The `workflow.run` `backend` param (`claude` / `codex` / a model id) is passed
+through as the per-request model hint.
+
+## Run
 
 ```sh
-claude   # follow the OAuth flow
+just serve    # obelisk server run -d deployment.toml
 ```
 
-This populates `~/.claude/`. `agent-start.js` reads `AGENT_HOST_CLAUDE_DIR`
-(defaults to `$HOME/.claude`) and mounts it at `/claude-config` with
-`CLAUDE_CONFIG_DIR=/claude-config` inside the container. The mount is
-read-write so claude can refresh tokens.
-
-## Start the server
+Submit a prompt from the web UI (webhook port, default `8080`) or the API:
 
 ```sh
-just serve
+curl -X POST http://127.0.0.1:8080/api/submit \
+  -H content-type:application/json -d '{"prompt":"Summarise recent executions.","backend":"claude"}'
 ```
 
-Optional env vars (defaults set per backend in `deployment.toml`):
-
-- `AGENT_IMAGE` - override the docker image tag
-- `AGENT_MODEL` - claude default `claude-opus-4-7`
-- `AGENT_CODEX_MODEL` - codex default `gpt-5.5` (a ChatGPT-account-supported model)
-- `AGENT_EXTRA_ARGS` / `AGENT_CODEX_EXTRA_ARGS` - extra CLI args inside the container
-- `AGENT_HOST_CLAUDE_DIR` - host claude config to mount, default `$HOME/.claude`
-- `AGENT_HOST_CODEX_DIR` - host codex config to mount, default `$HOME/.codex`
-
-## Submit a one-shot prompt
-
-From the CLI (claude is the default backend; `run-codex` selects codex):
-
-```sh
-just run 'Summarise the latest commits on main.'
-just run-codex 'Summarise the latest commits on main.'
-```
-
-To submit paused:
-
-```sh
-OBELISK_SUBMIT_FLAGS=--paused just run 'prompt here'
-```
-
-Or use the web UI (the new-prompt form has a `claude`/`codex` selector).
+For a Claude/Codex subscription backend, run `agent-backed-llm-server` alongside
+and leave `LLM_BASE_URL` at its default.
 
 ## Web UI
 
-`webhook/ui.js` is registered as `webhook_endpoint_js` and serves three routes
-on whatever port the Obelisk server has configured for webhooks (default
-`8080`):
+`webhook/ui-api.js` serves an SPA plus a JSON API on the webhook port:
 
-- `GET  /`              list recent `workflow.run` executions, with a form to
-                        submit a new prompt
-- `POST /submit`        accepts the form, schedules a new run, redirects to
-                        the detail page
-- `GET  /e/<exec-id>`   shows one run: the prompt, every stream-json event
-                        from claude (user, assistant, tool_use, tool_result,
-                        result), and the final return value
+- `GET /` — run list + new-prompt form
+- `POST /api/submit` — schedule a run
+- `GET /api/runs/:id` — one run as a transcript
+- `POST /api/say/:id`, `/api/cleanup/:id`, `/api/answer/:child`, `/api/confirm/:child`
 
-The detail page reconstructs the conversation from `/v1/executions/<id>/responses`
-by reading the typed `turn-outcome` returned by each `session.recv` child
-execution (the `reply` outcomes), so no extra storage is needed and no LLM JSON
-is parsed in the UI. The browser retains the latest response/history positions
-and polls only newer records. Its logs control similarly retains the latest log
-timestamp and incrementally loads workflow, stdout, and stderr entries from the
-root execution and every nested execution, including an active recv.
+The detail page reconstructs the conversation from `/v1/executions/<id>/responses`:
+each `llm.completion` child yields one assistant turn (final or tool_calls) and the
+tool activity children provide the tool results. No LLM JSON is parsed in the UI.
 
 ## Inspecting a run
 
-Each turn is a separate activity execution. Beyond the UI, you can use the
-standard Obelisk WebAPI / CLI to inspect them: `claude.start`, `session.send`,
-one `session.recv` per turn, tool activities, and `session.cleanup`. The typed
-`agent-reply` is captured as the `recv` result; native events stream to that
-activity's stderr.
-
-## Backends
-
-The backend is chosen by the workflow's `backend` param (`null`/absent =>
-claude, `"codex"` => codex). The common agent schema is the seam: only the start
-activity and `server.js` are provider-specific.
-
-| | claude | codex |
-|---|---|---|
-| start activity | `obelisk-agent:agent/claude.start` | `obelisk-agent:agent/codex.start` |
-| auth | `~/.claude` -> `CLAUDE_CONFIG_DIR` | `~/.codex` -> `CODEX_HOME` (`auth.json` + `config.toml`) |
-| default model | `claude-opus-4-7` | `gpt-5.5` (ChatGPT-account-supported) |
-| process model | one persistent `claude -p --input-format stream-json` | `codex exec --json` per turn, continued with `codex exec resume <thread_id>` |
-| turn ends at | `result` event | `turn.completed` / `turn.failed` |
-
-Both run their full internal tool loop (FS, shell, web) within a turn and
-surface durable actions through the `{"tool_calls": …}` envelope. `server.js`
-normalizes each into the common `turn-outcome` / `agent-reply` / `agent-error`
-shapes, so the workflow and UI are backend-agnostic.
-
-codex specifics: it has no `--append-system-prompt`, so the system prompt rides
-along in the first turn's user message; the first turn uses
-`--dangerously-bypass-approvals-and-sandbox` (the container is the sandbox) and
-resume inherits it. The codex session is persisted under the host-mounted
-`~/.codex/sessions`, so the conversation survives a container restart (automatic
-restart-and-resume on container death is not yet wired). `server.js` waits for
-each `codex exec` process to fully close before the next `resume`, so the
-session file is flushed first.
-
-Authenticate codex once on the host (`codex login`), which populates `~/.codex`.
-
-To add a third backend, follow the same seam: a new `<backend>.start` activity +
-a branch in `server.js` that maps its native events to the common shapes.
+Each turn is a separate `obelisk-agent:llm/chat.completion` activity execution;
+each tool call is its own activity execution. Use the standard Obelisk WebAPI / CLI
+to inspect them, or the web UI.

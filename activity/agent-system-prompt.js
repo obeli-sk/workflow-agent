@@ -1,3 +1,11 @@
+// Builds the agent's system prompt and the OpenAI tool schemas from one source
+// of truth (TOOL_SCHEMAS). The workflow sends `tools` to the LLM endpoint via
+// native tool-calling, so the prompt no longer carries a tool-call envelope or
+// per-tool schemas; it keeps only role, WIT<->JSON mapping, and deployment rules.
+//
+// obelisk-agent:agent/prompt.load-system-prompt:
+//   func() -> result<record { prompt: string, tools-json: string }, string>
+
 const OBELISK_DOCS_URL = 'https://obeli.sk/docs/latest/llms.txt/';
 const nl = String.fromCharCode(10);
 
@@ -144,38 +152,30 @@ const TOOL_SCHEMAS = [
     }),
 ];
 
-function renderToolSchema(t) {
-    const lines = [
-        '### ' + t.name,
-        t.purpose,
-        '',
-        'Args schema:',
-        '```json',
-        JSON.stringify(t.args, null, 2),
-        '```',
-    ];
-    if (t.notes.length > 0) {
-        lines.push('Notes:');
-        for (const note of t.notes) lines.push('- ' + note);
-    }
-    return lines.join(nl);
+// Map a schema arg description ("u32, optional; default 100") to a JSON Schema type.
+function jsonType(desc) {
+    const d = String(desc).toLowerCase();
+    if (d.startsWith('u32') || d.startsWith('u64') || d.startsWith('s32') || d.startsWith('s64') || d.startsWith('integer')) return 'integer';
+    if (d.startsWith('bool')) return 'boolean';
+    if (d.startsWith('record')) return 'object';
+    if (d.startsWith('list')) return 'array';
+    return 'string';
 }
 
-const TOOL_PROMPT = [
-    '## Tool-Call Envelope',
-    'When calling tools, emit a single JSON object and no surrounding prose:',
-    '```json',
-    '{"tool_calls":[{"name":"obelisk.get_execution","args":{"execution_id":"E_..."}}]}',
-    '```',
-    'Each call object uses exactly name and args. Do not use tool, arguments, input, params, or params_json as top-level call-object keys.',
-    'Inside args, use the snake_case field names from the schema for that tool.',
-    'Use workflow-visible tools only for durable, replayable actions that should appear in the Obelisk execution log.',
-    'Use your own built-in tools freely inside a turn for non-durable investigation.',
-    'If a tool error reports required or allowed arguments, retry with those exact names.',
-    '',
-    '## Workflow-Visible Tools',
-    ...TOOL_SCHEMAS.map(renderToolSchema),
-].join(nl + nl);
+// Convert TOOL_SCHEMAS into OpenAI function tools.
+function buildTools() {
+    return TOOL_SCHEMAS.map((t) => {
+        const properties = {};
+        const required = [];
+        for (const field of Object.keys(t.args)) {
+            const desc = t.args[field];
+            properties[field] = { type: jsonType(desc), description: desc };
+            if (/required/i.test(desc)) required.push(field);
+        }
+        const description = t.notes.length > 0 ? `${t.purpose} Notes: ${t.notes.join(' ')}` : t.purpose;
+        return { type: 'function', function: { name: t.name, description, parameters: { type: 'object', properties, required } } };
+    });
+}
 
 const WIT_JSON_MAPPING = [
     '## WIT to JSON Mapping',
@@ -208,13 +208,13 @@ const DEPLOYMENT_RULES = [
 
 const SYSTEM_PROMPT = [
     'You are the planner inside an Obelisk durable workflow.',
-    'The workflow runs Obelisk-side tools that you request and returns their results.',
+    'The workflow exposes Obelisk-side tools that you call; it runs each and returns the result.',
     'Your job is to investigate, plan, and decide which durable actions are needed.',
-    'Reply with Markdown for presentation. Use fenced Mermaid blocks only for diagrams.',
+    'Call the provided tools for durable, replayable actions that should appear in the Obelisk execution log; use your own built-in tools freely for non-durable investigation within a turn.',
+    'When you are done, reply with your final answer as Markdown (use fenced Mermaid blocks only for diagrams). Do not call a tool on your final turn.',
     'To pause for operator input, call input.ask_user.',
     'Never invent execution IDs, FFQNs, deployment IDs, tools, or tool arguments. Discover them first.',
-    'If a tool returns an error, decide whether to retry, use another tool, ask the operator, or finish with an error envelope.',
-    TOOL_PROMPT,
+    'If a tool returns an error, decide whether to retry, use another tool, ask the operator, or finish with an explanation.',
     WIT_JSON_MAPPING,
     DEPLOYMENT_RULES,
 ].join(nl + nl);
@@ -225,5 +225,6 @@ export default async function load_system_prompt() {
         throw `failed to fetch Obelisk documentation: HTTP ${response.status}: ${await response.text()}`;
     }
     const docs = await response.text();
-    return [SYSTEM_PROMPT, '', '# Obelisk documentation', 'The following reference was fetched from ' + OBELISK_DOCS_URL + '.', '', docs].join(nl);
+    const prompt = [SYSTEM_PROMPT, '', '# Obelisk documentation', 'The following reference was fetched from ' + OBELISK_DOCS_URL + '.', '', docs].join(nl);
+    return { prompt, tools_json: JSON.stringify(buildTools()) };
 }

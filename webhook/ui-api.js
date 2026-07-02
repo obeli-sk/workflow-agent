@@ -560,7 +560,7 @@ function lineDiff(oldText, newText) {
 // and everything else as a workflow-visible tool call. The `recv` activity now
 // returns a typed turn-outcome, so there is no LLM JSON left to parse here.
 const INFRA_NAMES = new Set([
-    "load-system-prompt", "start", "send", "recv", "inject", "injection", "cleanup",
+    "load-system-prompt", "completion", "inject", "injection",
 ]);
 
 async function loadResponses(execId, startCursor = 0) {
@@ -580,34 +580,23 @@ async function loadResponses(execId, startCursor = 0) {
             if (!ev || ev.type !== "child_execution_finished") continue;
             const joinName = parseJoinName(wrapped.join_set_id);
 
-            if (joinName === "recv") {
-                // turn-outcome: "working" (string) or
-                // { reply: { reply, presentation, blocks, narration } }.
-                // Tolerate the old shape where reply was the bare agent-reply.
+            if (joinName === "completion") {
+                // llm.completion ok = { reply: { content, tool_calls, finish_reason } }
+                // or { rate_limited: {...} } (skipped). Map to the UI reply shape:
+                // { tool_calls: [{ name, arguments_json }] } | { final }.
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
-                if (value && typeof value === "object" && value.reply) {
-                    const wrappedReply = value.reply;
-                    if (wrappedReply && typeof wrappedReply === "object" && "reply" in wrappedReply) {
-                        let presentation = typeof wrappedReply.presentation === "string" ? wrappedReply.presentation : "";
-                        if (!presentation && Array.isArray(wrappedReply.reply?.tool_calls)) {
-                            presentation = await loadRecvPresentation(ev.child_execution_id);
-                        }
-                        replies.push({
-                            reply: wrappedReply.reply,
-                            presentation,
-                            blocks: Array.isArray(wrappedReply.blocks) ? wrappedReply.blocks : [],
-                            narration: typeof wrappedReply.narration === "string" ? wrappedReply.narration : "",
-                            created_at: r.event?.created_at || "",
-                        });
-                    } else {
-                        replies.push({
-                            reply: wrappedReply,
-                            presentation: "",
-                            blocks: [],
-                            narration: "",
-                            created_at: r.event?.created_at || "",
-                        });
-                    }
+                const rep = value && typeof value === "object" ? value.reply : null;
+                if (rep && typeof rep === "object") {
+                    const reply = Array.isArray(rep.tool_calls) && rep.tool_calls.length > 0
+                        ? { tool_calls: rep.tool_calls.map((c) => ({ name: c.name, arguments_json: c.arguments_json })) }
+                        : { final: typeof rep.content === "string" ? rep.content : "" };
+                    replies.push({
+                        reply,
+                        presentation: "",
+                        blocks: [],
+                        narration: "",
+                        created_at: r.event?.created_at || "",
+                    });
                 }
             } else if (joinName && !INFRA_NAMES.has(joinName)) {
                 toolChildren.push({
@@ -1212,10 +1201,7 @@ function statusLabel(status, result_kind) {
 const JOIN_LABELS = {
   'ask-user': ['awaiting reply', 'awaiting'],
   'confirm-apply': ['awaiting approval', 'awaiting'],
-  'recv': ['thinking', 'working'],
-  'start': ['starting', 'working'],
-  'send': ['sending', 'working'],
-  'cleanup': ['finishing', 'working'],
+  'completion': ['thinking', 'working'],
 };
 function describeStatus(status, result_kind, joinName) {
   if (status === 'blocked_by_join_set') {

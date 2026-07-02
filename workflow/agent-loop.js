@@ -1,18 +1,23 @@
-import * as session from 'obelisk-agent:agent/session';
+import * as llm from 'obelisk-agent:llm/chat';
 import * as webapi from 'obelisk-agent:tools/webapi';
 import * as askUser from 'obelisk-agent:tools/input';
 import * as deploy from 'obelisk-agent:tools/deploy';
 
-const RECV_TIMEOUT_MS = 30000;
 const MAX_TURNS = 30;
-const MAX_CORRECTIONS = 3;
 const MAX_TOOL_RESULT_BYTES = 96 * 1024;
 const INJECTION_FFQN = 'obelisk-agent:agent/session.injection';
 
-export default function agentLoop(prompt, socketPath) {
+// The agent loop is the durable state: it holds the full chat-completions
+// message history and, each turn, POSTs it to the LLM endpoint (llm.completion),
+// dispatches any tool_calls to real Obelisk activities, appends the results as
+// tool messages, and repeats until the model answers with no tool_calls.
+export default function agentLoop(prompt, systemPrompt, toolsJson, model) {
     if (typeof prompt !== 'string' || !prompt.trim()) throw 'prompt is required';
-    if (typeof socketPath !== 'string' || !socketPath) throw 'socket path is required';
-    let nextInput = { prompt };
+    if (typeof systemPrompt !== 'string' || !systemPrompt) throw 'system prompt is required';
+    const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: prompt },
+    ];
     let finalAnswer = null;
     let injection = null;
     const state = {
@@ -31,13 +36,15 @@ export default function agentLoop(prompt, socketPath) {
             console.log(`--- turn ${turn} ---`);
             const prepared = prepareInjection(injection);
             injection = prepared.injection;
-            const reply = sendAndDrain(socketPath, nextInput, prepared.operatorMessages);
-            if (typeof reply.final === 'string') {
-                finalAnswer = reply.final;
-                console.log(`final after ${turn + 1} turns`);
-                break;
+            for (const text of prepared.operatorMessages) {
+                messages.push({ role: 'user', content: `[Operator message]: ${text}` });
             }
-            if (typeof reply.error === 'string') throw reply.error;
+
+            const reply = callLlm(messages, toolsJson, model);
+            // Record the assistant turn verbatim so the next request (and the
+            // backend's history pairing) see an identical, growing history.
+            messages.push(assistantMessage(reply));
+
             if (Array.isArray(reply.tool_calls) && reply.tool_calls.length > 0) {
                 if (reply.tool_calls.some(isBlockingHumanTool)) {
                     closeInjection(injection);
@@ -47,6 +54,7 @@ export default function agentLoop(prompt, socketPath) {
                 const results = reply.tool_calls.map((call) => {
                     const result = dispatch(call, state);
                     console.log(`  ${call?.name}: ${'ok' in result.outcome ? 'ok' : `err=${result.outcome.err}`}`);
+                    messages.push(toolMessage(call.id, result));
                     return result;
                 });
                 const applyIndex = reply.tool_calls.findIndex(isHotApplyPush);
@@ -58,10 +66,12 @@ export default function agentLoop(prompt, socketPath) {
                     console.log('deployment_activate(apply) is terminal; finishing workflow before switch');
                     break;
                 }
-                nextInput = { tool_results: results };
                 continue;
             }
-            throw `agent reply had no final answer and no tool calls: ${JSON.stringify(reply).slice(0, 500)}`;
+            // No tool calls: the model's content is the final answer.
+            finalAnswer = typeof reply.content === 'string' ? reply.content : '';
+            console.log(`final after ${turn + 1} turns`);
+            break;
         }
     } finally {
         closeInjection(injection);
@@ -69,6 +79,43 @@ export default function agentLoop(prompt, socketPath) {
     }
     if (finalAnswer === null) throw `exceeded MAX_TURNS=${MAX_TURNS} without a final answer`;
     return finalAnswer;
+}
+
+// One chat-completions call, retrying durably through an endpoint rate limit.
+function callLlm(messages, toolsJson, model) {
+    while (true) {
+        const res = llm.completion(JSON.stringify(messages), toolsJson || '[]', model || '');
+        if (res && res.rate_limited) {
+            const seconds = res.rate_limited.retry_after_seconds > 0 ? res.rate_limited.retry_after_seconds : 1;
+            console.log(`rate limited (${res.rate_limited.message}); sleeping ${seconds}s`);
+            obelisk.sleep({ seconds });
+            continue;
+        }
+        if (res && res.reply) return res.reply;
+        throw `unexpected llm.completion result: ${JSON.stringify(res)}`;
+    }
+}
+
+// The assistant message stored in history, in OpenAI shape.
+function assistantMessage(reply) {
+    if (Array.isArray(reply.tool_calls) && reply.tool_calls.length > 0) {
+        return {
+            role: 'assistant',
+            content: reply.content || null,
+            tool_calls: reply.tool_calls.map((c) => ({
+                id: c.id,
+                type: 'function',
+                function: { name: c.name, arguments: c.arguments_json },
+            })),
+        };
+    }
+    return { role: 'assistant', content: reply.content || '' };
+}
+
+// A tool result becomes a tool message keyed by the tool_call id.
+function toolMessage(id, result) {
+    const content = 'ok' in result.outcome ? result.outcome.ok : `Error: ${result.outcome.err}`;
+    return { role: 'tool', tool_call_id: id, content };
 }
 
 function prepareInjection(injection) {
@@ -108,71 +155,6 @@ function isHotApplyPush(call) {
         const args = call.arguments_json ? JSON.parse(call.arguments_json) : {};
         return args && args.mode === 'apply';
     } catch (_) { return false; }
-}
-
-function sendAndDrain(socketPath, input, operatorMessages) {
-    let pending = input;
-    let pendingOperatorMessages = operatorMessages;
-    let corrections = 0;
-    while (true) {
-        session.send(socketPath, pending, pendingOperatorMessages);
-        pendingOperatorMessages = [];
-        try { return drainTurn(socketPath); }
-        catch (error) {
-            const limit = rateLimited(error);
-            if (limit) {
-                const seconds = limit.retry_after_seconds > 0 ? limit.retry_after_seconds : 1;
-                console.log(`session limit reached (${limit.message}); sleeping ${seconds}s until reset`);
-                obelisk.sleep({ seconds });
-                console.log('rate-limit sleep elapsed; retrying turn');
-                continue;
-            }
-            const malformed = malformedReply(error);
-            if (malformed && corrections < MAX_CORRECTIONS) {
-                corrections += 1;
-                console.log(`malformed reply (correction ${corrections}/${MAX_CORRECTIONS}): ${malformed}`);
-                pending = { prompt: correctionPrompt(malformed) };
-                continue;
-            }
-            throw error;
-        }
-    }
-}
-function correctionPrompt(detail) {
-    return [
-        'Your previous reply looked like it requested tools but the JSON could not be parsed.',
-        `Parse error: ${detail}`,
-        'To call tools, emit a valid JSON object with tool_calls, each containing name and args.',
-        'If you are not calling tools, reply with an error envelope or a final answer.',
-    ].join(' ');
-}
-function drainTurn(socketPath) {
-    const outcome = session.recv(socketPath, RECV_TIMEOUT_MS);
-    if (outcome && typeof outcome === 'object' && outcome.reply) {
-        const r = outcome.reply;
-        return (r && typeof r === 'object' && 'reply' in r) ? r.reply : r;
-    }
-    throw `unexpected recv outcome: ${JSON.stringify(outcome)}`;
-}
-function errPayload(error) {
-    const raw = (error && typeof error === 'object' && typeof error.message === 'string')
-        ? error.message
-        : (typeof error === 'string' ? error : null);
-    if (raw === null) return null;
-    try {
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === 'object' ? parsed : null;
-    } catch (_) { return null; }
-}
-function rateLimited(error) {
-    const p = errPayload(error);
-    return p && p.permanent_rate_limited && typeof p.permanent_rate_limited === 'object'
-        ? p.permanent_rate_limited
-        : null;
-}
-function malformedReply(error) {
-    const p = errPayload(error);
-    return p && typeof p.permanent_malformed_reply === 'string' ? p.permanent_malformed_reply : null;
 }
 
 function dispatch(call, state) {

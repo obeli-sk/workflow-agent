@@ -1,40 +1,37 @@
-import * as claude from "obelisk-agent:agent/claude";
-import * as codex from "obelisk-agent:agent/codex";
+// Public supervisor workflow. It loads the system prompt + tool schemas, then
+// races the nested agent-loop workflow against an operator teardown signal.
+// There is no container to own anymore: the agent talks to an LLM endpoint over
+// HTTP (the llm/chat.completion activity), so this workflow holds no exec
+// activities and needs no cleanup step.
+
 import * as agentPrompt from "obelisk-agent:agent/prompt";
-import * as session from "obelisk-agent:agent/session";
 
 const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop";
 const TEARDOWN_SIGNAL_FFQN = "obelisk-agent:agent/session.teardown-signal";
-const STARTERS = { claude: claude.start, codex: codex.start };
 
 export default function run(prompt, backend) {
     if (typeof prompt !== "string" || !prompt.trim()) {
         throw "prompt is required";
     }
-    const which = (typeof backend === "string" && backend) ? backend : "claude";
-    const start = STARTERS[which];
-    if (!start) throw `unknown backend: ${which} (expected claude or codex)`;
+    // `backend` is a model hint for the endpoint ("claude" / "codex" / a model
+    // id); the endpoint decides how to serve it. Empty => the endpoint default.
+    const model = (typeof backend === "string" && backend) ? backend : "";
 
     const executionId = obelisk.executionIdCurrent();
-    const sessionId = sanitize(executionId);
-    const containerName = `obelisk-agent-${sessionId}`;
-    const socketPath = `/tmp/obelisk-agent/${sessionId}.sock`;
-
-    let outcome = null;
-    let workflowError = null;
-    let race = null;
-    try {
-        const systemPrompt = `${agentPrompt.loadSystemPrompt()}
+    const loaded = agentPrompt.loadSystemPrompt();   // { prompt, tools_json }
+    const systemPrompt = `${loaded.prompt}
 
 # This execution
 
 Your own workflow execution id is \`${executionId}\`. Pass it to
 obelisk.get_execution / obelisk.get_logs to inspect your own run.`;
-        const startInfo = start(containerName, socketPath, systemPrompt);
-        console.log(`Started ${which} agent ${startInfo.container} from ${startInfo.image}`);
 
+    let outcome = null;
+    let workflowError = null;
+    let race = null;
+    try {
         race = obelisk.createJoinSet({ name: "session" });
-        const childId = race.submit(AGENT_LOOP_FFQN, [prompt, socketPath]);
+        const childId = race.submit(AGENT_LOOP_FFQN, [prompt, systemPrompt, loaded.tools_json, model]);
         const teardownSignalId = race.submit(TEARDOWN_SIGNAL_FFQN, []);
         const completed = race.joinNext();
 
@@ -49,13 +46,6 @@ obelisk.get_execution / obelisk.get_logs to inspect your own run.`;
     } catch (error) {
         workflowError = error;
     } finally {
-        try {
-            session.cleanup(containerName, socketPath);
-            console.log(`Cleaned up ${containerName}`);
-        } catch (error) {
-            console.log(`Cleanup failed for ${containerName}: ${String(error)}`);
-            if (workflowError === null) workflowError = error;
-        }
         if (race !== null) {
             try { race.close(); }
             catch (error) { console.log(`Session race close failed: ${String(error)}`); }
@@ -64,8 +54,4 @@ obelisk.get_execution / obelisk.get_logs to inspect your own run.`;
 
     if (workflowError !== null) throw workflowError;
     return outcome;
-}
-
-function sanitize(value) {
-    return String(value).replace(/[^A-Za-z0-9_.-]/g, "-");
 }

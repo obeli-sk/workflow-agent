@@ -1,115 +1,46 @@
-# --- Agent lifecycle: provider-specific start (one per backend) ---------------
-# Both point to the same agent-start.js; the AGENT_BACKEND env picks the auth
-# mount + backend, and server.js inside the container spawns the right CLI.
+# --- System prompt + tool schemas ---------------------------------------------
+# Returns the agent's system prompt and the OpenAI tool schemas (built from one
+# source of truth). The agent has no exec activities: it talks to an LLM endpoint
+# over HTTP via llm_chat below.
 
 [[activity_js]]
 name = "agent_system_prompt"
 ffqn = "obelisk-agent:agent/prompt.load-system-prompt"
 params = []
-return_type = "result<string, string>"
+return_type = "result<record { prompt: string, tools-json: string }, string>"
 location = "activity/agent-system-prompt.js"
-content_digest = "sha256:1c3772abfa82a44372a5c4a0896219293bbd50e53d884ba5ad75e4a11d1afd4a"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
 request_url_regex = "^GET https://obeli\\.sk/docs/latest/llms.txt/"
 
-[[activity_exec]]
-ffqn = "obelisk-agent:agent/claude.start"
-params = [
-  { name = "container-name", type = "string" },
-  { name = "socket", type = "string" },
-  { name = "system-prompt", type = "string" },
-]
-return_type = "result<record { container: string, image: string, socket: string, id: string }, string>"
-location = "activity/agent-start.js"
-exec.lock_expiry.minutes = 2
-max_retries = 1
-env_vars = [
-  "PATH",
-  "HOME",
-  { key = "AGENT_IMAGE",            value = "${AGENT_IMAGE:-ghcr.io/obeli-sk/obelisk-agent-server:latest}" },
-  { key = "AGENT_BACKEND",          value = "claude" },
-  { key = "AGENT_MODEL",            value = "${AGENT_MODEL:-claude-opus-4-7}" },
-  { key = "AGENT_EXTRA_ARGS",       value = "${AGENT_EXTRA_ARGS:-}" },
-  { key = "AGENT_HOST_CLAUDE_DIR",  value = "${AGENT_HOST_CLAUDE_DIR:-${HOME}/.claude}" },
-]
-content_digest = "sha256:84a521ee8e30dd2dc2c3f4ef703b297332aabad06ce35656bd2a16752996fde5"
+# --- LLM endpoint: HTTP Chat Completions client -------------------------------
+# The only way the agent talks to a model. Point LLM_BASE_URL at the
+# agent-backed-llm-server (claude/codex in docker) or any OpenAI-compatible
+# provider (OpenRouter, OpenAI, vLLM, ...); set LLM_BASE_URL_REGEX to match.
 
-[[activity_exec]]
-ffqn = "obelisk-agent:agent/codex.start"
+[[activity_js]]
+name = "llm_chat"
+ffqn = "obelisk-agent:llm/chat.completion"
 params = [
-  { name = "container-name", type = "string" },
-  { name = "socket", type = "string" },
-  { name = "system-prompt", type = "string" },
+  { name = "messages-json", type = "string" },
+  { name = "tools-json",    type = "string" },
+  { name = "model",         type = "string" },
 ]
-return_type = "result<record { container: string, image: string, socket: string, id: string }, string>"
-location = "activity/agent-start.js"
-exec.lock_expiry.minutes = 2
-max_retries = 1
-env_vars = [
-  "PATH",
-  "HOME",
-  { key = "AGENT_IMAGE",           value = "${AGENT_IMAGE:-ghcr.io/obeli-sk/obelisk-agent-server:latest}" },
-  { key = "AGENT_BACKEND",         value = "codex" },
-  { key = "AGENT_MODEL",           value = "${AGENT_CODEX_MODEL:-gpt-5.5}" },
-  { key = "AGENT_EXTRA_ARGS",      value = "${AGENT_CODEX_EXTRA_ARGS:-}" },
-  { key = "AGENT_HOST_CODEX_DIR",  value = "${AGENT_HOST_CODEX_DIR:-${HOME}/.codex}" },
-]
-content_digest = "sha256:84a521ee8e30dd2dc2c3f4ef703b297332aabad06ce35656bd2a16752996fde5"
-
-# --- Agent session: provider-agnostic send / recv / cleanup -------------------
-#
-# Common schema for talking to any agent backend. The container's server.js
-# normalizes the backend's native output (claude stream-json today) into these
-# types, so the workflow and UI never parse LLM JSON.
-
-# agent-input: what the workflow sends to the agent each turn.
-[[activity_exec]]
-ffqn = "obelisk-agent:agent/session.send"
-params = [
-  { name = "socket", type = "string" },
-  { name = "input", type = "variant { prompt(string), tool-results(list<record { name: string, outcome: result<string, string> }>) }" },
-  { name = "operator-messages", type = "list<string>" },
-]
-return_type = "result<_, string>"
-location = "activity/agent-send.js"
-params_via_stdin = true
-exec.lock_expiry.seconds = 30
-max_retries = 3
-env_vars = ["PATH"]
-content_digest = "sha256:536a62d943260b22abcd501467cc819534b18a9cc930e238f0103afdc3e5bac4"
-
-# turn-outcome (ok): the activity polls internally and returns when the turn
-# produces a parsed agent-reply. Native events stream to its persisted stderr.
-# agent-error (err): structured failures; cases containing `permanent` are not
-#   retried (the workflow handles rate-limit by sleeping).
-[[activity_exec]]
-ffqn = "obelisk-agent:agent/session.recv"
-params = [
-  { name = "socket", type = "string" },
-  { name = "timeout-ms", type = "u32" },
-]
-return_type = "result<variant { working, reply(record { reply: variant { final(string), error(string), tool-calls(list<record { name: string, arguments-json: string }>) }, presentation: string, narration: string }) }, variant { permanent-rate-limited(record { retry-after-seconds: u32, message: string }), permanent-malformed-reply(string), permanent-agent-exited(string), permanent-error(string), transient-error(string), execution-failed }>"
-location = "activity/agent-recv.js"
+return_type = "result<variant { reply(record { content: string, tool-calls: list<record { id: string, name: string, arguments-json: string }>, finish-reason: string }), rate-limited(record { retry-after-seconds: u32, message: string }) }, string>"
+location = "activity/llm-chat.js"
 exec.lock_expiry.minutes = 10
-max_output_bytes = 1048576   # 1 MiB; default 4 KiB overflows on bigger claude replies
+max_output_bytes = 1048576   # 1 MiB; a big reply overflows the 4 KiB default
 max_retries = 3
-env_vars = ["PATH"]
-content_digest = "sha256:b1a0cb695e54841f4c3cbe1c2ed28f944c0321a0ee9bf6e552a8360fa74fba86"
-
-[[activity_exec]]
-ffqn = "obelisk-agent:agent/session.cleanup"
-params = [
-  { name = "container-name", type = "string" },
-  { name = "socket", type = "string" },
+env_vars = [
+  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:8080}" },
+  { key = "LLM_MODEL",    value = "${LLM_MODEL:-claude}" },
+  { key = "LLM_API_KEY",  value = "${LLM_API_KEY:-}" },
 ]
-return_type = "result<_, string>"
-location = "activity/agent-cleanup.js"
-exec.lock_expiry.seconds = 30
-max_retries = 3
-env_vars = ["PATH"]
-content_digest = "sha256:29350a3896ee19e9cf005669bfd2e60d6483f7178d33142a2689c8d5480dc2d6"
+[[activity_js.allowed_host]]
+pattern = "${LLM_BASE_URL:-http://127.0.0.1:8080}"
+methods = ["POST"]
+request_url_regex = "^POST ${LLM_BASE_URL_REGEX:-http://127\\.0\\.0\\.1:8080}/v1/chat/completions$"
 
 # `request_url_regex` is matched against `METHOD URL` (query stripped). It uses
 # OBELISK_API_URL_REGEX (a regex-escaped form of OBELISK_API_URL); set both when
@@ -535,7 +466,7 @@ return_type = "result<_, string>"
 
 # One generic operator-message offer owned by workflow.agent-loop. The UI may
 # fulfil it only while this concrete stub execution is pending. The workflow
-# includes it in the next session.send call and immediately opens another offer.
+# appends it as the next user message and immediately opens another offer.
 [[activity_stub]]
 name = "session_injection"
 ffqn = "obelisk-agent:agent/session.injection"
@@ -547,25 +478,25 @@ return_type = "result<string, string>"
 [[workflow_js]]
 ffqn = "obelisk-agent:workflow/workflow.agent-loop"
 params = [
-  { name = "prompt",       type = "string" },
-  { name = "socket-path",  type = "string" },
+  { name = "prompt",        type = "string" },
+  { name = "system-prompt", type = "string" },
+  { name = "tools-json",    type = "string" },
+  { name = "model",         type = "string" },
 ]
 return_type = "result<string, string>"
 location = "workflow/agent-loop.js"
-content_digest = "sha256:0b01a3ebfdbcb4f5b197e7ec30ad4b2c1916eb5c9e57db6417784312f65641f1"
 
-# Public supervisor workflow. It owns the container lifecycle and races the
-# nested agent-loop workflow against the operator teardown signal.
+# Public supervisor workflow. It loads the prompt + tools and races the nested
+# agent-loop workflow against the operator teardown signal.
 [[workflow_js]]
 ffqn = "obelisk-agent:workflow/workflow.run"
 params = [
   { name = "prompt", type = "string" },
-  # Which agent backend to drive: "claude" (default) or "codex". null => claude.
+  # Model hint for the LLM endpoint ("claude" / "codex" / a model id). null => endpoint default.
   { name = "backend", type = "option<string>" },
 ]
 return_type = "result<string, string>"
 location = "workflow/agent.js"
-content_digest = "sha256:d08dbd23903cfab5f3b4da768da819519baf1397106c3dc6cd8ef547102d8492"
 
 # --- agent-herder GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
