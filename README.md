@@ -1,4 +1,4 @@
-# obelisk-agent
+# workflow-agent
 
 An Obelisk app in which **the workflow is the agent**. It drives an LLM over the
 standard OpenAI **Chat Completions** wire (`POST /v1/chat/completions`), dispatches
