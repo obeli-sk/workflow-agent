@@ -30,17 +30,16 @@ params = [
 return_type = "result<variant { reply(record { content: string, tool-calls: list<record { id: string, name: string, arguments-json: string }>, finish-reason: string }), rate-limited(record { retry-after-seconds: u32, message: string }) }, string>"
 location = "activity/llm-chat.js"
 exec.lock_expiry.minutes = 10
-max_output_bytes = 1048576   # 1 MiB; a big reply overflows the 4 KiB default
 max_retries = 3
 env_vars = [
-  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:8080}" },
+  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
   { key = "LLM_MODEL",    value = "${LLM_MODEL:-claude}" },
   { key = "LLM_API_KEY",  value = "${LLM_API_KEY:-}" },
 ]
 [[activity_js.allowed_host]]
-pattern = "${LLM_BASE_URL:-http://127.0.0.1:8080}"
+pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
-request_url_regex = "^POST ${LLM_BASE_URL_REGEX:-http://127\\.0\\.0\\.1:8080}/v1/chat/completions$"
+request_url_regex = "^POST ${LLM_BASE_URL_REGEX:-http://127\\.0\\.0\\.1:9190}/v1/chat/completions$"
 
 # `request_url_regex` is matched against `METHOD URL` (query stripped). It uses
 # OBELISK_API_URL_REGEX (a regex-escaped form of OBELISK_API_URL); set both when
@@ -615,7 +614,7 @@ env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
 ]
-content_digest = "sha256:0ec6216dc7a0464df09a8850c8827e9225abda4eae30d4dfb0b95c08f12a446f"
+content_digest = "sha256:c3152910e277089b96c27bd8d687ea01af0ff465b2c9cc9d1d2ecfd1795d6170"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.

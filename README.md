@@ -102,7 +102,7 @@ Two `activity_stub`s let an operator steer a live run from the web UI:
 
 `llm-chat.js` reads:
 
-- `LLM_BASE_URL` — endpoint base (default `http://127.0.0.1:8080`, the local
+- `LLM_BASE_URL` — endpoint base (default `http://127.0.0.1:9190`, the local
   `agent-backed-llm-server` webhook). Set `LLM_BASE_URL_REGEX` to the regex-escaped
   form when pointing elsewhere so the `allowed_host` matches.
 - `LLM_MODEL` — default model / backend hint (default `claude`).
