@@ -6,7 +6,8 @@ the model's tool calls to real Obelisk activities, and feeds the results back,
 all as durable, replayable workflow state.
 
 There are **no exec activities and no docker here**. The model lives behind an
-HTTP endpoint (`LLM_BASE_URL`): point it at the sibling `agent-backed-llm-server`
+HTTP endpoint (`LLM_BASE_URL`): point it at the sibling
+[`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server)
 app (a Claude/Codex subscription in docker) or straight at OpenRouter, OpenAI,
 vLLM, Ollama, or anything OpenAI-compatible.
 
@@ -125,8 +126,9 @@ curl -X POST http://127.0.0.1:8080/api/submit \
   -H content-type:application/json -d '{"prompt":"Summarise recent executions.","backend":"claude"}'
 ```
 
-For a Claude/Codex subscription backend, run `agent-backed-llm-server` alongside
-and leave `LLM_BASE_URL` at its default.
+For a Claude/Codex subscription backend, run
+[`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server)
+alongside and leave `LLM_BASE_URL` at its default.
 
 ## Web UI
 
