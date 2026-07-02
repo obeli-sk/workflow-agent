@@ -9,6 +9,7 @@ ffqn = "obelisk-agent:agent/prompt.load-system-prompt"
 params = []
 return_type = "result<record { prompt: string, tools-json: string }, string>"
 location = "activity/agent-system-prompt.js"
+content_digest = "sha256:1e048e73f01fb06d026ac6ec5ffcde0a271857830af2513f0d1357513d77af3f"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -36,6 +37,7 @@ env_vars = [
   { key = "LLM_MODEL",    value = "${LLM_MODEL:-claude}" },
   { key = "LLM_API_KEY",  value = "${LLM_API_KEY:-}" },
 ]
+content_digest = "sha256:b722a4351c04a1e13a183203b7eb6b6fa3efe9b5777726eb452c7ba572c7e424"
 [[activity_js.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
@@ -484,6 +486,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "workflow/agent-loop.js"
+content_digest = "sha256:b0e0d2546c401aa39690e45f0fbcce7de25778678ffe1abae96b01fef7c633b6"
 
 # Public supervisor workflow. It loads the prompt + tools and races the nested
 # agent-loop workflow against the operator teardown signal.
@@ -496,6 +499,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "workflow/agent.js"
+content_digest = "sha256:0d5a302b87bf192b7325dda5054a15261cdc686edde265a0eb04086f79ad20f5"
 
 # --- agent-herder GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
