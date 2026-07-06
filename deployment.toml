@@ -580,12 +580,6 @@ request_url_regex = "^(GET|POST) https://api\\.github\\.com/repos/[^/]+/[^/]+/pu
 env_vars = ["AGENT_HERDER_GITHUB_TOKEN"]
 replace_in = ["headers"]
 
-# --- agent-herder GitHub export: orchestrator workflow ------------------------
-# Pulls the live deployment's manifest + every owned source via the existing
-# webapi.* activities, then drives the GitHub activities to create a branch,
-# commit each file (chaining the head OID), and open a PR. Each per-file commit
-# is its own activity invocation so the chain is durable and replayable.
-
 [[workflow_js]]
 ffqn = "agent-herder:export/workflow.push-deployment"
 params = [
@@ -595,7 +589,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "workflow/push-deployment.js"
-content_digest = "sha256:1811dc43ffe08a2f5f473e3c1a16d6c0554bfbc3d3c8d34f83936461037daa91"
+content_digest = "sha256:768bab2e86d15fb577e8e1b3e260b71bcda4eaaaf89fff9329bd82ee29b2b973"
+
 
 [[webhook_endpoint_js]]
 name = "ui-api"
