@@ -48,8 +48,12 @@ jobs:
 
       - name: Generate wit support and extensions 
         run: |
-          nix develop . --command ./scripts/obelisk-generate-wit-support.sh
-          nix develop . --command ./scripts/obelisk-generate-wit-extensions.sh
+          if [ -f "scripts/obelisk-generate-wit-support.sh" ]; then
+            nix develop . --command scripts/obelisk-generate-wit-support.sh
+          fi
+          if [ -f "scripts/obelisk-generate-wit-extensions.sh" ]; then
+            nix develop . --command scripts/obelisk-generate-wit-extensions.sh
+          fi
 
       - name: Generate Unique Branch Name
         id: branch-name
