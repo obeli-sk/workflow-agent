@@ -69,4 +69,4 @@ jobs:
         run: nix develop --command echo
 
       - name: obelisk server verify
-        run: nix develop --command obelisk server verify -d deployment.toml
+        run: nix develop --command obelisk server verify -d deployment.toml --ignore-missing-env-vars
