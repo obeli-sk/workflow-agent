@@ -1,2 +1,4 @@
 use flake .
 
+export WORKFLOW_AGENT_GITHUB_TOKEN="..."
+export TARGET_REPOSITORY="your-account/new-repo"

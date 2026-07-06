@@ -501,11 +501,11 @@ return_type = "result<string, string>"
 location = "workflow/agent.js"
 content_digest = "sha256:0d5a302b87bf192b7325dda5054a15261cdc686edde265a0eb04086f79ad20f5"
 
-# --- agent-herder GitHub export ----------------------------------------------
+# --- GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
 # GitHub repo. Each is invoked by workflow.push-deployment; the commit chain is
 # driven from the workflow (one file per commit) so each step is durable and
-# replayable. Secret AGENT_HERDER_GITHUB_TOKEN is exposed as an outbound HTTP
+# replayable. Secret WORKFLOW_AGENT_GITHUB_TOKEN is exposed as an outbound HTTP
 # secret and replaced only in approved GitHub request headers.
 
 [[activity_js]]
@@ -520,13 +520,13 @@ params = [
 return_type = "result<string, string>"
 location = "activity/github/create-branch.js"
 exec.lock_expiry.seconds = 30
-content_digest = "sha256:0f1d3a58f43403ea7be5a1973b6392f71bfe702ca1fe388abaa3020fb852259e"
+content_digest = "sha256:1115c913ae61730b9de1e3cdafabd59c119980e35f85ad7cc26adeee37bc7eb0"
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET", "POST"]
 request_url_regex = "^(POST https://api\\.github\\.com/repos/[^/]+/[^/]+/git/refs|GET https://api\\.github\\.com/repos/[^/]+/[^/]+/git/ref/heads/[^/]+)$"
 [activity_js.allowed_host.secrets]
-env_vars = ["AGENT_HERDER_GITHUB_TOKEN"]
+env_vars = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
 replace_in = ["headers"]
 
 
@@ -547,13 +547,13 @@ return_type = "result<string, string>"
 location = "activity/github/push-file.js"
 exec.lock_expiry.seconds = 60
 max_retries = 0
-content_digest = "sha256:95d7ef54ab311a714a90cf25b4c21cdc1c58732ce950e0a3b6a52d8f6772f04f"
+content_digest = "sha256:acb6050c33231f3cf3119591752ed75e1f8770318417043c1775a2480368dc67"
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["POST"]
 request_url_regex = "^POST https://api\\.github\\.com/graphql$"
 [activity_js.allowed_host.secrets]
-env_vars = ["AGENT_HERDER_GITHUB_TOKEN"]
+env_vars = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
 replace_in = ["headers"]
 
 
@@ -571,13 +571,13 @@ params = [
 return_type = "result<string, string>"
 location = "activity/github/create-pr.js"
 exec.lock_expiry.seconds = 60
-content_digest = "sha256:a3bedb61c769df816b3c1188f18321bca6535125b13b8a1f85356b906fe12a1b"
+content_digest = "sha256:5286f48a82db83dd4f3a275ebd5015452e6ce2e53772cdb33e2a71a273131a99"
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET", "POST"]
 request_url_regex = "^(GET|POST) https://api\\.github\\.com/repos/[^/]+/[^/]+/pulls$"
 [activity_js.allowed_host.secrets]
-env_vars = ["AGENT_HERDER_GITHUB_TOKEN"]
+env_vars = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
 replace_in = ["headers"]
 
 [[workflow_js]]

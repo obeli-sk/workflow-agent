@@ -11,8 +11,8 @@ export default async function createPr(
     if (!baseBranch) throw 'base-branch is required';
     if (!title) throw 'title is required';
 
-    const token = process.env['AGENT_HERDER_GITHUB_TOKEN'];
-    if (!token) throw 'AGENT_HERDER_GITHUB_TOKEN is not set';
+    const token = process.env['WORKFLOW_AGENT_GITHUB_TOKEN'];
+    if (!token) throw 'WORKFLOW_AGENT_GITHUB_TOKEN is not set';
 
     const headers = {
         accept: 'application/vnd.github+json',

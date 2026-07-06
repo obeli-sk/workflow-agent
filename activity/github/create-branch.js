@@ -10,8 +10,8 @@ export default async function createBranch(owner, repo, baseBranch, newBranch) {
     if (!baseBranch) throw "base-branch is required";
     if (!newBranch) throw "new-branch is required";
 
-    const token = process.env["AGENT_HERDER_GITHUB_TOKEN"];
-    if (!token) throw "AGENT_HERDER_GITHUB_TOKEN is not set";
+    const token = process.env["WORKFLOW_AGENT_GITHUB_TOKEN"];
+    if (!token) throw "WORKFLOW_AGENT_GITHUB_TOKEN is not set";
 
     const apiBase = "https://api.github.com";
     const headers = {

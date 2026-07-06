@@ -16,8 +16,8 @@ export default async function pushFile(
     if (typeof content !== "string") throw "content must be a string";
     if (!headline) throw "headline is required";
 
-    const token = process.env["AGENT_HERDER_GITHUB_TOKEN"];
-    if (!token) throw "AGENT_HERDER_GITHUB_TOKEN is not set";
+    const token = process.env["WORKFLOW_AGENT_GITHUB_TOKEN"];
+    if (!token) throw "WORKFLOW_AGENT_GITHUB_TOKEN is not set";
 
     const contentBase64 = utf8ToBase64(content);
 
