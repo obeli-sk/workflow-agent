@@ -28,7 +28,7 @@ workflow/
   agent-loop.js            workflow.agent-loop: durable messages[] + tool loop
   push-deployment.js       GitHub export orchestrator
 webhook/
-  ui-api.js, ui.js         web UI + JSON API
+  ui-api.js                web UI + JSON API
 deployment.toml            FFQNs, tool activities, stubs, and the LLM allow-list
 ```
 
@@ -54,23 +54,22 @@ from `TOOL_SCHEMAS` in `agent-system-prompt.js`) and the model replies with
 envelope is parsed in the workflow. Each turn is one `llm.completion` activity
 whose result is persisted, so the loop is fully replayable.
 
-Tools exposed to the LLM (each a real Obelisk activity, durable and inspectable):
+Tools exposed to the LLM (each a real Obelisk activity, durable and inspectable),
+grouped by family:
 
-| Tool                       | FFQN                                             |
-|----------------------------|--------------------------------------------------|
-| `obelisk.list_functions`   | `obelisk-agent:tools/webapi.list-functions`      |
-| `obelisk.get_function_wit` | `obelisk-agent:tools/webapi.get-function-wit`    |
-| `obelisk.list_executions`  | `obelisk-agent:tools/webapi.list-executions`     |
-| `obelisk.get_execution`    | `obelisk-agent:tools/webapi.get-execution`       |
-| `obelisk.get_logs`         | `obelisk-agent:tools/webapi.get-logs`            |
-| `obelisk.call` / `obelisk.submit` | native call / join-set submit             |
-| `obelisk.get_result`       | `obelisk-agent:tools/webapi.get-result-json`     |
-| `obelisk.deployment_checkout` / `_read_component` / `_put_component` / `_submit` / `_activate` | deployment editing |
-| `input.ask_user`           | `obelisk-agent:tools/input.ask-user` *(stub)*    |
+| Family              | Tools                                                                                     |
+|---------------------|-------------------------------------------------------------------------------------------|
+| Discover / inspect  | `list_functions`, `get_function_wit`, `list_executions`, `get_execution`, `get_logs`, `get_result` |
+| Native execution    | `call`, `submit`, `join_set_create` / `_submit` / `_delay` / `_join_next` / `_join_next_try` / `_close` |
+| Deployment inspect  | `list_deployments`, `current_deployment_id`, `get_deployment`, `get_component_source`      |
+| Deployment editing  | `deployment_checkout` / `_list_components` / `_read_component` / `_put_component` / `_remove_component` / `_submit` / `_activate` |
+| Operator            | `input.ask_user` *(stub)*                                                                  |
 
-`input.ask_user` is an `activity_stub`: it parks the workflow until an operator
-PUTs a response (via the web UI, or `curl -X PUT .../stub`). The full tool set and
-argument schemas live in `activity/agent-system-prompt.js`.
+`obelisk.call` and the `join_set_*` tools run as native workflow calls; the rest
+are real Obelisk activities. `input.ask_user` is an `activity_stub`: it parks the
+workflow until an operator PUTs a response (via the web UI, or
+`curl -X PUT .../stub`). `TOOL_SCHEMAS` in `activity/agent-system-prompt.js` is the
+single source of truth for the full tool set and argument schemas.
 
 ## Editing a deployment: checkout -> change one component -> submit -> activate
 
@@ -139,9 +138,11 @@ alongside and leave `LLM_BASE_URL` at its default.
 `webhook/ui-api.js` serves an SPA plus a JSON API on the webhook port:
 
 - `GET /` — run list + new-prompt form
+- `GET /api/runs`, `GET /api/runs/:id` — run list / one run as a transcript
+- `GET /api/logs/:id` — execution logs
 - `POST /api/submit` — schedule a run
-- `GET /api/runs/:id` — one run as a transcript
-- `POST /api/say/:id`, `/api/cleanup/:id`, `/api/answer/:child`, `/api/confirm/:child`
+- `POST /api/say/:id`, `/api/cleanup/:id`, `/api/pause/:id`, `/api/unpause/:id`, `/api/fork/:id`
+- `POST /api/answer/:child`, `/api/confirm/:child` — fulfil `ask_user` / apply-gate stubs
 
 The detail page reconstructs the conversation from `/v1/executions/<id>/responses`:
 each `llm.completion` child yields one assistant turn (final or tool_calls) and the
