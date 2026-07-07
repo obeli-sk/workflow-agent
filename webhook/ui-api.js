@@ -8,7 +8,6 @@
 //   GET  /api/logs/:id              logs from the run and all derived executions
 //   POST /api/submit                body: {prompt} -> {execution_id}
 //   POST /api/answer/:childId       body: {answer} -> {ok: true}
-//   POST /api/cleanup/:id           stop and remove an active run's container
 //
 // The SPA polls the run list every 10s and active open runs every 3s, so
 // refreshes happen without page reloads. Terminal runs stop polling. Layout is
@@ -22,7 +21,6 @@ const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop";
 const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
 const CONFIRM_FFQN = "obelisk-agent:tools/deploy.confirm-apply";
 const INJECTION_FFQN = "obelisk-agent:agent/session.injection";
-const TEARDOWN_SIGNAL_FFQN = "obelisk-agent:agent/session.teardown-signal";
 
 export default async function handle(request) {
     const url = new URL(request.url);
@@ -56,9 +54,6 @@ export default async function handle(request) {
         }
         if (method === "POST" && path.startsWith("/api/say/")) {
             return await sayToAgent(request, decodeURIComponent(path.substring("/api/say/".length)));
-        }
-        if (method === "POST" && path.startsWith("/api/cleanup/")) {
-            return await cleanupSession(decodeURIComponent(path.substring("/api/cleanup/".length)));
         }
         if (method === "POST" && path.startsWith("/api/fork/")) {
             return await forkRun(request, decodeURIComponent(path.substring("/api/fork/".length)));
@@ -185,10 +180,6 @@ function unpauseObeliskExecution(id) {
     return activityJson(`unpause-execution ${id}`, webapi.unpauseExecution(id));
 }
 
-function cancelObeliskExecution(id) {
-    return activityJson(`cancel-execution ${id}`, webapi.cancelExecution(id));
-}
-
 function stubObeliskExecution(id, result) {
     return activityJson(`stub-execution ${id}`, webapi.stubExecution(id, JSON.stringify(result)));
 }
@@ -265,7 +256,7 @@ async function detailRun(id, cursorState) {
     const resetTranscript = !agentLoopId || cursorState.agentLoopId !== agentLoopId;
     const responseCursor = resetTranscript ? 0 : cursorState.responseCursor;
     const historyVersion = resetTranscript ? 0 : cursorState.historyVersion;
-    const [status, created, walk, sent, finalResult, pendingAsks, pendingConfirms, pendingInjection, teardownSignalId] = await Promise.all([
+    const [status, created, walk, sent, finalResult, pendingAsks, pendingConfirms, pendingInjection] = await Promise.all([
         loadStatus(id),
         loadCreated(id),
         loadResponses(agentLoopId || id, responseCursor),
@@ -274,7 +265,6 @@ async function detailRun(id, cursorState) {
         loadPendingAsks(id),
         loadPendingConfirms(id),
         loadPendingInjection(id),
-        loadTeardownSignal(id),
     ]);
     return {
         id,
@@ -298,7 +288,6 @@ async function detailRun(id, cursorState) {
         pending_asks: pendingAsks,
         pending_confirms: pendingConfirms,
         pending_injection: pendingInjection,
-        teardown_signal_id: teardownSignalId,
     };
 }
 
@@ -383,16 +372,6 @@ async function loadPendingAsks(workflowId) {
         } catch (_) { }
         return { id: e.execution_id, question };
     }));
-}
-
-async function loadTeardownSignal(workflowId) {
-    let candidates;
-    try {
-        candidates = await listExecutions(TEARDOWN_SIGNAL_FFQN, workflowId, true, true, 10);
-    } catch (_) { return null; }
-    const mine = candidates.filter((e) => typeof e.execution_id === "string"
-        && e.execution_id.startsWith(workflowId + "."));
-    return mine.length > 0 ? mine[mine.length - 1].execution_id : null;
 }
 
 async function loadPendingInjection(workflowId) {
@@ -838,71 +817,6 @@ async function childWorkflowIds(runId) {
         .map((e) => e.execution_id);
 }
 
-function isTerminalStatus(status) {
-    return status === "finished" || /^permanently/.test(status || "");
-}
-
-// Cancel the supervisor-owned teardown stub. The supervisor races this child
-// against the complete nested agent workflow, then closes the child branch and
-// cleans up its container.
-async function cleanupSession(runId) {
-    if (!runId) return jsonError(400, "missing run id");
-    const status = await loadStatus(runId);
-    if (!status) return jsonError(404, "run not found");
-    const executionStatus = status.pending_state?.status || "unknown";
-    if (isTerminalStatus(executionStatus)) {
-        return jsonError(409, "run is already finished");
-    }
-
-    const signalId = await loadTeardownSignal(runId);
-    if (!signalId) return jsonError(409, "teardown signal is not ready");
-    try { cancelObeliskExecution(signalId); }
-    catch (e) { return jsonError(502, `teardown signal failed: ${String(e)}`); }
-    if (executionStatus === "paused") {
-        try { unpauseObeliskExecution(runId); }
-        catch (e) { return jsonError(502, `teardown signalled but unpause failed: ${String(e)}`); }
-    }
-
-    // Obelisk closes a join set by cancelling activities and delays, but it
-    // waits for child workflows. Wait until the supervisor has run container
-    // cleanup and entered join-set closing, then cancel pending leaf activities
-    // so the nested workflow can unwind instead of remaining on a human stub.
-    await waitForSupervisorClosing(runId);
-    const cancelled = await cancelPendingDescendants(runId, signalId);
-    return jsonResponse({ ok: true, signal_execution_id: signalId, cancelled });
-}
-
-async function waitForSupervisorClosing(runId) {
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-        const status = await loadStatus(runId);
-        const pending = status?.pending_state;
-        if (isTerminalStatus(pending?.status) || pending?.closing === true) return;
-    }
-}
-
-async function cancelPendingDescendants(runId, signalId) {
-    let executions;
-    try {
-        executions = await listExecutions("", runId, true, true, 200);
-    } catch (_) { return []; }
-
-    const cancellable = executions.filter((execution) => {
-        if (execution?.execution_id === signalId) return false;
-        if (execution?.ffqn === "obelisk-agent:agent/session.cleanup") return false;
-        return execution?.component_type === "activity"
-            || execution?.component_type === "activity_stub";
-    });
-    const cancelled = [];
-    for (const execution of cancellable) {
-        const id = execution.execution_id;
-        try {
-            cancelObeliskExecution(id);
-            cancelled.push(id);
-        } catch (_) { }
-    }
-    return cancelled;
-}
-
 // Fulfil the concrete pending injection stub owned by this workflow. The
 // workflow consumes the response and includes it in its next session.send call.
 async function sayToAgent(request, runId) {
@@ -1106,9 +1020,6 @@ const SHELL_HTML = `<!doctype html>
   .interact select { padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--panel); }
   .meta #pause-btn, .meta #unpause-btn { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
   .meta #pause-btn:hover, .meta #unpause-btn:hover { text-decoration: underline; }
-  .meta #cleanup-btn { color: var(--err); }
-  .meta #cleanup-btn.confirming { font-weight: 600; text-decoration: underline; }
-  .meta #cleanup-btn:disabled { color: var(--muted); cursor: wait; text-decoration: none; }
   .err-box { background: var(--err-bg); border: 1px solid #f4c0c0; color: var(--err); padding: 0.6em 0.9em; border-radius: 4px; margin: 1em 0; }
   .ago { color: var(--muted); font-size: 0.8em; }
 </style>
@@ -1475,7 +1386,6 @@ function renderDetail() {
     prompt: d.prompt, backend: d.backend, turns: d.turns, final_result: d.final_result,
     pending_asks: d.pending_asks, pending_confirms: d.pending_confirms,
     pending_injection: d.pending_injection,
-    teardown_signal_id: d.teardown_signal_id,
   });
   if (sig === state.lastSig) return;
 
@@ -1511,9 +1421,6 @@ function renderDetail() {
   const pauseBtn = phase === 'active'
     ? ' &middot; <button type="button" id="pause-btn">pause</button>'
     : (phase === 'paused' ? ' &middot; <button type="button" id="unpause-btn">unpause</button>' : '');
-  const cleanupBtn = phase !== 'terminal' && d.teardown_signal_id
-    ? ' &middot; <button type="button" id="cleanup-btn">tear down</button>'
-    : '';
 
   main.innerHTML = ''
     + '<h2>' + esc(d.prompt ? truncate(d.prompt, 80) : 'Run') + '</h2>'
@@ -1523,7 +1430,6 @@ function renderDetail() {
     +   ' &middot; ' + esc(ago(d.created_at))
     +   ' &middot; <button type="button" id="logs-toggle">logs (including nested)</button>'
     +   pauseBtn
-    +   cleanupBtn
     + '</div>'
     + '<div id="logs-slot">' + renderLogs() + '</div>'
     + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div><pre>' + esc(d.prompt) + '</pre></div>' : '')
@@ -1559,15 +1465,6 @@ function renderDetail() {
   main.querySelector('#logs-toggle')?.addEventListener('click', toggleLogs);
   main.querySelector('#pause-btn')?.addEventListener('click', () => setPaused(state.selected, false));
   main.querySelector('#unpause-btn')?.addEventListener('click', () => setPaused(state.selected, true));
-  main.querySelector('#cleanup-btn')?.addEventListener('click', (event) => {
-    const btn = event.currentTarget;
-    if (!btn.classList.contains('confirming')) {
-      btn.classList.add('confirming');
-      btn.textContent = 'confirm tear down';
-      return;
-    }
-    cleanupAgentSession(state.selected, btn);
-  });
 
   const say = main.querySelector('#say-form');
   if (say) {
@@ -1937,28 +1834,6 @@ async function setPaused(runId, unpause) {
     await refreshSidebar();
   } catch (e) {
     alert((unpause ? 'Unpause' : 'Pause') + ' failed: ' + String(e));
-  }
-}
-
-async function cleanupAgentSession(runId, btn) {
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = 'tearing down...';
-  }
-  try {
-    const r = await fetch('/api/cleanup/' + encodeURIComponent(runId), { method: 'POST' });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-    state.lastSig = null;
-    await refreshDetail();
-    await refreshSidebar();
-  } catch (e) {
-    alert('Tear down failed: ' + String(e));
-    if (btn) {
-      btn.disabled = false;
-      btn.classList.remove('confirming');
-      btn.textContent = 'tear down';
-    }
   }
 }
 

@@ -24,7 +24,7 @@ activity/
   tools/*                  the workflow-visible tools (each a real Obelisk activity)
   github/*                 GitHub export activities
 workflow/
-  agent.js                 workflow.run: load prompt/tools, race agent-loop vs teardown
+  agent.js                 workflow.run: load prompt/tools, run agent-loop
   agent-loop.js            workflow.agent-loop: durable messages[] + tool loop
   push-deployment.js       GitHub export orchestrator
 webhook/
@@ -90,17 +90,11 @@ intermediate deployment, so the server validates small diffs.
    (hot redeploy now, after the `deploy.confirm-apply` operator gate). `apply` is
    terminal and must be the final tool call.
 
-## Operator controls (teardown and injection stubs)
+## Operator controls (injection stub)
 
-Two `activity_stub`s let an operator steer a live run from the web UI:
-
-- `agent/session.teardown-signal` is a supervisor control child. `workflow.run`
-  races it against the whole nested `agent-loop`. Cancelling it (UI `POST
-  /api/cleanup`) wins the race, so the run returns instead of continuing. (There is
-  no container to stop anymore; teardown just ends the loop.)
-- `agent/session.injection` is one generic operator-message offer owned by
-  `agent-loop`. The UI fulfils it (`POST /api/say`) while it is pending; the
-  workflow includes the text as the next `user` message and opens a fresh offer.
+`agent/session.injection` is one generic operator-message offer owned by
+`agent-loop`. The UI fulfils it (`POST /api/say`) while it is pending; the
+workflow includes the text as the next `user` message and opens a fresh offer.
 
 ## Configure the LLM endpoint
 
@@ -141,7 +135,7 @@ alongside and leave `LLM_BASE_URL` at its default.
 - `GET /api/runs`, `GET /api/runs/:id` — run list / one run as a transcript
 - `GET /api/logs/:id` — execution logs
 - `POST /api/submit` — schedule a run
-- `POST /api/say/:id`, `/api/cleanup/:id`, `/api/pause/:id`, `/api/unpause/:id`, `/api/fork/:id`
+- `POST /api/say/:id`, `/api/pause/:id`, `/api/unpause/:id`, `/api/fork/:id`
 - `POST /api/answer/:child`, `/api/confirm/:child` — fulfil `ask_user` / apply-gate stubs
 
 The detail page reconstructs the conversation from `/v1/executions/<id>/responses`:

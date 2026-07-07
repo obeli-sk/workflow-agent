@@ -9,7 +9,7 @@ ffqn = "obelisk-agent:agent/prompt.load-system-prompt"
 params = []
 return_type = "result<record { prompt: string, tools-json: string }, string>"
 location = "activity/agent-system-prompt.js"
-content_digest = "sha256:1e048e73f01fb06d026ac6ec5ffcde0a271857830af2513f0d1357513d77af3f"
+content_digest = "sha256:2f436fc6bdad7dc72f02574af65dce1897cbdd90f6ff6714bbb3cf56c57dce37"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -58,7 +58,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/list-functions.js"
-content_digest = "sha256:c417661a167e95b2924738aa9ad64b29b94131b007fcb15a26a6e5270c0d7484"
+content_digest = "sha256:4ff52d1772fdb060fde19b53ab1a88a87428ffdef4241ef6f15f55db72f284e5"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -457,14 +457,6 @@ params = [
 ]
 return_type = "result<_, string>"
 
-# Long-lived supervisor control child. The web UI cancels this stub to request
-# teardown; the root workflow races it against the complete agent-loop workflow.
-[[activity_stub]]
-name = "session_teardown_signal"
-ffqn = "obelisk-agent:agent/session.teardown-signal"
-params = []
-return_type = "result<_, string>"
-
 # One generic operator-message offer owned by workflow.agent-loop. The UI may
 # fulfil it only while this concrete stub execution is pending. The workflow
 # appends it as the next user message and immediately opens another offer.
@@ -488,8 +480,8 @@ return_type = "result<string, string>"
 location = "workflow/agent-loop.js"
 content_digest = "sha256:b0e0d2546c401aa39690e45f0fbcce7de25778678ffe1abae96b01fef7c633b6"
 
-# Public supervisor workflow. It loads the prompt + tools and races the nested
-# agent-loop workflow against the operator teardown signal.
+# Public supervisor workflow. It loads the prompt + tools and runs the nested
+# agent-loop workflow, returning its result.
 [[workflow_js]]
 ffqn = "obelisk-agent:workflow/workflow.run"
 params = [
@@ -499,7 +491,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "workflow/agent.js"
-content_digest = "sha256:0d5a302b87bf192b7325dda5054a15261cdc686edde265a0eb04086f79ad20f5"
+content_digest = "sha256:b752f020c77d923bcbbdd653193456d2e7865ec727a9dae5ab8d3e885a5248fa"
 
 # --- GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
@@ -606,14 +598,13 @@ routes = [
   { methods = ["POST"], route = "/api/pause/:execution-id" },
   { methods = ["POST"], route = "/api/unpause/:execution-id" },
   { methods = ["POST"], route = "/api/say/:execution-id" },
-  { methods = ["POST"], route = "/api/cleanup/:execution-id" },
   { methods = ["POST"], route = "/api/fork/:execution-id" },
 ]
 env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
 ]
-content_digest = "sha256:c3152910e277089b96c27bd8d687ea01af0ff465b2c9cc9d1d2ecfd1795d6170"
+content_digest = "sha256:c12c1abd5fa4c5b95526f99e7979a2502913591d67bdbe7f13b16d8d15d6a32a"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.

@@ -14,7 +14,7 @@ function tool(name, purpose, args, notes = []) {
 }
 
 const TOOL_SCHEMAS = [
-    tool('obelisk.list_functions', 'Discover callable Obelisk FFQNs before submitting executions or reading WIT.', {
+    tool('obelisk.list_functions', 'Discover callable Obelisk FFQNs, each with its full WIT (the interface, the function signature, and every type it references).', {
         ffqn_prefix: 'string, optional',
         length: 'u32, optional; default 100',
     }),
