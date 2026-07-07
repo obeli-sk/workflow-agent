@@ -9,7 +9,7 @@ ffqn = "obelisk-agent:agent/prompt.load-system-prompt"
 params = []
 return_type = "result<record { prompt: string, tools-json: string }, string>"
 location = "activity/agent-system-prompt.js"
-content_digest = "sha256:2f436fc6bdad7dc72f02574af65dce1897cbdd90f6ff6714bbb3cf56c57dce37"
+content_digest = "sha256:7c0d660d39c3d8196c26f9d8e5ee59de0ab1f3acdf249f5d2b38807dcc4d2b37"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -478,7 +478,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "workflow/agent-loop.js"
-content_digest = "sha256:b0e0d2546c401aa39690e45f0fbcce7de25778678ffe1abae96b01fef7c633b6"
+content_digest = "sha256:ca78299be60e6d3ed4a35d4c4c52eb4d794cf4fb337acd3303e3c35d02f0055b"
 
 # Public supervisor workflow. It loads the prompt + tools and runs the nested
 # agent-loop workflow, returning its result.
@@ -598,13 +598,12 @@ routes = [
   { methods = ["POST"], route = "/api/pause/:execution-id" },
   { methods = ["POST"], route = "/api/unpause/:execution-id" },
   { methods = ["POST"], route = "/api/say/:execution-id" },
-  { methods = ["POST"], route = "/api/fork/:execution-id" },
 ]
 env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
 ]
-content_digest = "sha256:930d8cc72f6bb2ea50dab140d18a94b08b6aa6f64f29ccb9088d5d1a9134574d"
+content_digest = "sha256:7109637dc5898aeadec2be7bfcb8aebf967f3a848e10691a4f707bc01504b7d2"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.

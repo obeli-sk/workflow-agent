@@ -10,7 +10,8 @@ const INJECTION_FFQN = 'obelisk-agent:agent/session.injection';
 // The agent loop is the durable state: it holds the full chat-completions
 // message history and, each turn, POSTs it to the LLM endpoint (llm.completion),
 // dispatches any tool_calls to real Obelisk activities, appends the results as
-// tool messages, and repeats until the model answers with no tool_calls.
+// tool messages, and repeats. Plain assistant content is shown to the operator;
+// the workflow waits for an operator message before asking the model to continue.
 export default function agentLoop(prompt, systemPrompt, toolsJson, model) {
     if (typeof prompt !== 'string' || !prompt.trim()) throw 'prompt is required';
     if (typeof systemPrompt !== 'string' || !systemPrompt) throw 'system prompt is required';
@@ -18,7 +19,6 @@ export default function agentLoop(prompt, systemPrompt, toolsJson, model) {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt },
     ];
-    let finalAnswer = null;
     let injection = null;
     const state = {
         checkedOut: false,
@@ -32,15 +32,19 @@ export default function agentLoop(prompt, systemPrompt, toolsJson, model) {
         nextJoinSet: 1,
     };
     try {
-        for (let turn = 0; turn < MAX_TURNS; turn += 1) {
+        let turn = 0;
+        while (true) {
+            if (turn >= MAX_TURNS) throw `exceeded MAX_TURNS=${MAX_TURNS} without yielding an assistant response`;
             console.log(`--- turn ${turn} ---`);
             const prepared = prepareInjection(injection);
             injection = prepared.injection;
             for (const text of prepared.operatorMessages) {
                 messages.push({ role: 'user', content: `[Operator message]: ${text}` });
+                turn = 0;
             }
 
             const reply = callLlm(messages, toolsJson, model);
+            turn += 1;
             // Record the assistant turn verbatim so the next request (and the
             // backend's history pairing) see an identical, growing history.
             messages.push(assistantMessage(reply));
@@ -60,25 +64,30 @@ export default function agentLoop(prompt, systemPrompt, toolsJson, model) {
                 const applyIndex = reply.tool_calls.findIndex(isHotApplyPush);
                 if (applyIndex !== -1) {
                     const applyResult = results[applyIndex];
-                    finalAnswer = 'ok' in applyResult.outcome
+                    const message = 'ok' in applyResult.outcome
                         ? `Deployment hot reload approved and scheduled: ${applyResult.outcome.ok}`
                         : `Deployment hot reload was not scheduled: ${applyResult.outcome.err}`;
-                    console.log('deployment_activate(apply) is terminal; finishing workflow before switch');
-                    break;
+                    messages.push({ role: 'assistant', content: message });
+                    console.log('deployment_activate(apply) completed; waiting for operator input before continuing');
+                    injection = openInjection();
+                    const text = waitForOperatorMessage(injection);
+                    injection = null;
+                    messages.push({ role: 'user', content: `[Operator message]: ${text}` });
+                    turn = 0;
+                    continue;
                 }
                 continue;
             }
-            // No tool calls: the model's content is the final answer.
-            finalAnswer = typeof reply.content === 'string' ? reply.content : '';
-            console.log(`final after ${turn + 1} turns`);
-            break;
+            console.log(`assistant response after ${turn} turns; waiting for operator input`);
+            const text = waitForOperatorMessage(injection);
+            injection = null;
+            messages.push({ role: 'user', content: `[Operator message]: ${text}` });
+            turn = 0;
         }
     } finally {
         closeInjection(injection);
         closeNativeJoinSets(state);
     }
-    if (finalAnswer === null) throw `exceeded MAX_TURNS=${MAX_TURNS} without a final answer`;
-    return finalAnswer;
 }
 
 // One chat-completions call, retrying durably through an endpoint rate limit.
@@ -138,6 +147,14 @@ function closeInjection(injection) {
     if (injection === null) return;
     try { injection.joinSet.close(); }
     catch (error) { console.log(`injection close failed: ${String(error)}`); }
+}
+function waitForOperatorMessage(injection) {
+    if (injection === null) throw 'operator injection is not open';
+    const text = injection.joinSet.joinNext();
+    if (typeof text !== 'string' || !text.trim()) throw 'injection text must be a non-empty string';
+    console.log(`consumed operator injection from ${injection.executionId}`);
+    injection.joinSet.close();
+    return text.trim();
 }
 function closeNativeJoinSets(state) {
     for (const [id, entry] of Object.entries(state.joinSets || {})) {

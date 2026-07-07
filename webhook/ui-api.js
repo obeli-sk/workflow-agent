@@ -55,9 +55,6 @@ export default async function handle(request) {
         if (method === "POST" && path.startsWith("/api/say/")) {
             return await sayToAgent(request, decodeURIComponent(path.substring("/api/say/".length)));
         }
-        if (method === "POST" && path.startsWith("/api/fork/")) {
-            return await forkRun(request, decodeURIComponent(path.substring("/api/fork/".length)));
-        }
         if (method === "POST" && path.startsWith("/api/answer/")) {
             const childId = decodeURIComponent(path.substring("/api/answer/".length));
             return await answerStub(request, childId);
@@ -562,13 +559,13 @@ async function loadResponses(execId, startCursor = 0) {
             if (joinName === "completion") {
                 // llm.completion ok = { reply: { content, tool_calls, finish_reason } }
                 // or { rate_limited: {...} } (skipped). Map to the UI reply shape:
-                // { tool_calls: [{ name, arguments_json }] } | { final }.
+                // { tool_calls: [{ name, arguments_json }] } | { response }.
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
                 const rep = value && typeof value === "object" ? value.reply : null;
                 if (rep && typeof rep === "object") {
                     const reply = Array.isArray(rep.tool_calls) && rep.tool_calls.length > 0
                         ? { tool_calls: rep.tool_calls.map((c) => ({ name: c.name, arguments_json: c.arguments_json })) }
-                        : { final: typeof rep.content === "string" ? rep.content : "" };
+                        : { response: typeof rep.content === "string" ? rep.content : "" };
                     replies.push({
                         reply,
                         presentation: "",
@@ -641,7 +638,7 @@ function stripActionEnvelopes(text) {
         try {
             const value = JSON.parse(slice);
             isEnvelope = value && typeof value === "object"
-                && (Array.isArray(value.tool_calls) || typeof value.final === "string"
+                && (Array.isArray(value.tool_calls) || typeof value.response === "string" || typeof value.final === "string"
                     || typeof value.error === "string");
         } catch (_) { }
         if (!isEnvelope) output += slice;
@@ -833,31 +830,6 @@ async function sayToAgent(request, runId) {
     return jsonResponse({ child_execution_id: injection.id });
 }
 
-// Fork a finished run into a fresh session. The new run's prompt instructs the
-// agent to read the original run's prompt + result (via its own tools), then
-// continue with the operator's new instruction.
-async function forkRun(request, runId) {
-    if (!runId) return jsonError(400, "missing run id");
-    let payload;
-    try { payload = JSON.parse(await request.text()); }
-    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
-    const text = typeof payload?.text === "string" ? payload.text.trim() : "";
-    const created = await loadCreated(runId);
-    // Prefer an explicitly chosen backend, else inherit the original run's.
-    const chosen = (typeof payload?.backend === "string" && payload.backend) ? payload.backend : null;
-    const backend = chosen || ((typeof created?.backend === "string" && created.backend) ? created.backend : null);
-    const prompt = [
-        `You are continuing from a previous agent run ${runId}.`,
-        `First call obelisk.get_execution and obelisk.get_result with execution_id "${runId}"`,
-        `to read its original prompt and final result.`,
-        text ? `Then: ${text}` : `Then continue that work.`,
-    ].join(" ");
-    const execId = obelisk.executionIdGenerate();
-    try { submitWorkflowExecution(execId, prompt, backend); }
-    catch (e) { return jsonError(502, `fork schedule failed: ${String(e)}`); }
-    return jsonResponse({ execution_id: execId });
-}
-
 async function answerStub(request, childId) {
     if (!childId) return jsonError(400, "missing child id");
     let body;
@@ -1013,11 +985,8 @@ const SHELL_HTML = `<!doctype html>
   .logs .level-error { color: #ff9b9b; }
   .logs .level-warn { color: #ffd27d; }
   .interact { max-width: 720px; margin: 1.4em 0; padding: 0.8em 1em; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
-  .interact.fork { background: #f6f8fc; border-color: #d0deef; }
   .interact textarea { width: 100%; resize: vertical; min-height: 3em; padding: 0.4em 0.6em; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
   .interact button { margin-top: 0.4em; padding: 0.4em 0.9em; font: inherit; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: white; border-radius: 4px; }
-  .interact .fork-row { display: flex; gap: 0.4em; align-items: center; margin-top: 0.4em; }
-  .interact .fork-row button { margin-top: 0; }
   .interact select { padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--panel); }
   .meta #pause-btn, .meta #unpause-btn { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
   .meta #pause-btn:hover, .meta #unpause-btn:hover { text-decoration: underline; }
@@ -1292,8 +1261,9 @@ function buildCachedTurns() {
       reply,
     );
     if (!reply || typeof reply !== 'object') continue;
-    if (typeof reply.final === 'string') {
-      turns.push({ kind: 'final', text: reply.final, blocks, created_at: item.created_at, sequence: sequence++ });
+    const responseText = typeof reply.response === 'string' ? reply.response : reply.final;
+    if (typeof responseText === 'string') {
+      turns.push({ kind: 'assistant_response', text: responseText, blocks, created_at: item.created_at, sequence: sequence++ });
     } else if (typeof reply.error === 'string') {
       turns.push({ kind: 'error', text: reply.error, blocks, created_at: item.created_at, sequence: sequence++ });
     } else if (Array.isArray(reply.tool_calls)) {
@@ -1348,8 +1318,9 @@ function normalizeCachedBlocks(blocks, presentation, narration, reply) {
   }
   if (presentation.trim()) out.push(...splitCachedMermaid(presentation, 'markdown'));
   if (narration.trim()) out.push(...splitCachedMermaid(narration, 'thinking'));
-  if (out.length === 0 && typeof reply?.final === 'string') {
-    out.push(...splitCachedMermaid(reply.final, 'markdown'));
+  const responseText = typeof reply?.response === 'string' ? reply.response : reply?.final;
+  if (out.length === 0 && typeof responseText === 'string') {
+    out.push(...splitCachedMermaid(responseText, 'markdown'));
   }
   return out;
 }
@@ -1395,9 +1366,8 @@ function renderDetail() {
   for (const el of main.querySelectorAll('details.call[open]')) {
     if (el.dataset.key) openKeys.add(el.dataset.key);
   }
-  // Preserve in-progress text in the say/fork boxes across the poll re-render.
+  // Preserve in-progress text in the say box across the poll re-render.
   const sayDraft = main.querySelector('#say-input')?.value || '';
-  const forkDraft = main.querySelector('#fork-input')?.value || '';
 
   state.lastSig = sig;
 
@@ -1475,42 +1445,20 @@ function renderDetail() {
       sendToAgent(state.selected, say.querySelector('#say-input').value);
     });
   }
-  const fork = main.querySelector('#fork-form');
-  if (fork) {
-    fork.querySelector('#fork-input').value = forkDraft;
-    fork.addEventListener('submit', (ev) => {
-      ev.preventDefault();
-      forkSession(state.selected, fork.querySelector('#fork-input').value, fork.querySelector('#fork-backend')?.value);
-    });
-  }
 }
 
-// Status -> control phase. Terminal runs offer Fork; paused/active runs offer
-// pause/unpause and the live "send to agent" box.
+// Status -> control phase. Active runs can expose the live "send to agent" box.
 function runPhase(status) {
   if (status === 'finished' || /^permanently/.test(status)) return 'terminal';
   if (status === 'paused') return 'paused';
   return 'active';
 }
 
-// Bottom-of-transcript controls: a chat box to steer a running agent, or a fork
-// box to continue a finished run in a fresh session. The live box exists only
-// while the workflow has a concrete pending injection stub. Explicit ask/confirm
-// gates own the input UI and suppress generic steering.
+// Bottom-of-transcript controls: a chat box to steer a running agent. It exists
+// only while the workflow has a concrete pending injection stub. Explicit
+// ask/confirm gates own the input UI and suppress generic steering.
 function renderInteraction(phase, pendingInjection, hasHumanGate) {
-  if (phase === 'terminal') {
-    const orig = state.detail && state.detail.backend === 'codex' ? 'codex' : 'claude';
-    const opt = (v) => '<option value="' + v + '"' + (v === orig ? ' selected' : '') + '>' + v + '</option>';
-    return '<form id="fork-form" class="interact fork">'
-      + '<div class="label">fork to new session</div>'
-      + '<textarea id="fork-input" placeholder="Continue from this run with... (optional)"></textarea>'
-      + '<div class="fork-row">'
-      +   '<select id="fork-backend" title="agent backend">' + opt('claude') + opt('codex') + '</select>'
-      +   '<button type="submit">Fork to new session</button>'
-      + '</div>'
-      + '</form>';
-  }
-  if (hasHumanGate || !pendingInjection) return '';
+  if (phase === 'terminal' || hasHumanGate || !pendingInjection) return '';
   return '<form id="say-form" class="interact say">'
     + '<div class="label">' + (phase === 'paused' ? 'send to agent (queued until unpaused)' : 'send to agent') + '</div>'
     + '<textarea id="say-input" placeholder="Steer or interrupt the agent... (delivered next turn)" required></textarea>'
@@ -1704,7 +1652,7 @@ function renderTurn(t, i) {
   if (t.kind === 'operator_message') {
     return '<div class="bubble user"><div class="label">operator</div><pre>' + esc(t.text) + '</pre></div>';
   }
-  if (t.kind === 'final') return displayBlocksHtml(t.blocks);
+  if (t.kind === 'assistant_response' || t.kind === 'final') return displayBlocksHtml(t.blocks);
   if (t.kind === 'error') {
     return displayBlocksHtml(t.blocks)
       + '<div class="bubble error"><div class="label">error</div><pre>' + esc(t.text) + '</pre></div>';
@@ -1759,10 +1707,10 @@ function shortChildId(id) {
 }
 
 function renderFinal(d) {
-  // Model-emitted final blocks are rendered with their turn. Fall back to the
-  // workflow result only for old executions with no persisted final turn.
-  const finalTurn = [...d.turns].reverse().find((t) => t.kind === 'final');
-  if (finalTurn) return '';
+  // Model-emitted responses are rendered with their turn. Fall back to the
+  // workflow result only for old executions with no persisted response turn.
+  const responseTurn = [...d.turns].reverse().find((t) => t.kind === 'assistant_response' || t.kind === 'final');
+  if (responseTurn) return '';
   if (d.status !== 'finished') return '';
   const r = d.final_result;
   if (!r) return '';
@@ -1868,22 +1816,6 @@ async function sendToAgent(runId, text) {
     renderDetail();
   } catch (e) {
     alert('Send failed: ' + String(e));
-  }
-}
-
-async function forkSession(runId, text, backend) {
-  try {
-    const r = await fetch('/api/fork/' + encodeURIComponent(runId), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: text || '', backend: backend || undefined }),
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-    await refreshSidebar();
-    setSelected(data.execution_id);
-  } catch (e) {
-    alert('Fork failed: ' + String(e));
   }
 }
 

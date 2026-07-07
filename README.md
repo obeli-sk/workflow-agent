@@ -45,12 +45,12 @@ workflow state. Each turn:
 4. Append the assistant message verbatim (so the next request and the backend's
    history pairing see an identical, growing history).
 5. If there are `tool_calls`, dispatch each to its Obelisk activity, append one
-   `tool` message per result, and loop. Otherwise the assistant `content` is the
-   final answer.
+   `tool` message per result, and loop. Otherwise show the assistant `content`
+   and wait for the operator's next message in the same session.
 
 Tool calls are **native**: the agent sends OpenAI `tools` (function schemas built
 from `TOOL_SCHEMAS` in `agent-system-prompt.js`) and the model replies with
-`tool_calls`; a final answer is an assistant message with no `tool_calls`. No JSON
+`tool_calls`; a user-facing response is an assistant message with no `tool_calls`. No JSON
 envelope is parsed in the workflow. Each turn is one `llm.completion` activity
 whose result is persisted, so the loop is fully replayable.
 
@@ -94,7 +94,8 @@ intermediate deployment, so the server validates small diffs.
 
 `agent/session.injection` is one generic operator-message offer owned by
 `agent-loop`. The UI fulfils it (`POST /api/say`) while it is pending; the
-workflow includes the text as the next `user` message and opens a fresh offer.
+workflow includes the text as the next `user` message. When the model replies
+without tool calls, the workflow waits on that same offer instead of finishing.
 
 ## Configure the LLM endpoint
 
@@ -135,11 +136,11 @@ alongside and leave `LLM_BASE_URL` at its default.
 - `GET /api/runs`, `GET /api/runs/:id` — run list / one run as a transcript
 - `GET /api/logs/:id` — execution logs
 - `POST /api/submit` — schedule a run
-- `POST /api/say/:id`, `/api/pause/:id`, `/api/unpause/:id`, `/api/fork/:id`
+- `POST /api/say/:id`, `/api/pause/:id`, `/api/unpause/:id`
 - `POST /api/answer/:child`, `/api/confirm/:child` — fulfil `ask_user` / apply-gate stubs
 
 The detail page reconstructs the conversation from `/v1/executions/<id>/responses`:
-each `llm.completion` child yields one assistant turn (final or tool_calls) and the
+each `llm.completion` child yields one assistant turn (response or tool_calls) and the
 tool activity children provide the tool results. No LLM JSON is parsed in the UI.
 
 ## Inspecting a run

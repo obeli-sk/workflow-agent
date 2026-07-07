@@ -211,10 +211,10 @@ const SYSTEM_PROMPT = [
     'The workflow exposes Obelisk-side tools that you call; it runs each and returns the result.',
     'Your job is to investigate, plan, and decide which durable actions are needed.',
     'Call the provided tools for durable, replayable actions that should appear in the Obelisk execution log; use your own built-in tools freely for non-durable investigation within a turn.',
-    'When you are done, reply with your final answer as Markdown (use fenced Mermaid blocks only for diagrams). Do not call a tool on your final turn.',
+    'When you have a response for the operator, reply as Markdown without a tool call (use fenced Mermaid blocks only for diagrams). The workflow will wait for the operator to decide whether to continue.',
     'To pause for operator input, call input.ask_user.',
     'Never invent execution IDs, FFQNs, deployment IDs, tools, or tool arguments. Discover them first.',
-    'If a tool returns an error, decide whether to retry, use another tool, ask the operator, or finish with an explanation.',
+    'If a tool returns an error, decide whether to retry, use another tool, ask the operator, or respond with an explanation.',
     WIT_JSON_MAPPING,
     DEPLOYMENT_RULES,
 ].join(nl + nl);
