@@ -986,6 +986,7 @@ const SHELL_HTML = `<!doctype html>
   .call .args .key, .call .result .key { color: var(--muted); font-size: 0.8em; margin: 0.5em 0 0.2em; }
   form.ask { background: #fffaf2; border: 1px solid #f0d8a8; border-radius: 6px; padding: 0.8em 1em; margin: 1.4em 0; max-width: 720px; }
   form.ask p { margin: 0 0 0.5em; font-weight: 600; }
+  form.ask .ask-question { margin-bottom: 0.6em; font-weight: 600; }
   form.ask textarea { width: 100%; min-height: 4em; padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
   form.ask button { margin-top: 0.4em; }
   .confirm { background: #fff7ed; border: 1px solid #f0c98a; border-radius: 6px; padding: 0.8em 1em; margin: 1em 0; }
@@ -1408,7 +1409,7 @@ function renderDetail() {
 
   const asksHtml = (d.pending_asks && d.pending_asks.length) ? d.pending_asks.map((a) =>
     '<form class="ask" data-child="' + esc(a.id) + '">'
-    + '<p>' + esc(a.question || '(no question)') + '</p>'
+    + renderedMarkdownHtml('ask-question', a.question || '(no question)')
     + '<textarea name="answer" required></textarea>'
     + '<button type="submit">Answer</button>'
     + '</form>'
@@ -1639,29 +1640,41 @@ function renderDiffLines(lines) {
 
 function displayBlocksHtml(blocks) {
   return (blocks || []).map((block) => {
-    const source = encodeURIComponent(block.content || '');
     if (block.kind === 'thinking') {
       return '<div class="bubble thinking"><div class="label">thinking</div>'
-        + '<div class="rendered-markdown" data-source="' + esc(source) + '"></div></div>';
+        + renderedMarkdownHtml('', block.content || '') + '</div>';
     }
     if (block.kind === 'mermaid') {
       return '<div class="bubble mermaid-block"><div class="label">diagram</div>'
-        + '<div class="mermaid-source" data-source="' + esc(source) + '"></div></div>';
+        + '<div class="mermaid-source" data-source="' + sourceData(block.content || '') + '"></div></div>';
     }
-    return '<div class="bubble markdown rendered-markdown" data-source="' + esc(source) + '"></div>';
+    return renderedMarkdownHtml('bubble markdown', block.content || '');
   }).join('');
 }
 
-function hydrateDisplayBlocks(root) {
+function sourceData(source) {
+  return esc(encodeURIComponent(source));
+}
+
+function renderedMarkdownHtml(classes, source) {
+  const cls = classes ? classes + ' rendered-markdown' : 'rendered-markdown';
+  return '<div class="' + esc(cls) + '" data-source="' + sourceData(source) + '"></div>';
+}
+
+function hydrateDisplayBlocks(root, attempt = 0) {
+  let retryMarkdown = false;
   for (const el of root.querySelectorAll('.rendered-markdown[data-source]')) {
     const source = decodeURIComponent(el.dataset.source || '');
     if (window.marked && window.DOMPurify) {
       el.innerHTML = window.DOMPurify.sanitize(window.marked.parse(source));
+      el.removeAttribute('data-source');
     } else {
       el.innerHTML = '<pre>' + esc(source) + '</pre>';
+      retryMarkdown = true;
     }
-    el.removeAttribute('data-source');
   }
+  if (retryMarkdown && attempt < 50) setTimeout(() => hydrateDisplayBlocks(root, attempt + 1), 100);
+
   const diagrams = [];
   for (const el of root.querySelectorAll('.mermaid-source[data-source]')) {
     el.textContent = decodeURIComponent(el.dataset.source || '');
