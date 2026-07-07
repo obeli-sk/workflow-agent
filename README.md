@@ -1,5 +1,9 @@
 # workflow-agent
 
+> [!WARNING]
+> **Vibe coded**: This codebase was generated using an agent (partially by workflow-agent itself), testing the limits of this approach.
+
+
 An Obelisk app in which **the workflow is the agent**. It drives an LLM over the
 standard OpenAI **Chat Completions** wire (`POST /v1/chat/completions`), dispatches
 the model's tool calls to real Obelisk activities, and feeds the results back,
