@@ -1,47 +1,88 @@
-# --- System prompt + tool schemas ---------------------------------------------
-# Returns the agent's system prompt and the OpenAI tool schemas (built from one
-# source of truth). The agent has no exec activities: it talks to an LLM endpoint
-# over HTTP via llm_chat below.
+# --- Pack descriptor: system prompt + tool catalog ----------------------------
+# The obelisk-control use case (control this Obelisk instance). Returns the
+# system prompt and the tool catalog (name, description, ffqn, WIT param specs).
+# The generic core (workflow.agent-loop) calls this once, exposes the tools to
+# the model, and dispatches each call to its ffqn via obelisk.call. Swap this
+# FFQN (workflow.run descriptor-ffqn) to host a different use case.
 
 [[activity_js]]
-name = "agent_system_prompt"
-ffqn = "obelisk-agent:agent/prompt.load-system-prompt"
+name = "pack_describe"
+ffqn = "obelisk-control:agent/pack.describe"
 params = []
 return_type = "result<record { prompt: string, tools-json: string }, string>"
-location = "activity/agent-system-prompt.js"
-content_digest = "sha256:7c0d660d39c3d8196c26f9d8e5ee59de0ab1f3acdf249f5d2b38807dcc4d2b37"
+location = "packs/obelisk-control/descriptor.js"
+content_digest = "sha256:169c54cb06b3558db9ce2cd1d71c58133d0fd93d71a05285d3a965f42c7a07b5"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
 request_url_regex = "^GET https://obeli\\.sk/docs/latest/llms.txt/"
 
-# --- LLM endpoint: HTTP Chat Completions client -------------------------------
-# The only way the agent talks to a model. Point LLM_BASE_URL at the
-# agent-backed-llm-server (claude/codex in docker) or any OpenAI-compatible
-# provider (OpenRouter, OpenAI, vLLM, ...); set LLM_BASE_URL_REGEX to match.
+# Native call: run any deployed Obelisk function chosen at runtime by the model
+# (obelisk-control pack). A workflow, so obelisk.call runs durably in-loop.
+[[workflow_js]]
+ffqn = "obelisk-control:tools/native.call"
+params = [
+  { name = "ffqn",        type = "string" },
+  { name = "params-json", type = "string" },
+]
+return_type = "result<string, string>"
+location = "packs/obelisk-control/native-call.js"
+content_digest = "sha256:b77c66904303c4437a859c7facdc8e4c2e948f54cb5aaae8f953596b66c955a8"
+
+# --- LLM endpoint: multi-provider client --------------------------------------
+# The only way the agent talks to a model. It speaks a provider-neutral message
+# model and routes each request to the correct wire API (anthropic-messages,
+# openai-chat-completions, openai-responses) based on the AGENT_MODELS catalog.
+#
+# AGENT_MODELS is a JSON array of models: each entry has
+#   { id, label, api_type, base_url, wire_model, key_env?, max_tokens? }
+# The default catalog points at the local agent-backed-llm-server (chat
+# completions, no key). Add Anthropic/OpenAI entries and set the matching key
+# secret to route there; each provider's endpoint must have an allowed_host below.
 
 [[activity_js]]
 name = "llm_chat"
 ffqn = "obelisk-agent:llm/chat.completion"
 params = [
+  { name = "system",        type = "string" },
   { name = "messages-json", type = "string" },
   { name = "tools-json",    type = "string" },
   { name = "model",         type = "string" },
 ]
-return_type = "result<variant { reply(record { content: string, tool-calls: list<record { id: string, name: string, arguments-json: string }>, finish-reason: string }), rate-limited(record { retry-after-seconds: u32, message: string }) }, string>"
+return_type = "result<variant { reply(record { content-json: string, stop-reason: string }), rate-limited(record { retry-after-seconds: u32, message: string }) }, string>"
 location = "activity/llm-chat.js"
 exec.lock_expiry.minutes = 10
 max_retries = 3
 env_vars = [
-  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
-  { key = "LLM_MODEL",    value = "${LLM_MODEL:-claude}" },
-  { key = "LLM_API_KEY",  value = "${LLM_API_KEY:-}" },
+  { key = "AGENT_MODELS", value = '${AGENT_MODELS:-[{"id":"claude","label":"claude","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"claude"},{"id":"codex","label":"codex","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"codex"}]}' },
 ]
-content_digest = "sha256:b722a4351c04a1e13a183203b7eb6b6fa3efe9b5777726eb452c7ba572c7e424"
+content_digest = "sha256:f2c933bf0da77fbf598db4ae0334583d2c765af0fe3eb4eb025f992ad0b1c6bd"
+
+# Local agent-backed-llm-server (or any OpenAI-compatible chat endpoint). No key.
 [[activity_js.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
-request_url_regex = "^POST ${LLM_BASE_URL_REGEX:-http://127\\.0\\.0\\.1:9190}/v1/chat/completions$"
+request_url_regex = "^POST ${LLM_BASE_URL_REGEX:-http://127\\.0\\.0\\.1:9190}/v1/(chat/completions|responses)$"
+
+# Anthropic Messages. ANTHROPIC_API_KEY is injected into the x-api-key header.
+[[activity_js.allowed_host]]
+pattern = "https://api.anthropic.com"
+methods = ["POST"]
+request_url_regex = "^POST https://api\\.anthropic\\.com/v1/messages$"
+# Key/value form so the value is interpolated: `${VAR:-}` makes the key optional
+# (empty when unset) instead of a hard startup requirement.
+[activity_js.allowed_host.secrets]
+env_vars = [{ key = "ANTHROPIC_API_KEY", value = "${ANTHROPIC_API_KEY:-}" }]
+replace_in = ["headers"]
+
+# OpenAI Chat Completions + Responses. OPENAI_API_KEY -> Authorization header.
+[[activity_js.allowed_host]]
+pattern = "https://api.openai.com"
+methods = ["POST"]
+request_url_regex = "^POST https://api\\.openai\\.com/v1/(chat/completions|responses)$"
+[activity_js.allowed_host.secrets]
+env_vars = [{ key = "OPENAI_API_KEY", value = "${OPENAI_API_KEY:-}" }]
+replace_in = ["headers"]
 
 # `request_url_regex` is matched against `METHOD URL` (query stripped). It uses
 # OBELISK_API_URL_REGEX (a regex-escaped form of OBELISK_API_URL); set both when
@@ -57,7 +98,7 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/list-functions.js"
+location = "packs/obelisk-control/tools/list-functions.js"
 content_digest = "sha256:4ff52d1772fdb060fde19b53ab1a88a87428ffdef4241ef6f15f55db72f284e5"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -72,7 +113,7 @@ params = [
   { name = "ffqn", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/get-function-wit.js"
+location = "packs/obelisk-control/tools/get-function-wit.js"
 content_digest = "sha256:f21c7f6a65fb3849bbc67cb1bb2f2d9fcc815819006c97e45ec5362f49e72f68"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -96,7 +137,7 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/list-executions.js"
+location = "packs/obelisk-control/tools/list-executions.js"
 content_digest = "sha256:dcb9ec7d4a0174bcf2acca13e8d19e2fb0532b4e1ed5d0a748a5515b9b3d2894"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -111,7 +152,7 @@ params = [
   { name = "execution-id", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/get-execution.js"
+location = "packs/obelisk-control/tools/get-execution.js"
 content_digest = "sha256:e63d665d66288cb7f3a76f51e48ddc476e268e7b4d09bf8063026c19ea0845cb"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -126,7 +167,7 @@ params = [
   { name = "execution-id", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/get-execution-record.js"
+location = "packs/obelisk-control/tools/get-execution-record.js"
 content_digest = "sha256:e30be137f1d7e0989a80eaea1e2412342fd543eb96e70361abe353c3584e7377"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -145,7 +186,7 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/get-events.js"
+location = "packs/obelisk-control/tools/get-events.js"
 content_digest = "sha256:6ebaf768ff4f0b918ee0c20667ca9ed32b9ec12c117a0aadae43a5bd3209fa05"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -163,7 +204,7 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/get-responses.js"
+location = "packs/obelisk-control/tools/get-responses.js"
 content_digest = "sha256:92bb82a41fdcbedbc5466bb9add51a321f3d4da473970d1469e4fab207f6bd2a"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -187,7 +228,7 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/get-logs.js"
+location = "packs/obelisk-control/tools/get-logs.js"
 content_digest = "sha256:052011dcac24538ce3a876b8b7e82cf17fcfa5c08b6810ab316ef14d5c7f92a5"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -202,7 +243,7 @@ params = [
   { name = "execution-id", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/get-result.js"
+location = "packs/obelisk-control/tools/get-result.js"
 exec.lock_expiry.minutes = 10
 content_digest = "sha256:83b1ea3b3037b893b16f089110dc8a6aa7f8d6381dccb73fb9405a0adca22e4c"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
@@ -220,7 +261,7 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/list-deployments.js"
+location = "packs/obelisk-control/tools/list-deployments.js"
 content_digest = "sha256:7048f1bbc667938915a10e19ff6c06fede28a57e9d32f4aa50feb3f56053629d"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -239,7 +280,7 @@ params = [
   { name = "max-bytes", type = "option<u32>" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/get-deployment.js"
+location = "packs/obelisk-control/tools/get-deployment.js"
 content_digest = "sha256:778f703a507b93f98145348d3417f9acdedeaecb6e56fabba3fc76cc23e48dd4"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -257,7 +298,7 @@ params = [
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/get-component-source.js"
+location = "packs/obelisk-control/tools/get-component-source.js"
 content_digest = "sha256:fb00915c3109f2ce036dcd24b5c077a43b15729ad5a2ba84b92ece5faa715e3e"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -269,7 +310,7 @@ request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(
 name = "tool_current_deployment"
 ffqn = "obelisk-agent:tools/webapi.current-deployment-id"
 return_type = "result<string, string>"
-location = "activity/tools/current-deployment.js"
+location = "packs/obelisk-control/tools/current-deployment.js"
 content_digest = "sha256:8dcedff82784d2fd40173a82477b16a35310434bf0cf15bb3e5be16282e6a827"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -292,7 +333,7 @@ params = [
   { name = "deployment-id", type = "option<string>" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/deployment-checkout.js"
+location = "packs/obelisk-control/tools/deployment-checkout.js"
 content_digest = "sha256:837c313adfff00d999f3af5cbd464529083d3b6b94d68653139d48900b410671"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -307,7 +348,7 @@ params = [
   { name = "digest", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/deployment-read-blob.js"
+location = "packs/obelisk-control/tools/deployment-read-blob.js"
 content_digest = "sha256:6eb37181729368f5331f6c8ad0a3ebdd85067d461b0906b882507490a1221c23"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -330,7 +371,7 @@ return_type = "result<string, string>"
 # persisting, which far exceeds the 1s default lock.
 exec.lock_expiry.minutes = 5
 max_retries = 0
-location = "activity/tools/deployment-submit.js"
+location = "packs/obelisk-control/tools/deployment-submit.js"
 content_digest = "sha256:b6b89d51b3847e254c69acce8c5093ec9d5617304336f07a1a0f74afbdfeaa93"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -348,7 +389,7 @@ params = [
 return_type = "result<string, string>"
 # A cold switch re-verifies (compile + link) before enqueuing.
 exec.lock_expiry.minutes = 5
-location = "activity/tools/deployment-switch.js"
+location = "packs/obelisk-control/tools/deployment-switch.js"
 content_digest = "sha256:d3a96a5aaddbc8783d368efcc12b284779a9cda5953e7b0c773ec60fc097e0ce"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -365,8 +406,8 @@ params = [
   { name = "backend", type = "option<string>" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/submit-workflow-execution.js"
-content_digest = "sha256:b3386df2f6e15fba840cef153766779ff799c9391f0f8216b884d99d57e6eab6"
+location = "packs/obelisk-control/tools/submit-workflow-execution.js"
+content_digest = "sha256:95b8d1d51ad0e8373cee80fdd5ba49deaaeb05b436325a5e5e2090e8499e8925"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -380,7 +421,7 @@ params = [
   { name = "execution-id", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/pause-execution.js"
+location = "packs/obelisk-control/tools/pause-execution.js"
 content_digest = "sha256:2ba3bd41b2d6cbbb8fc99e18cefdc85dfbb3ea57d3afd062c0ee1dd17c3be344"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -395,7 +436,7 @@ params = [
   { name = "execution-id", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/unpause-execution.js"
+location = "packs/obelisk-control/tools/unpause-execution.js"
 content_digest = "sha256:2b9a8765b6b672f5f48212a59141cc8d05cbb7530025f12a18629032ae2832e5"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -410,7 +451,7 @@ params = [
   { name = "execution-id", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/cancel-execution.js"
+location = "packs/obelisk-control/tools/cancel-execution.js"
 content_digest = "sha256:4d8103eafc27fc2f11f3af74aae919b7f3562f06f83891543dc9eaad3b9eeb51"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -426,7 +467,7 @@ params = [
   { name = "result-json", type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/tools/stub-execution.js"
+location = "packs/obelisk-control/tools/stub-execution.js"
 content_digest = "sha256:5c6d0bcb22f629d2e91012fbff3f6ec89fe8819cf4548bce8e42b9712d45088c"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -478,20 +519,22 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "workflow/agent-loop.js"
-content_digest = "sha256:ca78299be60e6d3ed4a35d4c4c52eb4d794cf4fb337acd3303e3c35d02f0055b"
+content_digest = "sha256:d46a2634e282d47fd83c005be6815cc887a068d0018f6f52605e94921870786e"
 
-# Public supervisor workflow. It loads the prompt + tools and runs the nested
-# agent-loop workflow, returning its result.
+# Public supervisor workflow. Resolves the pack descriptor, then runs the generic
+# agent-loop workflow and returns its result.
 [[workflow_js]]
 ffqn = "obelisk-agent:workflow/workflow.run"
 params = [
   { name = "prompt", type = "string" },
-  # Model hint for the LLM endpoint ("claude" / "codex" / a model id). null => endpoint default.
-  { name = "backend", type = "option<string>" },
+  # Model id selecting an AGENT_MODELS catalog entry. null => catalog default.
+  { name = "model", type = "option<string>" },
+  # Pack descriptor FFQN. null => obelisk-control:agent/pack.describe.
+  { name = "descriptor-ffqn", type = "option<string>" },
 ]
 return_type = "result<string, string>"
 location = "workflow/agent.js"
-content_digest = "sha256:b752f020c77d923bcbbdd653193456d2e7865ec727a9dae5ab8d3e885a5248fa"
+content_digest = "sha256:81b14a4920c298a70b21948ef61ae8237df7af6da9fc38d2e226314d332d8c0f"
 
 # --- GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
@@ -510,7 +553,7 @@ params = [
   { name = "new-branch",  type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/github/create-branch.js"
+location = "packs/obelisk-control/github/create-branch.js"
 exec.lock_expiry.seconds = 30
 content_digest = "sha256:1115c913ae61730b9de1e3cdafabd59c119980e35f85ad7cc26adeee37bc7eb0"
 [[activity_js.allowed_host]]
@@ -518,7 +561,7 @@ pattern = "https://api.github.com"
 methods = ["GET", "POST"]
 request_url_regex = "^(POST https://api\\.github\\.com/repos/[^/]+/[^/]+/git/refs|GET https://api\\.github\\.com/repos/[^/]+/[^/]+/git/ref/heads/[^/]+)$"
 [activity_js.allowed_host.secrets]
-env_vars = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
+env_vars = [{ key = "WORKFLOW_AGENT_GITHUB_TOKEN", value = "${WORKFLOW_AGENT_GITHUB_TOKEN:-}" }]
 replace_in = ["headers"]
 
 
@@ -536,7 +579,7 @@ params = [
   { name = "body",              type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/github/push-file.js"
+location = "packs/obelisk-control/github/push-file.js"
 exec.lock_expiry.seconds = 60
 max_retries = 0
 content_digest = "sha256:acb6050c33231f3cf3119591752ed75e1f8770318417043c1775a2480368dc67"
@@ -545,7 +588,7 @@ pattern = "https://api.github.com"
 methods = ["POST"]
 request_url_regex = "^POST https://api\\.github\\.com/graphql$"
 [activity_js.allowed_host.secrets]
-env_vars = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
+env_vars = [{ key = "WORKFLOW_AGENT_GITHUB_TOKEN", value = "${WORKFLOW_AGENT_GITHUB_TOKEN:-}" }]
 replace_in = ["headers"]
 
 
@@ -561,7 +604,7 @@ params = [
   { name = "body",         type = "string" },
 ]
 return_type = "result<string, string>"
-location = "activity/github/create-pr.js"
+location = "packs/obelisk-control/github/create-pr.js"
 exec.lock_expiry.seconds = 60
 content_digest = "sha256:5286f48a82db83dd4f3a275ebd5015452e6ce2e53772cdb33e2a71a273131a99"
 [[activity_js.allowed_host]]
@@ -569,7 +612,7 @@ pattern = "https://api.github.com"
 methods = ["GET", "POST"]
 request_url_regex = "^(GET|POST) https://api\\.github\\.com/repos/[^/]+/[^/]+/pulls$"
 [activity_js.allowed_host.secrets]
-env_vars = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
+env_vars = [{ key = "WORKFLOW_AGENT_GITHUB_TOKEN", value = "${WORKFLOW_AGENT_GITHUB_TOKEN:-}" }]
 replace_in = ["headers"]
 
 [[workflow_js]]
@@ -580,7 +623,7 @@ params = [
   { name = "pr-body",     type = "string" },
 ]
 return_type = "result<string, string>"
-location = "workflow/push-deployment.js"
+location = "packs/obelisk-control/push-deployment.js"
 content_digest = "sha256:768bab2e86d15fb577e8e1b3e260b71bcda4eaaaf89fff9329bd82ee29b2b973"
 
 
@@ -589,6 +632,7 @@ name = "ui-api"
 location = "webhook/ui-api.js"
 routes = [
   { methods = ["GET"], route = "/" },
+  { methods = ["GET"], route = "/api/models" },
   { methods = ["GET"], route = "/api/runs" },
   { methods = ["GET"], route = "/api/runs/:execution-id" },
   { methods = ["GET"], route = "/api/logs/:execution-id" },
@@ -602,8 +646,9 @@ routes = [
 env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  { key = "AGENT_MODELS", value = '${AGENT_MODELS:-[{"id":"claude","label":"claude","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"claude"},{"id":"codex","label":"codex","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"codex"}]}' },
 ]
-content_digest = "sha256:7109637dc5898aeadec2be7bfcb8aebf967f3a848e10691a4f707bc01504b7d2"
+content_digest = "sha256:983f71dac8f1e096b6105b503d23f7c7ac1559e0cfdb044d974749f2187d8015"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.
@@ -622,7 +667,7 @@ params = [
 return_type = "result<string, string>"
 # A hot redeploy re-verifies (compile + link) before swapping executors.
 exec.lock_expiry.minutes = 5
-location = "activity/tools/apply-deployment.js"
+location = "packs/obelisk-control/tools/apply-deployment.js"
 content_digest = "sha256:dd3839168cea646edc112678ffd6126eaea720728ab0545125091653669e284a"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]

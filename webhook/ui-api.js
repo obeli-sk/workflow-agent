@@ -30,6 +30,7 @@ export default async function handle(request) {
     try {
         const query = parseQuery(request.url);
         if (method === "GET" && path === "/") return htmlShell();
+        if (method === "GET" && path === "/api/models") return jsonResponse(loadModels());
         if (method === "GET" && path === "/api/runs") return jsonResponse(await listRuns());
         if (method === "GET" && path.startsWith("/api/runs/")) {
             const id = decodeURIComponent(path.substring("/api/runs/".length));
@@ -224,6 +225,21 @@ function decodeQueryComponent(value) {
 function nonNegativeInteger(value) {
     const parsed = Number(value);
     return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+// ----- models -----------------------------------------------------------
+
+// The configurable model catalog (deployment.toml AGENT_MODELS). The UI renders
+// these in the model dropdown; the selected id is passed to the workflow as the
+// `backend`/model hint, and the llm activity routes it to the right wire API.
+function loadModels() {
+    const raw = process.env["AGENT_MODELS"];
+    let catalog = [];
+    if (raw) { try { catalog = JSON.parse(raw); } catch (_) { catalog = []; } }
+    const models = Array.isArray(catalog)
+        ? catalog.filter((m) => m && m.id).map((m) => ({ id: m.id, label: m.label || m.id, api_type: m.api_type || "" }))
+        : [];
+    return { models };
 }
 
 // ----- list -------------------------------------------------------------
@@ -557,15 +573,21 @@ async function loadResponses(execId, startCursor = 0) {
             const joinName = parseJoinName(wrapped.join_set_id);
 
             if (joinName === "completion") {
-                // llm.completion ok = { reply: { content, tool_calls, finish_reason } }
-                // or { rate_limited: {...} } (skipped). Map to the UI reply shape:
+                // llm.completion ok = { reply: { content_json, stop_reason } } or
+                // { rate_limited: {...} } (skipped). content_json is a neutral
+                // block array; map to the UI reply shape:
                 // { tool_calls: [{ name, arguments_json }] } | { response }.
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
                 const rep = value && typeof value === "object" ? value.reply : null;
-                if (rep && typeof rep === "object") {
-                    const reply = Array.isArray(rep.tool_calls) && rep.tool_calls.length > 0
-                        ? { tool_calls: rep.tool_calls.map((c) => ({ name: c.name, arguments_json: c.arguments_json })) }
-                        : { response: typeof rep.content === "string" ? rep.content : "" };
+                if (rep && typeof rep === "object" && typeof rep.content_json === "string") {
+                    let blocks = [];
+                    try { blocks = JSON.parse(rep.content_json); } catch (_) { blocks = []; }
+                    if (!Array.isArray(blocks)) blocks = [];
+                    const toolUses = blocks.filter((b) => b && b.type === "tool_use");
+                    const text = blocks.filter((b) => b && b.type === "text").map((b) => b.text || "").join("");
+                    const reply = toolUses.length > 0
+                        ? { tool_calls: toolUses.map((b) => ({ name: b.name, arguments_json: JSON.stringify(b.input || {}) })) }
+                        : { response: text };
                     replies.push({
                         reply,
                         presentation: "",
@@ -1010,10 +1032,7 @@ const SHELL_HTML = `<!doctype html>
     <form id="new-form">
       <textarea id="new-prompt" placeholder="Ask the agent..." required></textarea>
       <div class="new-row">
-        <select id="new-backend" title="agent backend">
-          <option value="claude">claude</option>
-          <option value="codex">codex</option>
-        </select>
+        <select id="new-backend" title="model"></select>
         <button type="submit" id="new-submit">Send</button>
       </div>
     </form>
@@ -1825,7 +1844,21 @@ document.getElementById('new-form').addEventListener('submit', (ev) => {
   if (t) submitPrompt(t);
 });
 
+async function loadModels() {
+  const sel = document.getElementById('new-backend');
+  if (!sel) return;
+  try {
+    const r = await fetch('/api/models', { headers: { accept: 'application/json' } });
+    if (!r.ok) return;
+    const data = await r.json();
+    const models = Array.isArray(data.models) ? data.models : [];
+    sel.innerHTML = models.map((m) =>
+      '<option value="' + esc(m.id) + '">' + esc(m.label || m.id) + '</option>').join('');
+  } catch (_) { /* leave the select empty; submit sends no backend override */ }
+}
+
 readSelectedFromUrl();
+loadModels();
 refreshSidebar();
 refreshDetail();
 document.addEventListener('visibilitychange', () => {
