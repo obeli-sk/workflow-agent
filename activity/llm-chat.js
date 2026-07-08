@@ -28,11 +28,12 @@ export default async function completion(system, messagesJson, toolsJson, model)
     const messages = parseJson(messagesJson, 'messages-json', []);
     const tools = parseJson(toolsJson, 'tools-json', []);
     const cfg = resolveModel(model);
+    const toolNames = buildToolNames(tools);
 
     let result;
-    if (cfg.api_type === 'anthropic-messages') result = await callAnthropic(cfg, system, messages, tools);
-    else if (cfg.api_type === 'openai-chat-completions') result = await callOpenAIChat(cfg, system, messages, tools);
-    else if (cfg.api_type === 'openai-responses') result = await callOpenAIResponses(cfg, system, messages, tools);
+    if (cfg.api_type === 'anthropic-messages') result = await callAnthropic(cfg, system, messages, tools, toolNames);
+    else if (cfg.api_type === 'openai-chat-completions') result = await callOpenAIChat(cfg, system, messages, tools, toolNames);
+    else if (cfg.api_type === 'openai-responses') result = await callOpenAIResponses(cfg, system, messages, tools, toolNames);
     else throw `unknown api_type '${cfg.api_type}' for model '${cfg.id}'`;
 
     if (result.rate_limited) return { rate_limited: result.rate_limited };
@@ -72,15 +73,14 @@ function apiKey(cfg) {
 
 // ----- anthropic messages -----------------------------------------------------
 
-async function callAnthropic(cfg, system, messages, tools) {
-    // The neutral block shapes are already Anthropic's, so messages pass through.
+async function callAnthropic(cfg, system, messages, tools, toolNames) {
     const body = {
         model: wireModel(cfg),
         max_tokens: maxTokens(cfg),
-        messages,
+        messages: encodeMessages(messages, toolNames),
     };
     if (system) body.system = system;
-    if (tools.length > 0) body.tools = tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema }));
+    if (tools.length > 0) body.tools = tools.map((t) => ({ name: toolNames.encode(t.name), description: t.description, input_schema: t.input_schema }));
 
     const headers = { 'content-type': 'application/json', accept: 'application/json', 'anthropic-version': '2023-06-01' };
     const key = apiKey(cfg);
@@ -92,21 +92,21 @@ async function callAnthropic(cfg, system, messages, tools) {
     const content = [];
     for (const block of arr(data.content)) {
         if (block.type === 'text') content.push({ type: 'text', text: String(block.text || '') });
-        else if (block.type === 'tool_use') content.push({ type: 'tool_use', id: block.id, name: block.name, input: block.input || {} });
+        else if (block.type === 'tool_use') content.push({ type: 'tool_use', id: block.id, name: toolNames.decode(block.name), input: block.input || {} });
     }
     return { content, stop_reason: normalizeStop(data.stop_reason) };
 }
 
 // ----- openai chat completions ------------------------------------------------
 
-async function callOpenAIChat(cfg, system, messages, tools) {
+async function callOpenAIChat(cfg, system, messages, tools, toolNames) {
     const wire = [];
     if (system) wire.push({ role: 'system', content: system });
     for (const msg of messages) {
         if (msg.role === 'assistant') {
             const text = textOf(msg);
             const toolCalls = blocks(msg, 'tool_use').map((b) => ({
-                id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input || {}) },
+                id: b.id, type: 'function', function: { name: toolNames.encode(b.name), arguments: JSON.stringify(b.input || {}) },
             }));
             const out = { role: 'assistant', content: text || null };
             if (toolCalls.length > 0) out.tool_calls = toolCalls;
@@ -124,7 +124,7 @@ async function callOpenAIChat(cfg, system, messages, tools) {
 
     const body = { model: wireModel(cfg), messages: wire };
     if (tools.length > 0) {
-        body.tools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } }));
+        body.tools = tools.map((t) => ({ type: 'function', function: { name: toolNames.encode(t.name), description: t.description, parameters: t.input_schema } }));
         body.tool_choice = 'auto';
     }
 
@@ -141,21 +141,21 @@ async function callOpenAIChat(cfg, system, messages, tools) {
     const content = [];
     if (typeof message.content === 'string' && message.content) content.push({ type: 'text', text: message.content });
     for (const tc of arr(message.tool_calls)) {
-        content.push({ type: 'tool_use', id: tc.id || '', name: tc.function?.name || '', input: parseArgs(tc.function?.arguments) });
+        content.push({ type: 'tool_use', id: tc.id || '', name: toolNames.decode(tc.function?.name || ''), input: parseArgs(tc.function?.arguments) });
     }
     return { content, stop_reason: normalizeStop(choice?.finish_reason) };
 }
 
 // ----- openai responses -------------------------------------------------------
 
-async function callOpenAIResponses(cfg, system, messages, tools) {
+async function callOpenAIResponses(cfg, system, messages, tools, toolNames) {
     const input = [];
     for (const msg of messages) {
         const text = textOf(msg);
         if (msg.role === 'assistant') {
             if (text) input.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
             for (const b of blocks(msg, 'tool_use')) {
-                input.push({ type: 'function_call', call_id: b.id, name: b.name, arguments: JSON.stringify(b.input || {}) });
+                input.push({ type: 'function_call', call_id: b.id, name: toolNames.encode(b.name), arguments: JSON.stringify(b.input || {}) });
             }
         } else {
             if (text) input.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] });
@@ -168,7 +168,7 @@ async function callOpenAIResponses(cfg, system, messages, tools) {
     const body = { model: wireModel(cfg), input };
     if (system) body.instructions = system;
     if (tools.length > 0) {
-        body.tools = tools.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.input_schema }));
+        body.tools = tools.map((t) => ({ type: 'function', name: toolNames.encode(t.name), description: t.description, parameters: t.input_schema }));
         body.tool_choice = 'auto';
     }
 
@@ -184,7 +184,7 @@ async function callOpenAIResponses(cfg, system, messages, tools) {
     for (const item of arr(data.output)) {
         if (item.type === 'function_call') {
             sawToolCall = true;
-            content.push({ type: 'tool_use', id: item.call_id || item.id || '', name: item.name || '', input: parseArgs(item.arguments) });
+            content.push({ type: 'tool_use', id: item.call_id || item.id || '', name: toolNames.decode(item.name || ''), input: parseArgs(item.arguments) });
         } else if (item.type === 'message') {
             for (const c of arr(item.content)) {
                 if (c.type === 'output_text' && c.text) content.push({ type: 'text', text: String(c.text) });
@@ -226,6 +226,64 @@ function parseArgs(text) {
 function arr(v) { return Array.isArray(v) ? v : []; }
 function blocks(msg, type) { return arr(msg && msg.content).filter((b) => b && b.type === type); }
 function textOf(msg) { return blocks(msg, 'text').map((b) => String(b.text || '')).join(''); }
+function encodeMessages(messages, toolNames) {
+    return arr(messages).map((msg) => ({
+        ...msg,
+        content: arr(msg.content).map((block) => {
+            if (!block || block.type !== 'tool_use') return block;
+            return { ...block, name: toolNames.encode(block.name) };
+        }),
+    }));
+}
+function buildToolNames(tools) {
+    const originalToWire = new Map();
+    const aliasCandidates = new Map();
+    const aliases = new Map();
+    const used = new Set();
+
+    for (const tool of arr(tools)) {
+        const original = String(tool?.name || '');
+        if (!original) continue;
+        let wire = safeToolName(original);
+        let n = 2;
+        while (used.has(wire)) {
+            const suffix = '_' + n++;
+            wire = safeToolName(original, suffix);
+        }
+        used.add(wire);
+        originalToWire.set(original, wire);
+        addAlias(aliasCandidates, original, original);
+        addAlias(aliasCandidates, wire, original);
+        const tail = original.split('.').pop();
+        addAlias(aliasCandidates, tail, original);
+        addAlias(aliasCandidates, safeToolName(tail), original);
+    }
+
+    for (const [alias, originals] of aliasCandidates) {
+        if (originals.size === 1) aliases.set(alias, Array.from(originals)[0]);
+    }
+
+    return {
+        encode(name) { return originalToWire.get(String(name || '')) || safeToolName(String(name || '')); },
+        decode(name) { return aliases.get(String(name || '')) || String(name || ''); },
+    };
+}
+function addAlias(map, alias, original) {
+    if (!alias) return;
+    let originals = map.get(alias);
+    if (!originals) {
+        originals = new Set();
+        map.set(alias, originals);
+    }
+    originals.add(original);
+}
+function safeToolName(name, suffix = '') {
+    let base = String(name || '').replace(/[^A-Za-z0-9_-]/g, '_');
+    if (!base) base = 'tool';
+    const maxBase = 64 - suffix.length;
+    if (base.length > maxBase) base = base.slice(0, Math.max(1, maxBase));
+    return base + suffix;
+}
 function normalizeStop(reason) {
     switch (reason) {
         case 'tool_use': case 'tool_calls': return 'tool_use';

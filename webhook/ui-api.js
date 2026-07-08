@@ -688,15 +688,14 @@ function findMatchingBrace(text, start) {
     return -1;
 }
 
-// The tool responses *as the model received them* are the `tool_results` the
-// workflow passed to each session.send. Those are not in /responses (which only
-// has child results); they live in the workflow history as the params of the
-// send join_set_request. Reading them here means the UI shows what was actually
-// sent to the LLM (post any workflow processing), not the upstream tool child's
-// raw result. Flattened in dispatch order to align 1:1 with the tool calls.
+// The tool responses *as the model received them* are the `tool_result` blocks
+// in the message history passed to each llm.completion. Those are not in
+// /responses when dispatch fails before a child execution is started, so read
+// the completion request params and flatten them in dispatch order.
 async function loadSentResults(execId, startVersion = 0) {
     const sent = [];
     const operatorMessages = [];
+    const seenToolResults = new Set();
     let version = startVersion;
     let including = startVersion === 0;
     while (true) {
@@ -708,19 +707,34 @@ async function loadSentResults(execId, startVersion = 0) {
         for (const e of events) {
             const he = e.event?.history_event?.event;
             if (!he || he.type !== "join_set_request") continue;
-            if (parseJoinName(he.join_set_id) !== "send") continue;
-            const input = he.request?.params?.[1];
-            if (input && Array.isArray(input.tool_results)) {
-                for (const tr of input.tool_results) sent.push(normalizeSent(tr));
-            }
-            const messages = he.request?.params?.[2];
-            if (Array.isArray(messages)) {
-                for (const text of messages) {
-                    if (typeof text === "string" && text.trim()) {
-                        operatorMessages.push({
-                            text: text.trim(),
-                            created_at: e.created_at || "",
-                        });
+            const joinName = parseJoinName(he.join_set_id);
+            if (joinName === "completion") {
+                const messages = parseMessagesParam(he.request?.params?.[1]);
+                for (const msg of messages) {
+                    for (const block of Array.isArray(msg?.content) ? msg.content : []) {
+                        if (!block || block.type !== "tool_result") continue;
+                        const id = String(block.tool_use_id || "");
+                        if (id && seenToolResults.has(id)) continue;
+                        if (id) seenToolResults.add(id);
+                        sent.push(normalizeToolResultBlock(block));
+                    }
+                }
+            } else if (joinName === "send") {
+                // backcompat: pre-agent-loop rewrite stored sent tool results in
+                // a session.send request instead of the completion history.
+                const input = he.request?.params?.[1];
+                if (input && Array.isArray(input.tool_results)) {
+                    for (const tr of input.tool_results) sent.push(normalizeSent(tr));
+                }
+                const messages = he.request?.params?.[2];
+                if (Array.isArray(messages)) {
+                    for (const text of messages) {
+                        if (typeof text === "string" && text.trim()) {
+                            operatorMessages.push({
+                                text: text.trim(),
+                                created_at: e.created_at || "",
+                            });
+                        }
                     }
                 }
             }
@@ -733,6 +747,27 @@ async function loadSentResults(execId, startVersion = 0) {
         if (events.length < 200) break;
     }
     return { results: sent, operatorMessages, version };
+}
+
+function parseMessagesParam(value) {
+    if (Array.isArray(value)) return value;
+    if (typeof value !== "string" || !value) return [];
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (_) { return []; }
+}
+
+function normalizeToolResultBlock(block) {
+    const out = { id: String(block.tool_use_id || "") };
+    const content = String(block.content ?? "");
+    if (block.is_error) {
+        out.err = content.replace(/^Error:\s*/, "");
+    } else {
+        try { out.ok = JSON.parse(content); }
+        catch (_) { out.ok = content; }
+    }
+    return out;
 }
 
 // A sent tool_result entry is { name, outcome: { ok|err } } where ok is the
@@ -1259,10 +1294,20 @@ function mergeTranscript(delta) {
   }
   state.transcript.replies.push(...(delta.replies || []));
   state.transcript.tool_children.push(...(delta.tool_children || []));
-  state.transcript.sent_results.push(...(delta.sent_results || []));
+  mergeSentResults(state.transcript.sent_results, delta.sent_results || []);
   state.transcript.operator_messages.push(...(delta.operator_messages || []));
   state.transcript.response_cursor = delta.response_cursor || state.transcript.response_cursor;
   state.transcript.history_version = delta.history_version || state.transcript.history_version;
+}
+
+function mergeSentResults(target, incoming) {
+  const seen = new Set(target.map((item) => item && item.id).filter(Boolean));
+  for (const item of incoming) {
+    if (!item) continue;
+    if (item.id && seen.has(item.id)) continue;
+    if (item.id) seen.add(item.id);
+    target.push(item);
+  }
 }
 
 function buildCachedTurns() {

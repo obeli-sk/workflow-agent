@@ -56,7 +56,7 @@ max_retries = 3
 env_vars = [
   { key = "AGENT_MODELS", value = '${AGENT_MODELS:-[{"id":"claude","label":"claude","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"claude"},{"id":"codex","label":"codex","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"codex"}]}' },
 ]
-content_digest = "sha256:f2c933bf0da77fbf598db4ae0334583d2c765af0fe3eb4eb025f992ad0b1c6bd"
+content_digest = "sha256:0aaa7cc3742ac6c062c30eb47effdfdbbcd60368c99dae65256ac1207cc1b74c"
 
 # Local agent-backed-llm-server (or any OpenAI-compatible chat endpoint). No key.
 [[activity_js.allowed_host]]
@@ -648,7 +648,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   { key = "AGENT_MODELS", value = '${AGENT_MODELS:-[{"id":"claude","label":"claude","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"claude"},{"id":"codex","label":"codex","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"codex"}]}' },
 ]
-content_digest = "sha256:983f71dac8f1e096b6105b503d23f7c7ac1559e0cfdb044d974749f2187d8015"
+content_digest = "sha256:fc2594b2c329c3c54ec424e470aea22d393de1a25e81c8e4310f39caaea35638"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.
