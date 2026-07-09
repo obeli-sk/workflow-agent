@@ -1,0 +1,16 @@
+[
+  {
+    "id": "claude",
+    "label": "claude",
+    "api_type": "openai-chat-completions",
+    "base_url": "http://127.0.0.1:9190",
+    "wire_model": "claude"
+  },
+  {
+    "id": "codex",
+    "label": "codex",
+    "api_type": "openai-chat-completions",
+    "base_url": "http://127.0.0.1:9190",
+    "wire_model": "codex"
+  }
+]

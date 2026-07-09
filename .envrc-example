@@ -1,4 +1,38 @@
 use flake .
 
+# --- LLM model catalog --------------------------------------------------------
+# AGENT_MODELS (read by activity/llm-chat.js and the web UI) is the list of models
+# in the UI dropdown. When set here (direnv loads it) it OVERRIDES the built-in
+# default in deployment.toml (which is the local agent-backed-llm-server).
+#
+# Two ready-made catalogs ship as JSON files; load one into AGENT_MODELS:
+#   models.local.json     agent-backed-llm-server on :9190 (keyless)  [= the default]
+#   models.exe-gateway.json   exe.dev gateway: Anthropic + OpenAI + Fireworks (22 models)
+#
+# Uncomment one (or point AGENT_MODELS at any JSON however you like):
+# export AGENT_MODELS="$(cat models.exe-gateway.json)"
+# export AGENT_MODELS="$(cat models.local.json)"
+#
+# ...or symlink a canonical models.json and switch with a single ln -sf:
+#   ln -sf models.gateway.json models.json
+# export AGENT_MODELS="$(cat models.json)"
+
+# Each entry: { id, label, api_type, base_url, wire_model, auth_header?, auth_value?, max_tokens? }
+#   api_type   anthropic-messages | openai-responses | openai-chat-completions
+#   base_url   origin + provider path; the adapter appends /v1/messages, /v1/responses, ...
+#   wire_model the exact id the provider wants (differs from the friendly id/label)
+#   auth_header / auth_value  the auth header to send and its value. auth_value may
+#              embed \${ENV_VAR}; for a real key make ENV_VAR an allowed_host.secrets
+#              entry in deployment.toml so the JS only ever sees a placeholder. A
+#              literal (e.g. the gateway's public "implicit") needs no secret.
+
+# --- A keyed provider directly (e.g. OpenRouter) ------------------------------
+# A real API key stays secret: set it here and uncomment the openrouter
+# allowed_host block in deployment.toml; the runtime injects it into the header
+# and the JS never sees the real value.
+# export OPENROUTER_API_KEY=sk-or-...
+# export AGENT_MODELS='[{"id":"kimi-k2","label":"Kimi K2 (OpenRouter)","api_type":"openai-chat-completions","base_url":"https://openrouter.ai/api","wire_model":"moonshotai/kimi-k2","auth_header":"authorization","auth_value":"Bearer \${OPENROUTER_API_KEY}"}]'
+
+# --- GitHub export (optional) -------------------------------------------------
 export WORKFLOW_AGENT_GITHUB_TOKEN="..."
 export TARGET_REPOSITORY="your-account/new-repo"

@@ -1,0 +1,209 @@
+[
+  {
+    "id": "claude-opus-4.8",
+    "label": "claude-opus-4.8",
+    "api_type": "anthropic-messages",
+    "base_url": "http://localhost:7070/gateway/llm/anthropic",
+    "wire_model": "claude-opus-4-8",
+    "auth_header": "x-api-key",
+    "auth_value": "implicit",
+    "max_tokens": 8192
+  },
+  {
+    "id": "claude-opus-4.7",
+    "label": "claude-opus-4.7",
+    "api_type": "anthropic-messages",
+    "base_url": "http://localhost:7070/gateway/llm/anthropic",
+    "wire_model": "claude-opus-4-7",
+    "auth_header": "x-api-key",
+    "auth_value": "implicit",
+    "max_tokens": 8192
+  },
+  {
+    "id": "claude-opus-4.6",
+    "label": "claude-opus-4.6",
+    "api_type": "anthropic-messages",
+    "base_url": "http://localhost:7070/gateway/llm/anthropic",
+    "wire_model": "claude-opus-4-6",
+    "auth_header": "x-api-key",
+    "auth_value": "implicit",
+    "max_tokens": 8192
+  },
+  {
+    "id": "claude-opus-4.5",
+    "label": "claude-opus-4.5",
+    "api_type": "anthropic-messages",
+    "base_url": "http://localhost:7070/gateway/llm/anthropic",
+    "wire_model": "claude-opus-4-5",
+    "auth_header": "x-api-key",
+    "auth_value": "implicit",
+    "max_tokens": 8192
+  },
+  {
+    "id": "claude-sonnet-5",
+    "label": "claude-sonnet-5",
+    "api_type": "anthropic-messages",
+    "base_url": "http://localhost:7070/gateway/llm/anthropic",
+    "wire_model": "claude-sonnet-5",
+    "auth_header": "x-api-key",
+    "auth_value": "implicit",
+    "max_tokens": 8192
+  },
+  {
+    "id": "claude-sonnet-4.6",
+    "label": "claude-sonnet-4.6",
+    "api_type": "anthropic-messages",
+    "base_url": "http://localhost:7070/gateway/llm/anthropic",
+    "wire_model": "claude-sonnet-4-6",
+    "auth_header": "x-api-key",
+    "auth_value": "implicit",
+    "max_tokens": 8192
+  },
+  {
+    "id": "claude-sonnet-4.5",
+    "label": "claude-sonnet-4.5",
+    "api_type": "anthropic-messages",
+    "base_url": "http://localhost:7070/gateway/llm/anthropic",
+    "wire_model": "claude-sonnet-4-5",
+    "auth_header": "x-api-key",
+    "auth_value": "implicit",
+    "max_tokens": 8192
+  },
+  {
+    "id": "claude-haiku-4.5",
+    "label": "claude-haiku-4.5",
+    "api_type": "anthropic-messages",
+    "base_url": "http://localhost:7070/gateway/llm/anthropic",
+    "wire_model": "claude-haiku-4-5",
+    "auth_header": "x-api-key",
+    "auth_value": "implicit",
+    "max_tokens": 8192
+  },
+  {
+    "id": "claude-fable-5",
+    "label": "claude-fable-5",
+    "api_type": "anthropic-messages",
+    "base_url": "http://localhost:7070/gateway/llm/anthropic",
+    "wire_model": "claude-fable-5",
+    "auth_header": "x-api-key",
+    "auth_value": "implicit",
+    "max_tokens": 8192
+  },
+  {
+    "id": "gpt-5.5",
+    "label": "gpt-5.5",
+    "api_type": "openai-responses",
+    "base_url": "http://localhost:7070/gateway/llm/openai",
+    "wire_model": "gpt-5.5",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "gpt-5.4",
+    "label": "gpt-5.4",
+    "api_type": "openai-responses",
+    "base_url": "http://localhost:7070/gateway/llm/openai",
+    "wire_model": "gpt-5.4",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "gpt-5.4-mini",
+    "label": "gpt-5.4-mini",
+    "api_type": "openai-responses",
+    "base_url": "http://localhost:7070/gateway/llm/openai",
+    "wire_model": "gpt-5.4-mini",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "gpt-5.4-nano",
+    "label": "gpt-5.4-nano",
+    "api_type": "openai-responses",
+    "base_url": "http://localhost:7070/gateway/llm/openai",
+    "wire_model": "gpt-5.4-nano",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "gpt-5.3-codex",
+    "label": "gpt-5.3-codex",
+    "api_type": "openai-responses",
+    "base_url": "http://localhost:7070/gateway/llm/openai",
+    "wire_model": "gpt-5.3-codex",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "gpt-5.2-codex",
+    "label": "gpt-5.2-codex",
+    "api_type": "openai-responses",
+    "base_url": "http://localhost:7070/gateway/llm/openai",
+    "wire_model": "gpt-5.2-codex",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "glm-5.2-fireworks",
+    "label": "glm-5.2-fireworks",
+    "api_type": "openai-chat-completions",
+    "base_url": "http://localhost:7070/gateway/llm/fireworks/inference",
+    "wire_model": "accounts/fireworks/models/glm-5p2",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "glm-5.1-fireworks",
+    "label": "glm-5.1-fireworks",
+    "api_type": "openai-chat-completions",
+    "base_url": "http://localhost:7070/gateway/llm/fireworks/inference",
+    "wire_model": "accounts/fireworks/models/glm-5p1",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "kimi-k2.6-fireworks",
+    "label": "kimi-k2.6-fireworks",
+    "api_type": "openai-chat-completions",
+    "base_url": "http://localhost:7070/gateway/llm/fireworks/inference",
+    "wire_model": "accounts/fireworks/models/kimi-k2p6",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "deepseek-v4-pro-fireworks",
+    "label": "deepseek-v4-pro-fireworks",
+    "api_type": "openai-chat-completions",
+    "base_url": "http://localhost:7070/gateway/llm/fireworks/inference",
+    "wire_model": "accounts/fireworks/models/deepseek-v4-pro",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "deepseek-v4-flash-fireworks",
+    "label": "deepseek-v4-flash-fireworks",
+    "api_type": "openai-chat-completions",
+    "base_url": "http://localhost:7070/gateway/llm/fireworks/inference",
+    "wire_model": "accounts/fireworks/models/deepseek-v4-flash",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "qwen3.6-plus-fireworks",
+    "label": "qwen3.6-plus-fireworks",
+    "api_type": "openai-chat-completions",
+    "base_url": "http://localhost:7070/gateway/llm/fireworks/inference",
+    "wire_model": "accounts/fireworks/models/qwen3p6-plus",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  },
+  {
+    "id": "gpt-oss-20b-fireworks",
+    "label": "gpt-oss-20b-fireworks",
+    "api_type": "openai-chat-completions",
+    "base_url": "http://localhost:7070/gateway/llm/fireworks/inference",
+    "wire_model": "accounts/fireworks/models/gpt-oss-20b",
+    "auth_header": "authorization",
+    "auth_value": "Bearer implicit"
+  }
+]

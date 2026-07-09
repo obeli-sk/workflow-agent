@@ -43,8 +43,9 @@ export default async function completion(system, messagesJson, toolsJson, model)
 // ----- model catalog ----------------------------------------------------------
 
 // AGENT_MODELS is a JSON array of { id, label, api_type, base_url, wire_model,
-// key_env?, max_tokens? }. The requested model id selects one entry; an empty id
-// selects the first. base_url is the bare origin; each adapter appends its path.
+// auth_header?, auth_value?, max_tokens? }. The requested model id selects one
+// entry; an empty id selects the first. base_url is the origin (+ provider path);
+// each adapter appends its route.
 function resolveModel(model) {
     const raw = process.env['AGENT_MODELS'];
     if (!raw) throw 'AGENT_MODELS is not configured';
@@ -63,12 +64,16 @@ function baseOf(cfg) { return String(cfg.base_url).replace(/\/$/, ''); }
 function wireModel(cfg) { return cfg.wire_model || cfg.id; }
 function maxTokens(cfg) { return Number.isFinite(cfg.max_tokens) && cfg.max_tokens > 0 ? Math.trunc(cfg.max_tokens) : DEFAULT_MAX_TOKENS; }
 
-// The API key is read from the env var named by key_env. Under Obelisk it is a
-// short-lived placeholder that the runtime swaps for the real secret in the
-// outbound headers (allowed_host.secrets). Empty => no auth header (local backend).
-function apiKey(cfg) {
-    if (!cfg.key_env) return '';
-    return process.env[cfg.key_env] || '';
+// Auth is configured per model: send header `auth_header` with `auth_value`.
+// auth_value may embed ${ENV_VAR} references; each is replaced with that env
+// var's value, which under Obelisk is a short-lived placeholder the runtime swaps
+// for the real secret in the outbound header (allowed_host.secrets). A literal
+// value (e.g. the exe.dev gateway's public "implicit" token) needs no env var or
+// secret. Omit both => no auth header (keyless endpoint, e.g. the local backend).
+function applyAuth(cfg, headers) {
+    if (!cfg.auth_header || cfg.auth_value == null) return;
+    headers[String(cfg.auth_header).toLowerCase()] =
+        String(cfg.auth_value).replace(/\$\{(\w+)\}/g, (_, name) => process.env[name] || '');
 }
 
 // ----- anthropic messages -----------------------------------------------------
@@ -83,8 +88,7 @@ async function callAnthropic(cfg, system, messages, tools, toolNames) {
     if (tools.length > 0) body.tools = tools.map((t) => ({ name: toolNames.encode(t.name), description: t.description, input_schema: t.input_schema }));
 
     const headers = { 'content-type': 'application/json', accept: 'application/json', 'anthropic-version': '2023-06-01' };
-    const key = apiKey(cfg);
-    if (key) headers['x-api-key'] = key;
+    applyAuth(cfg, headers);
 
     const { data, rate_limited } = await post(`${baseOf(cfg)}/v1/messages`, headers, body);
     if (rate_limited) return { rate_limited };
@@ -129,8 +133,7 @@ async function callOpenAIChat(cfg, system, messages, tools, toolNames) {
     }
 
     const headers = { 'content-type': 'application/json', accept: 'application/json' };
-    const key = apiKey(cfg);
-    if (key) headers.authorization = 'Bearer ' + key;
+    applyAuth(cfg, headers);
 
     const { data, rate_limited } = await post(`${baseOf(cfg)}/v1/chat/completions`, headers, body);
     if (rate_limited) return { rate_limited };
@@ -173,8 +176,7 @@ async function callOpenAIResponses(cfg, system, messages, tools, toolNames) {
     }
 
     const headers = { 'content-type': 'application/json', accept: 'application/json' };
-    const key = apiKey(cfg);
-    if (key) headers.authorization = 'Bearer ' + key;
+    applyAuth(cfg, headers);
 
     const { data, rate_limited } = await post(`${baseOf(cfg)}/v1/responses`, headers, body);
     if (rate_limited) return { rate_limited };

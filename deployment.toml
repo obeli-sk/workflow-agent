@@ -56,33 +56,34 @@ max_retries = 3
 env_vars = [
   { key = "AGENT_MODELS", value = '${AGENT_MODELS:-[{"id":"claude","label":"claude","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"claude"},{"id":"codex","label":"codex","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"codex"}]}' },
 ]
-content_digest = "sha256:0aaa7cc3742ac6c062c30eb47effdfdbbcd60368c99dae65256ac1207cc1b74c"
+content_digest = "sha256:080384e73c939a2b9e88dfac62cb6cb74b2328c977f1b29bc35e6a8a5e1a5cbb"
 
-# Local agent-backed-llm-server (or any OpenAI-compatible chat endpoint). No key.
+# Default endpoint: the local agent-backed-llm-server (Claude/Codex subscription in
+# docker; OpenAI-compatible, no key). The default AGENT_MODELS points here.
 [[activity_js.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
 request_url_regex = "^POST ${LLM_BASE_URL_REGEX:-http://127\\.0\\.0\\.1:9190}/v1/(chat/completions|responses)$"
 
-# Anthropic Messages. ANTHROPIC_API_KEY is injected into the x-api-key header.
+# exe.dev LLM gateway. One local origin proxies Anthropic / OpenAI / Fireworks;
+# real credentials are injected at the gateway edge, so a model here sends only the
+# literal public token "implicit" (auth_value in AGENT_MODELS) -- no secret. Switch
+# to it by setting AGENT_MODELS in .envrc (see .envrc-example / models.gateway.json).
 [[activity_js.allowed_host]]
-pattern = "https://api.anthropic.com"
+pattern = "${LLM_GATEWAY:-http://localhost:7070}"
 methods = ["POST"]
-request_url_regex = "^POST https://api\\.anthropic\\.com/v1/messages$"
-# Key/value form so the value is interpolated: `${VAR:-}` makes the key optional
-# (empty when unset) instead of a hard startup requirement.
-[activity_js.allowed_host.secrets]
-env_vars = [{ key = "ANTHROPIC_API_KEY", value = "${ANTHROPIC_API_KEY:-}" }]
-replace_in = ["headers"]
+request_url_regex = "^POST ${LLM_GATEWAY_REGEX:-http://localhost:7070}/gateway/llm/(anthropic/v1/messages|openai/v1/(chat/completions|responses)|fireworks/inference/v1/chat/completions)$"
 
-# OpenAI Chat Completions + Responses. OPENAI_API_KEY -> Authorization header.
-[[activity_js.allowed_host]]
-pattern = "https://api.openai.com"
-methods = ["POST"]
-request_url_regex = "^POST https://api\\.openai\\.com/v1/(chat/completions|responses)$"
-[activity_js.allowed_host.secrets]
-env_vars = [{ key = "OPENAI_API_KEY", value = "${OPENAI_API_KEY:-}" }]
-replace_in = ["headers"]
+# A keyed provider reached directly, e.g. OpenRouter. Uncomment + set the secret to
+# route a model here; its catalog entry sends auth_value = "Bearer ${OPENROUTER_API_KEY}"
+# and the runtime swaps the placeholder for the real key, so the JS never sees it.
+# [[activity_js.allowed_host]]
+# pattern = "https://openrouter.ai"
+# methods = ["POST"]
+# request_url_regex = "^POST https://openrouter\\.ai/api/v1/(chat/completions|responses)$"
+# [activity_js.allowed_host.secrets]
+# env_vars = [{ key = "OPENROUTER_API_KEY", value = "${OPENROUTER_API_KEY:-}" }]
+# replace_in = ["headers"]
 
 # `request_url_regex` is matched against `METHOD URL` (query stripped). It uses
 # OBELISK_API_URL_REGEX (a regex-escaped form of OBELISK_API_URL); set both when

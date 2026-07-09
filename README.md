@@ -12,10 +12,13 @@ results back, all as durable, replayable workflow state.
 
 There are **no exec activities and no docker here**. The model lives behind an
 HTTP endpoint. A configurable **model catalog** (`AGENT_MODELS`) maps each model
-to its wire API + endpoint: point it at the sibling
+to its wire API + endpoint, and each entry declares its own auth (`auth_header` +
+`auth_value`). By default it points at the sibling
 [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server)
-app (a Claude/Codex subscription in docker), at Anthropic/OpenAI directly, or at
-OpenRouter, vLLM, Ollama, or anything OpenAI-compatible.
+app (a Claude/Codex subscription in docker, keyless on `:9190`), but an entry can
+point anywhere OpenAI- or Anthropic-shaped: a local **exe.dev LLM gateway**
+(`http://localhost:7070`, one origin proxying Anthropic / OpenAI / Fireworks),
+Anthropic/OpenAI directly, OpenRouter, vLLM, Ollama, or anything compatible.
 
 ## Layout
 
@@ -128,16 +131,20 @@ without tool calls, the workflow waits on that same offer instead of finishing.
 ## Configure the LLM endpoint
 
 The model catalog lives in the `AGENT_MODELS` env var (read by both `llm-chat.js`
-and the web UI). It is a JSON array; each entry routes one model to a wire API and
-endpoint:
+and the web UI). The built-in default in `deployment.toml` is the local
+`agent-backed-llm-server` (keyless, `:9190`). To use a different set, export
+`AGENT_MODELS` in `.envrc` (copy `.envrc-example`); direnv loads it and it
+overrides the default. It is a JSON array; each entry routes one model to a wire
+API + endpoint and declares its own auth:
 
 ```json
 [
-  { "id": "claude", "label": "Claude Opus", "api_type": "anthropic-messages",
-    "base_url": "https://api.anthropic.com", "wire_model": "claude-opus-4-8",
-    "key_env": "ANTHROPIC_API_KEY", "max_tokens": 8192 },
-  { "id": "gpt", "label": "GPT-5.1", "api_type": "openai-responses",
-    "base_url": "https://api.openai.com", "wire_model": "gpt-5.1", "key_env": "OPENAI_API_KEY" },
+  { "id": "claude-opus-4.8", "label": "claude-opus-4.8", "api_type": "anthropic-messages",
+    "base_url": "http://localhost:7070/gateway/llm/anthropic", "wire_model": "claude-opus-4-8",
+    "auth_header": "x-api-key", "auth_value": "implicit", "max_tokens": 8192 },
+  { "id": "kimi-k2", "label": "Kimi K2 (OpenRouter)", "api_type": "openai-chat-completions",
+    "base_url": "https://openrouter.ai/api", "wire_model": "moonshotai/kimi-k2",
+    "auth_header": "authorization", "auth_value": "Bearer ${OPENROUTER_API_KEY}" },
   { "id": "local", "label": "local backend", "api_type": "openai-chat-completions",
     "base_url": "http://127.0.0.1:9190", "wire_model": "claude" }
 ]
@@ -145,17 +152,34 @@ endpoint:
 
 - `api_type` — `anthropic-messages`, `openai-chat-completions`, or
   `openai-responses`. The llm activity adapts the neutral history to that wire.
-- `key_env` — env var holding the API key. Under Obelisk it is a placeholder
-  swapped for the real secret in the outbound header
-  (`allowed_host.secrets`, `x-api-key` for Anthropic, `Authorization` for OpenAI).
-  Omit it for a keyless local backend.
-- Every endpoint a model points at needs a matching `allowed_host` in
-  `deployment.toml` (local, Anthropic, and OpenAI blocks ship by default).
+- `base_url` — the origin + provider path; each adapter appends its route
+  (`/v1/messages`, `/v1/responses`, `/v1/chat/completions`).
+- `wire_model` — the exact id the provider expects, which may differ from the
+  friendly `id`/`label` shown in the UI (e.g. `claude-opus-4.8` → `claude-opus-4-8`,
+  or `accounts/fireworks/models/glm-5p2`).
+- `auth_header` / `auth_value` — the auth header to send and its value; omit both
+  for a keyless endpoint. `auth_value` may embed `${ENV_VAR}`. For a **real key**,
+  make `ENV_VAR` an `allowed_host.secrets` entry in `deployment.toml`: Obelisk
+  hands the JS a placeholder and swaps in the real value at the network edge, so
+  the key never enters the workflow. For the exe.dev gateway the token is the
+  literal public string `implicit` (creds are injected at the gateway), so it is
+  written inline and needs no secret.
+- Every origin a model points at needs a matching `allowed_host` in
+  `deployment.toml`. Blocks for the local backend and the gateway ship active; an
+  OpenRouter block (with its `allowed_host.secrets`) ships commented as a template.
 
-The default catalog points at the local `agent-backed-llm-server` (chat
-completions, no key). The `workflow.run` `model` param (the `backend` field of
-`POST /api/submit`) is the model `id`; empty selects the first catalog entry. The
-UI dropdown is populated from `GET /api/models`.
+Two ready-made catalogs ship as JSON files, loaded via `.envrc`:
+
+- `models.local.json` — the two `agent-backed-llm-server` models (`:9190`, keyless).
+  Same as the `deployment.toml` default.
+- `models.exe-gateway.json` — the full **exe.dev gateway** set (Anthropic `claude-*`,
+  OpenAI `gpt-*` via the responses API, Fireworks `*-fireworks`).
+
+`.envrc-example` shows loading either (`export AGENT_MODELS="$(cat models.exe-gateway.json)"`),
+the `ln -sf` symlink pattern (a canonical `models.json`), and a keyed **OpenRouter**
+entry. The `workflow.run` `model` param (the `backend` field of `POST /api/submit`)
+is the model `id`; empty selects the first catalog entry. The UI dropdown is
+populated from `GET /api/models`.
 
 ## Run
 
