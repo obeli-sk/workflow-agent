@@ -13,6 +13,8 @@ The core (agent loop + LLM router + web UI) is generic; a runtime **pack**
 supplies the use case (system prompt + tools). This repo ships one pack,
 `obelisk-control`, which inspects and modifies the Obelisk instance it runs on.
 
+![workflow-agent web UI](docs/workflow-agent.png)
+
 ## Requirements
 
 - **Obelisk** — the runtime that serves this deployment. Use `nix develop` for
