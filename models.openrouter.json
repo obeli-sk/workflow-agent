@@ -1,0 +1,38 @@
+[
+  {
+    "id": "qwen3-coder-free",
+    "label": "Qwen3 Coder (free)",
+    "api_type": "openai-chat-completions",
+    "base_url": "https://openrouter.ai/api",
+    "wire_model": "qwen/qwen3-coder:free",
+    "auth_header": "authorization",
+    "auth_value": "Bearer ${OPENROUTER_API_KEY}"
+  },
+  {
+    "id": "claude-opus-4.8",
+    "label": "Claude Opus 4.8 (OpenRouter)",
+    "api_type": "openai-chat-completions",
+    "base_url": "https://openrouter.ai/api",
+    "wire_model": "anthropic/claude-opus-4.8",
+    "auth_header": "authorization",
+    "auth_value": "Bearer ${OPENROUTER_API_KEY}"
+  },
+  {
+    "id": "gpt-5.5",
+    "label": "GPT-5.5 (OpenRouter)",
+    "api_type": "openai-chat-completions",
+    "base_url": "https://openrouter.ai/api",
+    "wire_model": "openai/gpt-5.5",
+    "auth_header": "authorization",
+    "auth_value": "Bearer ${OPENROUTER_API_KEY}"
+  },
+  {
+    "id": "deepseek-v3.1",
+    "label": "DeepSeek Chat v3.1 (OpenRouter)",
+    "api_type": "openai-chat-completions",
+    "base_url": "https://openrouter.ai/api",
+    "wire_model": "deepseek/deepseek-chat-v3.1",
+    "auth_header": "authorization",
+    "auth_value": "Bearer ${OPENROUTER_API_KEY}"
+  }
+]

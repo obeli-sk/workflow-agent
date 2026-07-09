@@ -5,12 +5,13 @@ use flake .
 # in the UI dropdown. It is REQUIRED: deployment.toml has no built-in default, so
 # the server won't serve until it is set here (direnv loads it).
 #
-# Two ready-made catalogs ship as JSON files:
+# Three ready-made catalogs ship as JSON files:
 #   models.local.json         agent-backed-llm-server on :9190 (keyless)
 #   models.exe-gateway.json   exe.dev gateway: Anthropic + OpenAI + Fireworks (22 models)
 #                             needs an exe.dev account; its entries point at
 #                             http://localhost:7070, so forward the gateway first:
 #                               ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz
+#   models.openrouter.json    OpenRouter (keyed); needs OPENROUTER_API_KEY set below
 #
 # Symlink a canonical models.json and switch catalogs with a single ln -sf:
 #   ln -sf models.local.json models.json
@@ -27,12 +28,13 @@ export AGENT_MODELS="$(cat models.json)"
 #              entry in deployment.toml so the JS only ever sees a placeholder. A
 #              literal (e.g. the gateway's public "implicit") needs no secret.
 
-# --- A keyed provider directly (e.g. OpenRouter) ------------------------------
-# A real API key stays secret: set it here and uncomment the openrouter
-# allowed_host block in deployment.toml; the runtime injects it into the header
-# and the JS never sees the real value.
+# --- OpenRouter (keyed provider reached directly) -----------------------------
+# The API key stays secret: the catalog sends "Bearer ${OPENROUTER_API_KEY}", the
+# deployment.toml openrouter allowed_host.secrets block swaps the placeholder for
+# the real key at the network edge, and the JS only ever sees the placeholder. To
+# use models.openrouter.json, set the key and select that catalog:
 # export OPENROUTER_API_KEY=sk-or-...
-# export AGENT_MODELS='[{"id":"kimi-k2","label":"Kimi K2 (OpenRouter)","api_type":"openai-chat-completions","base_url":"https://openrouter.ai/api","wire_model":"moonshotai/kimi-k2","auth_header":"authorization","auth_value":"Bearer \${OPENROUTER_API_KEY}"}]'
+# export AGENT_MODELS="$(cat models.openrouter.json)"
 
 # --- GitHub export (optional) -------------------------------------------------
 export WORKFLOW_AGENT_GITHUB_TOKEN="..."

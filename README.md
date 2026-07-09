@@ -29,9 +29,15 @@ supplies the use case (system prompt + tools). This repo ships one pack,
     ```sh
     ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz
     ```
+  - `models.openrouter.json` — [OpenRouter](https://openrouter.ai) (Claude, GPT,
+    DeepSeek, and a free Qwen3 Coder model). Needs an API key; the key stays
+    secret (injected into the outbound header at the edge, never seen by the JS):
+    ```sh
+    export OPENROUTER_API_KEY=sk-or-...
+    ```
 
-  Any other compatible endpoint (Anthropic/OpenAI directly, OpenRouter, vLLM,
-  Ollama, …) works too — add an entry pointing at it.
+  Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama, …)
+  works too — add an entry pointing at it.
 
 ## Run
 
