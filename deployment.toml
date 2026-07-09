@@ -651,6 +651,7 @@ routes = [
   { methods = ["POST"], route = "/api/confirm/:child-id" },
   { methods = ["POST"], route = "/api/pause/:execution-id" },
   { methods = ["POST"], route = "/api/unpause/:execution-id" },
+  { methods = ["POST"], route = "/api/cancel/:execution-id" },
   { methods = ["POST"], route = "/api/say/:execution-id" },
 ]
 env_vars = [
@@ -658,7 +659,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   "AGENT_MODELS",
 ]
-content_digest = "sha256:439f75d7e1b125a1c5208af2ab14823095fa3aa8e85898a5b52e64e7c39b5f1d"
+content_digest = "sha256:bcf438b18fbfd1b40eecfd11bdeef75defb82d1043cdec520fb99e134e0dcf4e"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.

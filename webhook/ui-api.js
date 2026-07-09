@@ -55,6 +55,9 @@ export default async function handle(request) {
         if (method === "POST" && path.startsWith("/api/unpause/")) {
             return await pauseExecution(decodeURIComponent(path.substring("/api/unpause/".length)), true);
         }
+        if (method === "POST" && path.startsWith("/api/cancel/")) {
+            return await cancelRun(decodeURIComponent(path.substring("/api/cancel/".length)));
+        }
         if (method === "POST" && path.startsWith("/api/say/")) {
             return await sayToAgent(request, decodeURIComponent(path.substring("/api/say/".length)));
         }
@@ -178,6 +181,10 @@ function pauseObeliskExecution(id) {
 
 function unpauseObeliskExecution(id) {
     return activityJson(`unpause-execution ${id}`, webapi.unpauseExecution(id));
+}
+
+function cancelObeliskExecution(id) {
+    return activityJson(`cancel-execution ${id}`, webapi.cancelExecution(id));
 }
 
 function stubObeliskExecution(id, result) {
@@ -902,6 +909,32 @@ async function childWorkflowIds(runId) {
         .map((e) => e.execution_id);
 }
 
+// Cancel a run. Obelisk only cancels executions whose FFQN ends with
+// `-cancellable`; for a run that is the nested agent-loop session, not the
+// top-level workflow.run. Cancelling it unwinds the run: workflow.run's joinNext
+// resolves to the cancelled child and the run ends.
+async function cancelRun(id) {
+    if (!id) return jsonError(400, "missing run id");
+    let executions;
+    try {
+        executions = await listExecutions("", id, true, true, 200);
+    } catch (e) { return jsonError(502, `cancel failed: ${String(e)}`); }
+    const targets = executions
+        .filter((e) => e?.component_type === "workflow"
+            && typeof e?.ffqn === "string" && e.ffqn.endsWith("-cancellable"))
+        .map((e) => e.execution_id);
+    if (targets.length === 0) {
+        return jsonError(409, "no cancellable execution for this run (needs a redeploy on the -cancellable agent loop)");
+    }
+    const failures = [];
+    for (const target of targets) {
+        try { cancelObeliskExecution(target); }
+        catch (e) { failures.push(`${target}: ${String(e)}`); }
+    }
+    if (failures.length) return jsonError(502, `cancel failed: ${failures.join("; ")}`);
+    return jsonResponse({ ok: true, cancelled: targets });
+}
+
 // Fulfil the concrete pending injection stub owned by this workflow. The
 // workflow consumes the response and includes it in its next session.send call.
 async function sayToAgent(request, runId) {
@@ -1083,6 +1116,9 @@ const SHELL_HTML = `<!doctype html>
   .logs .level-warn { color: #ffd27d; }
   .meta #pause-btn, .meta #unpause-btn { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
   .meta #pause-btn:hover, .meta #unpause-btn:hover { text-decoration: underline; }
+  .meta #cancel-btn { border: 0; background: none; color: var(--err); cursor: pointer; padding: 0; font: inherit; }
+  .meta #cancel-btn:hover { text-decoration: underline; }
+  .meta #cancel-confirm { color: var(--err); font-weight: 700; text-decoration: underline; cursor: pointer; }
   .err-box { background: var(--err-bg); border: 1px solid #f4c0c0; color: var(--err); padding: 0.6em 0.9em; border-radius: 4px; margin: 1em 0; }
   .ago { color: var(--muted); font-size: 0.8em; }
 </style>
@@ -1515,6 +1551,9 @@ function renderDetail() {
   const pauseBtn = phase === 'active'
     ? ' &middot; <button type="button" id="pause-btn">pause</button>'
     : (phase === 'paused' ? ' &middot; <button type="button" id="unpause-btn">unpause</button>' : '');
+  const cancelBtn = phase === 'terminal'
+    ? ''
+    : ' &middot; <button type="button" id="cancel-btn">cancel</button>';
 
   main.innerHTML = ''
     + '<h2>' + esc(d.prompt ? truncate(d.prompt, 80) : 'Run') + '</h2>'
@@ -1526,6 +1565,7 @@ function renderDetail() {
     +   (d.effort ? ' &middot; <code>effort: ' + esc(d.effort) + '</code>' : '')
     +   ' &middot; <button type="button" id="logs-toggle">logs (including nested)</button>'
     +   pauseBtn
+    +   cancelBtn
     + '</div>'
     + '<div id="logs-slot">' + renderLogs() + '</div>'
     + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div><pre>' + esc(d.prompt) + '</pre></div>' : '')
@@ -1555,6 +1595,16 @@ function renderDetail() {
   main.querySelector('#logs-toggle')?.addEventListener('click', toggleLogs);
   main.querySelector('#pause-btn')?.addEventListener('click', () => setPaused(state.selected, false));
   main.querySelector('#unpause-btn')?.addEventListener('click', () => setPaused(state.selected, true));
+  main.querySelector('#cancel-btn')?.addEventListener('click', (ev) => {
+    // Two-step inline confirm: swap "cancel" for a "confirm cancel" link in place.
+    const link = document.createElement('a');
+    link.id = 'cancel-confirm';
+    link.href = '#';
+    link.textContent = 'confirm cancel';
+    link.title = 'The agent stops and the run cannot be resumed';
+    link.addEventListener('click', (e) => { e.preventDefault(); cancelRun(state.selected); });
+    ev.currentTarget.replaceWith(link);
+  });
 }
 
 // Status -> control phase. Active runs can expose the live "send to agent" box.
@@ -1938,6 +1988,21 @@ async function setPaused(runId, unpause) {
     await refreshSidebar();
   } catch (e) {
     alert((unpause ? 'Unpause' : 'Pause') + ' failed: ' + String(e));
+  }
+}
+
+async function cancelRun(runId) {
+  try {
+    const r = await fetch('/api/cancel/' + encodeURIComponent(runId), { method: 'POST' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    state.lastSig = null;
+    await refreshDetail();
+    await refreshSidebar();
+  } catch (e) {
+    alert('Cancel failed: ' + String(e));
   }
 }
 
