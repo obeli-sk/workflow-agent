@@ -3,7 +3,7 @@
 // descriptor FFQN selects the use case; the core is otherwise pack-agnostic.
 // There is no container to own: the agent talks to an LLM endpoint over HTTP.
 
-const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop";
+const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop-cancellable";
 const DEFAULT_DESCRIPTOR_FFQN = "obelisk-control:agent/pack.describe";
 
 export default function run(prompt, model, descriptorFfqn, effort) {

@@ -19,7 +19,7 @@
 import * as webapi from "obelisk-agent:tools/webapi";
 
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run";
-const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop";
+const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop-cancellable";
 const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
 const CONFIRM_FFQN = "obelisk-agent:tools/deploy.confirm-apply";
 const INJECTION_FFQN = "obelisk-agent:agent/session.injection";

@@ -515,7 +515,9 @@ return_type = "result<string, string>"
 # --- Workflow -----------------------------------------------------------------
 
 [[workflow_js]]
-ffqn = "obelisk-agent:workflow/workflow.agent-loop"
+# The `-cancellable` suffix opts this workflow into operator cancellation: the UI
+# can cancel this execution (the agent-loop session), unwinding the run.
+ffqn = "obelisk-agent:workflow/workflow.agent-loop-cancellable"
 params = [
   { name = "prompt",        type = "string" },
   { name = "system-prompt", type = "string" },
@@ -542,7 +544,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "workflow/agent.js"
-content_digest = "sha256:e660db4a6cb448baaa3b7cccb8520b822d97df228ee69c32bde0012a2b9c0351"
+content_digest = "sha256:dc56dd6a19f8dcff131a2421ff371aee5949aafc3befbee73bcf8e3a5ad64bc4"
 
 # --- GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
@@ -656,7 +658,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   "AGENT_MODELS",
 ]
-content_digest = "sha256:183b4563132fd1a15384c056f06d5f4c8244250b0aed01330ded12a326a7cd76"
+content_digest = "sha256:439f75d7e1b125a1c5208af2ab14823095fa3aa8e85898a5b52e64e7c39b5f1d"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.
