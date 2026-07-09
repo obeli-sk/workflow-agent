@@ -36,9 +36,9 @@ content_digest = "sha256:b77c66904303c4437a859c7facdc8e4c2e948f54cb5aaae8f953596
 #
 # AGENT_MODELS is a JSON array of models: each entry has
 #   { id, label, api_type, base_url, wire_model, key_env?, max_tokens? }
-# The default catalog points at the local agent-backed-llm-server (chat
-# completions, no key). Add Anthropic/OpenAI entries and set the matching key
-# secret to route there; each provider's endpoint must have an allowed_host below.
+# It is REQUIRED (no built-in default): set it in the environment before serving
+# (see .envrc-example / models.*.json). Each model's endpoint must have a matching
+# allowed_host below; keyed providers also need the matching secret.
 
 [[activity_js]]
 name = "llm_chat"
@@ -55,12 +55,13 @@ location = "activity/llm-chat.js"
 exec.lock_expiry.minutes = 10
 max_retries = 3
 env_vars = [
-  { key = "AGENT_MODELS", value = '${AGENT_MODELS:-[{"id":"claude","label":"claude","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"claude"},{"id":"codex","label":"codex","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"codex"}]}' },
+  "AGENT_MODELS",
 ]
 content_digest = "sha256:8b9c244f99955b5bd45ee37205fd89ec33599976c94a1f1fb474bee6b8a40790"
 
-# Default endpoint: the local agent-backed-llm-server (Claude/Codex subscription in
-# docker; OpenAI-compatible, no key). The default AGENT_MODELS points here.
+# Local agent-backed-llm-server (Claude/Codex subscription in docker;
+# OpenAI-compatible, no key). Whitelisted here; point AGENT_MODELS at it to use it
+# (models.local.json).
 [[activity_js.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
@@ -69,7 +70,7 @@ request_url_regex = "^POST ${LLM_BASE_URL_REGEX:-http://127\\.0\\.0\\.1:9190}/v1
 # exe.dev LLM gateway. One local origin proxies Anthropic / OpenAI / Fireworks;
 # real credentials are injected at the gateway edge, so a model here sends only the
 # literal public token "implicit" (auth_value in AGENT_MODELS) -- no secret. Switch
-# to it by setting AGENT_MODELS in .envrc (see .envrc-example / models.gateway.json).
+# to it by setting AGENT_MODELS in .envrc (see .envrc-example / models.exe-gateway.json).
 [[activity_js.allowed_host]]
 pattern = "${LLM_GATEWAY:-http://localhost:7070}"
 methods = ["POST"]
@@ -652,7 +653,7 @@ routes = [
 env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
-  { key = "AGENT_MODELS", value = '${AGENT_MODELS:-[{"id":"claude","label":"claude","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"claude"},{"id":"codex","label":"codex","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"codex"}]}' },
+  "AGENT_MODELS",
 ]
 content_digest = "sha256:54e8dc953c85c46fab87da5154f85b2ffbf1d2e0c3295dc3068afb9133dfe265"
 # Read-only API access for the polling UI (statuses, responses, events, logs,

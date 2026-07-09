@@ -2,20 +2,18 @@ use flake .
 
 # --- LLM model catalog --------------------------------------------------------
 # AGENT_MODELS (read by activity/llm-chat.js and the web UI) is the list of models
-# in the UI dropdown. When set here (direnv loads it) it OVERRIDES the built-in
-# default in deployment.toml (which is the local agent-backed-llm-server).
+# in the UI dropdown. It is REQUIRED: deployment.toml has no built-in default, so
+# the server won't serve until it is set here (direnv loads it).
 #
-# Two ready-made catalogs ship as JSON files; load one into AGENT_MODELS:
-#   models.local.json     agent-backed-llm-server on :9190 (keyless)  [= the default]
+# Two ready-made catalogs ship as JSON files:
+#   models.local.json         agent-backed-llm-server on :9190 (keyless)
 #   models.exe-gateway.json   exe.dev gateway: Anthropic + OpenAI + Fireworks (22 models)
 #
-# Uncomment one (or point AGENT_MODELS at any JSON however you like):
+# Symlink a canonical models.json and switch catalogs with a single ln -sf:
+#   ln -sf models.local.json models.json
+export AGENT_MODELS="$(cat models.json)"
+# ...or point AGENT_MODELS at either file (or any JSON) directly:
 # export AGENT_MODELS="$(cat models.exe-gateway.json)"
-# export AGENT_MODELS="$(cat models.local.json)"
-#
-# ...or symlink a canonical models.json and switch with a single ln -sf:
-#   ln -sf models.gateway.json models.json
-# export AGENT_MODELS="$(cat models.json)"
 
 # Each entry: { id, label, api_type, base_url, wire_model, auth_header?, auth_value?, max_tokens? }
 #   api_type   anthropic-messages | openai-responses | openai-chat-completions

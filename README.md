@@ -17,18 +17,22 @@ supplies the use case (system prompt + tools). This repo ships one pack,
 
 - **Obelisk** — the runtime that serves this deployment. Use `nix develop` for
   the pinned toolchain.
-- **An LLM endpoint.** The model lives behind an HTTP endpoint chosen from the
-  `AGENT_MODELS` catalog. The built-in default points at the sibling
+- **`AGENT_MODELS`** — the model catalog, **required**. It
+  is a JSON array pointing each model at an HTTP endpoint. Any OpenAI- or
+  Anthropic-shaped endpoint works: the sibling
   [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server)
-  (a Claude/Codex subscription in docker, keyless on `:9190`). Any
-  OpenAI- or Anthropic-shaped endpoint works: the exe.dev gateway, Anthropic or
-  OpenAI directly, OpenRouter, vLLM, Ollama, etc. Override the catalog by
-  exporting `AGENT_MODELS` in `.envrc` (copy `.envrc-example`).
+  (a Claude/Codex subscription in docker, keyless on `:9190`), the exe.dev
+  gateway, Anthropic or OpenAI directly, OpenRouter, vLLM, Ollama, etc. Two
+  ready-made catalogs ship as `models.local.json` and `models.exe-gateway.json`.
 
 ## Run
 
+Set the required catalog, then serve:
+
 ```sh
-just serve    # obelisk server run -d deployment.toml
+ln -sf models.local.json models.json      # pick a catalog
+export AGENT_MODELS="$(cat models.json)"   # or use direnv (.envrc-example)
+just serve                                 # obelisk server run -d deployment.toml
 ```
 
 Then open the web UI on the webhook port (default `8080`), or submit via the API:
