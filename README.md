@@ -17,13 +17,21 @@ supplies the use case (system prompt + tools). This repo ships one pack,
 
 - **Obelisk** — the runtime that serves this deployment. Use `nix develop` for
   the pinned toolchain.
-- **`AGENT_MODELS`** — the model catalog, **required**. It
-  is a JSON array pointing each model at an HTTP endpoint. Any OpenAI- or
-  Anthropic-shaped endpoint works: the sibling
-  [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server)
-  (a Claude/Codex subscription in docker, keyless on `:9190`), the exe.dev
-  gateway, Anthropic or OpenAI directly, OpenRouter, vLLM, Ollama, etc. Two
-  ready-made catalogs ship as `models.local.json` and `models.exe-gateway.json`.
+- **`AGENT_MODELS`** — the model catalog, **required**: a JSON array pointing each
+  model at an OpenAI- or Anthropic-shaped HTTP endpoint. Two ready-made catalogs
+  ship:
+  - `models.local.json` — the sibling
+    [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server)
+    (a Claude/Codex subscription in docker, keyless on `:9190`).
+  - `models.exe-gateway.json` — the exe.dev LLM gateway (Anthropic + OpenAI +
+    Fireworks). Requires an exe.dev account; the entries point at
+    `http://localhost:7070`, so forward the gateway to that local port first:
+    ```sh
+    ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz
+    ```
+
+  Any other compatible endpoint (Anthropic/OpenAI directly, OpenRouter, vLLM,
+  Ollama, …) works too — add an entry pointing at it.
 
 ## Run
 

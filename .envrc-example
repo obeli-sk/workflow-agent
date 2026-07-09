@@ -8,6 +8,9 @@ use flake .
 # Two ready-made catalogs ship as JSON files:
 #   models.local.json         agent-backed-llm-server on :9190 (keyless)
 #   models.exe-gateway.json   exe.dev gateway: Anthropic + OpenAI + Fireworks (22 models)
+#                             needs an exe.dev account; its entries point at
+#                             http://localhost:7070, so forward the gateway first:
+#                               ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz
 #
 # Symlink a canonical models.json and switch catalogs with a single ln -sf:
 #   ln -sf models.local.json models.json
