@@ -196,7 +196,9 @@ function prepareInjection(injection) {
     return { injection: current, operatorMessages: [text.trim()] };
 }
 function openInjection() {
-    const joinSet = obelisk.createJoinSet();
+    // Named so the UI can tell "waiting for the operator" (join_name "operator")
+    // apart from the agent actively working (completion / tool join sets).
+    const joinSet = obelisk.createJoinSet({ name: 'operator' });
     const executionId = joinSet.submit(INJECTION_FFQN, []);
     console.log(`opened operator injection ${executionId}`);
     return { joinSet, executionId };

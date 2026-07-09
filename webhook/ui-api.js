@@ -11,8 +11,10 @@
 //
 // The SPA polls the run list every 10s and active open runs every 3s, so
 // refreshes happen without page reloads. Terminal runs stop polling. Layout is
-// two-pane: sidebar = prompt list + new-prompt form, right pane = chat-style
-// transcript.
+// two-pane: sidebar = "new conversation" button + run list; right pane =
+// chat-style transcript with a persistent composer pinned at the bottom (creates
+// a run, or steers/replies to the selected one) and an "agent is working"
+// indicator directly above it.
 
 import * as webapi from "obelisk-agent:tools/webapi";
 
@@ -244,16 +246,42 @@ function loadModels() {
 
 // ----- list -------------------------------------------------------------
 
+// The run's live phase lives on the agent-loop *child*, not the top-level
+// workflow.run. The parent spends the whole run blocked on its "session" join
+// set (waiting for the child), so its join_name never tells "working" apart
+// from "waiting for the operator". While the parent is still delegating, report
+// the child's pending_state; once the parent reaches a terminal/paused state it
+// is authoritative for the whole run.
+function pickRunState(parentStatus, childStatus) {
+    const parent = parentStatus?.pending_state || null;
+    const phase = parent?.status;
+    const parentAuthoritative = !childStatus
+        || phase === "finished" || phase === "paused"
+        || (typeof phase === "string" && phase.startsWith("permanently"));
+    const ps = parentAuthoritative ? parent : (childStatus.pending_state || parent);
+    return {
+        status: ps?.status || "unknown",
+        result_kind: ps?.result_kind ?? null,
+        join_name: parseJoinName(ps?.join_set_id),
+    };
+}
+
 async function listRuns() {
     const executions = await listExecutions(WORKFLOW_FFQN, "", false, false, 50);
-    const runs = await Promise.all(executions.map(async (e) => ({
-        id: e.execution_id,
-        created_at: e.created_at || "",
-        status: e.pending_state?.status || "unknown",
-        result_kind: e.pending_state?.result_kind ?? null,
-        join_name: parseJoinName(e.pending_state?.join_set_id),
-        prompt_preview: await loadPromptPreview(e.execution_id),
-    })));
+    const runs = await Promise.all(executions.map(async (e) => {
+        const id = e.execution_id;
+        const [childId, prompt_preview] = await Promise.all([
+            loadAgentLoopExecution(id),
+            loadPromptPreview(id),
+        ]);
+        const childStatus = childId ? await loadStatus(childId) : null;
+        return {
+            id,
+            created_at: e.created_at || "",
+            ...pickRunState(e, childStatus),
+            prompt_preview,
+        };
+    }));
     return { runs };
 }
 
@@ -269,8 +297,9 @@ async function detailRun(id, cursorState) {
     const resetTranscript = !agentLoopId || cursorState.agentLoopId !== agentLoopId;
     const responseCursor = resetTranscript ? 0 : cursorState.responseCursor;
     const historyVersion = resetTranscript ? 0 : cursorState.historyVersion;
-    const [status, created, walk, sent, finalResult, pendingAsks, pendingConfirms, pendingInjection] = await Promise.all([
+    const [status, childStatus, created, walk, sent, finalResult, pendingAsks, pendingConfirms, pendingInjection] = await Promise.all([
         loadStatus(id),
+        agentLoopId ? loadStatus(agentLoopId) : Promise.resolve(null),
         loadCreated(id),
         loadResponses(agentLoopId || id, responseCursor),
         loadSentResults(agentLoopId || id, historyVersion),
@@ -281,9 +310,7 @@ async function detailRun(id, cursorState) {
     ]);
     return {
         id,
-        status: status?.pending_state?.status || "unknown",
-        result_kind: status?.pending_state?.result_kind ?? null,
-        join_name: parseJoinName(status?.pending_state?.join_set_id),
+        ...pickRunState(status, childStatus),
         created_at: status?.created_at || "",
         prompt: created?.prompt ?? null,
         backend: created?.backend ?? null,
@@ -955,16 +982,25 @@ const SHELL_HTML = `<!doctype html>
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body { font: 14px/1.45 -apple-system, system-ui, sans-serif; color: #1d1d1f; background: var(--bg); display: flex; }
-  aside { width: 320px; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; }
-  main { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
+  aside { width: 300px; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; }
+  main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  #detail { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
   aside header { padding: 1rem; border-bottom: 1px solid var(--line); }
-  aside header h1 { margin: 0 0 0.5rem; font-size: 1rem; font-weight: 600; }
-  aside header form textarea { width: 100%; resize: vertical; min-height: 3.5em; padding: 0.4em 0.6em; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
-  aside header form button { margin-top: 0.4em; padding: 0.4em 0.9em; font: inherit; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: white; border-radius: 4px; }
-  aside header form button:disabled { opacity: 0.5; cursor: wait; }
-  aside header form .new-row { display: flex; gap: 0.4em; align-items: center; }
-  aside header form .new-row button { margin-top: 0; }
-  aside header form select { padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--panel); }
+  aside header h1 { margin: 0 0 0.6rem; font-size: 1rem; font-weight: 600; }
+  #new-convo { width: 100%; padding: 0.55em 0.9em; font: inherit; font-weight: 600; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: white; border-radius: 4px; }
+  #new-convo:hover { background: #1f57ad; }
+  #composer { border-top: 1px solid var(--line); background: var(--panel); padding: 0.7rem 2rem 1rem; }
+  #composer form textarea { width: 100%; resize: vertical; min-height: 3em; max-height: 40vh; padding: 0.5em 0.7em; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  #composer form textarea:disabled { background: #f4f4f4; }
+  .composer-row { display: flex; gap: 0.5em; align-items: center; margin-top: 0.5em; }
+  .composer-selects { display: flex; gap: 0.5em; flex: 1; flex-wrap: wrap; min-width: 0; }
+  #composer select { padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--panel); max-width: 100%; }
+  #composer-send { margin-left: auto; padding: 0.5em 1.3em; font: inherit; font-weight: 600; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: white; border-radius: 6px; }
+  #composer-send:disabled { opacity: 0.5; cursor: not-allowed; }
+  .working { display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.5em; color: var(--warn); font-size: 0.85em; font-weight: 600; }
+  .working[hidden] { display: none; }
+  .working .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); animation: workpulse 1s ease-in-out infinite; }
+  @keyframes workpulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(0.7); } }
   .runs { flex: 1; overflow-y: auto; }
   .run-item { display: block; padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); cursor: pointer; text-decoration: none; color: inherit; }
   .run-item:hover { background: #f4f4f4; }
@@ -1045,10 +1081,6 @@ const SHELL_HTML = `<!doctype html>
   .logs .source { color: #8eaccf; }
   .logs .level-error { color: #ff9b9b; }
   .logs .level-warn { color: #ffd27d; }
-  .interact { max-width: 720px; margin: 1.4em 0; padding: 0.8em 1em; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
-  .interact textarea { width: 100%; resize: vertical; min-height: 3em; padding: 0.4em 0.6em; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
-  .interact button { margin-top: 0.4em; padding: 0.4em 0.9em; font: inherit; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: white; border-radius: 4px; }
-  .interact select { padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--panel); }
   .meta #pause-btn, .meta #unpause-btn { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
   .meta #pause-btn:hover, .meta #unpause-btn:hover { text-decoration: underline; }
   .err-box { background: var(--err-bg); border: 1px solid #f4c0c0; color: var(--err); padding: 0.6em 0.9em; border-radius: 4px; margin: 1em 0; }
@@ -1068,27 +1100,35 @@ const SHELL_HTML = `<!doctype html>
 <aside>
   <header>
     <h1>obelisk-agent</h1>
-    <form id="new-form">
-      <textarea id="new-prompt" placeholder="Ask the agent..." required></textarea>
-      <div class="new-row">
-        <select id="new-backend" title="model"></select>
-        <select id="new-effort" title="reasoning effort">
-          <option value="">effort: default</option>
-          <option value="off">off</option>
-          <option value="minimal">minimal</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="xhigh">xhigh</option>
-        </select>
-        <button type="submit" id="new-submit">Send</button>
-      </div>
-    </form>
+    <button type="button" id="new-convo">+ New conversation</button>
   </header>
   <div class="runs" id="runs"></div>
 </aside>
-<main id="detail">
-  <p class="empty">Pick a run from the sidebar, or submit a new prompt.</p>
+<main>
+  <div id="detail" class="transcript">
+    <p class="empty">Start a new conversation below, or pick a run from the sidebar.</p>
+  </div>
+  <div id="composer">
+    <div id="working" class="working" hidden><span class="dot"></span><span id="working-label">Agent is working…</span></div>
+    <form id="composer-form">
+      <textarea id="composer-input" placeholder="Ask the agent..." rows="3"></textarea>
+      <div class="composer-row">
+        <div class="composer-selects" id="composer-selects">
+          <select id="new-backend" title="model"></select>
+          <select id="new-effort" title="reasoning effort">
+            <option value="">effort: default</option>
+            <option value="off">off</option>
+            <option value="minimal">minimal</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+          </select>
+        </div>
+        <button type="submit" id="composer-send">Send</button>
+      </div>
+    </form>
+  </div>
 </main>
 <script>
 const OBELISK_UI_URL = "__OBELISK_UI_URL__";
@@ -1150,6 +1190,7 @@ const JOIN_LABELS = {
   'ask-user': ['awaiting reply', 'awaiting'],
   'confirm-apply': ['awaiting approval', 'awaiting'],
   'completion': ['thinking', 'working'],
+  'operator': ['your turn', 'awaiting'],
 };
 function describeStatus(status, result_kind, joinName) {
   if (status === 'blocked_by_join_set') {
@@ -1236,7 +1277,9 @@ function scheduleDetailRefresh() {
 function refreshDetail() {
   const main = document.getElementById('detail');
   if (!state.selected) {
-    main.innerHTML = '<p class="empty">Pick a run from the sidebar, or submit a new prompt.</p>';
+    main.innerHTML = '<p class="empty">Start a new conversation below, or pick a run from the sidebar.</p>';
+    state.detail = null;
+    renderComposer();
     return Promise.resolve();
   }
   const selected = state.selected;
@@ -1428,6 +1471,11 @@ function renderDetail() {
   if (!d) return;
   const main = document.getElementById('detail');
 
+  // The composer (new-prompt / steer box) + working indicator live outside the
+  // transcript and reflect the live status every poll, even when the transcript
+  // itself is unchanged.
+  renderComposer();
+
   // Skip rendering when nothing changed - otherwise the 2 s poll trashes any
   // <details> the user opened.
   const sig = JSON.stringify({
@@ -1443,8 +1491,6 @@ function renderDetail() {
   for (const el of main.querySelectorAll('details.call[open]')) {
     if (el.dataset.key) openKeys.add(el.dataset.key);
   }
-  // Preserve in-progress text in the say box across the poll re-render.
-  const sayDraft = main.querySelector('#say-input')?.value || '';
 
   state.lastSig = sig;
 
@@ -1486,13 +1532,7 @@ function renderDetail() {
     + confirmsHtml
     + turnsHtml
     + finalHtml
-    + asksHtml
-    + renderInteraction(
-      phase,
-      d.pending_injection,
-      Boolean((d.pending_asks && d.pending_asks.length)
-        || (d.pending_confirms && d.pending_confirms.length)),
-    );
+    + asksHtml;
 
   hydrateDisplayBlocks(main);
 
@@ -1515,15 +1555,6 @@ function renderDetail() {
   main.querySelector('#logs-toggle')?.addEventListener('click', toggleLogs);
   main.querySelector('#pause-btn')?.addEventListener('click', () => setPaused(state.selected, false));
   main.querySelector('#unpause-btn')?.addEventListener('click', () => setPaused(state.selected, true));
-
-  const say = main.querySelector('#say-form');
-  if (say) {
-    say.querySelector('#say-input').value = sayDraft;
-    say.addEventListener('submit', (ev) => {
-      ev.preventDefault();
-      sendToAgent(state.selected, say.querySelector('#say-input').value);
-    });
-  }
 }
 
 // Status -> control phase. Active runs can expose the live "send to agent" box.
@@ -1533,16 +1564,49 @@ function runPhase(status) {
   return 'active';
 }
 
-// Bottom-of-transcript controls: a chat box to steer a running agent. It exists
-// only while the workflow has a concrete pending injection stub. Explicit
-// ask/confirm gates own the input UI and suppress generic steering.
-function renderInteraction(phase, pendingInjection, hasHumanGate) {
-  if (phase === 'terminal' || hasHumanGate || !pendingInjection) return '';
-  return '<form id="say-form" class="interact say">'
-    + '<div class="label">' + (phase === 'paused' ? 'send to agent (queued until unpaused)' : 'send to agent') + '</div>'
-    + '<textarea id="say-input" placeholder="Steer or interrupt the agent... (delivered next turn)" required></textarea>'
-    + '<button type="submit">Send to agent</button>'
-    + '</form>';
+// The persistent composer at the bottom of the right pane is context-sensitive:
+//   - no run / terminal run  -> "new conversation": create a run (model+effort).
+//   - active or paused run   -> "say": steer/reply to the running agent.
+// A pending ask/confirm gate owns its own inline input, so the composer defers.
+function hasHumanGate(d) {
+  return Boolean(d && ((d.pending_asks && d.pending_asks.length) || (d.pending_confirms && d.pending_confirms.length)));
+}
+function isWorking(d) {
+  if (!d || runPhase(d.status) !== 'active') return false;
+  // describeStatus tags "your turn" / human gates as 'awaiting'; everything else
+  // active (thinking, running a tool, locked) means the agent is busy.
+  return describeStatus(d.status, d.result_kind, d.join_name).cls !== 'awaiting';
+}
+function composerMode() {
+  const d = state.detail;
+  if (!state.selected || !d || runPhase(d.status) === 'terminal') return 'new';
+  return 'say';
+}
+function renderComposer() {
+  const d = state.detail;
+  const mode = composerMode();
+  const gate = hasHumanGate(d);
+  const working = isWorking(d);
+  const input = document.getElementById('composer-input');
+  const send = document.getElementById('composer-send');
+  const selects = document.getElementById('composer-selects');
+  const workingEl = document.getElementById('working');
+  if (!input) return;
+
+  workingEl.hidden = !working;
+  selects.style.display = mode === 'new' ? 'flex' : 'none';
+
+  if (gate) {
+    input.placeholder = 'Respond to the request above...';
+    input.disabled = true;
+    send.disabled = true;
+  } else {
+    input.disabled = false;
+    send.disabled = false;
+    input.placeholder = mode === 'say'
+      ? (working ? 'Steer the agent... (delivered next turn)' : 'Reply to the agent...')
+      : 'Ask the agent...';
+  }
 }
 
 // One pending hot-reload confirmation: agent summary, target deployment, the
@@ -1805,11 +1869,9 @@ function truncate(s, n) {
 }
 
 async function submitPrompt(prompt) {
-  const btn = document.getElementById('new-submit');
-  const sel = document.getElementById('new-backend');
-  const backend = sel ? sel.value : 'claude';
-  const effortSel = document.getElementById('new-effort');
-  const effort = effortSel ? effortSel.value : '';
+  const btn = document.getElementById('composer-send');
+  const backend = document.getElementById('new-backend')?.value || null;
+  const effort = document.getElementById('new-effort')?.value || '';
   btn.disabled = true;
   try {
     const r = await fetch('/api/submit', {
@@ -1819,7 +1881,7 @@ async function submitPrompt(prompt) {
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-    document.getElementById('new-prompt').value = '';
+    document.getElementById('composer-input').value = '';
     await refreshSidebar();
     setSelected(data.execution_id);
   } catch (e) {
@@ -1890,7 +1952,7 @@ async function sendToAgent(runId, text) {
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-    const box = document.getElementById('say-input');
+    const box = document.getElementById('composer-input');
     if (box) box.value = '';
     if (state.detail) state.detail.pending_injection = null;
     state.lastSig = null;
@@ -1900,10 +1962,30 @@ async function sendToAgent(runId, text) {
   }
 }
 
-document.getElementById('new-form').addEventListener('submit', (ev) => {
+function sendComposer() {
+  const input = document.getElementById('composer-input');
+  const text = input.value.trim();
+  if (!text) return;
+  if (composerMode() === 'say') sendToAgent(state.selected, text);
+  else submitPrompt(text);
+}
+
+document.getElementById('composer-form').addEventListener('submit', (ev) => {
   ev.preventDefault();
-  const t = document.getElementById('new-prompt').value.trim();
-  if (t) submitPrompt(t);
+  sendComposer();
+});
+
+// Enter sends; Shift+Enter inserts a newline (chat-composer convention).
+document.getElementById('composer-input').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    sendComposer();
+  }
+});
+
+document.getElementById('new-convo').addEventListener('click', () => {
+  setSelected(null);
+  document.getElementById('composer-input').focus();
 });
 
 async function loadModels() {
