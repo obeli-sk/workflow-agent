@@ -1,17 +1,18 @@
 // obelisk-agent:tools/webapi.submit-workflow-execution:
-//   func(execution-id: string, prompt: string, backend: option<string>)
+//   func(execution-id: string, prompt: string, backend: option<string>, effort: option<string>)
 //     -> result<string, string>
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run";
 
-export default async function submit_workflow_execution(executionId, prompt, backend) {
+export default async function submit_workflow_execution(executionId, prompt, backend, effort) {
     if (!executionId) throw "execution-id is required";
     if (typeof prompt !== "string" || !prompt.trim()) throw "prompt is required";
-    // workflow.run params: [prompt, model, descriptor-ffqn]. backend is the
-    // model id; descriptor is left null so the run uses the default pack.
+    // workflow.run params: [prompt, model, descriptor-ffqn, effort]. backend is
+    // the model id; descriptor is left null so the run uses the default pack.
     const modelId = typeof backend === "string" && backend ? backend : null;
+    const effortLevel = typeof effort === "string" && effort ? effort : null;
     const body = {
         ffqn: WORKFLOW_FFQN,
-        params: [prompt, modelId, null],
+        params: [prompt, modelId, null, effortLevel],
     };
 
     const base = process.env["OBELISK_API_URL"];

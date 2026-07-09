@@ -4,7 +4,7 @@
 // behind an HTTP endpoint.
 //
 // obelisk-agent:llm/chat.completion:
-//   func(system: string, messages-json: string, tools-json: string, model: string)
+//   func(system: string, messages-json: string, tools-json: string, model: string, effort: string)
 //     -> result<variant {
 //          reply(record { content-json: string, stop-reason: string }),
 //          rate-limited(record { retry-after-seconds: u32, message: string }),
@@ -24,16 +24,17 @@
 
 const DEFAULT_MAX_TOKENS = 8192;
 
-export default async function completion(system, messagesJson, toolsJson, model) {
+export default async function completion(system, messagesJson, toolsJson, model, effort) {
     const messages = parseJson(messagesJson, 'messages-json', []);
     const tools = parseJson(toolsJson, 'tools-json', []);
     const cfg = resolveModel(model);
+    const level = resolveEffort(effort);
     const toolNames = buildToolNames(tools);
 
     let result;
-    if (cfg.api_type === 'anthropic-messages') result = await callAnthropic(cfg, system, messages, tools, toolNames);
-    else if (cfg.api_type === 'openai-chat-completions') result = await callOpenAIChat(cfg, system, messages, tools, toolNames);
-    else if (cfg.api_type === 'openai-responses') result = await callOpenAIResponses(cfg, system, messages, tools, toolNames);
+    if (cfg.api_type === 'anthropic-messages') result = await callAnthropic(cfg, system, messages, tools, toolNames, level);
+    else if (cfg.api_type === 'openai-chat-completions') result = await callOpenAIChat(cfg, system, messages, tools, toolNames, level);
+    else if (cfg.api_type === 'openai-responses') result = await callOpenAIResponses(cfg, system, messages, tools, toolNames, level);
     else throw `unknown api_type '${cfg.api_type}' for model '${cfg.id}'`;
 
     if (result.rate_limited) return { rate_limited: result.rate_limited };
@@ -76,14 +77,60 @@ function applyAuth(cfg, headers) {
         String(cfg.auth_value).replace(/\$\{(\w+)\}/g, (_, name) => process.env[name] || '');
 }
 
+// ----- reasoning effort -------------------------------------------------------
+
+// `effort` is a user-facing reasoning level (shelley vocabulary). One of
+// minimal|low|medium|high|xhigh enables extended thinking; anything else (empty,
+// "off", "default", unknown) omits the field so the provider uses its own
+// default. Each adapter maps the resolved level onto its own wire shape.
+const EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
+function resolveEffort(effort) {
+    const e = typeof effort === 'string' ? effort.trim().toLowerCase() : '';
+    return EFFORTS.has(e) ? e : '';
+}
+// Anthropic budget_tokens per level (legacy non-adaptive models); xhigh clamps to
+// the high budget since budget-style APIs have no xhigh tier.
+const ANTHROPIC_BUDGET = { minimal: 1024, low: 2048, medium: 8192, high: 16384, xhigh: 16384 };
+// Claude Opus 4.7+ / Sonnet 5 / Fable 5 require adaptive thinking (output_config
+// effort) instead of a token budget. Match on '-'/'.'-delimited tokens so dated
+// snapshots ("claude-opus-4-8-20260115") and provider-qualified names
+// ("us.anthropic.claude-opus-4-8-v1:0") are covered without false positives.
+const ADAPTIVE_MODELS = ['claude-fable-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-7'];
+function useAdaptiveThinking(model) {
+    const m = '-' + String(model).replace(/\./g, '-') + '-';
+    return ADAPTIVE_MODELS.some((name) => m.includes('-' + name + '-'));
+}
+// Set extended-thinking fields for the requested level. Adaptive models take
+// output_config.effort; budget models take thinking.budget_tokens and require
+// max_tokens > budget_tokens, so bump max_tokens if needed.
+function applyAnthropicThinking(body, model, level) {
+    if (!level) return;
+    if (useAdaptiveThinking(model)) {
+        body.thinking = { type: 'adaptive' };
+        body.output_config = { effort: level };
+        return;
+    }
+    const budget = ANTHROPIC_BUDGET[level];
+    if (body.max_tokens <= budget) body.max_tokens = budget + 1024;
+    body.thinking = { type: 'enabled', budget_tokens: budget };
+}
+// chat/completions reasoning_effort accepts low|medium|high on many backends;
+// clamp the finer levels the other APIs allow.
+function chatEffort(level) {
+    if (level === 'minimal') return 'low';
+    if (level === 'xhigh') return 'high';
+    return level;
+}
+
 // ----- anthropic messages -----------------------------------------------------
 
-async function callAnthropic(cfg, system, messages, tools, toolNames) {
+async function callAnthropic(cfg, system, messages, tools, toolNames, level) {
     const body = {
         model: wireModel(cfg),
         max_tokens: maxTokens(cfg),
         messages: encodeMessages(messages, toolNames),
     };
+    applyAnthropicThinking(body, wireModel(cfg), level);
     if (system) body.system = system;
     if (tools.length > 0) body.tools = tools.map((t) => ({ name: toolNames.encode(t.name), description: t.description, input_schema: t.input_schema }));
 
@@ -103,7 +150,7 @@ async function callAnthropic(cfg, system, messages, tools, toolNames) {
 
 // ----- openai chat completions ------------------------------------------------
 
-async function callOpenAIChat(cfg, system, messages, tools, toolNames) {
+async function callOpenAIChat(cfg, system, messages, tools, toolNames, level) {
     const wire = [];
     if (system) wire.push({ role: 'system', content: system });
     for (const msg of messages) {
@@ -127,6 +174,7 @@ async function callOpenAIChat(cfg, system, messages, tools, toolNames) {
     }
 
     const body = { model: wireModel(cfg), messages: wire };
+    if (level) body.reasoning_effort = chatEffort(level);
     if (tools.length > 0) {
         body.tools = tools.map((t) => ({ type: 'function', function: { name: toolNames.encode(t.name), description: t.description, parameters: t.input_schema } }));
         body.tool_choice = 'auto';
@@ -151,7 +199,7 @@ async function callOpenAIChat(cfg, system, messages, tools, toolNames) {
 
 // ----- openai responses -------------------------------------------------------
 
-async function callOpenAIResponses(cfg, system, messages, tools, toolNames) {
+async function callOpenAIResponses(cfg, system, messages, tools, toolNames, level) {
     const input = [];
     for (const msg of messages) {
         const text = textOf(msg);
@@ -169,6 +217,11 @@ async function callOpenAIResponses(cfg, system, messages, tools, toolNames) {
     }
 
     const body = { model: wireModel(cfg), input };
+    if (level) {
+        // gpt-5.x-codex rejects reasoning.effort="minimal" (HTTP 400); clamp to low.
+        const effort = level === 'minimal' && /codex/.test(wireModel(cfg)) ? 'low' : level;
+        body.reasoning = { effort };
+    }
     if (system) body.instructions = system;
     if (tools.length > 0) {
         body.tools = tools.map((t) => ({ type: 'function', name: toolNames.encode(t.name), description: t.description, parameters: t.input_schema }));

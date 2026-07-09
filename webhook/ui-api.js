@@ -182,8 +182,8 @@ function stubObeliskExecution(id, result) {
     return activityJson(`stub-execution ${id}`, webapi.stubExecution(id, JSON.stringify(result)));
 }
 
-function submitWorkflowExecution(id, prompt, backend) {
-    return activityJson(`submit-workflow-execution ${id}`, webapi.submitWorkflowExecution(id, prompt, backend));
+function submitWorkflowExecution(id, prompt, backend, effort) {
+    return activityJson(`submit-workflow-execution ${id}`, webapi.submitWorkflowExecution(id, prompt, backend, effort));
 }
 
 function jsonResponse(value, status = 200) {
@@ -287,6 +287,7 @@ async function detailRun(id, cursorState) {
         created_at: status?.created_at || "",
         prompt: created?.prompt ?? null,
         backend: created?.backend ?? null,
+        effort: created?.effort ?? null,
         transcript: {
             reset: resetTranscript,
             agent_loop_id: agentLoopId,
@@ -319,9 +320,9 @@ async function loadStatus(id) {
     catch (_) { return null; }
 }
 
-// The workflow.run creation params are [prompt, backend]. version 0 is the
-// `created` event; without including_cursor=true the server skips it and returns
-// the `locked` event at version 1, which has no params.
+// The workflow.run creation params are [prompt, model, descriptor-ffqn, effort].
+// version 0 is the `created` event; without including_cursor=true the server
+// skips it and returns the `locked` event at version 1, which has no params.
 async function loadCreated(id) {
     try {
         const payload = await getExecutionEvents(id, "version_from", 0, true, 1);
@@ -330,6 +331,7 @@ async function loadCreated(id) {
         return {
             prompt: typeof params[0] === "string" ? params[0] : null,
             backend: typeof params[1] === "string" ? params[1] : null,
+            effort: typeof params[3] === "string" ? params[3] : null,
         };
     } catch (_) { return null; }
 }
@@ -829,8 +831,10 @@ async function submit(request) {
     }
     // backend is the workflow's option<string>: null => claude.
     const backend = (typeof payload?.backend === "string" && payload.backend) ? payload.backend : null;
+    // effort is the reasoning level (option<string>): null => provider default.
+    const effort = (typeof payload?.effort === "string" && payload.effort) ? payload.effort : null;
     const execId = obelisk.executionIdGenerate();
-    try { submitWorkflowExecution(execId, prompt, backend); }
+    try { submitWorkflowExecution(execId, prompt, backend, effort); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }
@@ -1068,6 +1072,15 @@ const SHELL_HTML = `<!doctype html>
       <textarea id="new-prompt" placeholder="Ask the agent..." required></textarea>
       <div class="new-row">
         <select id="new-backend" title="model"></select>
+        <select id="new-effort" title="reasoning effort">
+          <option value="">effort: default</option>
+          <option value="off">off</option>
+          <option value="minimal">minimal</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+        </select>
         <button type="submit" id="new-submit">Send</button>
       </div>
     </form>
@@ -1419,7 +1432,7 @@ function renderDetail() {
   // <details> the user opened.
   const sig = JSON.stringify({
     id: d.id, status: d.status, result_kind: d.result_kind, join_name: d.join_name,
-    prompt: d.prompt, backend: d.backend, turns: d.turns, final_result: d.final_result,
+    prompt: d.prompt, backend: d.backend, effort: d.effort, turns: d.turns, final_result: d.final_result,
     pending_asks: d.pending_asks, pending_confirms: d.pending_confirms,
     pending_injection: d.pending_injection,
   });
@@ -1463,6 +1476,8 @@ function renderDetail() {
     +   '<a href="' + esc(execLink(d.id)) + '" target="_blank" rel="noopener"><code>' + esc(d.id) + '</code></a>'
     +   ' &middot; <span class="status ' + esc(statusCls) + '">' + esc(label) + '</span>'
     +   ' &middot; ' + esc(ago(d.created_at))
+    +   (d.backend ? ' &middot; <code>' + esc(d.backend) + '</code>' : '')
+    +   (d.effort ? ' &middot; <code>effort: ' + esc(d.effort) + '</code>' : '')
     +   ' &middot; <button type="button" id="logs-toggle">logs (including nested)</button>'
     +   pauseBtn
     + '</div>'
@@ -1793,12 +1808,14 @@ async function submitPrompt(prompt) {
   const btn = document.getElementById('new-submit');
   const sel = document.getElementById('new-backend');
   const backend = sel ? sel.value : 'claude';
+  const effortSel = document.getElementById('new-effort');
+  const effort = effortSel ? effortSel.value : '';
   btn.disabled = true;
   try {
     const r = await fetch('/api/submit', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt, backend }),
+      body: JSON.stringify({ prompt, backend, effort }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));

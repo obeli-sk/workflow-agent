@@ -14,7 +14,7 @@ const INJECTION_FFQN = 'obelisk-agent:agent/session.injection';
 //
 // toolsJson is a JSON array of tools:
 //   { name, description, ffqn, params: [{ name, type, default? }] }
-export default function agentLoop(prompt, systemPrompt, toolsJson, model) {
+export default function agentLoop(prompt, systemPrompt, toolsJson, model, effort) {
     if (typeof prompt !== 'string' || !prompt.trim()) throw 'prompt is required';
     if (typeof systemPrompt !== 'string' || !systemPrompt) throw 'system prompt is required';
 
@@ -43,7 +43,7 @@ export default function agentLoop(prompt, systemPrompt, toolsJson, model) {
                 turn = 0;
             }
 
-            const reply = callLlm(system, messages, llmToolsJson, model);
+            const reply = callLlm(system, messages, llmToolsJson, model, effort);
             turn += 1;
             messages.push({ role: 'assistant', content: reply.content });
 
@@ -73,9 +73,9 @@ export default function agentLoop(prompt, systemPrompt, toolsJson, model) {
 
 // One LLM call, retrying durably through an endpoint rate limit. Returns the
 // assistant turn as neutral content blocks: { content: [block], stop_reason }.
-function callLlm(system, messages, toolsJson, model) {
+function callLlm(system, messages, toolsJson, model, effort) {
     while (true) {
-        const res = llm.completion(system, JSON.stringify(messages), toolsJson || '[]', model || '');
+        const res = llm.completion(system, JSON.stringify(messages), toolsJson || '[]', model || '', effort || '');
         if (res && res.rate_limited) {
             const seconds = res.rate_limited.retry_after_seconds > 0 ? res.rate_limited.retry_after_seconds : 1;
             console.log(`rate limited (${res.rate_limited.message}); sleeping ${seconds}s`);

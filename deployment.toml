@@ -48,6 +48,7 @@ params = [
   { name = "messages-json", type = "string" },
   { name = "tools-json",    type = "string" },
   { name = "model",         type = "string" },
+  { name = "effort",        type = "string" },
 ]
 return_type = "result<variant { reply(record { content-json: string, stop-reason: string }), rate-limited(record { retry-after-seconds: u32, message: string }) }, string>"
 location = "activity/llm-chat.js"
@@ -56,7 +57,7 @@ max_retries = 3
 env_vars = [
   { key = "AGENT_MODELS", value = '${AGENT_MODELS:-[{"id":"claude","label":"claude","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"claude"},{"id":"codex","label":"codex","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"codex"}]}' },
 ]
-content_digest = "sha256:080384e73c939a2b9e88dfac62cb6cb74b2328c977f1b29bc35e6a8a5e1a5cbb"
+content_digest = "sha256:8b9c244f99955b5bd45ee37205fd89ec33599976c94a1f1fb474bee6b8a40790"
 
 # Default endpoint: the local agent-backed-llm-server (Claude/Codex subscription in
 # docker; OpenAI-compatible, no key). The default AGENT_MODELS points here.
@@ -405,10 +406,11 @@ params = [
   { name = "execution-id", type = "string" },
   { name = "prompt", type = "string" },
   { name = "backend", type = "option<string>" },
+  { name = "effort", type = "option<string>" },
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/submit-workflow-execution.js"
-content_digest = "sha256:95b8d1d51ad0e8373cee80fdd5ba49deaaeb05b436325a5e5e2090e8499e8925"
+content_digest = "sha256:0d5bbb6f24bc385e28b43b6a232633f61976e724b15de7a9d0cc3de81defbe9b"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -517,10 +519,11 @@ params = [
   { name = "system-prompt", type = "string" },
   { name = "tools-json",    type = "string" },
   { name = "model",         type = "string" },
+  { name = "effort",        type = "string" },
 ]
 return_type = "result<string, string>"
 location = "workflow/agent-loop.js"
-content_digest = "sha256:d46a2634e282d47fd83c005be6815cc887a068d0018f6f52605e94921870786e"
+content_digest = "sha256:608d7f579155f1db964736b412346075aceab43bf0a458a0eba5e3e61baedee3"
 
 # Public supervisor workflow. Resolves the pack descriptor, then runs the generic
 # agent-loop workflow and returns its result.
@@ -532,10 +535,12 @@ params = [
   { name = "model", type = "option<string>" },
   # Pack descriptor FFQN. null => obelisk-control:agent/pack.describe.
   { name = "descriptor-ffqn", type = "option<string>" },
+  # Reasoning effort: off|minimal|low|medium|high|xhigh. null => provider default.
+  { name = "effort", type = "option<string>" },
 ]
 return_type = "result<string, string>"
 location = "workflow/agent.js"
-content_digest = "sha256:81b14a4920c298a70b21948ef61ae8237df7af6da9fc38d2e226314d332d8c0f"
+content_digest = "sha256:e660db4a6cb448baaa3b7cccb8520b822d97df228ee69c32bde0012a2b9c0351"
 
 # --- GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
@@ -649,7 +654,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   { key = "AGENT_MODELS", value = '${AGENT_MODELS:-[{"id":"claude","label":"claude","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"claude"},{"id":"codex","label":"codex","api_type":"openai-chat-completions","base_url":"http://127.0.0.1:9190","wire_model":"codex"}]}' },
 ]
-content_digest = "sha256:fc2594b2c329c3c54ec424e470aea22d393de1a25e81c8e4310f39caaea35638"
+content_digest = "sha256:54e8dc953c85c46fab87da5154f85b2ffbf1d2e0c3295dc3068afb9133dfe265"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.
