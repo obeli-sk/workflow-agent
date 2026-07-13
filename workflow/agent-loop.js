@@ -53,9 +53,10 @@ export default function agentLoop(prompt, systemPrompt, toolsJson, model, effort
             if (calls.length > 0) {
                 console.log(`dispatching ${calls.length} tool call(s)`);
                 const resultBlocks = calls.map((call) => {
-                    const result = dispatch(call, toolsByName);
-                    console.log(`  ${call.name}: ${'ok' in result.outcome ? 'ok' : `err=${result.outcome.err}`}`);
-                    return toolResultBlock(call.id, result);
+                    const block = dispatch(call, toolsByName);
+                    const status = block.is_error ? `err=${block.content.replace(/^Error:\s*/, '')}` : 'ok';
+                    console.log(`  ${call.name}: ${status}`);
+                    return block;
                 });
                 messages.push({ role: 'user', content: resultBlocks });
                 continue;
@@ -101,15 +102,15 @@ function callLlm(system, messages, toolsJson, model, effort) {
 function dispatch(call, toolsByName) {
     const name = call.name;
     const tool = toolsByName.get(name);
-    if (!tool) return err(name, `unknown tool: ${name}`);
+    if (!tool) return toolError(call.id, `unknown tool: ${name}`);
     let params;
     try { params = encodeParams(tool.params, call.input); }
-    catch (e) { return err(name, String(e)); }
+    catch (e) { return toolError(call.id, String(e)); }
     try {
         const out = obelisk.call(tool.ffqn, params);
         const s = out === undefined || out === null ? 'null' : (typeof out === 'string' ? out : JSON.stringify(out));
-        return ok(name, s);
-    } catch (e) { return err(name, String(e)); }
+        return toolOk(call.id, s);
+    } catch (e) { return toolError(call.id, callErrorMessage(e)); }
 }
 
 // Build the positional WIT param array from the model's argument object.
@@ -169,17 +170,15 @@ function jsonType(t) {
 function userText(text) {
     return { role: 'user', content: [{ type: 'text', text }] };
 }
-function toolResultBlock(id, result) {
-    const isOk = 'ok' in result.outcome;
-    return { type: 'tool_result', tool_use_id: id, content: isOk ? result.outcome.ok : `Error: ${result.outcome.err}`, is_error: !isOk };
-}
-function ok(name, jsonString) {
+function toolOk(id, jsonString) {
     const s = typeof jsonString === 'string' ? jsonString : JSON.stringify(jsonString);
     const encoded = JSON.stringify(s).length;
-    if (encoded > MAX_TOOL_RESULT_BYTES) return err(name, `result too large (~${encoded} encoded bytes); narrow the request with pagination or a more specific selector`);
-    return { name, outcome: { ok: s } };
+    if (encoded > MAX_TOOL_RESULT_BYTES) return toolError(id, `result too large (~${encoded} encoded bytes); narrow the request with pagination or a more specific selector`);
+    return { type: 'tool_result', tool_use_id: id, content: s, is_error: false };
 }
-function err(name, message) { return { name, outcome: { err: message } }; }
+function toolError(id, message) {
+    return { type: 'tool_result', tool_use_id: id, content: `Error: ${message}`, is_error: true };
+}
 
 // ----- operator injection (the one built-in capability) -----------------------
 
@@ -210,12 +209,17 @@ function closeInjection(injection) {
 }
 function waitForOperatorMessage(injection) {
     if (injection === null) throw 'operator injection is not open';
-    // joinNext blocks and returns a response descriptor { type, id, ok }, NOT the
-    // value (unlike joinNextTry). Fetch the unwrapped string with getResult.
-    injection.joinSet.joinNext();
-    const text = obelisk.getResult(injection.executionId);
+    const text = injection.joinSet.joinNext();
     if (typeof text !== 'string' || !text.trim()) throw 'injection text must be a non-empty string';
     console.log(`consumed operator injection from ${injection.executionId}`);
     injection.joinSet.close();
     return text.trim();
+}
+
+function callErrorMessage(e) {
+    if (e instanceof obelisk.ChildExecutionError) {
+        if (e.value !== undefined) return typeof e.value === 'string' ? e.value : JSON.stringify(e.value);
+        return e.message;
+    }
+    return String(e);
 }

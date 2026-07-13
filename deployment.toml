@@ -27,7 +27,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/native-call.js"
-content_digest = "sha256:b77c66904303c4437a859c7facdc8e4c2e948f54cb5aaae8f953596b66c955a8"
+content_digest = "sha256:0f4f6665f325da48de089137d6963764262948e488dfef85b2dfa3731c91f3a5"
 
 # --- LLM endpoint: multi-provider client --------------------------------------
 # The only way the agent talks to a model. It speaks a provider-neutral message
@@ -525,12 +525,12 @@ params = [
   { name = "model",         type = "string" },
   { name = "effort",        type = "string" },
 ]
-return_type = "result<string, string>"
+return_type = "result<_, string>"
 location = "workflow/agent-loop.js"
-content_digest = "sha256:ec5d6a280d959f1a9fee42b675bfb836f63aedad174067c44c5da3790e398659"
+content_digest = "sha256:23e402b2fddc2006b493ca329901779c4d56194018a0c69bdf4f51e3d289bd84"
 
-# Public supervisor workflow. Resolves the pack descriptor, then runs the generic
-# agent-loop workflow and returns its result.
+# Public supervisor workflow. Resolves the pack descriptor, then delegates to the
+# generic agent-loop workflow.
 [[workflow_js]]
 ffqn = "obelisk-agent:workflow/workflow.run"
 params = [
@@ -542,9 +542,9 @@ params = [
   # Reasoning effort: off|minimal|low|medium|high|xhigh. null => provider default.
   { name = "effort", type = "option<string>" },
 ]
-return_type = "result<string, string>"
+return_type = "result<_, string>"
 location = "workflow/agent.js"
-content_digest = "sha256:dc56dd6a19f8dcff131a2421ff371aee5949aafc3befbee73bcf8e3a5ad64bc4"
+content_digest = "sha256:799b774028cf7afda110acefa6855ed50dbe9a2679f20b50fde295b59560d10a"
 
 # --- GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
@@ -659,7 +659,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   "AGENT_MODELS",
 ]
-content_digest = "sha256:bcf438b18fbfd1b40eecfd11bdeef75defb82d1043cdec520fb99e134e0dcf4e"
+content_digest = "sha256:eabe9b6a84b4024cc782b82bb032d450e185b9b620e81a4f09b2da244278a3c0"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.

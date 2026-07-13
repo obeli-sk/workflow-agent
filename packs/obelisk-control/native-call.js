@@ -18,11 +18,19 @@ export default function call(ffqn, paramsJson) {
     try {
         const result = obelisk.call(ffqn, params);
         return JSON.stringify({ ffqn, result: result === undefined ? null : result });
-    } catch (e) { throw witHint(ffqn, String(e)); }
+    } catch (e) { throw witHint(ffqn, callErrorMessage(e)); }
 }
 
 // On error, append the target WIT so the model can correct its parameters.
 function witHint(ffqn, message) {
     try { return `${message}\n\nWIT for ${ffqn}:\n${webapi.getFunctionWit(ffqn)}`; }
     catch (e) { return `${message}\n\nCould not fetch WIT for ${ffqn}: ${String(e)}`; }
+}
+
+function callErrorMessage(e) {
+    if (e instanceof obelisk.ChildExecutionError) {
+        if (e.value !== undefined) return typeof e.value === 'string' ? e.value : JSON.stringify(e.value);
+        return e.message;
+    }
+    return String(e);
 }

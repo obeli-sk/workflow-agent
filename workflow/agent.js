@@ -1,9 +1,10 @@
 // Public supervisor workflow. It resolves a pack descriptor (system prompt +
-// tool catalog), then runs the generic agent-loop and returns its result. The
-// descriptor FFQN selects the use case; the core is otherwise pack-agnostic.
+// tool catalog), then delegates to the generic agent-loop. The descriptor FFQN
+// selects the use case; the core is otherwise pack-agnostic.
 // There is no container to own: the agent talks to an LLM endpoint over HTTP.
 
-const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop-cancellable";
+import { agentLoopCancellable } from "obelisk-agent:workflow/workflow";
+
 const DEFAULT_DESCRIPTOR_FFQN = "obelisk-control:agent/pack.describe";
 
 export default function run(prompt, model, descriptorFfqn, effort) {
@@ -29,8 +30,5 @@ export default function run(prompt, model, descriptorFfqn, effort) {
 Your own workflow execution id is \`${executionId}\`. Pass it to
 obelisk.get_execution / obelisk.get_logs to inspect your own run.`;
 
-    const session = obelisk.createJoinSet({ name: "session" });
-    const childId = session.submit(AGENT_LOOP_FFQN, [prompt, systemPrompt, described.tools_json, modelId, effortLevel]);
-    session.joinNext();
-    return obelisk.getResult(childId);
+    return agentLoopCancellable(prompt, systemPrompt, described.tools_json, modelId, effortLevel);
 }

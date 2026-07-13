@@ -254,11 +254,11 @@ function loadModels() {
 // ----- list -------------------------------------------------------------
 
 // The run's live phase lives on the agent-loop *child*, not the top-level
-// workflow.run. The parent spends the whole run blocked on its "session" join
-// set (waiting for the child), so its join_name never tells "working" apart
-// from "waiting for the operator". While the parent is still delegating, report
-// the child's pending_state; once the parent reaches a terminal/paused state it
-// is authoritative for the whole run.
+// workflow.run. The parent spends the whole run blocked on the direct child call,
+// so its pending state never tells "working" apart from "waiting for the
+// operator". While the parent is still delegating, report the child's
+// pending_state; once the parent reaches a terminal/paused state it is
+// authoritative for the whole run.
 function pickRunState(parentStatus, childStatus) {
     const parent = parentStatus?.pending_state || null;
     const phase = parent?.status;
@@ -328,7 +328,6 @@ async function detailRun(id, cursorState) {
             replies: walk.replies,
             tool_children: walk.toolChildren,
             sent_results: sent.results,
-            operator_messages: sent.operatorMessages,
             response_cursor: walk.cursor,
             history_version: sent.version,
         },
@@ -730,7 +729,6 @@ function findMatchingBrace(text, start) {
 // the completion request params and flatten them in dispatch order.
 async function loadSentResults(execId, startVersion = 0) {
     const sent = [];
-    const operatorMessages = [];
     const seenToolResults = new Set();
     let version = startVersion;
     let including = startVersion === 0;
@@ -755,24 +753,6 @@ async function loadSentResults(execId, startVersion = 0) {
                         sent.push(normalizeToolResultBlock(block));
                     }
                 }
-            } else if (joinName === "send") {
-                // backcompat: pre-agent-loop rewrite stored sent tool results in
-                // a session.send request instead of the completion history.
-                const input = he.request?.params?.[1];
-                if (input && Array.isArray(input.tool_results)) {
-                    for (const tr of input.tool_results) sent.push(normalizeSent(tr));
-                }
-                const messages = he.request?.params?.[2];
-                if (Array.isArray(messages)) {
-                    for (const text of messages) {
-                        if (typeof text === "string" && text.trim()) {
-                            operatorMessages.push({
-                                text: text.trim(),
-                                created_at: e.created_at || "",
-                            });
-                        }
-                    }
-                }
             }
         }
         if (events.length === 0) break;
@@ -782,7 +762,7 @@ async function loadSentResults(execId, startVersion = 0) {
         including = false;
         if (events.length < 200) break;
     }
-    return { results: sent, operatorMessages, version };
+    return { results: sent, version };
 }
 
 function parseMessagesParam(value) {
@@ -804,20 +784,6 @@ function normalizeToolResultBlock(block) {
         catch (_) { out.ok = content; }
     }
     return out;
-}
-
-// A sent tool_result entry is { name, outcome: { ok|err } } where ok is the
-// activity's JSON string. Normalise to { ok }/{ err }, JSON-parsing ok so the
-// UI can pretty-print (mirrors unwrapTypedResult).
-function normalizeSent(entry) {
-    const o = entry && entry.outcome;
-    if (o && "ok" in o) {
-        let v = o.ok;
-        if (typeof v === "string") { try { v = JSON.parse(v); } catch (_) { /* keep string */ } }
-        return { ok: v };
-    }
-    if (o && "err" in o) return { err: o.err };
-    return null;
 }
 
 function parseJoinName(joinSetId) {
@@ -911,8 +877,8 @@ async function childWorkflowIds(runId) {
 
 // Cancel a run. Obelisk only cancels executions whose FFQN ends with
 // `-cancellable`; for a run that is the nested agent-loop session, not the
-// top-level workflow.run. Cancelling it unwinds the run: workflow.run's joinNext
-// resolves to the cancelled child and the run ends.
+// top-level workflow.run. Cancelling it unwinds the run through workflow.run's
+// direct call await.
 async function cancelRun(id) {
     if (!id) return jsonError(400, "missing run id");
     let executions;
@@ -1379,7 +1345,6 @@ function mergeTranscript(delta) {
       replies: [],
       tool_children: [],
       sent_results: [],
-      operator_messages: [],
       response_cursor: 0,
       history_version: 0,
     };
@@ -1387,7 +1352,6 @@ function mergeTranscript(delta) {
   state.transcript.replies.push(...(delta.replies || []));
   state.transcript.tool_children.push(...(delta.tool_children || []));
   mergeSentResults(state.transcript.sent_results, delta.sent_results || []);
-  state.transcript.operator_messages.push(...(delta.operator_messages || []));
   state.transcript.response_cursor = delta.response_cursor || state.transcript.response_cursor;
   state.transcript.history_version = delta.history_version || state.transcript.history_version;
 }
@@ -1439,15 +1403,6 @@ function buildCachedTurns() {
       });
       turns.push({ kind: 'tool_calls', calls, blocks, created_at: item.created_at, sequence: sequence++ });
     }
-  }
-  for (const message of cached.operator_messages || []) {
-    if (typeof message?.text !== 'string' || !message.text.trim()) continue;
-    turns.push({
-      kind: 'operator_message',
-      text: message.text,
-      created_at: message.created_at || '',
-      sequence: sequence++,
-    });
   }
   turns.sort((a, b) => {
     if (a.created_at && b.created_at && a.created_at !== b.created_at) {
