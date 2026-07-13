@@ -1,5 +1,7 @@
 use flake .
 
+export OBELISK__API__TOKEN=$(obelisk generate token --json | jq -r .token)
+
 # --- LLM model catalog --------------------------------------------------------
 # AGENT_MODELS (read by activity/llm-chat.js and the web UI) is the list of models
 # in the UI dropdown. It is REQUIRED: deployment.toml has no built-in default, so

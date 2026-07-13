@@ -88,11 +88,15 @@ function activityJson(label, text) {
 // the Obelisk REST API directly, so these GETs run as plain fetches. Mutations
 // (pause/unpause/cancel/stub/submit) stay as durable activities below.
 const API_BASE = (process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005").replace(/\/$/, "");
+const OBELISK_API_TOKEN = process.env["OBELISK__API__TOKEN"];
+if (!OBELISK_API_TOKEN) throw new Error("OBELISK__API__TOKEN is required");
 
 async function apiGet(label, path, accept = "application/json") {
     let resp;
     try {
-        resp = await fetch(`${API_BASE}${path}`, { headers: { accept } });
+        resp = await fetch(`${API_BASE}${path}`, {
+            headers: { accept, authorization: `Bearer ${OBELISK_API_TOKEN}` },
+        });
     } catch (e) {
         throw new Error(`${label}: ${String(e)}`);
     }
