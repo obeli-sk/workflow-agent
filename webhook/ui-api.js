@@ -331,6 +331,7 @@ async function detailRun(id, cursorState) {
             agent_loop_id: agentLoopId,
             replies: walk.replies,
             tool_children: walk.toolChildren,
+            operator_messages: walk.operatorMessages,
             sent_results: sent.results,
             response_cursor: walk.cursor,
             history_version: sent.version,
@@ -597,6 +598,7 @@ const INFRA_NAMES = new Set([
 async function loadResponses(execId, startCursor = 0) {
     const replies = [];
     const toolChildren = [];
+    const operatorMessages = [];
     let cursor = startCursor;
     let including = startCursor === 0;
     while (true) {
@@ -635,6 +637,17 @@ async function loadResponses(execId, startCursor = 0) {
                         created_at: r.event?.created_at || "",
                     });
                 }
+            } else if (joinName === "operator") {
+                // A fulfilled operator-injection stub: its ok string is the
+                // message the operator sent mid-run. Render it as a user turn.
+                // (One long-lived 'operator' join set fulfils many of these.)
+                const value = ev.result?.ok?.value ?? ev.result?.ok;
+                if (typeof value === "string" && value.trim()) {
+                    operatorMessages.push({
+                        text: value,
+                        created_at: r.event?.created_at || "",
+                    });
+                }
             } else if (joinName && !INFRA_NAMES.has(joinName)) {
                 toolChildren.push({
                     id: ev.child_execution_id,
@@ -649,7 +662,7 @@ async function loadResponses(execId, startCursor = 0) {
         including = false;
         if (responses.length < 200) break;
     }
-    return { replies, toolChildren, cursor };
+    return { replies, toolChildren, operatorMessages, cursor };
 }
 
 async function loadRecvPresentation(executionId) {
@@ -1348,6 +1361,7 @@ function mergeTranscript(delta) {
       agent_loop_id: delta.agent_loop_id || '',
       replies: [],
       tool_children: [],
+      operator_messages: [],
       sent_results: [],
       response_cursor: 0,
       history_version: 0,
@@ -1355,6 +1369,7 @@ function mergeTranscript(delta) {
   }
   state.transcript.replies.push(...(delta.replies || []));
   state.transcript.tool_children.push(...(delta.tool_children || []));
+  state.transcript.operator_messages.push(...(delta.operator_messages || []));
   mergeSentResults(state.transcript.sent_results, delta.sent_results || []);
   state.transcript.response_cursor = delta.response_cursor || state.transcript.response_cursor;
   state.transcript.history_version = delta.history_version || state.transcript.history_version;
@@ -1407,6 +1422,10 @@ function buildCachedTurns() {
       });
       turns.push({ kind: 'tool_calls', calls, blocks, created_at: item.created_at, sequence: sequence++ });
     }
+  }
+  for (const msg of cached.operator_messages || []) {
+    if (!msg || typeof msg.text !== 'string') continue;
+    turns.push({ kind: 'operator_message', text: msg.text, created_at: msg.created_at, sequence: sequence++ });
   }
   turns.sort((a, b) => {
     if (a.created_at && b.created_at && a.created_at !== b.created_at) {
