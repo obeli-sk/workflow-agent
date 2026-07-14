@@ -11,7 +11,7 @@ export default async function apply_deployment(deploymentId) {
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}/switch`,
         {
             method: "PUT",
-            headers: { accept: "application/json", "content-type": "application/json" },
+            headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}`, "content-type": "application/json" },
             body: JSON.stringify({ hot_redeploy: true }),
         },
     );

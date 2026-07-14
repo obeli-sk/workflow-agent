@@ -32,7 +32,7 @@ export default async function list_executions(
     if (includingCursor) params.push("including_cursor=true");
     if (length > 0) params.push(`length=${encodeURIComponent(String(length))}`);
     const qs = params.length ? `?${params.join("&")}` : "";
-    const resp = await fetch(`${base}/v1/executions${qs}`, { headers: { accept: "application/json" } });
+    const resp = await fetch(`${base}/v1/executions${qs}`, { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } });
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.text();
 }

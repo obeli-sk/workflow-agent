@@ -6,7 +6,7 @@ export default async function list_functions(ffqnPrefix, length) {
     const base = process.env["OBELISK_API_URL"];
     if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(`${base}/v1/functions`, {
-        headers: { accept: "application/json" },
+        headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` },
     });
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
 
@@ -31,7 +31,7 @@ async function fetchWit(base, ffqn) {
     try {
         const resp = await fetch(
             `${base}/v1/functions/wit?ffqn=${encodeURIComponent(ffqn)}`,
-            { headers: { accept: "text/plain" } },
+            { headers: { accept: "text/plain", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
         );
         if (!resp.ok) return `<wit unavailable: HTTP ${resp.status}>`;
         return (await resp.text()).trim();

@@ -18,7 +18,7 @@ export default async function deployment_switch(deploymentId, allowMissing) {
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}/switch`,
         {
             method: "PUT",
-            headers: { accept: "application/json", "content-type": "application/json" },
+            headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}`, "content-type": "application/json" },
             body: JSON.stringify({ hot_redeploy: false, allow_missing_runtime_config: Boolean(allowMissing) }),
         },
     );

@@ -19,7 +19,7 @@ export default async function get_component_source(deploymentId, component, offs
     if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}`,
-        { headers: { accept: "application/json" } },
+        { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
     );
     if (!resp.ok) throw `deployment HTTP ${resp.status}: ${await resp.text()}`;
     const record = JSON.parse(await resp.text());

@@ -21,7 +21,7 @@ export default async function get_events(
     if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/events?${params.join("&")}`,
-        { headers: { accept: "application/json" } },
+        { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.text();

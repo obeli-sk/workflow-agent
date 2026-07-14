@@ -63,7 +63,7 @@ export default async function deployment_submit(
 
     const preflight = await fetch(`${base}/v1/deployments`, {
         method: "POST",
-        headers: { accept: "application/json", "content-type": "application/json" },
+        headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}`, "content-type": "application/json" },
         body: JSON.stringify(body),
     });
     if (preflight.ok) {
@@ -99,7 +99,7 @@ export default async function deployment_submit(
 
     const retry = await fetch(`${base}/v1/deployments`, {
         method: "POST",
-        headers: { accept: "application/json", "content-type": `multipart/form-data; boundary=${boundary}` },
+        headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}`, "content-type": `multipart/form-data; boundary=${boundary}` },
         body: multipartBody,
     });
     if (!retry.ok) throw `HTTP ${retry.status}: ${await retry.text()}`;

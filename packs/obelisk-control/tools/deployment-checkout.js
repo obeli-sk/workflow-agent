@@ -30,7 +30,7 @@ export default async function deployment_checkout(deploymentId) {
 }
 
 async function getJson(url) {
-    const resp = await fetch(url, { headers: { accept: "application/json" } });
+    const resp = await fetch(url, { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } });
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.json();
 }

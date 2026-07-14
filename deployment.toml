@@ -103,12 +103,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/list-functions.js"
-content_digest = "sha256:4ff52d1772fdb060fde19b53ab1a88a87428ffdef4241ef6f15f55db72f284e5"
+content_digest = "sha256:d4f54abbe8b45deefcad04c4bb5b55a9d925ecb14d83e6332ac7ba50c368e09c"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/functions"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_get_function_wit"
@@ -118,12 +121,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-function-wit.js"
-content_digest = "sha256:f21c7f6a65fb3849bbc67cb1bb2f2d9fcc815819006c97e45ec5362f49e72f68"
+content_digest = "sha256:12c9da962a8912862ecc783dd793d06e8ceac3d49782d9318637e836b926c1b0"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/functions/wit"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_list_executions"
@@ -142,12 +148,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/list-executions.js"
-content_digest = "sha256:dcb9ec7d4a0174bcf2acca13e8d19e2fb0532b4e1ed5d0a748a5515b9b3d2894"
+content_digest = "sha256:46a6c77e00153f101cfad4988719f1c979403dd8b8af46fc41e21d8f1ff3604b"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_get_execution"
@@ -157,12 +166,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-execution.js"
-content_digest = "sha256:e63d665d66288cb7f3a76f51e48ddc476e268e7b4d09bf8063026c19ea0845cb"
+content_digest = "sha256:08e213ebc5f7e15f51098145f334a7c70302dd7ba6564b65184b68724b6154dd"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_get_execution_record"
@@ -172,12 +184,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-execution-record.js"
-content_digest = "sha256:e30be137f1d7e0989a80eaea1e2412342fd543eb96e70361abe353c3584e7377"
+content_digest = "sha256:4123ba39f05345c7815e290451cca527b96ac337394469ff739c0d889350293f"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_get_events"
@@ -191,12 +206,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-events.js"
-content_digest = "sha256:6ebaf768ff4f0b918ee0c20667ca9ed32b9ec12c117a0aadae43a5bd3209fa05"
+content_digest = "sha256:544527e45fc317db52aea81d4478c4e1a578046d1bb6f7b7f41f4a496a3a51cf"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_get_responses"
@@ -209,12 +227,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-responses.js"
-content_digest = "sha256:92bb82a41fdcbedbc5466bb9add51a321f3d4da473970d1469e4fab207f6bd2a"
+content_digest = "sha256:e9aaa480885445f0513eaa0297c9ed727311d1019a506cda04da96fc0ea85acf"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_get_logs"
@@ -233,12 +254,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-logs.js"
-content_digest = "sha256:052011dcac24538ce3a876b8b7e82cf17fcfa5c08b6810ab316ef14d5c7f92a5"
+content_digest = "sha256:1e843ac415b72fa38b8a0d257ac8550b1e7993a734166cbf7ceddc663b63c41f"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_get_result"
@@ -249,12 +273,15 @@ params = [
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-result.js"
 exec.lock_expiry.minutes = 10
-content_digest = "sha256:83b1ea3b3037b893b16f089110dc8a6aa7f8d6381dccb73fb9405a0adca22e4c"
+content_digest = "sha256:52084e96b00ef2686263ec9811441775c71067f98b96d3ba251ca4c89cd7fed5"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_list_deployments"
@@ -266,12 +293,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/list-deployments.js"
-content_digest = "sha256:7048f1bbc667938915a10e19ff6c06fede28a57e9d32f4aa50feb3f56053629d"
+content_digest = "sha256:9c61d8372c2296a94962ca784cfc00ec74e8f74823d1780a66a37fc09faf237d"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_get_deployment"
@@ -285,12 +315,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-deployment.js"
-content_digest = "sha256:778f703a507b93f98145348d3417f9acdedeaecb6e56fabba3fc76cc23e48dd4"
+content_digest = "sha256:7d05e1a21ab5a5496867252caf40a119f3c2e90aef6baa0f5456497dc2c26ae5"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_get_component_source"
@@ -303,24 +336,30 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-component-source.js"
-content_digest = "sha256:fb00915c3109f2ce036dcd24b5c077a43b15729ad5a2ba84b92ece5faa715e3e"
+content_digest = "sha256:c45b95f47e289d96673e893254298b6c95900ecb51cb2d89955221e5dedeb319"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/deployments/|/v1/files/)"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_current_deployment"
 ffqn = "obelisk-agent:tools/webapi.current-deployment-id"
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/current-deployment.js"
-content_digest = "sha256:8dcedff82784d2fd40173a82477b16a35310434bf0cf15bb3e5be16282e6a827"
+content_digest = "sha256:4b0d1ead09073c77e332e3cd0e047b4da0a889de7fc7dce7cbe35ef783499a8e"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployment-id"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 # --- Deployment editing: checkout -> edit one component -> submit -------------
 # The workflow holds the checked-out deployment.toml in memory, split into
@@ -338,12 +377,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/deployment-checkout.js"
-content_digest = "sha256:837c313adfff00d999f3af5cbd464529083d3b6b94d68653139d48900b410671"
+content_digest = "sha256:4caac0dd3800bc227d8388b674a50e4a1196fcb71c9631921e656adaac8851a4"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/deployment-id|/v1/deployments/)"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_deployment_read_blob"
@@ -353,12 +395,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/deployment-read-blob.js"
-content_digest = "sha256:6eb37181729368f5331f6c8ad0a3ebdd85067d461b0906b882507490a1221c23"
+content_digest = "sha256:41b939fb646ed5c434a83f2ede29bd9dc6ff0ad08409fc322aeea32a57bbcb8f"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/files/"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_deployment_submit"
@@ -376,12 +421,15 @@ return_type = "result<string, string>"
 exec.lock_expiry.minutes = 5
 max_retries = 0
 location = "packs/obelisk-control/tools/deployment-submit.js"
-content_digest = "sha256:b6b89d51b3847e254c69acce8c5093ec9d5617304336f07a1a0f74afbdfeaa93"
+content_digest = "sha256:fd626521000ad2ebf7b765dcd6f096383e31078e024130998800e0c6a0611a23"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["POST"]
 request_url_regex = "^POST ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments$"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_deployment_switch"
@@ -394,12 +442,15 @@ return_type = "result<string, string>"
 # A cold switch re-verifies (compile + link) before enqueuing.
 exec.lock_expiry.minutes = 5
 location = "packs/obelisk-control/tools/deployment-switch.js"
-content_digest = "sha256:d3a96a5aaddbc8783d368efcc12b284779a9cda5953e7b0c773ec60fc097e0ce"
+content_digest = "sha256:da2d4df3ea7de76d90888d74705e76d8a312d0d07abe80dc6be744111ea6f153"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["PUT"]
 request_url_regex = "^PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/Dep_[^/]+/switch$"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_submit_workflow_execution"
@@ -412,12 +463,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/submit-workflow-execution.js"
-content_digest = "sha256:0d5bbb6f24bc385e28b43b6a232633f61976e724b15de7a9d0cc3de81defbe9b"
+content_digest = "sha256:eb3c561ab9ce4ea7add38bc3e3cd843d16b59310eefa2539fdf235cd207f5f4e"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_pause_execution"
@@ -427,12 +481,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/pause-execution.js"
-content_digest = "sha256:2ba3bd41b2d6cbbb8fc99e18cefdc85dfbb3ea57d3afd062c0ee1dd17c3be344"
+content_digest = "sha256:102f0dcc9bc636cc5dcd967bcf28f5c32e9fc86b7aabc6aef575205c5faf7eda"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/pause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_unpause_execution"
@@ -442,12 +499,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/unpause-execution.js"
-content_digest = "sha256:2b9a8765b6b672f5f48212a59141cc8d05cbb7530025f12a18629032ae2832e5"
+content_digest = "sha256:222f288717edc1177c5fdf74716cc5457f73b73950786d210c2edfffe0542b24"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/unpause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_cancel_execution"
@@ -457,12 +517,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/cancel-execution.js"
-content_digest = "sha256:4d8103eafc27fc2f11f3af74aae919b7f3562f06f83891543dc9eaad3b9eeb51"
+content_digest = "sha256:aa3e873b0f0b7ef3a1e030a9f4bfbd5810fc651e974baede2d1fcd0cc2e42572"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/cancel|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_stub_execution"
@@ -473,12 +536,15 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/stub-execution.js"
-content_digest = "sha256:5c6d0bcb22f629d2e91012fbff3f6ec89fe8819cf4548bce8e42b9712d45088c"
+content_digest = "sha256:6246e136f476e06053c4c34a0896f0fd9c91d899882d3687e97e8285464fa931"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 # --- Stub activity: human-in-the-loop -----------------------------------------
 
@@ -682,9 +748,12 @@ return_type = "result<string, string>"
 # A hot redeploy re-verifies (compile + link) before swapping executors.
 exec.lock_expiry.minutes = 5
 location = "packs/obelisk-control/tools/apply-deployment.js"
-content_digest = "sha256:dd3839168cea646edc112678ffd6126eaea720728ab0545125091653669e284a"
+content_digest = "sha256:153dc86da7089b9f6f3b99721be76df8ce6adcc577821f9d4e956dbc8ef55a61"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["PUT"]
 request_url_regex = "^PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/Dep_[^/]+/switch$"
+[activity_js.allowed_host.secrets]
+env_vars = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]

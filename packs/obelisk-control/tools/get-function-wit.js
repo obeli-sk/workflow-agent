@@ -6,7 +6,7 @@ export default async function get_function_wit(ffqn) {
     if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/functions/wit?ffqn=${encodeURIComponent(ffqn)}`,
-        { headers: { accept: "text/plain" } },
+        { headers: { accept: "text/plain", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.text();

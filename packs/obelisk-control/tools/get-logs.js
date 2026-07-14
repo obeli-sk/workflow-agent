@@ -33,7 +33,7 @@ export default async function get_logs(
     if (length > 0) params.push(`length=${encodeURIComponent(String(length))}`);
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/logs?${params.join("&")}`,
-        { headers: { accept: "application/json" } },
+        { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.text();

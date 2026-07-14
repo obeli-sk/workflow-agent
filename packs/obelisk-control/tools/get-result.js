@@ -6,7 +6,7 @@ export default async function get_result_json(executionId) {
     if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}?follow=true`,
-        { headers: { accept: "application/json" } },
+        { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.text();
