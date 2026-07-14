@@ -593,7 +593,7 @@ params = [
 ]
 return_type = "result<_, string>"
 location = "workflow/agent-loop.js"
-content_digest = "sha256:23e402b2fddc2006b493ca329901779c4d56194018a0c69bdf4f51e3d289bd84"
+content_digest = "sha256:dbef42ce10c927e11634f2919e3e5ab3c702af6c7c9d8e4de3e4ec9518340252"
 
 # Public supervisor workflow. Resolves the pack descriptor, then delegates to the
 # generic agent-loop workflow.

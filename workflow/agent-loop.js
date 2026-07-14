@@ -30,16 +30,22 @@ export default function agentLoop(prompt, systemPrompt, toolsJson, model, effort
 
     const system = systemPrompt;
     const messages = [userText(prompt)];
-    let injection = null;
+    // One long-lived operator channel for the whole run: a single named join set
+    // holding exactly one outstanding injection offer at any time. Reusing one
+    // join set (rather than opening a fresh 'operator' set each round) is required
+    // because a named join set's name is unique for the execution's entire history
+    // -- recreating it raises JoinSetCreateError::Conflict. The UI keys "your turn"
+    // off the constant join name 'operator', so this needs no UI change.
+    const operator = openOperator();
     try {
         let turn = 0;
         while (true) {
             if (turn >= MAX_TURNS) throw `exceeded MAX_TURNS=${MAX_TURNS} without yielding an assistant response`;
             console.log(`--- turn ${turn} ---`);
-            const prepared = prepareInjection(injection);
-            injection = prepared.injection;
-            for (const text of prepared.operatorMessages) {
-                messages.push(userText(`[Operator message]: ${text}`));
+            // Non-blocking: fold in an operator message that arrived while working.
+            const injected = tryTakeInjection(operator);
+            if (injected !== null) {
+                messages.push(userText(`[Operator message]: ${injected}`));
                 turn = 0;
             }
 
@@ -62,13 +68,14 @@ export default function agentLoop(prompt, systemPrompt, toolsJson, model, effort
                 continue;
             }
             console.log(`assistant response after ${turn} turns; waiting for operator input`);
-            const text = waitForOperatorMessage(injection);
-            injection = null;
+            // Blocking: the run parks on the 'operator' join set -> UI shows "your turn".
+            const text = takeInjection(operator);
             messages.push(userText(`[Operator message]: ${text}`));
             turn = 0;
         }
     } finally {
-        closeInjection(injection);
+        try { operator.joinSet.close(); }
+        catch (error) { console.log(`operator channel close failed: ${String(error)}`); }
     }
 }
 
@@ -181,38 +188,41 @@ function toolError(id, message) {
 }
 
 // ----- operator injection (the one built-in capability) -----------------------
+// A single 'operator' join set holds one outstanding injection offer (an
+// INJECTION_FFQN stub the web UI fulfils). After each message is consumed we
+// re-arm a fresh offer in the SAME join set, so the workflow never recreates the
+// named set (which would conflict) yet always has an offer the UI can fulfil.
 
-function prepareInjection(injection) {
-    let current = injection || openInjection();
-    // joinNextTry is non-blocking: undefined while pending, otherwise the child's
-    // already-unwrapped return value (here the result<string,string> ok string).
-    const text = current.joinSet.joinNextTry();
-    if (text === undefined) return { injection: current, operatorMessages: [] };
-    if (typeof text !== 'string' || !text.trim()) throw 'injection text must be a non-empty string';
-    console.log(`consumed operator injection from ${current.executionId}`);
-    current.joinSet.close();
-    current = openInjection();
-    return { injection: current, operatorMessages: [text.trim()] };
-}
-function openInjection() {
-    // Named so the UI can tell "waiting for the operator" (join_name "operator")
+function openOperator() {
+    // Named so the UI can tell "waiting for the operator" (join name "operator")
     // apart from the agent actively working (completion / tool join sets).
     const joinSet = obelisk.createJoinSet({ name: 'operator' });
     const executionId = joinSet.submit(INJECTION_FFQN, []);
-    console.log(`opened operator injection ${executionId}`);
+    console.log(`opened operator channel ${executionId}`);
     return { joinSet, executionId };
 }
-function closeInjection(injection) {
-    if (injection === null) return;
-    try { injection.joinSet.close(); }
-    catch (error) { console.log(`injection close failed: ${String(error)}`); }
+// Submit the next offer into the same join set after one has been taken.
+function rearmOperator(operator) {
+    operator.executionId = operator.joinSet.submit(INJECTION_FFQN, []);
+    console.log(`re-armed operator offer ${operator.executionId}`);
 }
-function waitForOperatorMessage(injection) {
-    if (injection === null) throw 'operator injection is not open';
-    const text = injection.joinSet.joinNext();
+// Non-blocking: return the injected text (re-arming the offer) or null if none.
+// joinNextTry is undefined while pending, otherwise the stub's already-unwrapped
+// result<string,string> ok string.
+function tryTakeInjection(operator) {
+    const text = operator.joinSet.joinNextTry();
+    if (text === undefined) return null;
     if (typeof text !== 'string' || !text.trim()) throw 'injection text must be a non-empty string';
-    console.log(`consumed operator injection from ${injection.executionId}`);
-    injection.joinSet.close();
+    console.log(`consumed operator injection from ${operator.executionId}`);
+    rearmOperator(operator);
+    return text.trim();
+}
+// Blocking: wait for the operator, return the text (re-arming the offer).
+function takeInjection(operator) {
+    const text = operator.joinSet.joinNext();
+    if (typeof text !== 'string' || !text.trim()) throw 'injection text must be a non-empty string';
+    console.log(`consumed operator injection from ${operator.executionId}`);
+    rearmOperator(operator);
     return text.trim();
 }
 
