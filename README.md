@@ -51,14 +51,4 @@ export AGENT_MODELS="$(cat models.json)"   # or use direnv (.envrc-example)
 just serve                                 # obelisk server run -d deployment.toml
 ```
 
-Then open the web UI on the webhook port (default `8080`), or submit via the API:
-
-```sh
-curl -X POST http://127.0.0.1:8080/api/submit \
-  -H content-type:application/json -d '{"prompt":"Summarise recent executions.","backend":"claude"}'
-```
-
-`backend` is the model `id` from the catalog (empty selects the first entry).
-Each turn is a separate `llm.completion` activity and each tool call its own
-child execution, so a run is fully durable and replayable; inspect it with the
-web UI or the standard Obelisk WebAPI / CLI.
+Then navigate to http://localhost:9090 to see the UI.
