@@ -254,6 +254,7 @@ async function callOpenAIResponses(cfg, system, messages, tools, toolNames, leve
 
 async function post(url, headers, body) {
     let resp;
+    console.debug(`Fetching from ${url}`);
     try { resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) }); }
     catch (e) { throw `LLM request failed: ${String(e)}`; }   // network error -> transient retry
 
@@ -349,7 +350,7 @@ function normalizeStop(reason) {
 }
 function retryAfterSeconds(resp) {
     let raw = '';
-    try { raw = resp.headers && resp.headers.get ? (resp.headers.get('retry-after') || '') : ''; } catch (_) {}
+    try { raw = resp.headers && resp.headers.get ? (resp.headers.get('retry-after') || '') : ''; } catch (_) { }
     const n = parseInt(raw, 10);
     return Number.isFinite(n) && n > 0 ? n : 60;
 }

@@ -57,7 +57,7 @@ max_retries = 3
 env_vars = [
   "AGENT_MODELS",
 ]
-content_digest = "sha256:8b9c244f99955b5bd45ee37205fd89ec33599976c94a1f1fb474bee6b8a40790"
+content_digest = "sha256:b6ff3524f6fa42f57d721b2bc4f338b8579b0d096af9ba6fa16de4d5e972ee3a"
 
 # Local agent-backed-llm-server (Claude/Codex subscription in docker;
 # OpenAI-compatible, no key). Whitelisted here; point AGENT_MODELS at it to use it
@@ -65,7 +65,7 @@ content_digest = "sha256:8b9c244f99955b5bd45ee37205fd89ec33599976c94a1f1fb474bee
 [[activity_js.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
-request_url_regex = "^POST ${LLM_BASE_URL_REGEX:-http://127\\.0\\.0\\.1:9190}/v1/(chat/completions|responses)$"
+request_url_regex = "^POST http[s]?://[^/]+/v1/(chat/completions|responses)$"
 
 # exe.dev LLM gateway. One local origin proxies Anthropic / OpenAI / Fireworks;
 # real credentials are injected at the gateway edge, so a model here sends only the
@@ -74,7 +74,7 @@ request_url_regex = "^POST ${LLM_BASE_URL_REGEX:-http://127\\.0\\.0\\.1:9190}/v1
 [[activity_js.allowed_host]]
 pattern = "${LLM_GATEWAY:-http://localhost:7070}"
 methods = ["POST"]
-request_url_regex = "^POST ${LLM_GATEWAY_REGEX:-http://localhost:7070}/gateway/llm/(anthropic/v1/messages|openai/v1/(chat/completions|responses)|fireworks/inference/v1/chat/completions)$"
+request_url_regex = "^POST http[s]?://[^/]+/gateway/llm/(anthropic/v1/messages|openai/v1/(chat/completions|responses)|fireworks/inference/v1/chat/completions)$"
 
 # OpenRouter (keyed provider reached directly; models.openrouter.json). Each
 # catalog entry sends auth_value = "Bearer ${OPENROUTER_API_KEY}"; the runtime
@@ -87,10 +87,6 @@ request_url_regex = "^POST https://openrouter\\.ai/api/v1/(chat/completions|resp
 [activity_js.allowed_host.secrets]
 env_vars = [{ key = "OPENROUTER_API_KEY", value = "${OPENROUTER_API_KEY:-}" }]
 replace_in = ["headers"]
-
-# `request_url_regex` is matched against `METHOD URL` (query stripped). It uses
-# OBELISK_API_URL_REGEX (a regex-escaped form of OBELISK_API_URL); set both when
-# pointing at a non-default host.
 
 # --- LLM-facing tools ---------------------------------------------------------
 
