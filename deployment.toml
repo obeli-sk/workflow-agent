@@ -59,27 +59,28 @@ env_vars = [
 ]
 content_digest = "sha256:b6ff3524f6fa42f57d721b2bc4f338b8579b0d096af9ba6fa16de4d5e972ee3a"
 
-# Local agent-backed-llm-server (Claude/Codex subscription in docker;
-# OpenAI-compatible, no key). Whitelisted here; point AGENT_MODELS at it to use it
-# (models.local.json).
+# Emulate an LLM server locally using codex/claude locally: See https://github.com/obeli-sk/agent-backed-llm-server
+# Switch to it by setting AGENT_MODELS in .envrc (see .envrc-example / models.local.json).
 [[activity_js.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
 request_url_regex = "^POST http[s]?://[^/]+/v1/(chat/completions|responses)$"
+[activity_js.allowed_host.secrets]
+env_vars = [{ key = "LLM_API_KEY", value = "${LLM_API_KEY:-}" }]
+replace_in = ["headers"]
 
-# exe.dev LLM gateway. One local origin proxies Anthropic / OpenAI / Fireworks;
-# real credentials are injected at the gateway edge, so a model here sends only the
-# literal public token "implicit" (auth_value in AGENT_MODELS) -- no secret. Switch
-# to it by setting AGENT_MODELS in .envrc (see .envrc-example / models.exe-gateway.json).
+# exe.dev LLM gateway
+# Switch to it by setting AGENT_MODELS and optionally LLM_GATEWAY_API_KEY in .envrc (see .envrc-example / models.exe-gateway.json).
 [[activity_js.allowed_host]]
 pattern = "${LLM_GATEWAY:-http://localhost:7070}"
 methods = ["POST"]
 request_url_regex = "^POST http[s]?://[^/]+/gateway/llm/(anthropic/v1/messages|openai/v1/(chat/completions|responses)|fireworks/inference/v1/chat/completions)$"
+[activity_js.allowed_host.secrets]
+env_vars = [{ key = "LLM_GATEWAY_API_KEY", value = "${LLM_GATEWAY_API_KEY:-}" }]
+replace_in = ["headers"]
 
-# OpenRouter (keyed provider reached directly; models.openrouter.json). Each
-# catalog entry sends auth_value = "Bearer ${OPENROUTER_API_KEY}"; the runtime
-# swaps the placeholder for the real key in the outbound header, so the JS never
-# sees it. Set OPENROUTER_API_KEY in the environment to route here.
+# OpenRouter
+# Switch to it by setting AGENT_MODELS and OPENROUTER_API_KEY in .envrc (see .envrc-example / models.openrouter.json).
 [[activity_js.allowed_host]]
 pattern = "https://openrouter.ai"
 methods = ["POST"]
