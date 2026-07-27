@@ -2142,7 +2142,7 @@ function renderTurn(t, i) {
 
 function renderCall(call, turnIndex, callIndex) {
   const name = call && typeof call.name === 'string' ? call.name : '?';
-  const argsJson = call && call.args !== undefined ? JSON.stringify(call.args, null, 2) : '{}';
+  const argsBlock = renderCallArgs(name, call && call.args);
   const key = call.child_id || (name + '#' + turnIndex + ':' + callIndex);
   const childLink = call.child_id
     ? ' <a class="child-link" href="' + esc(execLink(call.child_id)) + '" target="_blank" rel="noopener" title="open in obelisk web UI">' + esc(shortChildId(call.child_id)) + '</a>'
@@ -2165,9 +2165,23 @@ function renderCall(call, turnIndex, callIndex) {
 
   return '<details class="call" data-key="' + esc(key) + '">'
     + '<summary><code>' + esc(name) + '</code>' + childLink + pill + '</summary>'
-    + '<div class="args"><div class="key">args</div><pre>' + esc(argsJson) + '</pre></div>'
+    + argsBlock
     + resultBlock
     + '</details>';
+}
+
+// The bash tool's only meaningful arg is a multi-line shell script; show it
+// verbatim (rendered newlines) instead of a JSON string with escaped newlines.
+function renderCallArgs(name, args) {
+  if (name === 'bash' && args && typeof args.script === 'string') {
+    let html = '<div class="args"><div class="key">script</div><pre>' + esc(args.script) + '</pre>';
+    if (typeof args.stdin === 'string' && args.stdin !== '') {
+      html += '<div class="key">stdin</div><pre>' + esc(args.stdin) + '</pre>';
+    }
+    return html + '</div>';
+  }
+  const argsJson = args !== undefined ? JSON.stringify(args, null, 2) : '{}';
+  return '<div class="args"><div class="key">args</div><pre>' + esc(argsJson) + '</pre></div>';
 }
 
 function shortChildId(id) {
