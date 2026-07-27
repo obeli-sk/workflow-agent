@@ -782,7 +782,23 @@ const BUILTIN_HELP = new Map<string, [string, string]>([
 ]);
 
 // All builtin names for listing
-const ALL_BUILTINS = [...BUILTIN_HELP.keys()].sort();
+// These topics have compatibility scaffolding, but no job table, signal
+// delivery, or asynchronous statement execution. Advertising them made
+// `help` claim commands such as `jobs` existed when dispatch could not run
+// them.
+const UNIMPLEMENTED_JOB_CONTROL = new Set([
+  "bg",
+  "disown",
+  "fg",
+  "jobs",
+  "kill",
+  "suspend",
+  "wait",
+]);
+
+const ALL_BUILTINS = [...BUILTIN_HELP.keys()]
+  .filter((name) => !UNIMPLEMENTED_JOB_CONTROL.has(name))
+  .sort();
 
 export function handleHelp(
   _ctx: InterpreterContext,

@@ -21,6 +21,10 @@ one pack, `obelisk-control`, which mounts the active deployment under
   requires the deterministic Promise-draining change in the sibling Obelisk
   source tree. Until that runtime is published, build Obelisk with
   `--features workflow-js-local` and run that binary.
+- **pnpm**: installs the workflow bundler and the dependencies of the just-bash
+  source vendored at `vendor/just-bash`. The vendored package starts at upstream
+  revision `6df692f236ca108c888552a67557998156ac845b` and includes the embedding
+  changes required by this application.
 - **`AGENT_MODELS`**: the model catalog, **required**: a JSON array pointing each
   model at an OpenAI- or Anthropic-shaped HTTP endpoint. Two ready-made catalogs
   ship:
@@ -48,6 +52,7 @@ one pack, `obelisk-control`, which mounts the active deployment under
 Build the workflow bundle and set the required catalog:
 
 ```sh
+just install
 just build
 ln -sf models.local.json models.json      # pick a catalog
 export AGENT_MODELS="$(cat models.json)"   # or use direnv (.envrc-example)

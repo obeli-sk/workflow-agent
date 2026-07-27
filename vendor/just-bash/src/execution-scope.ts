@@ -57,7 +57,7 @@ export class ExecutionScope {
   private readonly cleanupCallbacks: Cleanup[] = [];
   private poisoned: ExecutionLimitError | ExecutionAbortedError | undefined;
   private closed = false;
-  private readonly startedAt = Date.now();
+  private readonly startedAt: number;
 
   /** Bytes still available for prospective intermediate allocations. */
   get remainingLiveBytes(): number {
@@ -72,7 +72,10 @@ export class ExecutionScope {
   constructor(
     private readonly limits: Required<ExecutionLimits>,
     private readonly signal: AbortSignal | undefined = undefined,
-  ) {}
+    private readonly now: () => number = Date.now.bind(Date),
+  ) {
+    this.startedAt = now();
+  }
 
   private fail(error: ExecutionLimitError | ExecutionAbortedError): never {
     this.poisoned ??= error;
@@ -365,7 +368,7 @@ export class ExecutionScope {
     if (this.signal?.aborted) {
       this.fail(new ExecutionAbortedError("", `bash: ${site} aborted\n`));
     }
-    if (Date.now() - this.startedAt > this.limits.maxExecutionTimeMs) {
+    if (this.now() - this.startedAt > this.limits.maxExecutionTimeMs) {
       this.fail(
         new ExecutionAbortedError(
           "",
@@ -378,7 +381,7 @@ export class ExecutionScope {
   remainingTimeMs(): number {
     return Math.max(
       0,
-      this.limits.maxExecutionTimeMs - (Date.now() - this.startedAt),
+      this.limits.maxExecutionTimeMs - (this.now() - this.startedAt),
     );
   }
 
@@ -398,10 +401,11 @@ export class ExecutionScope {
     if (this.closed) return;
     this.closed = true;
     const errors: unknown[] = [];
-    const cleanupDeadline = Date.now() + this.limits.maxExtensionCleanupTimeMs;
+    const cleanupDeadline =
+      this.now() + this.limits.maxExtensionCleanupTimeMs;
     for (let index = this.cleanupCallbacks.length - 1; index >= 0; index--) {
       try {
-        const remaining = cleanupDeadline - Date.now();
+        const remaining = cleanupDeadline - this.now();
         if (remaining <= 0) {
           errors.push(new Error("execution cleanup grace period exceeded"));
           break;
@@ -428,7 +432,7 @@ export class ExecutionScope {
         _clearFiniteTimeout(timer);
         if (!outcome.ok) {
           errors.push(outcome.error);
-          if (Date.now() >= cleanupDeadline) break;
+          if (this.now() >= cleanupDeadline) break;
         }
       } catch (error) {
         errors.push(error);

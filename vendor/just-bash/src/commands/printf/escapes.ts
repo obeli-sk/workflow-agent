@@ -135,8 +135,9 @@ export function parseWidthPrecision(
 
 /**
  * Process escape sequences in a string
- * Handles: \n, \t, \r, \\, \a, \b, \f, \v, \e, \0NNN (octal), \xHH (hex),
- *          \uHHHH (unicode), \UHHHHHHHH (unicode)
+ * Handles: \n, \t, \r, \\, \", \', \?, \a, \b, \f, \v, \e,
+ *          \0NNN (octal), \xHH (hex), \uHHHH (unicode),
+ *          \UHHHHHHHH (unicode)
  */
 export function processEscapes(
   str: string,
@@ -169,6 +170,12 @@ export function processEscapes(
           break;
         case "\\":
           result += "\\";
+          i += 2;
+          break;
+        case '"':
+        case "'":
+        case "?":
+          result += next;
           i += 2;
           break;
         case "a":

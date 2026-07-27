@@ -19,6 +19,10 @@ describe("processEscapes", () => {
       expect(processEscapes("a\\\\b")).toBe("a\\b");
     });
 
+    it("should handle escaped quotes and question marks", () => {
+      expect(processEscapes('\\"|\\\'|\\?')).toBe("\"|'|?");
+    });
+
     it("should handle \\a (bell)", () => {
       expect(processEscapes("\\a")).toBe("\x07");
     });

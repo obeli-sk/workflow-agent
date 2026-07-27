@@ -1,4 +1,5 @@
 dist
+*.parsed.json
 src/commands/python3/worker.js
 src/commands/js-exec/js-exec-worker.js
 src/commands/sqlite3/worker.js

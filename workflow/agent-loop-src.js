@@ -1,10 +1,10 @@
 import "./boa-polyfills.js";
-import { Bash } from "../../../just-bash/packages/just-bash/src/EmbeddedBash.ts";
+import { Bash } from "../vendor/just-bash/src/EmbeddedBash.ts";
 import {
     createLazyCommands,
     getCommandNames,
-} from "../../../just-bash/packages/just-bash/src/commands/registry.ts";
-import { parse } from "../../../just-bash/packages/just-bash/src/parser/parser.ts";
+} from "../vendor/just-bash/src/commands/registry.ts";
+import { parse } from "../vendor/just-bash/src/parser/parser.ts";
 import {
     commands as obeliskCommands,
     descriptor as obeliskPack,

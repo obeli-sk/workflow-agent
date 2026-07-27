@@ -17,6 +17,15 @@ describe("help builtin", () => {
       expect(result.stdout).toContain("export");
       expect(result.stdout).toContain("echo");
     });
+
+    it("does not advertise unimplemented job control", async () => {
+      const env = new Bash();
+      const result = await env.exec("help");
+      expect(result.stdout).not.toMatch(/\bjobs\b/);
+      expect(result.stdout).not.toMatch(/\bwait\b/);
+      expect(result.stdout).not.toMatch(/\bfg\b/);
+      expect(result.stdout).not.toMatch(/\bbg\b/);
+    });
   });
 
   describe("help for specific builtin", () => {
@@ -38,6 +47,13 @@ describe("help builtin", () => {
     it("should error for unknown builtin", async () => {
       const env = new Bash();
       const result = await env.exec("help nonexistent");
+      expect(result.stderr).toContain("no help topics match");
+      expect(result.exitCode).toBe(1);
+    });
+
+    it("should error for unimplemented job control", async () => {
+      const env = new Bash();
+      const result = await env.exec("help jobs");
       expect(result.stderr).toContain("no help topics match");
       expect(result.exitCode).toBe(1);
     });

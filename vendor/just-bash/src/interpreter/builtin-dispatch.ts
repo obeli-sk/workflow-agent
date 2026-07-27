@@ -563,10 +563,6 @@ export async function dispatchBuiltin(
     const [cmd, ...rest] = args;
     return runCommand(cmd, rest, [], stdin, false, false, -1);
   }
-  if (commandName === "wait") {
-    // wait - wait for background jobs (stub: no-op in this context)
-    return OK;
-  }
   if (commandName === "type") {
     return await handleTypeHelper(
       ctx,

@@ -661,25 +661,8 @@ export class InMemoryFs implements IFileSystem {
 
   async readdirWithFileTypes(path: string): Promise<DirentEntry[]> {
     validatePath(path, "scandir");
-    let normalized = normalizePath(path);
-    let entry = this.data.get(normalized);
-
-    if (!entry) {
-      throw new Error(`ENOENT: no such file or directory, scandir '${path}'`);
-    }
-
-    // Follow symlinks to get to the actual directory
-    const seen = new Set<string>();
-    while (entry && entry.type === "symlink") {
-      if (seen.has(normalized)) {
-        throw new Error(
-          `ELOOP: too many levels of symbolic links, scandir '${path}'`,
-        );
-      }
-      seen.add(normalized);
-      normalized = resolveSymlinkTarget(normalized, entry.target);
-      entry = this.data.get(normalized);
-    }
+    const normalized = this.resolvePathWithSymlinks(path);
+    const entry = this.data.get(normalized);
 
     if (!entry) {
       throw new Error(`ENOENT: no such file or directory, scandir '${path}'`);

@@ -1,6 +1,9 @@
 serve:
   obelisk server run -d deployment.toml
 
+install:
+  pnpm install --frozen-lockfile
+
 build:
   pnpm run build
 

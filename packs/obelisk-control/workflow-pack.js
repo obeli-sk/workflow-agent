@@ -1,5 +1,5 @@
-import { defineCommand } from "../../../../just-bash/packages/just-bash/src/custom-commands.ts";
-import { decodeBytesToUtf8 } from "../../../../just-bash/packages/just-bash/src/encoding.ts";
+import { defineCommand } from "../../vendor/just-bash/src/custom-commands.ts";
+import { decodeBytesToUtf8 } from "../../vendor/just-bash/src/encoding.ts";
 
 const DEPLOYMENT_ROOT = "/workspace/deployment";
 

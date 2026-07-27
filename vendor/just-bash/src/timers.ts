@@ -11,10 +11,22 @@
  */
 import { DefenseInDepthBox } from "./security/defense-in-depth-box.js";
 
-const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
-const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis);
-const nativeSetInterval = globalThis.setInterval.bind(globalThis);
-const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
+const nativeSetTimeout =
+  typeof globalThis.setTimeout === "function"
+    ? globalThis.setTimeout.bind(globalThis)
+    : undefined;
+const nativeClearTimeout =
+  typeof globalThis.clearTimeout === "function"
+    ? globalThis.clearTimeout.bind(globalThis)
+    : undefined;
+const nativeSetInterval =
+  typeof globalThis.setInterval === "function"
+    ? globalThis.setInterval.bind(globalThis)
+    : undefined;
+const nativeClearInterval =
+  typeof globalThis.clearInterval === "function"
+    ? globalThis.clearInterval.bind(globalThis)
+    : undefined;
 
 type TimerCallback = (...args: unknown[]) => unknown;
 
@@ -28,10 +40,15 @@ export const _setTimeout: typeof globalThis.setTimeout = ((
   delay?: number,
   ...args: unknown[]
 ) => {
+  if (!nativeSetTimeout) {
+    throw new Error("Host does not provide setTimeout");
+  }
   return nativeSetTimeout(bindTimerCallback(callback), delay, ...args);
 }) as typeof globalThis.setTimeout;
 
-export const _clearTimeout: typeof globalThis.clearTimeout = nativeClearTimeout;
+export const _clearTimeout: typeof globalThis.clearTimeout = ((handle) => {
+  nativeClearTimeout?.(handle);
+}) as typeof globalThis.clearTimeout;
 
 const MAX_NATIVE_TIMEOUT_MS = 2_147_483_647;
 
@@ -51,6 +68,9 @@ export function _setTimeoutIfFinite(
   delay: number,
 ): FiniteTimeoutHandle | undefined {
   if (delay === Number.POSITIVE_INFINITY) return undefined;
+  if (!nativeSetTimeout) {
+    throw new Error("Host does not provide setTimeout for a finite deadline");
+  }
   const boundCallback = bindTimerCallback(callback) as () => void;
   const handle: FiniteTimeoutHandle = {
     cleared: false,
@@ -76,7 +96,7 @@ export function _clearFiniteTimeout(
 ): void {
   if (!handle) return;
   handle.cleared = true;
-  if (handle.timer !== undefined) nativeClearTimeout(handle.timer);
+  if (handle.timer !== undefined) nativeClearTimeout?.(handle.timer);
 }
 
 export const _setInterval: typeof globalThis.setInterval = ((
@@ -84,10 +104,14 @@ export const _setInterval: typeof globalThis.setInterval = ((
   delay?: number,
   ...args: unknown[]
 ) => {
+  if (!nativeSetInterval) {
+    throw new Error("Host does not provide setInterval");
+  }
   return nativeSetInterval(bindTimerCallback(callback), delay, ...args);
 }) as typeof globalThis.setInterval;
 
-export const _clearInterval: typeof globalThis.clearInterval =
-  nativeClearInterval;
+export const _clearInterval: typeof globalThis.clearInterval = ((handle) => {
+  nativeClearInterval?.(handle);
+}) as typeof globalThis.clearInterval;
 
 // _SharedArrayBuffer, _Atomics, _performanceNow moved to security/trusted-globals.ts
