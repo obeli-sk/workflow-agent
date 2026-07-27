@@ -36,9 +36,9 @@ const CORE_COMMANDS = createLazyCommands(
 );
 
 // The session loop owns provider-neutral message history, one persistent Bash
-// instance, and one operator input channel. `toolsJson` is retained in the WIT
-// signature for deployment compatibility but intentionally ignored: Bash is
-// the only model-facing tool, and compiled packs contribute shell commands.
+// instance, and one operator input channel per turn. `toolsJson` is retained in
+// the WIT signature for deployment compatibility but intentionally ignored: Bash
+// is the only model-facing tool, and compiled packs contribute shell commands.
 export default async function agentLoop(prompt, systemPrompt, _toolsJson, model, effort) {
     if (typeof prompt !== 'string') throw 'prompt must be a string';
     if (typeof systemPrompt !== 'string' || !systemPrompt) throw 'system prompt is required';
@@ -69,62 +69,80 @@ export default async function agentLoop(prompt, systemPrompt, _toolsJson, model,
 The only model-facing tool is bash. Its filesystem persists for this session.
 ${obeliskPack.systemPrompt}`;
     const messages = prompt.trim() ? [userText(prompt.trim())] : [];
-    // Open the input offer before mounting packs so the UI can identify a live
-    // session immediately. The same join set also owns the in-flight LLM child,
-    // allowing shell input to win the race and execute while the model works.
-    const session = openSession();
+    // Shell outputs are stubbed and drained synchronously, so one named set
+    // serves the whole session; each turn opens its own operator set below.
+    const outputJoinSet = obelisk.createJoinSet({ name: 'record-output' });
+    let packMounted = false;
+    let turnIndex = 0;
+    let pendingPrompt = messages.length > 0;
     try {
-        try {
-            await mountObeliskPack(shell.bash.fs);
-        } catch (error) {
-            console.log(`obelisk-control mount unavailable: ${callErrorMessage(error)}`);
-        }
-
-        let turn = 0;
-        let shouldCallLlm = messages.length > 0;
         while (true) {
-            if (!shouldCallLlm) {
-                const event = parseSessionEvent(takeOperatorEvent(session));
-                shouldCallLlm = await applySessionEvent(event, session, shell, messages);
-                turn = 0;
-                continue;
-            }
-            if (turn >= MAX_TURNS) throw `exceeded MAX_TURNS=${MAX_TURNS} without yielding an assistant response`;
-            console.log(`--- turn ${turn} ---`);
-            const reply = await callLlmWithOperator(
-                session, system, messages, BASH_TOOLS_JSON, model, effort, shell,
-            );
-            turn += 1;
-            messages.splice(reply.requestMessageCount, 0, {
-                role: 'assistant',
-                content: reply.content,
-            });
-
-            const calls = reply.content
-                .filter((b) => b && b.type === 'tool_use')
-                .map((b) => ({ id: b.id, name: b.name, input: b.input || {} }));
-            if (calls.length > 0) {
-                console.log(`dispatching ${calls.length} tool call(s)`);
-                const resultBlocks = [];
-                for (const call of calls) {
-                    const block = await dispatchBash(call, shell);
-                    const status = block.is_error ? `err=${block.content.replace(/^Error:\s*/, '')}` : 'ok';
-                    console.log(`  ${call.name}: ${status}`);
-                    resultBlocks.push(block);
+            // A turn is one operator round: open a fresh named operator set,
+            // wait for the prompt that starts it, run the model until it yields
+            // a plain response, then close the set. The name embeds the turn
+            // index because a named set's name is reserved for the execution's
+            // whole history and cannot be reused across turns.
+            const session = openTurn(turnIndex, outputJoinSet);
+            try {
+                if (!packMounted) {
+                    // Open the input offer (in openTurn) before mounting packs so
+                    // the UI can identify a live session immediately.
+                    try {
+                        await mountObeliskPack(shell.bash.fs);
+                    } catch (error) {
+                        console.log(`obelisk-control mount unavailable: ${callErrorMessage(error)}`);
+                    }
+                    packMounted = true;
                 }
-                messages.splice(reply.requestMessageCount + 1, 0, {
-                    role: 'user',
-                    content: resultBlocks,
-                });
-                continue;
+                if (!pendingPrompt) {
+                    // Idle: run operator shell commands inline and keep the offer
+                    // open until a prompt arrives to start the model's work.
+                    while (!(await applySessionEvent(parseSessionEvent(takeOperatorEvent(session)), session, shell, messages))) {}
+                }
+                pendingPrompt = false;
+
+                let step = 0;
+                while (true) {
+                    if (step >= MAX_TURNS) throw `exceeded MAX_TURNS=${MAX_TURNS} without yielding an assistant response`;
+                    console.log(`--- turn ${turnIndex} step ${step} ---`);
+                    const reply = await callLlmWithOperator(
+                        session, system, messages, BASH_TOOLS_JSON, model, effort, shell,
+                    );
+                    step += 1;
+                    messages.splice(reply.requestMessageCount, 0, {
+                        role: 'assistant',
+                        content: reply.content,
+                    });
+
+                    const calls = reply.content
+                        .filter((b) => b && b.type === 'tool_use')
+                        .map((b) => ({ id: b.id, name: b.name, input: b.input || {} }));
+                    if (calls.length > 0) {
+                        console.log(`dispatching ${calls.length} tool call(s)`);
+                        const resultBlocks = [];
+                        for (const call of calls) {
+                            const block = await dispatchBash(call, shell);
+                            const status = block.is_error ? `err=${block.content.replace(/^Error:\s*/, '')}` : 'ok';
+                            console.log(`  ${call.name}: ${status}`);
+                            resultBlocks.push(block);
+                        }
+                        messages.splice(reply.requestMessageCount + 1, 0, {
+                            role: 'user',
+                            content: resultBlocks,
+                        });
+                        continue;
+                    }
+                    console.log(`assistant response after ${step} step(s); waiting for operator input`);
+                    break;
+                }
+            } finally {
+                try { session.joinSet.close(); }
+                catch (error) { console.log(`turn ${turnIndex} operator channel close failed: ${String(error)}`); }
             }
-            console.log(`assistant response after ${turn} turns; waiting for operator input`);
-            shouldCallLlm = false;
+            turnIndex += 1;
         }
     } finally {
-        try { session.joinSet.close(); }
-        catch (error) { console.log(`session channel close failed: ${String(error)}`); }
-        try { session.outputJoinSet.close(); }
+        try { outputJoinSet.close(); }
         catch (error) { console.log(`session output close failed: ${String(error)}`); }
     }
 }
@@ -307,15 +325,15 @@ function toolError(id, message) {
 }
 
 // ----- durable session channel ------------------------------------------------
-// One named join set owns both the always-outstanding operator offer and, while
-// the agent works, its LLM child. This is the durable equivalent of a small
-// event loop: whichever child completes first is handled, without cloning VFS.
+// Each turn owns one named join set holding both the always-outstanding operator
+// offer and, while the agent works, its LLM child. This is the durable equivalent
+// of a small event loop: whichever child completes first is handled, without
+// cloning the VFS. The persistent record-output set is shared across turns.
 
-function openSession() {
-    const joinSet = obelisk.createJoinSet({ name: 'operator' });
-    const outputJoinSet = obelisk.createJoinSet({ name: 'record-output' });
+function openTurn(turnIndex, outputJoinSet) {
+    const joinSet = obelisk.createJoinSet({ name: `operator-${turnIndex}` });
     const injectionExecutionId = joinSet.submit(INJECTION_FFQN, []);
-    console.log(`opened operator channel ${injectionExecutionId}`);
+    console.log(`opened turn ${turnIndex} operator channel ${injectionExecutionId}`);
     return { joinSet, outputJoinSet, injectionExecutionId, completionExecutionId: null };
 }
 function rearmOperator(session) {

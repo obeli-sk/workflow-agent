@@ -291,10 +291,18 @@ async function listRuns() {
             loadPromptPreview(id),
         ]);
         const childStatus = childId ? await loadStatus(childId) : null;
+        const runState = pickRunState(e, childStatus);
+        // A run blocked on the shared operator set is either awaiting the operator
+        // ("your turn") or mid-completion ("thinking"); the join name cannot tell
+        // them apart, so consult the pending completion child (only for such runs).
+        const working = runState.status === "blocked_by_join_set" && runState.join_name === "operator"
+            ? Boolean(await loadPendingCompletion(id))
+            : false;
         return {
             id,
             created_at: e.created_at || "",
-            ...pickRunState(e, childStatus),
+            ...runState,
+            working,
             prompt_preview,
         };
     }));
@@ -857,11 +865,17 @@ function normalizeToolResultBlock(block, createdAt) {
 
 function parseJoinName(joinSetId) {
     // One-off join sets use "o:<ordinal>-<name>"; explicitly named join sets
-    // use "n:<name>".
+    // use "n:<name>". Each turn opens its own operator set named "operator-<turn>";
+    // collapse the turn suffix so callers key off the stable name "operator".
     if (typeof joinSetId !== "string") return "";
-    if (joinSetId.startsWith("n:")) return joinSetId.substring(2);
-    const dash = joinSetId.indexOf("-");
-    return dash === -1 ? "" : joinSetId.substring(dash + 1);
+    let name;
+    if (joinSetId.startsWith("n:")) {
+        name = joinSetId.substring(2);
+    } else {
+        const dash = joinSetId.indexOf("-");
+        name = dash === -1 ? "" : joinSetId.substring(dash + 1);
+    }
+    return /^operator-\d+$/.test(name) ? "operator" : name;
 }
 
 // ----- mutations --------------------------------------------------------
@@ -1360,7 +1374,8 @@ function renderSidebar() {
     return;
   }
   box.innerHTML = state.runs.map((r) => {
-    const { label, cls } = describeStatus(r.status, r.result_kind, r.join_name);
+    let { label, cls } = describeStatus(r.status, r.result_kind, r.join_name);
+    if (r.join_name === 'operator' && r.working) { label = 'thinking'; cls = 'working'; }
     return '<a class="run-item' + (r.id === state.selected ? ' active' : '') + '" href="?run=' + encodeURIComponent(r.id) + '" data-id="' + esc(r.id) + '">'
       + '<div class="run-prompt">' + esc(r.prompt_preview || '(no prompt)') + '</div>'
       + '<div class="run-meta"><span class="status ' + esc(cls) + '">' + esc(label) + '</span><span class="ago">' + esc(ago(r.created_at)) + '</span></div>'
@@ -1693,7 +1708,15 @@ function renderDetail(forceScroll = false) {
   state.lastSig = sig;
 
   const phase = runPhase(d.status);
-  const { label, cls: statusCls } = describeStatus(d.status, d.result_kind, d.join_name);
+  let { label, cls: statusCls } = describeStatus(d.status, d.result_kind, d.join_name);
+  // The completion child shares the per-turn operator join set (so operator input
+  // can race the model), so a run mid-completion still reports blocked on
+  // 'operator' -> "your turn". Keep the chip in step with the "Agent is working…"
+  // banner while the model is actually thinking.
+  if (d.join_name === 'operator' && agentIsWorking(d)) {
+    label = 'thinking';
+    statusCls = 'working';
+  }
   let turnsHtml;
   if (d.turns.length > 0) {
     turnsHtml = d.turns.map((t, i) => renderTurn(t, i)).join('');

@@ -598,7 +598,7 @@ params = [
 ]
 return_type = "result<_, string>"
 location = "workflow/agent-loop.js"
-content_digest = "sha256:dc3c810852c5e8bf72cd29602b5ea1200049a8cb2563576dba6522ad72fc42b7"
+content_digest = "sha256:0649c9f27b44193ff9648f25ebcc52b05945c0ebbc1b813a0ed83121f4f89fc9"
 exec.lock_expiry.seconds = 30
 
 # Public supervisor workflow. Resolves the pack descriptor, then delegates to the
@@ -733,7 +733,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   "AGENT_MODELS",
 ]
-content_digest = "sha256:ade49d03245e80872c6b18f65f996b235c01023b74fec3c91017cd3e7cbc17aa"
+content_digest = "sha256:0c3cea88e23254d32fa1f34aba82238a6bc5b26bf7cacb4482ab82ea181241d3"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.
