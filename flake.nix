@@ -20,6 +20,8 @@
           };
           commonDeps = with pkgs; [
             just
+            nodejs
+            pnpm
           ];
           withObelisk = commonDeps ++ [ obelisk.packages.${system}.default ];
         in

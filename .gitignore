@@ -2,3 +2,4 @@
 .envrc
 models.json
 models-private*
+node_modules

@@ -8,8 +8,8 @@ import { agentLoopCancellable } from "obelisk-agent:workflow/workflow";
 const DEFAULT_DESCRIPTOR_FFQN = "obelisk-control:agent/pack.describe";
 
 export default function run(prompt, model, descriptorFfqn, effort) {
-    if (typeof prompt !== "string" || !prompt.trim()) {
-        throw "prompt is required";
+    if (typeof prompt !== "string") {
+        throw "prompt must be a string";
     }
     // `model` selects an entry in the LLM catalog (AGENT_MODELS); empty => the
     // catalog default. `effort` is a reasoning level (off/minimal/low/medium/
@@ -30,5 +30,12 @@ export default function run(prompt, model, descriptorFfqn, effort) {
 Your own workflow execution id is \`${executionId}\`. Pass it to
 obelisk.get_execution / obelisk.get_logs to inspect your own run.`;
 
-    return agentLoopCancellable(prompt, systemPrompt, described.tools_json, modelId, effortLevel);
+    try {
+        return agentLoopCancellable(prompt, systemPrompt, described.tools_json, modelId, effortLevel);
+    } catch (error) {
+        if (error instanceof obelisk.ChildExecutionError && error.value === undefined) {
+            throw error.cancelled ? "agent session cancelled" : error.message;
+        }
+        throw error;
+    }
 }
