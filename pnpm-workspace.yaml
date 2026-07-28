@@ -1,7 +1,0 @@
-packages:
-  - vendor/just-bash
-
-allowBuilds:
-  '@mongodb-js/zstd': false
-  esbuild: true
-  node-liblzma: false

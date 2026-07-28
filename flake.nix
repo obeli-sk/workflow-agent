@@ -30,19 +30,8 @@
             fontDirectories = [ pkgs.dejavu_fonts ];
           };
           commonDeps = with pkgs; [
-            cargo-edit
-            cargo-expand
-            cargo-insta
-            cargo-nextest
             just
-            jq
-            pkg-config
             rustToolchain
-            wasm-tools
-            wasmtime.out
-            # JS runtimes (just-bash / workflow migration still in progress)
-            nodejs
-            pnpm
           ];
           withObelisk = commonDeps ++ [ obelisk.packages.${system}.default ];
         in

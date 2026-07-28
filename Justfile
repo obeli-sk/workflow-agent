@@ -1,9 +1,6 @@
 serve:
   obelisk server run -d deployment.toml
 
-install:
-  pnpm install --frozen-lockfile
-
 # deployment.toml's [[workflow_wasm]] entry points at it; the crate's
 # .cargo/config.toml pins the wasm32-unknown-unknown target.
 # Build the native Rust workflow component (workflow/workflow-rs).

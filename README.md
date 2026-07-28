@@ -17,14 +17,12 @@ one pack, `obelisk-control`, which mounts the active deployment under
 
 ## Requirements
 
-- **Obelisk**: the runtime that serves this deployment. The just-bash workflow
-  requires the deterministic Promise-draining change in the sibling Obelisk
-  source tree. Until that runtime is published, build Obelisk with
-  `--features workflow-js-local` and run that binary.
-- **pnpm**: installs the workflow bundler and the dependencies of the just-bash
-  source vendored at `vendor/just-bash`. The vendored package starts at upstream
-  revision `6df692f236ca108c888552a67557998156ac845b` and includes the embedding
-  changes required by this application.
+- **Obelisk**: the runtime that serves this deployment (pinned via the flake, so
+  `nix develop` provides the matching binary).
+- **Rust (wasm32-unknown-unknown)**: the workflow is a native Rust component
+  (`workflow/workflow-rs`) built with the toolchain the flake pins. `just build`
+  compiles it. The shell it runs is a Rust port of just-bash, vendored at
+  `vendor/just-bash-rs` (Apache-2.0, see its LICENSE/NOTICE).
 - **`AGENT_MODELS`**: the model catalog, **required**: a JSON array pointing each
   model at an OpenAI- or Anthropic-shaped HTTP endpoint. Two ready-made catalogs
   ship:
@@ -49,24 +47,17 @@ one pack, `obelisk-control`, which mounts the active deployment under
 
 ## Run
 
-Build the workflow bundle and set the required catalog:
+Build the workflow component and set the required catalog:
 
 ```sh
-just install
 just build
 ln -sf models.local.json models.json      # pick a catalog
 export AGENT_MODELS="$(cat models.json)"   # or use direnv (.envrc-example)
 ```
 
-With a published Promise-capable runtime, `just serve` starts the app. For local
-development against the sibling Obelisk source:
-
-```sh
-cd ../../obelisk
-nix develop -c cargo build -p obelisk --features workflow-js-local
-cd ../apps/workflow-agent
-../../obelisk/target/debug/obelisk server run -d deployment.toml
-```
+`just serve` starts the app (it runs `obelisk server run -d deployment.toml`
+with the Obelisk the flake pins). The workflow is a native Rust component, so no
+special Obelisk build is required.
 
 Then navigate to http://localhost:9090. Create an empty session to use the shell
 directly, or submit a prompt and inspect the same filesystem afterward. The
@@ -74,12 +65,12 @@ operator input offer remains live while an LLM completion is pending, so shell
 commands can inspect and edit the session VFS during the model wait. A prompt
 sent during that wait is queued for the next model turn.
 
-The core registers just-bash's full browser command catalog, except `gzip`,
-`gunzip`, and `zcat`, which require Node zlib. This includes the standard file,
-path, text-processing, search, shell, checksum, encoding, and inspection tools.
+The core registers a broad shell command catalog ported from just-bash, except
+`gzip`, `gunzip`, and `zcat`. This includes the standard file, path,
+text-processing, search, shell, checksum, encoding, and inspection tools.
 Network access is not a direct `curl` command: external I/O is supplied by
 durable pack executables such as `obelisk`. Python, Node.js, tar, yq, xan, and
-SQLite also require runtimes that workflow JavaScript does not provide.
+SQLite also require runtimes that the workflow sandbox does not provide.
 
 Interactive job control is not available. `jobs`, `wait`, `fg`, `bg`, signals,
 and durable background execution with `&` are not supported. The session
@@ -87,6 +78,4 @@ rejects statements terminated by `&` instead of silently running them in the
 foreground. Packs use Obelisk child executions for durable external work.
 
 If an empty session finishes immediately, inspect its execution result and
-logs. A server without returned-Promise support is one possible cause.
-Hot-redeploying this application does not replace that runtime; restart Obelisk
-with the `workflow-js-local` build above.
+logs.
