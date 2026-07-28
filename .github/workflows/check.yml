@@ -51,6 +51,33 @@ jobs:
               exit 1
           fi
 
+  rust:
+    name: Rust workflow rewrite
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          ref: ${{ github.event.inputs.ref }} # Use the ref if provided, otherwise defaults to the current branch/commit
+
+      - uses: nixbuild/nix-quick-install-action@v34
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          nix_conf: |
+            extra-substituters = https://obeli-sk.cachix.org
+            extra-trusted-public-keys = obeli-sk.cachix.org-1:31iM9GWSEhAXvvuTWQ7CvAcwvgRzsuJ9yJghywSd3Jw=
+
+      - name: Populate the nix store
+        run: nix develop --command echo
+
+      - name: Format
+        run: nix develop --command cargo fmt --all --check
+
+      - name: Clippy
+        run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Unit tests (just-bash-rs)
+        run: nix develop --command cargo test -p just-bash-rs
+
   verify:
     runs-on: ubuntu-24.04
     steps:
@@ -67,6 +94,11 @@ jobs:
 
       - name: Populate the nix store
         run: nix develop --command echo
+
+      # deployment.toml's [[workflow_wasm]] points at the release artifact, so
+      # build it before verifying (obelisk server verify does not compile it).
+      - name: Build the workflow component
+        run: nix develop --command just build
 
       - name: obelisk server verify
         run: nix develop --command obelisk server verify -d deployment.toml --allow-unavailable-runtime-config

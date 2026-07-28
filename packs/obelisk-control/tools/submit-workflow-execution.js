@@ -5,7 +5,7 @@ const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run";
 
 export default async function submit_workflow_execution(executionId, prompt, backend, effort) {
     if (!executionId) throw "execution-id is required";
-    if (typeof prompt !== "string" || !prompt.trim()) throw "prompt is required";
+    if (typeof prompt !== "string") throw "prompt must be a string";
     // workflow.run params: [prompt, model, descriptor-ffqn, effort]. backend is
     // the model id; descriptor is left null so the run uses the default pack.
     const modelId = typeof backend === "string" && backend ? backend : null;

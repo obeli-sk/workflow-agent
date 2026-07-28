@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "vendor/just-bash-rs",
+    "workflow/bash-rs",
+    "workflow/workflow-rs",
+]
+
+[workspace.package]
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2024"
+rust-version = "1.96.0"
+
+[workspace.dependencies]
+anyhow = "1.0"
+regex = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+wit-bindgen = "0.59.0"
+wit-bindgen-rust = "0.59.0"
+wit-parser = "0.253.0"
+
+[profile.release]
+opt-level = "s"
+debug = "line-tables-only"

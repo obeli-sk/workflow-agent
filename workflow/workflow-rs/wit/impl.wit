@@ -1,0 +1,30 @@
+package obelisk-agent:workflow;
+
+// FFQNs match the JS versions verbatim (obelisk-agent:workflow/workflow.*) so
+// deployment.toml can swap `[[workflow_js]]` for `[[workflow_wasm]]` without
+// touching any caller (the webhook, the obelisk-control pack's
+// submit-workflow-execution tool, deployment.toml's other entries).
+interface workflow {
+  // The generic session loop: persistent Bash tool, LLM turns, operator
+  // injection, durable shell-output stubbing. See src/session.rs.
+  agent-loop-cancellable: func(
+    prompt: string,
+    system-prompt: string,
+    tools-json: string,
+    model: string,
+    effort: string,
+  ) -> result<_, string>;
+
+  // Public supervisor: resolves a pack descriptor, then runs the loop above.
+  run: func(
+    prompt: string,
+    model: option<string>,
+    descriptor-ffqn: option<string>,
+    effort: option<string>,
+  ) -> result<_, string>;
+}
+
+world any {
+  export workflow;
+  import obelisk:workflow/workflow-support@6.0.0;
+}

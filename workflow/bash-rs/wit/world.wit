@@ -1,0 +1,13 @@
+package just-bash:agent;
+
+interface bash {
+  /// Run a bash script against a fresh virtual session.
+  ///
+  /// On success returns a JSON object `{ "stdout", "stderr", "exit_code" }`.
+  /// The `err` case is reserved for internal failures (not shell exit codes).
+  run-bash: func(script: string, stdin: string) -> result<string, string>;
+}
+
+world any {
+  export bash;
+}

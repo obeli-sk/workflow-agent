@@ -460,7 +460,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/submit-workflow-execution.js"
-content_digest = "sha256:eb3c561ab9ce4ea7add38bc3e3cd843d16b59310eefa2539fdf235cd207f5f4e"
+content_digest = "sha256:e718b6eb2bcbeb947930a3611e952086ed4fb144a0c0f8185e0886e1c96ac9b5"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -575,39 +575,31 @@ ffqn = "obelisk-agent:agent/session.injection"
 params = []
 return_type = "result<string, string>"
 
+[[activity_stub]]
+name = "session_record_output"
+ffqn = "obelisk-agent:agent/session.record-output"
+params = [
+  { name = "event-id", type = "string" },
+]
+return_type = "result<string, string>"
+
 # --- Workflow -----------------------------------------------------------------
+# Native Rust workflow (workflow/workflow-rs), replacing the two JS workflows
+# above (agent-loop.js / agent.js). The WIT world (workflow/workflow-rs/wit/
+# impl.wit) declares both exports under the exact same FFQNs the JS versions
+# used (obelisk-agent:workflow/workflow.{agent-loop-cancellable,run}), so no
+# caller (webhook, obelisk-control pack's submit-workflow-execution tool)
+# needs to change. Params/return types now come from the WIT, not this file.
+# The `-cancellable` suffix on agent-loop-cancellable still opts it into
+# operator cancellation (the UI can cancel the session without killing the
+# `run` supervisor); see workflow/workflow-rs/src/agent.rs for how `run`
+# preserves that by submitting agent-loop-cancellable as a real child call.
 
-[[workflow_js]]
-# The `-cancellable` suffix opts this workflow into operator cancellation: the UI
-# can cancel this execution (the agent-loop session), unwinding the run.
-ffqn = "obelisk-agent:workflow/workflow.agent-loop-cancellable"
-params = [
-  { name = "prompt",        type = "string" },
-  { name = "system-prompt", type = "string" },
-  { name = "tools-json",    type = "string" },
-  { name = "model",         type = "string" },
-  { name = "effort",        type = "string" },
-]
-return_type = "result<_, string>"
-location = "workflow/agent-loop.js"
-content_digest = "sha256:dbef42ce10c927e11634f2919e3e5ab3c702af6c7c9d8e4de3e4ec9518340252"
-
-# Public supervisor workflow. Resolves the pack descriptor, then delegates to the
-# generic agent-loop workflow.
-[[workflow_js]]
-ffqn = "obelisk-agent:workflow/workflow.run"
-params = [
-  { name = "prompt", type = "string" },
-  # Model id selecting an AGENT_MODELS catalog entry. null => catalog default.
-  { name = "model", type = "option<string>" },
-  # Pack descriptor FFQN. null => obelisk-control:agent/pack.describe.
-  { name = "descriptor-ffqn", type = "option<string>" },
-  # Reasoning effort: off|minimal|low|medium|high|xhigh. null => provider default.
-  { name = "effort", type = "option<string>" },
-]
-return_type = "result<_, string>"
-location = "workflow/agent.js"
-content_digest = "sha256:799b774028cf7afda110acefa6855ed50dbe9a2679f20b50fde295b59560d10a"
+[[workflow_wasm]]
+name = "workflow_agent_rs"
+location = "target/wasm32-unknown-unknown/release/workflow_agent_rs.wasm"
+exec.lock_expiry.seconds = 30
+backtrace.sources = { ".../src/lib.rs" = "workflow/workflow-rs/src/lib.rs" }
 
 # --- GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
@@ -710,19 +702,21 @@ routes = [
   { methods = ["GET"], route = "/api/runs/:execution-id" },
   { methods = ["GET"], route = "/api/logs/:execution-id" },
   { methods = ["POST"], route = "/api/submit" },
+  { methods = ["POST"], route = "/api/sessions" },
   { methods = ["POST"], route = "/api/answer/:child-id" },
   { methods = ["POST"], route = "/api/confirm/:child-id" },
   { methods = ["POST"], route = "/api/pause/:execution-id" },
   { methods = ["POST"], route = "/api/unpause/:execution-id" },
   { methods = ["POST"], route = "/api/cancel/:execution-id" },
   { methods = ["POST"], route = "/api/say/:execution-id" },
+  { methods = ["POST"], route = "/api/shell/:execution-id" },
 ]
 env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   "AGENT_MODELS",
 ]
-content_digest = "sha256:86288c90c833da6d9ece1916627b4cc4aec3b8bfd62100747cb1252c3de62997"
+content_digest = "sha256:fd65ffa6aedea1f11e676ed4a7d73340c35daeadc4ac87550f5a3d460c4d803f"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.
