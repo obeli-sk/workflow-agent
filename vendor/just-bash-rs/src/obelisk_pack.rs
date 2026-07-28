@@ -783,7 +783,7 @@ mod tests {
             BTreeMap::new(),
             cwd.to_string(),
             Vfs::new(),
-            0,
+            || 0,
             CustomCommands::new(),
         )
     }

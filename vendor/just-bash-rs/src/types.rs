@@ -34,15 +34,19 @@ pub struct BashOptions {
     pub cwd: String,
     pub defense_in_depth: bool,
     pub limits: ExecutionLimits,
-    /// Returns the current wall-clock time as Unix epoch milliseconds,
-    /// sampled once per `exec` call (so `date`/`$EPOCHSECONDS`-style reads
-    /// stay stable across one script run). Defaults to a fixed clock (always
-    /// epoch 0, i.e. 1970-01-01 UTC) since this interpreter has no host clock
-    /// of its own and must stay deterministic for durable replay; the
-    /// workflow overrides this with the durable Obelisk clock once phase 5
-    /// wires it through (see design doc "What the workflow needs from
-    /// just-bash").
+    /// Returns the current wall-clock time as Unix epoch milliseconds, read on
+    /// demand by `date` (not sampled per `exec`, so a `date` reflects the time
+    /// it runs and does not cost a clock read on scripts that never call it).
+    /// Defaults to a fixed clock (always epoch 0, i.e. 1970-01-01 UTC) since
+    /// this interpreter has no host clock of its own and must stay
+    /// deterministic for durable replay; the workflow overrides this with the
+    /// durable Obelisk clock (a `sleep(now)` host activity, see `session.rs`).
     pub now_ms: fn() -> i64,
+    /// Durably sleep for the given number of milliseconds, used by the `sleep`
+    /// builtin. Defaults to a no-op (the bare interpreter and tests have no
+    /// scheduler and must not block); the workflow overrides this with the
+    /// durable Obelisk `sleep(in(...))` host activity (see `session.rs`).
+    pub sleep_ms: fn(u64),
 }
 
 impl Default for BashOptions {
@@ -52,6 +56,7 @@ impl Default for BashOptions {
             defense_in_depth: false,
             limits: ExecutionLimits::default(),
             now_ms: fixed_epoch,
+            sleep_ms: no_sleep,
         }
     }
 }
@@ -59,6 +64,8 @@ impl Default for BashOptions {
 fn fixed_epoch() -> i64 {
     0
 }
+
+fn no_sleep(_ms: u64) {}
 
 /// Per-`exec` inputs: the piped stdin and the working directory for this call.
 #[derive(Debug, Clone, Default)]

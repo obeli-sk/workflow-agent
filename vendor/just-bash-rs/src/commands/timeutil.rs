@@ -7,12 +7,13 @@
 //! re-entering the parser).
 //!
 //! This interpreter is a synchronous, single-threaded, deterministic durable
-//! workflow shell: there is no real host clock and no background scheduler.
-//! `date` reads `Interpreter::now_ms`, a clock value sampled once per `exec`
-//! call (`BashOptions::now_ms`, defaulting to a fixed epoch of 0); `sleep`
-//! and `timeout` do not block wall-clock time (a durable workflow must never
-//! busy-wait), and `time` always reports zero elapsed time. See each
-//! function's doc comment for the exact scope caveat.
+//! workflow shell. `date` and `sleep` reach the host through the
+//! `BashOptions::now_ms` / `sleep_ms` seams: under the workflow those are the
+//! durable Obelisk clock (a `sleep(now)` activity) and durable `sleep(in(...))`
+//! (so a `sleep` suspends the workflow rather than busy-waiting), and the bare
+//! interpreter defaults them to a fixed epoch-0 clock and a no-op sleep.
+//! `timeout` still does not enforce a wall-clock deadline and `time` always
+//! reports zero elapsed time. See each function's doc comment for the caveat.
 
 use super::grep::translate_bre;
 use super::{fail, ok};
@@ -303,7 +304,7 @@ pub fn date(interp: &Interpreter, args: &[String]) -> CommandOutput {
         i += 1;
     }
 
-    let now_secs = interp.now_ms.div_euclid(1000);
+    let now_secs = (interp.now_ms)().div_euclid(1000);
     let secs = match date_str {
         Some(s) => match parse_date_spec(&s, now_secs) {
             Some(secs) => secs,
@@ -578,20 +579,23 @@ fn parse_duration_ms(s: &str) -> Option<f64> {
     })
 }
 
-/// `sleep NUMBER[SUFFIX]...`. This is a durable, synchronous, single-threaded
-/// interpreter with no background scheduler, so sleeping for real wall-clock
-/// time would just busy-block the workflow; `sleep` validates its arguments
-/// (same error messages as upstream) and otherwise returns immediately
-/// without an actual delay.
-pub fn sleep_cmd(args: &[String]) -> CommandOutput {
+/// `sleep NUMBER[SUFFIX]...`. Validates its arguments (same error messages as
+/// upstream), then sleeps for their sum via the host `sleep_ms` seam
+/// (`BashOptions::sleep_ms`). Under the workflow that seam is the durable
+/// Obelisk `sleep`, so the delay suspends the workflow rather than busy-waiting;
+/// the bare interpreter's default seam is a no-op, so `sleep` returns at once.
+pub fn sleep_cmd(interp: &Interpreter, args: &[String]) -> CommandOutput {
     if args.is_empty() {
         return fail("sleep: missing operand\n".to_string(), 1);
     }
+    let mut total_ms = 0.0;
     for arg in args {
-        if parse_duration_ms(arg).is_none() {
-            return fail(format!("sleep: invalid time interval '{arg}'\n"), 1);
+        match parse_duration_ms(arg) {
+            Some(ms) => total_ms += ms,
+            None => return fail(format!("sleep: invalid time interval '{arg}'\n"), 1),
         }
     }
+    (interp.sleep_ms)(total_ms.round().max(0.0) as u64);
     ok(String::new())
 }
 
@@ -740,6 +744,20 @@ mod tests {
             let mut bash = fresh();
             let out = run(&mut bash, "date +%Y-%m-%d");
             assert_eq!(out.stdout, "1970-01-01\n");
+        }
+
+        fn host_clock() -> i64 {
+            1_700_000_000_000 // 2023-11-14T22:13:20Z
+        }
+
+        #[test]
+        fn reads_the_host_clock_seam() {
+            let mut bash = Bash::new(BashOptions {
+                cwd: "/workspace".into(),
+                now_ms: host_clock,
+                ..Default::default()
+            });
+            assert_eq!(run(&mut bash, "date -u +%Y-%m-%d").stdout, "2023-11-14\n");
         }
 
         #[test]
@@ -896,6 +914,25 @@ mod tests {
             assert!(out.stderr.contains("invalid time interval"));
             let out = run(&mut bash, "sleep 1x");
             assert!(out.stderr.contains("invalid time interval"));
+        }
+
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SLEPT_MS: AtomicU64 = AtomicU64::new(0);
+        fn record_sleep(ms: u64) {
+            SLEPT_MS.store(ms, Ordering::SeqCst);
+        }
+
+        #[test]
+        fn sleeps_for_the_summed_duration_via_the_host_seam() {
+            SLEPT_MS.store(0, Ordering::SeqCst);
+            let mut bash = Bash::new(BashOptions {
+                cwd: "/workspace".into(),
+                sleep_ms: record_sleep,
+                ..Default::default()
+            });
+            // 1 + 0.5s + 2 = 3.5s -> 3500ms passed to the durable sleep seam.
+            assert_eq!(run(&mut bash, "sleep 1 0.5s 2").exit_code, 0);
+            assert_eq!(SLEPT_MS.load(Ordering::SeqCst), 3500);
         }
     }
 

@@ -117,7 +117,7 @@ pub fn dispatch(
         "awk" => awk::awk(interp, rest, stdin),
         "date" => timeutil::date(interp, rest),
         "expr" => timeutil::expr(rest),
-        "sleep" => timeutil::sleep_cmd(rest),
+        "sleep" => timeutil::sleep_cmd(interp, rest),
         "timeout" => timeutil::timeout(interp, rest, stdin),
         "time" => timeutil::time_cmd(interp, rest, stdin),
         "seq" => misc::seq(rest),

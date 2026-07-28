@@ -35,6 +35,25 @@ use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, Sched
 use crate::host::RealHost;
 use crate::support::{child_error_message, last_response_execution_id, split_ffqn};
 
+/// `date`'s clock: the current time from the durable Obelisk `sleep(now)` host
+/// activity, as Unix epoch milliseconds. Read on demand by `date`, so a script
+/// that never calls it pays no clock read. A cancelled read reports the epoch.
+fn host_now_ms() -> i64 {
+    match workflow_support::sleep(ScheduleAt::Now, None) {
+        Ok(dt) => dt.seconds as i64 * 1000 + (dt.nanoseconds / 1_000_000) as i64,
+        Err(_) => 0,
+    }
+}
+
+/// `sleep`'s delay: the durable Obelisk `sleep(in(...))` host activity, which
+/// suspends the workflow rather than busy-waiting. A zero delay is a no-op.
+fn host_sleep_ms(ms: u64) {
+    if ms == 0 {
+        return;
+    }
+    let _ = workflow_support::sleep(ScheduleAt::In(Duration::Milliseconds(ms)), None);
+}
+
 const MAX_TURNS: u32 = 30;
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const INJECTION_FFQN: &str = "obelisk-agent:agent/session.injection";
@@ -82,11 +101,14 @@ pub fn agent_loop_cancellable(
 
     let mut bash = Bash::new(BashOptions {
         cwd: "/workspace".to_string(),
-        // `now_ms` already defaults to a fixed epoch-0 clock (see
-        // `types.rs`), matching JS's explicit `now: () => 0`. Execution
+        // `date` and `sleep` reach the durable Obelisk clock/timer through
+        // these seams (a `sleep(now)` read and a `sleep(in(...))` suspend);
+        // the interpreter defaults are a fixed epoch and a no-op. Execution
         // limits are not enforced yet anywhere in this interpreter (see
         // design doc), so there is nothing to widen the way JS widens
         // `maxExecutionTimeMs` to infinity.
+        now_ms: host_now_ms,
+        sleep_ms: host_sleep_ms,
         ..Default::default()
     });
     bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(RealHost)));
