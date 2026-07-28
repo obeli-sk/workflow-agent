@@ -20,7 +20,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-OBELISK="${OBELISK:-/workspace/obelisk/target/release/obelisk}"
+# The flake pins the matching obelisk on PATH (see README); override with
+# $OBELISK to point at a local build.
+OBELISK="${OBELISK:-obelisk}"
 API_PORT=28016
 EXTERNAL_PORT=28091
 API_URL="http://127.0.0.1:${API_PORT}"
