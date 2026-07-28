@@ -1498,9 +1498,8 @@ pub fn jq(args: &[String], stdin: String) -> CommandOutput {
             _ => return fail(format!("jq: unexpected argument '{arg}'\n"), 2),
         }
     }
-    let Some(filter_text) = filter_text else {
-        return fail("jq: missing filter argument\n".to_string(), 2);
-    };
+    // No positional filter defaults to identity `.`, matching upstream jq.
+    let filter_text = filter_text.unwrap_or_else(|| ".".to_string());
 
     let filter = match parse_filter(&filter_text) {
         Ok(f) => f,
@@ -1944,6 +1943,14 @@ mod tests {
         let mut bash = fresh();
         let r = run(&mut bash, "printf '1\\n2\\n3\\n' | jq -s 'add'");
         assert_eq!(r.stdout, "6\n");
+    }
+
+    #[test]
+    fn no_filter_defaults_to_identity() {
+        let mut bash = fresh();
+        let r = run(&mut bash, r#"echo '{"a":1}' | jq"#);
+        assert_eq!(r.stdout, "{\n  \"a\": 1\n}\n");
+        assert_eq!(r.exit_code, 0);
     }
 
     // ---- string interpolation ----
