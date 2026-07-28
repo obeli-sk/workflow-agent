@@ -599,7 +599,49 @@ return_type = "result<string, string>"
 name = "workflow_agent_rs"
 location = "target/wasm32-unknown-unknown/release/workflow_agent_rs.wasm"
 exec.lock_expiry.seconds = 30
-backtrace.sources = { ".../src/lib.rs" = "workflow/workflow-rs/src/lib.rs" }
+
+# Backtrace source map for the native workflow. All these `.rs` files compile
+# into the single workflow_agent_rs.wasm, so every key is the full
+# deployment-relative path: suffix matching returns None on ambiguity, and a
+# bare `.../src/lib.rs` would collide between workflow-rs and just-bash-rs. The
+# build-generated `out/any.rs` glue (wit-bindgen) is intentionally omitted: it
+# lives under target/ with a per-build hash in its path, so it has no stable
+# deployment-owned source to point at.
+[workflow_wasm.backtrace.sources]
+# Hand-written workflow sources (workflow/workflow-rs).
+".../workflow/workflow-rs/src/lib.rs" = "workflow/workflow-rs/src/lib.rs"
+".../workflow/workflow-rs/src/agent.rs" = "workflow/workflow-rs/src/agent.rs"
+".../workflow/workflow-rs/src/host.rs" = "workflow/workflow-rs/src/host.rs"
+".../workflow/workflow-rs/src/session.rs" = "workflow/workflow-rs/src/session.rs"
+".../workflow/workflow-rs/src/support.rs" = "workflow/workflow-rs/src/support.rs"
+# Vendored just-bash-rs interpreter (vendor/just-bash-rs), linked into the wasm.
+".../vendor/just-bash-rs/src/lib.rs" = "vendor/just-bash-rs/src/lib.rs"
+".../vendor/just-bash-rs/src/arithmetic.rs" = "vendor/just-bash-rs/src/arithmetic.rs"
+".../vendor/just-bash-rs/src/ast.rs" = "vendor/just-bash-rs/src/ast.rs"
+".../vendor/just-bash-rs/src/bash.rs" = "vendor/just-bash-rs/src/bash.rs"
+".../vendor/just-bash-rs/src/custom_command.rs" = "vendor/just-bash-rs/src/custom_command.rs"
+".../vendor/just-bash-rs/src/expansion.rs" = "vendor/just-bash-rs/src/expansion.rs"
+".../vendor/just-bash-rs/src/fs.rs" = "vendor/just-bash-rs/src/fs.rs"
+".../vendor/just-bash-rs/src/glob.rs" = "vendor/just-bash-rs/src/glob.rs"
+".../vendor/just-bash-rs/src/interpreter.rs" = "vendor/just-bash-rs/src/interpreter.rs"
+".../vendor/just-bash-rs/src/obelisk_pack.rs" = "vendor/just-bash-rs/src/obelisk_pack.rs"
+".../vendor/just-bash-rs/src/parser.rs" = "vendor/just-bash-rs/src/parser.rs"
+".../vendor/just-bash-rs/src/types.rs" = "vendor/just-bash-rs/src/types.rs"
+".../vendor/just-bash-rs/src/commands/mod.rs" = "vendor/just-bash-rs/src/commands/mod.rs"
+".../vendor/just-bash-rs/src/commands/awk.rs" = "vendor/just-bash-rs/src/commands/awk.rs"
+".../vendor/just-bash-rs/src/commands/diff.rs" = "vendor/just-bash-rs/src/commands/diff.rs"
+".../vendor/just-bash-rs/src/commands/find.rs" = "vendor/just-bash-rs/src/commands/find.rs"
+".../vendor/just-bash-rs/src/commands/fsutil.rs" = "vendor/just-bash-rs/src/commands/fsutil.rs"
+".../vendor/just-bash-rs/src/commands/grep.rs" = "vendor/just-bash-rs/src/commands/grep.rs"
+".../vendor/just-bash-rs/src/commands/hash.rs" = "vendor/just-bash-rs/src/commands/hash.rs"
+".../vendor/just-bash-rs/src/commands/jq.rs" = "vendor/just-bash-rs/src/commands/jq.rs"
+".../vendor/just-bash-rs/src/commands/misc.rs" = "vendor/just-bash-rs/src/commands/misc.rs"
+".../vendor/just-bash-rs/src/commands/sed.rs" = "vendor/just-bash-rs/src/commands/sed.rs"
+".../vendor/just-bash-rs/src/commands/sort_uniq.rs" = "vendor/just-bash-rs/src/commands/sort_uniq.rs"
+".../vendor/just-bash-rs/src/commands/text.rs" = "vendor/just-bash-rs/src/commands/text.rs"
+".../vendor/just-bash-rs/src/commands/textutil2.rs" = "vendor/just-bash-rs/src/commands/textutil2.rs"
+".../vendor/just-bash-rs/src/commands/timeutil.rs" = "vendor/just-bash-rs/src/commands/timeutil.rs"
+".../vendor/just-bash-rs/src/commands/xargs.rs" = "vendor/just-bash-rs/src/commands/xargs.rs"
 
 # --- GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
