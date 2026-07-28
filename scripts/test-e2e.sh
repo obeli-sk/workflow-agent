@@ -44,12 +44,13 @@ trap cleanup EXIT
 echo ">>> building workflow/bash-rs (wasm32-unknown-unknown)"
 ( cd "$ROOT/workflow/bash-rs" && cargo build --release )
 
-# Resolve the wasm path, honouring CARGO_TARGET_DIR (may be absolute).
-TD="${CARGO_TARGET_DIR:-target}"
-case "$TD" in
-    /*) WASM="$TD/wasm32-unknown-unknown/release/bash_workflow.wasm" ;;
-    *)  WASM="$ROOT/workflow/bash-rs/$TD/wasm32-unknown-unknown/release/bash_workflow.wasm" ;;
-esac
+# Ask cargo where the artifact really is. This is a workspace, so a build from
+# the crate dir writes to the workspace-root target/ by default (not the crate's
+# own), or to a CARGO_TARGET_DIR override (relative, resolved from the crate dir,
+# as the sandbox's target-sandbox is). Deriving the path by hand got this wrong.
+TARGET_DIR="$(cd "$ROOT/workflow/bash-rs" && cargo metadata --no-deps --format-version=1 \
+    | tr ',' '\n' | sed -n 's/.*"target_directory":"\(.*\)"/\1/p' | head -1)"
+WASM="$TARGET_DIR/wasm32-unknown-unknown/release/bash_workflow.wasm"
 [[ -f "$WASM" ]] || { echo "wasm not found at $WASM" >&2; exit 1; }
 REL_WASM="$(realpath --relative-to="$ROOT" "$WASM")"
 
