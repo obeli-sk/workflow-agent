@@ -102,3 +102,30 @@ jobs:
 
       - name: obelisk server verify
         run: nix develop --command obelisk server verify -d deployment.toml --allow-unavailable-runtime-config
+
+  e2e:
+    name: End-to-end (isolated Obelisk)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          ref: ${{ github.event.inputs.ref }} # Use the ref if provided, otherwise defaults to the current branch/commit
+
+      - uses: nixbuild/nix-quick-install-action@v34
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          nix_conf: |
+            extra-substituters = https://obeli-sk.cachix.org
+            extra-trusted-public-keys = obeli-sk.cachix.org-1:31iM9GWSEhAXvvuTWQ7CvAcwvgRzsuJ9yJghywSd3Jw=
+
+      - name: Populate the nix store
+        run: nix develop --command echo
+
+      # Each script builds its wasm, starts an isolated obelisk (own sqlite dir,
+      # non-default ports) using the flake's obelisk on PATH, and asserts a real
+      # execution result.
+      - name: bash workflow e2e
+        run: nix develop --command just test-e2e
+
+      - name: agent workflow e2e
+        run: nix develop --command just test-e2e-agent-workflow
