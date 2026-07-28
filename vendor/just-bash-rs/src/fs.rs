@@ -308,6 +308,7 @@ impl Vfs {
             .keys()
             .chain(self.dirs.iter())
             .chain(self.pending.keys())
+            .chain(self.symlinks.keys())
         {
             if entry == &dir {
                 continue;
@@ -450,6 +451,22 @@ mod tests {
         assert_eq!(
             fs.read_file("/deployment/abc/new.txt").as_deref(),
             Some(&b"added"[..])
+        );
+    }
+
+    #[test]
+    fn readdir_lists_a_symlink_entry() {
+        // Regression: a symlink lives only in the `symlinks` map, so an `ls` of
+        // its parent (e.g. `ls /workspace/deployment` after the deployment
+        // mount) must still show the link (`current`) alongside real entries.
+        let mut fs = Vfs::new();
+        fs.write_file("/deployment/abc/deployment.toml", b"hi")
+            .unwrap();
+        fs.symlink("/deployment/abc", "/deployment/current")
+            .unwrap();
+        assert_eq!(
+            fs.readdir("/deployment"),
+            Some(vec!["abc".to_string(), "current".to_string()])
         );
     }
 
