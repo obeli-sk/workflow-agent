@@ -602,6 +602,21 @@ mod tests {
     }
 
     #[test]
+    fn c_style_for_loop_iterates() {
+        let mut bash = fresh();
+        // The `;`-separated header used to be eaten by the single-expression
+        // arithmetic lexer and rejected with "syntax error near `; i<=5; i++`".
+        let out = run(&mut bash, "for ((i=1; i<=5; i++)); do echo \"Iteration $i\"; done");
+        assert_eq!(
+            out.stdout,
+            "Iteration 1\nIteration 2\nIteration 3\nIteration 4\nIteration 5\n"
+        );
+        assert_eq!(out.exit_code, 0);
+        // The loop variable keeps its final post-increment value, as in bash.
+        assert_eq!(run(&mut bash, "echo $i").stdout, "6\n");
+    }
+
+    #[test]
     fn while_loop_runs_until_condition_false() {
         let mut bash = fresh();
         run(&mut bash, "echo go > /workspace/loop");

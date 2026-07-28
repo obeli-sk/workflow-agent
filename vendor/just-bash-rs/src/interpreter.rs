@@ -350,6 +350,50 @@ impl Interpreter {
                     }
                 }
             }
+            CompoundCommand::CStyleFor {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                self.last_exit = 0;
+                // Evaluate the init clause once; a failure aborts the loop.
+                if let Some(init) = init
+                    && let Err(msg) = arithmetic::eval(init, &mut self.env)
+                {
+                    self.stderr.push_str(&format!("bash: {msg}\n"));
+                    self.last_exit = 1;
+                    return;
+                }
+                loop {
+                    if self.exiting {
+                        break;
+                    }
+                    // An absent condition is always true (`for ((;;))`).
+                    if let Some(cond) = cond {
+                        match arithmetic::eval(cond, &mut self.env) {
+                            Ok(0) => break,
+                            Ok(_) => {}
+                            Err(msg) => {
+                                self.stderr.push_str(&format!("bash: {msg}\n"));
+                                self.last_exit = 1;
+                                return;
+                            }
+                        }
+                    }
+                    self.run_block(body, true);
+                    if self.exiting {
+                        break;
+                    }
+                    if let Some(update) = update
+                        && let Err(msg) = arithmetic::eval(update, &mut self.env)
+                    {
+                        self.stderr.push_str(&format!("bash: {msg}\n"));
+                        self.last_exit = 1;
+                        return;
+                    }
+                }
+            }
             CompoundCommand::While { cond, body, until } => {
                 self.last_exit = 0;
                 loop {

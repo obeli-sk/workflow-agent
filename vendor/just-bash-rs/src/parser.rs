@@ -65,8 +65,11 @@ enum Token {
     /// A leading descriptor number immediately before a redirection operator
     /// (`2>`, `1>&2`), bash's IO_NUMBER lexer rule.
     IoNumber(u32),
-    /// `(( expr ))`, the arithmetic command.
-    Arith(crate::arithmetic::ArithExpr),
+    /// `(( ... ))`: the raw text between the parens. Parsed lazily by the AST
+    /// parser so a C-style `for (( init; cond; update ))` header, whose body
+    /// holds three `;`-separated expressions, isn't rejected by the
+    /// single-expression arithmetic parser at lex time.
+    DParen(String),
 }
 
 struct Lexer {
@@ -153,9 +156,7 @@ impl Lexer {
                     self.bump();
                     self.bump();
                     let body = self.read_double_paren_body()?;
-                    let expr = crate::arithmetic::parse(&body)
-                        .map_err(|e| ParseError { message: e.message })?;
-                    tokens.push(Token::Arith(expr));
+                    tokens.push(Token::DParen(body));
                 }
                 Some('<') => {
                     self.bump();
@@ -688,10 +689,12 @@ impl Parser {
     }
 
     fn parse_command(&mut self) -> Result<Command, ParseError> {
-        if matches!(self.peek(), Some(Token::Arith(_))) {
-            let Some(Token::Arith(expr)) = self.bump() else {
+        if matches!(self.peek(), Some(Token::DParen(_))) {
+            let Some(Token::DParen(body)) = self.bump() else {
                 unreachable!()
             };
+            let expr =
+                crate::arithmetic::parse(&body).map_err(|e| ParseError { message: e.message })?;
             return Ok(Command::Arith(expr));
         }
         // A reserved word in command position starts a compound command.
@@ -831,6 +834,10 @@ impl Parser {
 
     fn parse_for(&mut self) -> Result<Command, ParseError> {
         self.expect_keyword("for")?;
+        // C-style header: `for (( init; cond; update ))`.
+        if let Some(Token::DParen(_)) = self.peek() {
+            return self.parse_cstyle_for();
+        }
         let name = match self.bump() {
             Some(Token::Word(w)) => match word_literal(&w) {
                 Some(n) if is_valid_name(n) => n.to_string(),
@@ -860,6 +867,39 @@ impl Parser {
         }))
     }
 
+    /// `for (( init; cond; update )); do body; done`. The `for` keyword is
+    /// already consumed and the next token is the `(( ... ))` header.
+    fn parse_cstyle_for(&mut self) -> Result<Command, ParseError> {
+        let Some(Token::DParen(body)) = self.bump() else {
+            unreachable!()
+        };
+        let parts = split_top_level_semis(&body);
+        if parts.len() != 3 {
+            return err("expected `(( init; cond; update ))` in C-style for loop");
+        }
+        let parse_part = |src: &str| -> Result<Option<crate::arithmetic::ArithExpr>, ParseError> {
+            if src.trim().is_empty() {
+                return Ok(None);
+            }
+            crate::arithmetic::parse(src)
+                .map(Some)
+                .map_err(|e| ParseError { message: e.message })
+        };
+        let init = parse_part(&parts[0])?;
+        let cond = parse_part(&parts[1])?;
+        let update = parse_part(&parts[2])?;
+        self.skip_separators();
+        self.expect_keyword("do")?;
+        let body = self.parse_statement_list(&["done"])?;
+        self.expect_keyword("done")?;
+        Ok(Command::Compound(CompoundCommand::CStyleFor {
+            init,
+            cond,
+            update,
+            body,
+        }))
+    }
+
     fn parse_while(&mut self, until: bool) -> Result<Command, ParseError> {
         self.expect_keyword(if until { "until" } else { "while" })?;
         let cond = self.parse_statement_list(&["do"])?;
@@ -872,6 +912,31 @@ impl Parser {
             until,
         }))
     }
+}
+
+/// Split a C-style `for` header body on `;` that sit outside any parentheses,
+/// so a grouped sub-expression like `(a; b)` (not valid arithmetic, but kept
+/// intact for a faithful error) or a nested `for (( (i=0); ...; ... ))` does
+/// not split mid-expression. Arithmetic expressions never contain a bare `;`,
+/// so top-level `;` always delimits the init/cond/update parts.
+fn split_top_level_semis(body: &str) -> Vec<String> {
+    let mut parts = vec![String::new()];
+    let mut depth = 0i32;
+    for c in body.chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                parts.last_mut().unwrap().push(c);
+            }
+            ')' => {
+                depth -= 1;
+                parts.last_mut().unwrap().push(c);
+            }
+            ';' if depth == 0 => parts.push(String::new()),
+            _ => parts.last_mut().unwrap().push(c),
+        }
+    }
+    parts
 }
 
 /// The literal text of a word if it is exactly one literal part. Used for

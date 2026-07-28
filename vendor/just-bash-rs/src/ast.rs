@@ -63,6 +63,14 @@ pub enum CompoundCommand {
         items: Vec<Word>,
         body: Vec<Statement>,
     },
+    /// `for (( init; cond; update )); do body; done`, the C-style arithmetic
+    /// for loop. Any of the three header clauses may be absent (`for ((;;))`).
+    CStyleFor {
+        init: Option<crate::arithmetic::ArithExpr>,
+        cond: Option<crate::arithmetic::ArithExpr>,
+        update: Option<crate::arithmetic::ArithExpr>,
+        body: Vec<Statement>,
+    },
     /// `while cond; do body; done`, or `until` when `until` is true.
     While {
         cond: Vec<Statement>,
@@ -185,6 +193,7 @@ fn command_has_background(command: &Command) -> bool {
                         .is_some_and(|b| b.iter().any(statement_has_background))
             }
             CompoundCommand::For { body, .. } => body.iter().any(statement_has_background),
+            CompoundCommand::CStyleFor { body, .. } => body.iter().any(statement_has_background),
             CompoundCommand::While { cond, body, .. } => {
                 cond.iter().any(statement_has_background)
                     || body.iter().any(statement_has_background)
