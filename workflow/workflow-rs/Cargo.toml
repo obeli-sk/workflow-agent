@@ -1,0 +1,20 @@
+[package]
+name = "workflow-agent-rs"
+description = "Native Rust Obelisk workflow: the workflow-agent session loop (phase 5 of the JS-to-Rust port)"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+just-bash-rs = { path = "../../vendor/just-bash-rs" }
+serde_json.workspace = true
+wit-bindgen.workspace = true
+
+[build-dependencies]
+anyhow.workspace = true
+wit-bindgen-rust.workspace = true
+wit-parser.workspace = true

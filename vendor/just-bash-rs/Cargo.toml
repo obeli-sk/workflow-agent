@@ -1,0 +1,15 @@
+[package]
+name = "just-bash-rs"
+description = "Rust port of the just-bash virtual bash interpreter used by the workflow-agent"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+
+[dependencies]
+regex.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]

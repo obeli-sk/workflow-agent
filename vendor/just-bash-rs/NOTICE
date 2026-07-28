@@ -1,0 +1,9 @@
+just-bash-rs
+Copyright 2025 obeli-sk
+
+This product is a Rust port of just-bash
+(https://github.com/vercel-labs/just-bash), Copyright 2025 Vercel Inc.,
+licensed under the Apache License, Version 2.0.
+
+The original TypeScript sources each port module was derived from are named in
+that module's `//! PORT:` header comment. See LICENSE for the full license text.

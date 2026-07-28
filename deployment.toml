@@ -584,39 +584,22 @@ params = [
 return_type = "result<string, string>"
 
 # --- Workflow -----------------------------------------------------------------
+# Native Rust workflow (workflow/workflow-rs), replacing the two JS workflows
+# above (agent-loop.js / agent.js). The WIT world (workflow/workflow-rs/wit/
+# impl.wit) declares both exports under the exact same FFQNs the JS versions
+# used (obelisk-agent:workflow/workflow.{agent-loop-cancellable,run}), so no
+# caller (webhook, obelisk-control pack's submit-workflow-execution tool)
+# needs to change. Params/return types now come from the WIT, not this file.
+# The `-cancellable` suffix on agent-loop-cancellable still opts it into
+# operator cancellation (the UI can cancel the session without killing the
+# `run` supervisor); see workflow/workflow-rs/src/agent.rs for how `run`
+# preserves that by submitting agent-loop-cancellable as a real child call.
 
-[[workflow_js]]
-# The `-cancellable` suffix opts this workflow into operator cancellation: the UI
-# can cancel this execution (the agent-loop session), unwinding the run.
-ffqn = "obelisk-agent:workflow/workflow.agent-loop-cancellable"
-params = [
-  { name = "prompt",        type = "string" },
-  { name = "system-prompt", type = "string" },
-  { name = "tools-json",    type = "string" },
-  { name = "model",         type = "string" },
-  { name = "effort",        type = "string" },
-]
-return_type = "result<_, string>"
-location = "workflow/agent-loop.js"
-content_digest = "sha256:8cbe1717f8cb7e024bc6bdc54efeb0e8d096701a1ba366f47106fc7cbff87c8c"
+[[workflow_wasm]]
+name = "workflow_agent_rs"
+location = "target/wasm32-unknown-unknown/release/workflow_agent_rs.wasm"
 exec.lock_expiry.seconds = 30
-
-# Public supervisor workflow. Resolves the pack descriptor, then delegates to the
-# generic agent-loop workflow.
-[[workflow_js]]
-ffqn = "obelisk-agent:workflow/workflow.run"
-params = [
-  { name = "prompt", type = "string" },
-  # Model id selecting an AGENT_MODELS catalog entry. null => catalog default.
-  { name = "model", type = "option<string>" },
-  # Pack descriptor FFQN. null => obelisk-control:agent/pack.describe.
-  { name = "descriptor-ffqn", type = "option<string>" },
-  # Reasoning effort: off|minimal|low|medium|high|xhigh. null => provider default.
-  { name = "effort", type = "option<string>" },
-]
-return_type = "result<_, string>"
-location = "workflow/agent.js"
-content_digest = "sha256:e87bb451d741b67e8cdc594c7f559442bb8edc778db74ac66061a811e6466903"
+backtrace.sources = { ".../src/lib.rs" = "workflow/workflow-rs/src/lib.rs" }
 
 # --- GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
