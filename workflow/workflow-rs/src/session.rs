@@ -126,6 +126,12 @@ pub fn agent_loop_cancellable(
             // module docs), so a failed mount records the error into the
             // workspace (`/workspace/.mount-error`) instead of leaving an
             // empty workspace with no explanation (see port-findings.md A).
+            //
+            // Install the lazy blob loader before mounting: `mount` only
+            // registers the deployment's file *structure*, so each source is
+            // fetched from the CAS by this loader the first time it is read.
+            bash.fs_mut()
+                .set_blob_loader(obelisk_pack::blob_loader(Box::new(RealHost)));
             if let Err(err) = obelisk_pack::mount(bash.fs_mut(), &mut RealHost) {
                 let _ = bash
                     .fs_mut()

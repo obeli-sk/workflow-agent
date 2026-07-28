@@ -132,7 +132,7 @@ pub fn wc(interp: &Interpreter, args: &[String], stdin: String) -> CommandOutput
     };
     for file in &files {
         let path = normalize_path(&interp.cwd, file);
-        match interp.fs.read_file(&path) {
+        match interp.fs.read_file(&path).as_deref() {
             Some(bytes) => {
                 let content = String::from_utf8_lossy(bytes);
                 let s = count_stats(&content, show_chars);
@@ -371,7 +371,7 @@ fn process_head_tail(
     let mut printed = 0;
     for file in &opts.files {
         let path = normalize_path(&interp.cwd, file);
-        match interp.fs.read_file(&path) {
+        match interp.fs.read_file(&path).as_deref() {
             Some(bytes) => {
                 let content = String::from_utf8_lossy(bytes);
                 if show_headers {

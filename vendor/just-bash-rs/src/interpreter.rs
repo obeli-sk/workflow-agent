@@ -412,7 +412,7 @@ impl Interpreter {
                 RedirectTarget::File(word) => {
                     let path = self.resolve_path(word)?;
                     match redirect.kind {
-                        RedirectKind::Read => match self.fs.read_file(&path) {
+                        RedirectKind::Read => match self.fs.read_file(&path).as_deref() {
                             Some(bytes) => stdin = String::from_utf8_lossy(bytes).into_owned(),
                             None => {
                                 return Ok(CommandOutput {

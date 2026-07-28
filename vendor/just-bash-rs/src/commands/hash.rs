@@ -232,7 +232,7 @@ pub fn md5sum(interp: &Interpreter, args: &[String], stdin: String) -> CommandOu
                 interp
                     .fs
                     .read_file(&normalize_path(&interp.cwd, file))
-                    .map(|b| String::from_utf8_lossy(b).into_owned())
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
             };
             let Some(content) = content else {
                 return fail(format!("md5sum: {file}: No such file or directory\n"), 1);

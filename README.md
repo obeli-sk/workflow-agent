@@ -11,7 +11,10 @@ call real Obelisk activities for external operations.
 The core owns the agent loop, Bash session, LLM router, and web UI. A compiled
 **pack** supplies commands, system guidance, and virtual files. This repo ships
 one pack, `obelisk-control`, which mounts the active deployment under
-`/workspace/deployment` and provides an `obelisk` executable.
+`/workspace/deployment` and provides an `obelisk` executable. The mount is lazy:
+the file tree (including each component's `backtrace.sources`) lists
+immediately, and a file's bytes are fetched from the content-addressed store the
+first time it is read (see `meta/designs/workflow-agent-lazy-deployment-mount.md`).
 
 ![workflow-agent web UI](docs/workflow-agent.png)
 

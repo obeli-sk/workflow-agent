@@ -11,12 +11,19 @@
 //! session's own bash, not those targets, so it never needs to know how they
 //! are implemented.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::OnceLock;
+
+use regex::Regex;
 use serde_json::{Value, json};
 
 use crate::commands::normalize_path;
 use crate::custom_command::CustomCommandHandler;
-use crate::fs::{FsError, Vfs};
+use crate::fs::{BlobLoader, FsError, Vfs};
 use crate::interpreter::{CommandOutput, Interpreter};
+
+const READ_BLOB_FFQN: &str = "obelisk-agent:tools/webapi.deployment-read-blob";
 
 const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
 
@@ -64,12 +71,18 @@ pub fn command_handler(host: Box<dyn ObeliskHost>) -> CustomCommandHandler {
     Box::new(move |interp, args, stdin| execute_obelisk(interp, args, &stdin, host.as_mut()))
 }
 
-/// Check out the active deployment's `deployment.toml` plus its owned source
-/// files into `/workspace/deployment/<id>/`, then symlink
-/// `/workspace/deployment/current` to it. Called once at session mount
-/// (`replace = false`, via `mount`) and again by `obelisk deployment refresh`
-/// (`replace = true`, forcing already-present files to be re-fetched; the
-/// initial mount instead leaves a locally-edited file alone).
+/// Check out the active deployment's `deployment.toml` plus the *structure* of
+/// its owned source files into `/workspace/deployment/<id>/`, then symlink
+/// `/workspace/deployment/current` to it. Only the manifest is fetched here;
+/// each owned source (component scripts/wasm and `backtrace.sources`) is
+/// registered as a lazy VFS entry whose bytes are pulled from the CAS on first
+/// read (see `Vfs::register_lazy` and `blob_loader`), so mounting costs two
+/// host calls regardless of how many files the deployment owns.
+///
+/// Called once at session mount (`replace = false`, via `mount`) and again by
+/// `obelisk deployment refresh` (`replace = true`, re-registering every file so
+/// a locally-read/edited copy is dropped for the current digest; the initial
+/// mount instead leaves an already-present file alone).
 pub fn refresh_deployment_mount(
     fs: &mut Vfs,
     host: &mut dyn ObeliskHost,
@@ -109,19 +122,12 @@ pub fn refresh_deployment_mount(
     }
 
     let mut files = 1u32;
-    for reference in owned_script_refs(&manifest) {
+    for reference in deployment_file_refs(&manifest) {
         let path = format!("{dir}/{}", reference.location);
         if !replace && fs.exists(&path) {
             continue;
         }
-        let content = call_value(
-            host,
-            "obelisk-agent:tools/webapi.deployment-read-blob",
-            &json!([reference.digest]).to_string(),
-        )?;
-        let content = coerce_text(&content);
-        fs.write_file(&path, content.as_bytes())
-            .map_err(fs_error_message)?;
+        fs.register_lazy(&path, &reference.digest);
         files += 1;
     }
 
@@ -140,6 +146,36 @@ pub fn refresh_deployment_mount(
 /// `replace = false`.
 pub fn mount(fs: &mut Vfs, host: &mut dyn ObeliskHost) -> Result<MountResult, String> {
     refresh_deployment_mount(fs, host, false)
+}
+
+/// The `Vfs` blob loader for a mounted session: fetch a deployment file's bytes
+/// by content digest via `deployment-read-blob`, decoding the same way the old
+/// eager mount did (`call_value` peels `call_json`'s JSON layer, `coerce_text`
+/// takes the verbatim string body). Install with `fs.set_blob_loader(...)`; it
+/// owns a host of its own (the shell's `obelisk` command owns a separate one)
+/// with interior mutability, since `BlobLoader::load` is a `&self` call reached
+/// from a plain file read.
+struct HostBlobLoader {
+    host: RefCell<Box<dyn ObeliskHost>>,
+}
+
+impl BlobLoader for HostBlobLoader {
+    fn load(&self, digest: &str) -> Result<Vec<u8>, String> {
+        let value = call_value(
+            &mut **self.host.borrow_mut(),
+            READ_BLOB_FFQN,
+            &json!([digest]).to_string(),
+        )?;
+        Ok(coerce_text(&value).into_bytes())
+    }
+}
+
+/// Build the session's lazy blob loader from an owned host (see
+/// `HostBlobLoader`).
+pub fn blob_loader(host: Box<dyn ObeliskHost>) -> Rc<dyn BlobLoader> {
+    Rc::new(HostBlobLoader {
+        host: RefCell::new(host),
+    })
 }
 
 fn execute_obelisk(
@@ -341,6 +377,69 @@ struct ScriptRef {
     digest: String,
 }
 
+/// Every deployment-owned source file to mount, by deployment-relative
+/// `location` + `content_digest`: the top-level component scripts/wasm
+/// (`owned_script_refs`) plus each `backtrace.sources` entry
+/// (`backtrace_source_refs`), which the component scanner does not see because
+/// it lives in a nested table. Deduplicated on `location` (a wasm component and
+/// its backtrace source never collide, but a source file listed twice should
+/// mount once).
+fn deployment_file_refs(toml: &str) -> Vec<ScriptRef> {
+    let mut seen = std::collections::BTreeSet::new();
+    owned_script_refs(toml)
+        .into_iter()
+        .chain(backtrace_source_refs(toml))
+        .filter(|r| seen.insert(r.location.clone()))
+        .collect()
+}
+
+/// The `backtrace.sources` entries the component scanner misses. Obelisk stores
+/// each as an inline table `{ path = "<loc>", content_digest = "sha256:..." }`,
+/// either under a `[<section>.backtrace.sources]` header or inline as
+/// `backtrace.sources = { "<key>" = { path = ..., content_digest = ... } }`
+/// (see `obelisk/src/config/manifest.rs`). Both forms are picked up by scanning
+/// each `{ ... }` chunk in a backtrace region for the `path`/`content_digest`
+/// pair; a digest-less entry (the pre-submit shorthand, never seen in a stored
+/// manifest) cannot be fetched, so it is skipped.
+fn backtrace_source_refs(toml: &str) -> Vec<ScriptRef> {
+    static ENTRY: OnceLock<Regex> = OnceLock::new();
+    static PATH: OnceLock<Regex> = OnceLock::new();
+    static DIGEST: OnceLock<Regex> = OnceLock::new();
+    let entry = ENTRY.get_or_init(|| Regex::new(r"\{[^{}]*\}").unwrap());
+    let path = PATH.get_or_init(|| Regex::new(r#"\bpath\s*=\s*"([^"]+)""#).unwrap());
+    let digest = DIGEST.get_or_init(|| Regex::new(r#"\bcontent_digest\s*=\s*"([^"]+)""#).unwrap());
+
+    let mut refs = Vec::new();
+    let mut in_table = false;
+    for line in toml.split('\n') {
+        let text = line.trim();
+        if text.starts_with('[') {
+            // A `[section.backtrace.sources]` header opens a region; any other
+            // table header (including `[[...]]`) closes it.
+            in_table = text.ends_with(".backtrace.sources]");
+            continue;
+        }
+        if !in_table && !text.contains("backtrace.sources") {
+            continue;
+        }
+        for chunk in entry.find_iter(line) {
+            let chunk = chunk.as_str();
+            let (Some(loc), Some(dig)) = (path.captures(chunk), digest.captures(chunk)) else {
+                continue;
+            };
+            let location = loc[1].to_string();
+            if location.starts_with("oci://") {
+                continue;
+            }
+            refs.push(ScriptRef {
+                location,
+                digest: dig[1].to_string(),
+            });
+        }
+    }
+    refs
+}
+
 /// A tiny hand-rolled TOML scanner, line-based and deliberately minimal (not
 /// a real TOML parser - see the design doc): finds `location`/`content_digest`
 /// keys inside the deployment manifest's top-level `[[...]]` array-of-tables
@@ -411,12 +510,12 @@ struct SourceEntry {
 
 fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<SourceEntry> {
     let mut files = Vec::new();
-    for reference in owned_script_refs(manifest) {
+    for reference in deployment_file_refs(manifest) {
         let path = format!("{dir}/{}", reference.location);
         if let Some(bytes) = fs.read_file(&path) {
             files.push(SourceEntry {
                 path: reference.location,
-                content: String::from_utf8_lossy(bytes).into_owned(),
+                content: String::from_utf8_lossy(&bytes).into_owned(),
             });
         }
     }
@@ -431,7 +530,7 @@ fn resolve_deployment_dir(interp: &Interpreter, value: Option<&str>) -> String {
 fn read_manifest(fs: &Vfs, dir: &str) -> Result<String, String> {
     let path = format!("{dir}/deployment.toml");
     fs.read_file(&path)
-        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .ok_or_else(|| format!("{path}: No such file or directory"))
 }
 
@@ -647,6 +746,31 @@ mod tests {
                 .cloned()
                 .map(Some)
                 .ok_or_else(|| format!("no fixture for {ffqn}"))
+        }
+    }
+
+    /// A digest-addressed blob loader for the lazy-mount tests: mount now only
+    /// registers file *structure*, so a test that wants a file's bytes installs
+    /// one of these (mirroring the real CAS, keyed by content digest).
+    struct FixtureLoader(BTreeMap<String, Vec<u8>>);
+
+    impl FixtureLoader {
+        fn rc(entries: &[(&str, &[u8])]) -> Rc<dyn BlobLoader> {
+            Rc::new(FixtureLoader(
+                entries
+                    .iter()
+                    .map(|(d, b)| (d.to_string(), b.to_vec()))
+                    .collect(),
+            ))
+        }
+    }
+
+    impl BlobLoader for FixtureLoader {
+        fn load(&self, digest: &str) -> Result<Vec<u8>, String> {
+            self.0
+                .get(digest)
+                .cloned()
+                .ok_or_else(|| format!("no blob for {digest}"))
         }
     }
 
@@ -910,6 +1034,38 @@ content_digest = \"sha256:3\"\n";
     }
 
     #[test]
+    fn backtrace_source_refs_reads_nested_table_and_inline_forms() {
+        // Nested-table form (obelisk's stored shape) with two entries.
+        let table = "[[workflow_wasm]]\n\
+name = \"wf\"\n\
+location = \"w.wasm\"\n\
+content_digest = \"sha256:9\"\n\
+\n\
+[workflow_wasm.backtrace.sources]\n\
+\".../src/lib.rs\" = { path = \"src/lib.rs\", content_digest = \"sha256:1\" }\n\
+\".../src/util.rs\" = { path = \"src/util.rs\", content_digest = \"sha256:2\" }\n";
+        let refs = backtrace_source_refs(table);
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].location, "src/lib.rs");
+        assert_eq!(refs[0].digest, "sha256:1");
+        assert_eq!(refs[1].location, "src/util.rs");
+        assert_eq!(refs[1].digest, "sha256:2");
+        // The component scanner does not see them; only the wasm location.
+        assert_eq!(deployment_file_refs(table).len(), 3);
+
+        // Inline form within the `[[workflow_wasm]]` table (nested inline table).
+        let inline = "[[workflow_wasm]]\n\
+name = \"wf\"\n\
+location = \"w.wasm\"\n\
+content_digest = \"sha256:9\"\n\
+backtrace.sources = { \".../src/lib.rs\" = { path = \"src/lib.rs\", content_digest = \"sha256:1\" } }\n";
+        let refs = backtrace_source_refs(inline);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].location, "src/lib.rs");
+        assert_eq!(refs[0].digest, "sha256:1");
+    }
+
+    #[test]
     fn toml_value_matches_a_quoted_string_value() {
         assert_eq!(
             toml_value("location = \"a.wasm\"", "location"),
@@ -935,10 +1091,6 @@ content_digest = \"sha256:3\"\n";
             .with(
                 "obelisk-agent:tools/webapi.deployment-checkout",
                 &json!({"deployment_toml": manifest}).to_string(),
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-read-blob",
-                &json!("binary-bytes").to_string(),
             );
         let mut fs = Vfs::new();
         let result = mount(&mut fs, &mut host).unwrap();
@@ -949,18 +1101,66 @@ content_digest = \"sha256:3\"\n";
                 files: 2
             }
         );
+        // Mount fetches only the manifest; the blob endpoint is never called.
+        assert!(
+            !host
+                .calls
+                .iter()
+                .any(|(ffqn, _)| ffqn == "obelisk-agent:tools/webapi.deployment-read-blob")
+        );
         assert!(fs.is_dir("/workspace/deployment/current"));
         assert_eq!(
-            fs.read_file("/workspace/deployment/current/deployment.toml"),
+            fs.read_file("/workspace/deployment/current/deployment.toml")
+                .as_deref(),
             Some(manifest.as_bytes())
         );
+        // The owned source lists immediately but holds no bytes until a loader
+        // is installed and the file is read.
+        assert!(fs.is_file("/workspace/deployment/current/a.wasm"));
+        fs.set_blob_loader(FixtureLoader::rc(&[("sha256:1", b"binary-bytes")]));
         assert_eq!(
-            fs.read_file("/workspace/deployment/current/a.wasm"),
+            fs.read_file("/workspace/deployment/current/a.wasm")
+                .as_deref(),
             Some(&b"binary-bytes"[..])
         );
         assert_eq!(
-            fs.read_file("/workspace/deployment/dep-1/a.wasm"),
+            fs.read_file("/workspace/deployment/dep-1/a.wasm")
+                .as_deref(),
             Some(&b"binary-bytes"[..])
+        );
+    }
+
+    #[test]
+    fn mount_registers_backtrace_sources_from_the_nested_table() {
+        // Obelisk stores backtrace sources in a nested table with inline
+        // `{ path, content_digest }` values; the component scanner never sees
+        // them, so this exercises the dedicated backtrace scan.
+        let manifest = "[[workflow_wasm]]\n\
+name = \"wf\"\n\
+location = \"components/w.wasm\"\n\
+content_digest = \"sha256:1\"\n\
+\n\
+[workflow_wasm.backtrace.sources]\n\
+\".../src/lib.rs\" = { path = \"workflow/workflow-rs/src/lib.rs\", content_digest = \"sha256:2\" }\n";
+        let mut host = FakeHost::new()
+            .with(
+                "obelisk-agent:tools/webapi.current-deployment-id",
+                "\"dep-1\"",
+            )
+            .with(
+                "obelisk-agent:tools/webapi.deployment-checkout",
+                &json!({"deployment_toml": manifest}).to_string(),
+            );
+        let mut fs = Vfs::new();
+        let result = mount(&mut fs, &mut host).unwrap();
+        // manifest + the wasm component + the backtrace source.
+        assert_eq!(result.files, 3);
+        assert!(fs.is_file("/workspace/deployment/current/workflow/workflow-rs/src/lib.rs"));
+        fs.set_blob_loader(FixtureLoader::rc(&[("sha256:2", b"fn workflow() {}")]));
+        assert_eq!(
+            fs.read_file("/workspace/deployment/current/workflow/workflow-rs/src/lib.rs")
+                .as_deref(),
+            Some(&b"fn workflow() {}"[..])
         );
     }
 
@@ -1029,12 +1229,14 @@ content_digest = \"sha256:3\"\n";
             .with(
                 "obelisk-agent:tools/webapi.deployment-checkout",
                 &json!({"deployment_toml": manifest_v1}).to_string(),
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-read-blob",
-                &json!("v1").to_string(),
             );
         let mut fs = Vfs::new();
+        // A single digest-addressed loader stands in for the CAS across both
+        // deployments (the real HostBlobLoader is likewise one per session).
+        fs.set_blob_loader(FixtureLoader::rc(&[
+            ("sha256:1", b"v1"),
+            ("sha256:2", b"v2"),
+        ]));
         mount(&mut fs, &mut host_v1).unwrap();
 
         let mut host_v2 = FakeHost::new()
@@ -1045,20 +1247,19 @@ content_digest = \"sha256:3\"\n";
             .with(
                 "obelisk-agent:tools/webapi.deployment-checkout",
                 &json!({"deployment_toml": manifest_v2}).to_string(),
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-read-blob",
-                &json!("v2").to_string(),
             );
         let result = refresh_deployment_mount(&mut fs, &mut host_v2, true).unwrap();
         assert_eq!(result.deployment_id.as_deref(), Some("dep-2"));
-        // The old deployment dir is untouched; `current` now resolves to the new one.
+        // The old deployment dir is untouched; `current` now resolves to the new
+        // one and reads the new digest (sha256:2).
         assert_eq!(
-            fs.read_file("/workspace/deployment/dep-1/a.wasm"),
+            fs.read_file("/workspace/deployment/dep-1/a.wasm")
+                .as_deref(),
             Some(&b"v1"[..])
         );
         assert_eq!(
-            fs.read_file("/workspace/deployment/current/a.wasm"),
+            fs.read_file("/workspace/deployment/current/a.wasm")
+                .as_deref(),
             Some(&b"v2"[..])
         );
     }

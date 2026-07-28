@@ -38,7 +38,7 @@ fn copy_tree(fs: &mut crate::fs::Vfs, src: &str, dest: &str) {
                 copy_tree(fs, &join_path(src, &entry), &join_path(dest, &entry));
             }
         }
-    } else if let Some(data) = fs.read_file(src).map(<[u8]>::to_vec) {
+    } else if let Some(data) = fs.read_file(src) {
         let _ = fs.write_file(dest, &data);
     }
 }
@@ -603,7 +603,7 @@ pub fn ln(interp: &mut Interpreter, args: &[String]) -> CommandOutput {
             1,
         );
     }
-    let Some(data) = interp.fs.read_file(&target_path).map(<[u8]>::to_vec) else {
+    let Some(data) = interp.fs.read_file(&target_path) else {
         return fail(
             format!("ln: failed to access '{target}': No such file or directory\n"),
             1,
@@ -673,8 +673,8 @@ pub fn file(interp: &Interpreter, args: &[String]) -> CommandOutput {
         let (desc, mime) = if interp.fs.is_dir(&path) {
             ("directory".to_string(), "inode/directory".to_string())
         } else {
-            let bytes = interp.fs.read_file(&path).unwrap_or(&[]);
-            detect_file_type(file, bytes)
+            let bytes = interp.fs.read_file(&path).unwrap_or_default();
+            detect_file_type(file, &bytes)
         };
         let result = if mime_mode { &mime } else { &desc };
         stdout.push_str(&if brief {
@@ -846,7 +846,7 @@ fn du_walk(
         }
         total
     } else {
-        let size = interp.fs.read_file(full).map(<[u8]>::len).unwrap_or(0) as u64;
+        let size = interp.fs.read_file(full).map(|b| b.len()).unwrap_or(0) as u64;
         if !opts.summarize && (opts.all_files || depth == 0) {
             out.push_str(&format!("{}\t{}\n", format_size(size, opts.human), display));
         }
@@ -1103,8 +1103,14 @@ mod tests {
         bash.fs_mut().write_file("/a.txt", b"hello").unwrap();
         let r = run(&mut bash, "cp /a.txt /b.txt");
         assert_eq!(r.exit_code, 0);
-        assert_eq!(bash.fs().read_file("/b.txt"), Some(&b"hello"[..]));
-        assert_eq!(bash.fs().read_file("/a.txt"), Some(&b"hello"[..]));
+        assert_eq!(
+            bash.fs().read_file("/b.txt").as_deref(),
+            Some(&b"hello"[..])
+        );
+        assert_eq!(
+            bash.fs().read_file("/a.txt").as_deref(),
+            Some(&b"hello"[..])
+        );
     }
 
     #[test]
@@ -1123,8 +1129,14 @@ mod tests {
         bash.fs_mut().write_file("/dir/sub/b.txt", b"b").unwrap();
         let r = run(&mut bash, "cp -r /dir /dest");
         assert_eq!(r.exit_code, 0);
-        assert_eq!(bash.fs().read_file("/dest/a.txt"), Some(&b"a"[..]));
-        assert_eq!(bash.fs().read_file("/dest/sub/b.txt"), Some(&b"b"[..]));
+        assert_eq!(
+            bash.fs().read_file("/dest/a.txt").as_deref(),
+            Some(&b"a"[..])
+        );
+        assert_eq!(
+            bash.fs().read_file("/dest/sub/b.txt").as_deref(),
+            Some(&b"b"[..])
+        );
     }
 
     #[test]
@@ -1143,7 +1155,10 @@ mod tests {
         let r = run(&mut bash, "mv /a.txt /b.txt");
         assert_eq!(r.exit_code, 0);
         assert!(!bash.fs().exists("/a.txt"));
-        assert_eq!(bash.fs().read_file("/b.txt"), Some(&b"hello"[..]));
+        assert_eq!(
+            bash.fs().read_file("/b.txt").as_deref(),
+            Some(&b"hello"[..])
+        );
     }
 
     #[test]
@@ -1152,7 +1167,10 @@ mod tests {
         bash.fs_mut().write_file("/a.txt", b"hi").unwrap();
         bash.fs_mut().mkdir("/dir", true).unwrap();
         run(&mut bash, "mv /a.txt /dir");
-        assert_eq!(bash.fs().read_file("/dir/a.txt"), Some(&b"hi"[..]));
+        assert_eq!(
+            bash.fs().read_file("/dir/a.txt").as_deref(),
+            Some(&b"hi"[..])
+        );
     }
 
     #[test]
@@ -1223,7 +1241,10 @@ mod tests {
         bash.fs_mut().write_file("/a.txt", b"hello").unwrap();
         let r = run(&mut bash, "ln /a.txt /b.txt");
         assert_eq!(r.exit_code, 0);
-        assert_eq!(bash.fs().read_file("/b.txt"), Some(&b"hello"[..]));
+        assert_eq!(
+            bash.fs().read_file("/b.txt").as_deref(),
+            Some(&b"hello"[..])
+        );
     }
 
     #[test]

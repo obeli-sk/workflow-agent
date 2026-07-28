@@ -20,7 +20,7 @@ fn read_operand(interp: &Interpreter, file: &str, stdin: &str) -> Option<String>
     interp
         .fs
         .read_file(&path)
-        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
 /// Classic LCS table over lines, used to build the shortest edit script.

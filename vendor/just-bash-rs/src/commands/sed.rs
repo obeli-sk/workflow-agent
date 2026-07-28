@@ -456,7 +456,7 @@ pub fn sed(interp: &mut Interpreter, args: &[String], stdin: String) -> CommandO
     let mut exit_code = 0;
     for file in &files {
         let path = normalize_path(&interp.cwd, file);
-        match interp.fs.read_file(&path) {
+        match interp.fs.read_file(&path).as_deref() {
             Some(bytes) => {
                 let content = String::from_utf8_lossy(bytes).into_owned();
                 let out = run_sed(&stmts, &content, suppress_auto);

@@ -568,7 +568,10 @@ mod tests {
         let mut bash = fresh();
         let r = run(&mut bash, "echo hello | tee /output.txt");
         assert_eq!(r.stdout, "hello\n");
-        assert_eq!(bash.fs().read_file("/output.txt"), Some(&b"hello\n"[..]));
+        assert_eq!(
+            bash.fs().read_file("/output.txt").as_deref(),
+            Some(&b"hello\n"[..])
+        );
     }
 
     #[test]
@@ -579,7 +582,7 @@ mod tests {
             .unwrap();
         run(&mut bash, "echo appended | tee -a /test.txt");
         assert_eq!(
-            bash.fs().read_file("/test.txt"),
+            bash.fs().read_file("/test.txt").as_deref(),
             Some(&b"existing\nappended\n"[..])
         );
     }
