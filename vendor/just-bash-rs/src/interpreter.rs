@@ -75,9 +75,12 @@ pub struct Interpreter {
     /// `$0`: the shell or script name.
     pub arg0: String,
     pub fs: Vfs,
-    /// Current time (Unix epoch milliseconds), sampled once at the start of
-    /// this `exec` call. See `BashOptions::now_ms`.
-    pub now_ms: i64,
+    /// Reads the current time (Unix epoch milliseconds) on demand, used by
+    /// `date`. See `BashOptions::now_ms`.
+    pub now_ms: fn() -> i64,
+    /// Durably sleeps for the given milliseconds, used by `sleep`. See
+    /// `BashOptions::sleep_ms`.
+    pub sleep_ms: fn(u64),
     /// Host-registered commands (see `custom_command.rs`), moved in from
     /// `Bash` for this run and moved back out afterward.
     pub custom_commands: CustomCommands,
@@ -90,12 +93,16 @@ pub struct CommandOutput {
     pub exit_code: i32,
 }
 
+/// Default `sleep_ms`: no scheduler, so a bare interpreter never blocks (the
+/// workflow installs a durable sleep, see `BashOptions::sleep_ms`).
+fn no_sleep(_ms: u64) {}
+
 impl Interpreter {
     pub fn new(
         env: BTreeMap<String, String>,
         cwd: String,
         fs: Vfs,
-        now_ms: i64,
+        now_ms: fn() -> i64,
         custom_commands: CustomCommands,
     ) -> Self {
         Self {
@@ -110,6 +117,7 @@ impl Interpreter {
             arg0: "bash".to_string(),
             fs,
             now_ms,
+            sleep_ms: no_sleep,
             custom_commands,
         }
     }
@@ -412,7 +420,7 @@ impl Interpreter {
                 RedirectTarget::File(word) => {
                     let path = self.resolve_path(word)?;
                     match redirect.kind {
-                        RedirectKind::Read => match self.fs.read_file(&path) {
+                        RedirectKind::Read => match self.fs.read_file(&path).as_deref() {
                             Some(bytes) => stdin = String::from_utf8_lossy(bytes).into_owned(),
                             None => {
                                 return Ok(CommandOutput {

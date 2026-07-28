@@ -8,14 +8,25 @@
 //! pack bridge, see `symlink` below), and the handful of operations
 //! redirections and the file-aware builtins call.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
+
+/// Fetches a deployment-owned file's bytes from the content-addressed store by
+/// its `sha256:...` content digest. Installed on the `Vfs` by the session's
+/// deployment mount (`obelisk_pack::mount`) so the file tree is browsable
+/// immediately while each file's bytes are pulled only when first read (see
+/// `Vfs::register_lazy` / `Vfs::read_file`).
+pub trait BlobLoader {
+    fn load(&self, digest: &str) -> Result<Vec<u8>, String>;
+}
 
 /// An in-memory tree of text files keyed by absolute, normalized path.
 ///
 /// Directories are tracked explicitly (including ancestors) so `readdir` can
 /// list them even when empty. Paths passed in are expected to be absolute; they
 /// are normalized defensively so `.`/`..` never escape the root.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct Vfs {
     files: BTreeMap<String, Vec<u8>>,
     dirs: BTreeSet<String>,
@@ -27,6 +38,32 @@ pub struct Vfs {
     /// bit modelled: a path-invoked script (`./x.sh`) must be executable or the
     /// shell reports `Permission denied`, matching real bash.
     executable: BTreeSet<String>,
+    /// Deployment-owned files whose bytes have not been fetched yet: resolved
+    /// path -> content digest. Populated by `register_lazy` so the mounted
+    /// deployment tree lists (`ls`, `exists`, `is_file`) without any CAS
+    /// round-trips; the bytes are pulled by `loader` on the first `read_file`.
+    pending: BTreeMap<String, String>,
+    /// Bytes fetched for a `pending` entry, cached so each file is fetched at
+    /// most once. Interior mutability keeps `read_file` a `&self` call, so the
+    /// whole read-side command surface is unchanged by lazy loading.
+    lazy_cache: RefCell<BTreeMap<String, Vec<u8>>>,
+    /// Loader for `pending` bytes. `None` outside a mounted session (the bare
+    /// interpreter and unit tests), where nothing is ever `pending`.
+    loader: Option<Rc<dyn BlobLoader>>,
+}
+
+impl std::fmt::Debug for Vfs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vfs")
+            .field("files", &self.files)
+            .field("dirs", &self.dirs)
+            .field("symlinks", &self.symlinks)
+            .field("executable", &self.executable)
+            .field("pending", &self.pending)
+            .field("lazy_cache", &self.lazy_cache)
+            .field("loader", &self.loader.as_ref().map(|_| "..."))
+            .finish()
+    }
 }
 
 impl Vfs {
@@ -38,7 +75,31 @@ impl Vfs {
             dirs,
             symlinks: BTreeMap::new(),
             executable: BTreeSet::new(),
+            pending: BTreeMap::new(),
+            lazy_cache: RefCell::new(BTreeMap::new()),
+            loader: None,
         }
+    }
+
+    /// Install the loader that fetches `pending` files' bytes on first read.
+    pub fn set_blob_loader(&mut self, loader: Rc<dyn BlobLoader>) {
+        self.loader = Some(loader);
+    }
+
+    /// Register a deployment-owned file whose bytes are fetched lazily (by
+    /// `content_digest`) the first time it is read. The path lists immediately
+    /// but holds no bytes yet. Overwrites any content already at `path`,
+    /// including a previously fetched/cached body (so `deployment refresh` can
+    /// re-point a file at a new digest and discard the stale bytes).
+    pub fn register_lazy(&mut self, path: &str, digest: &str) {
+        let path = self.resolve(path);
+        self.files.remove(&path);
+        self.executable.remove(&path);
+        self.lazy_cache.borrow_mut().remove(&path);
+        if let Some(parent) = Self::parent(&path) {
+            self.ensure_dirs(&parent);
+        }
+        self.pending.insert(path, digest.to_string());
     }
 
     /// Set or clear a file's execute bit (`chmod`). The path is resolved
@@ -140,19 +201,37 @@ impl Vfs {
 
     pub fn exists(&self, path: &str) -> bool {
         let path = self.resolve(path);
-        self.files.contains_key(&path) || self.dirs.contains(&path)
+        self.files.contains_key(&path)
+            || self.dirs.contains(&path)
+            || self.pending.contains_key(&path)
     }
 
     pub fn is_file(&self, path: &str) -> bool {
-        self.files.contains_key(&self.resolve(path))
+        let path = self.resolve(path);
+        self.files.contains_key(&path) || self.pending.contains_key(&path)
     }
 
     pub fn is_dir(&self, path: &str) -> bool {
         self.dirs.contains(&self.resolve(path))
     }
 
-    pub fn read_file(&self, path: &str) -> Option<&[u8]> {
-        self.files.get(&self.resolve(path)).map(Vec::as_slice)
+    /// Read a file's bytes. A `pending` (lazily-mounted) file is fetched from
+    /// the CAS via the installed `loader` on first read and cached; a fetch
+    /// failure (or no loader) reads as absent. Returns owned bytes so a cached
+    /// lazy body can be handed back without lending out the interior-mutable
+    /// cache.
+    pub fn read_file(&self, path: &str) -> Option<Vec<u8>> {
+        let path = self.resolve(path);
+        if let Some(bytes) = self.files.get(&path) {
+            return Some(bytes.clone());
+        }
+        if let Some(bytes) = self.lazy_cache.borrow().get(&path) {
+            return Some(bytes.clone());
+        }
+        let digest = self.pending.get(&path)?;
+        let bytes = self.loader.as_ref()?.load(digest).ok()?;
+        self.lazy_cache.borrow_mut().insert(path, bytes.clone());
+        Some(bytes)
     }
 
     /// Write (truncating) a file, creating parent directories as needed. Fails
@@ -165,6 +244,9 @@ impl Vfs {
         if let Some(parent) = Self::parent(&path) {
             self.ensure_dirs(&parent);
         }
+        // A truncating write discards any not-yet-fetched (or cached) lazy body.
+        self.pending.remove(&path);
+        self.lazy_cache.borrow_mut().remove(&path);
         self.files.insert(path, data.to_vec());
         Ok(())
     }
@@ -176,6 +258,14 @@ impl Vfs {
         }
         if let Some(parent) = Self::parent(&path) {
             self.ensure_dirs(&parent);
+        }
+        // Materialize a lazy file before appending so its fetched bytes are
+        // preserved rather than replaced by the appended tail.
+        if self.pending.contains_key(&path) {
+            let existing = self.read_file(&path).unwrap_or_default();
+            self.pending.remove(&path);
+            self.lazy_cache.borrow_mut().remove(&path);
+            self.files.insert(path.clone(), existing);
         }
         self.files.entry(path).or_default().extend_from_slice(data);
         Ok(())
@@ -213,7 +303,12 @@ impl Vfs {
             return None;
         }
         let mut names = BTreeSet::new();
-        for entry in self.files.keys().chain(self.dirs.iter()) {
+        for entry in self
+            .files
+            .keys()
+            .chain(self.dirs.iter())
+            .chain(self.pending.keys())
+        {
             if entry == &dir {
                 continue;
             }
@@ -236,8 +331,9 @@ impl Vfs {
             return Ok(());
         }
         let path = self.resolve(path);
-        if self.files.remove(&path).is_some() {
+        if self.files.remove(&path).is_some() || self.pending.remove(&path).is_some() {
             self.executable.remove(&path);
+            self.lazy_cache.borrow_mut().remove(&path);
             return Ok(());
         }
         if self.dirs.contains(&path) {
@@ -253,6 +349,11 @@ impl Vfs {
             self.dirs.retain(|k| k != &path && !k.starts_with(&prefix));
             self.executable
                 .retain(|k| k != &path && !k.starts_with(&prefix));
+            self.pending
+                .retain(|k, _| k != &path && !k.starts_with(&prefix));
+            self.lazy_cache
+                .borrow_mut()
+                .retain(|k, _| k != &path && !k.starts_with(&prefix));
             return Ok(());
         }
         Err(FsError::NotFound(path))
@@ -276,7 +377,10 @@ mod tests {
     fn write_read_roundtrip() {
         let mut fs = Vfs::new();
         fs.write_file("/a/b/file.txt", b"hello").unwrap();
-        assert_eq!(fs.read_file("/a/b/file.txt"), Some(&b"hello"[..]));
+        assert_eq!(
+            fs.read_file("/a/b/file.txt").as_deref(),
+            Some(&b"hello"[..])
+        );
         assert!(fs.is_dir("/a"));
         assert!(fs.is_dir("/a/b"));
         assert!(fs.is_file("/a/b/file.txt"));
@@ -287,7 +391,7 @@ mod tests {
         let mut fs = Vfs::new();
         fs.append_file("/log", b"one\n").unwrap();
         fs.append_file("/log", b"two\n").unwrap();
-        assert_eq!(fs.read_file("/log"), Some(&b"one\ntwo\n"[..]));
+        assert_eq!(fs.read_file("/log").as_deref(), Some(&b"one\ntwo\n"[..]));
     }
 
     #[test]
@@ -333,7 +437,8 @@ mod tests {
             .unwrap();
         assert!(fs.is_dir("/deployment/current"));
         assert_eq!(
-            fs.read_file("/deployment/current/deployment.toml"),
+            fs.read_file("/deployment/current/deployment.toml")
+                .as_deref(),
             Some(&b"hi"[..])
         );
         assert_eq!(
@@ -342,7 +447,10 @@ mod tests {
         );
         fs.write_file("/deployment/current/new.txt", b"added")
             .unwrap();
-        assert_eq!(fs.read_file("/deployment/abc/new.txt"), Some(&b"added"[..]));
+        assert_eq!(
+            fs.read_file("/deployment/abc/new.txt").as_deref(),
+            Some(&b"added"[..])
+        );
     }
 
     #[test]
@@ -356,11 +464,82 @@ mod tests {
         // target directory intact, matching real `rm` on a symlink.
         fs.remove("/deployment/current", true).unwrap();
         assert!(fs.is_dir("/deployment/abc"));
-        assert_eq!(fs.read_file("/deployment/abc/f"), Some(&b"old"[..]));
+        assert_eq!(
+            fs.read_file("/deployment/abc/f").as_deref(),
+            Some(&b"old"[..])
+        );
         assert!(!fs.is_symlink("/deployment/current"));
 
         fs.symlink("/deployment/def", "/deployment/current")
             .unwrap();
-        assert_eq!(fs.read_file("/deployment/current/f"), Some(&b"new"[..]));
+        assert_eq!(
+            fs.read_file("/deployment/current/f").as_deref(),
+            Some(&b"new"[..])
+        );
+    }
+
+    /// A loader that records every digest it is asked for, so a test can assert
+    /// a lazy file is fetched exactly once.
+    struct CountingLoader {
+        blobs: BTreeMap<String, Vec<u8>>,
+        loads: RefCell<Vec<String>>,
+    }
+
+    impl BlobLoader for CountingLoader {
+        fn load(&self, digest: &str) -> Result<Vec<u8>, String> {
+            self.loads.borrow_mut().push(digest.to_string());
+            self.blobs
+                .get(digest)
+                .cloned()
+                .ok_or_else(|| format!("no blob for {digest}"))
+        }
+    }
+
+    #[test]
+    fn lazy_file_lists_before_read_and_fetches_once_on_read() {
+        let loader = Rc::new(CountingLoader {
+            blobs: BTreeMap::from([("sha256:a".to_string(), b"hello".to_vec())]),
+            loads: RefCell::new(Vec::new()),
+        });
+        let mut fs = Vfs::new();
+        fs.set_blob_loader(loader.clone());
+        fs.register_lazy("/dep/a.txt", "sha256:a");
+
+        // Listed and typed as a file with no fetch yet.
+        assert!(fs.exists("/dep/a.txt"));
+        assert!(fs.is_file("/dep/a.txt"));
+        assert_eq!(fs.readdir("/dep"), Some(vec!["a.txt".to_string()]));
+        assert!(loader.loads.borrow().is_empty());
+
+        // First read fetches; second read is served from cache.
+        assert_eq!(fs.read_file("/dep/a.txt").as_deref(), Some(&b"hello"[..]));
+        assert_eq!(fs.read_file("/dep/a.txt").as_deref(), Some(&b"hello"[..]));
+        assert_eq!(&*loader.loads.borrow(), &["sha256:a".to_string()]);
+    }
+
+    #[test]
+    fn writing_a_lazy_file_wins_over_the_pending_fetch() {
+        let loader = Rc::new(CountingLoader {
+            blobs: BTreeMap::from([("sha256:a".to_string(), b"remote".to_vec())]),
+            loads: RefCell::new(Vec::new()),
+        });
+        let mut fs = Vfs::new();
+        fs.set_blob_loader(loader.clone());
+        fs.register_lazy("/dep/a.txt", "sha256:a");
+        fs.write_file("/dep/a.txt", b"local").unwrap();
+        assert_eq!(fs.read_file("/dep/a.txt").as_deref(), Some(&b"local"[..]));
+        assert!(
+            loader.loads.borrow().is_empty(),
+            "no fetch after a local write"
+        );
+    }
+
+    #[test]
+    fn missing_loader_or_failed_fetch_reads_as_absent() {
+        let mut fs = Vfs::new();
+        fs.register_lazy("/dep/a.txt", "sha256:a");
+        // Listed, but unreadable without a loader.
+        assert!(fs.is_file("/dep/a.txt"));
+        assert_eq!(fs.read_file("/dep/a.txt"), None);
     }
 }

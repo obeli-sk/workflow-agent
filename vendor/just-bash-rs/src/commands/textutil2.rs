@@ -34,7 +34,7 @@ fn read_operand(interp: &Interpreter, file: &str, stdin: &str) -> Option<String>
     interp
         .fs
         .read_file(&path)
-        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
 // ---------------------------------------------------------------------
@@ -588,7 +588,7 @@ pub fn nl(interp: &Interpreter, args: &[String], stdin: &str) -> CommandOutput {
     } else {
         for file in &files {
             let path = normalize_path(&interp.cwd, file);
-            let content = match interp.fs.read_file(&path) {
+            let content = match interp.fs.read_file(&path).as_deref() {
                 Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
                 None => {
                     return CommandOutput {
@@ -683,7 +683,7 @@ pub fn od(interp: &Interpreter, args: &[String], stdin: &str) -> CommandOutput {
             continue;
         }
         let path = normalize_path(&interp.cwd, operand);
-        match interp.fs.read_file(&path) {
+        match interp.fs.read_file(&path).as_deref() {
             Some(bytes) => input.push_str(&String::from_utf8_lossy(bytes)),
             None => return fail(format!("od: {operand}: No such file or directory\n"), 1),
         }
@@ -771,7 +771,7 @@ pub fn rev(interp: &Interpreter, args: &[String], stdin: &str) -> CommandOutput 
                 continue;
             }
             let path = normalize_path(&interp.cwd, file);
-            match interp.fs.read_file(&path) {
+            match interp.fs.read_file(&path).as_deref() {
                 Some(bytes) => output.push_str(&rev_process(&String::from_utf8_lossy(bytes))),
                 None => {
                     return CommandOutput {
@@ -969,7 +969,7 @@ pub fn fold(interp: &Interpreter, args: &[String], stdin: &str) -> CommandOutput
     } else {
         for file in &files {
             let path = normalize_path(&interp.cwd, file);
-            match interp.fs.read_file(&path) {
+            match interp.fs.read_file(&path).as_deref() {
                 Some(bytes) => {
                     output.push_str(&fold_process(&String::from_utf8_lossy(bytes), &opts))
                 }
@@ -1162,7 +1162,7 @@ pub fn expand(interp: &Interpreter, args: &[String], stdin: &str) -> CommandOutp
     } else {
         for file in &files {
             let path = normalize_path(&interp.cwd, file);
-            match interp.fs.read_file(&path) {
+            match interp.fs.read_file(&path).as_deref() {
                 Some(bytes) => output.push_str(&expand_process(
                     &String::from_utf8_lossy(bytes),
                     &tab_stops,
@@ -1321,7 +1321,7 @@ pub fn unexpand(interp: &Interpreter, args: &[String], stdin: &str) -> CommandOu
     } else {
         for file in &files {
             let path = normalize_path(&interp.cwd, file);
-            match interp.fs.read_file(&path) {
+            match interp.fs.read_file(&path).as_deref() {
                 Some(bytes) => output.push_str(&unexpand_process(
                     &String::from_utf8_lossy(bytes),
                     &tab_stops,
@@ -1578,7 +1578,7 @@ pub fn paste(interp: &Interpreter, args: &[String], stdin: &str) -> CommandOutpu
             stdin_index += 1;
         } else {
             let path = normalize_path(&interp.cwd, file);
-            match interp.fs.read_file(&path) {
+            match interp.fs.read_file(&path).as_deref() {
                 Some(bytes) => {
                     let content = String::from_utf8_lossy(bytes).into_owned();
                     file_contents.push(
@@ -1734,7 +1734,7 @@ pub fn strings(interp: &Interpreter, args: &[String], stdin: &str) -> CommandOut
                 stdin.as_bytes().to_vec()
             } else {
                 let path = normalize_path(&interp.cwd, file);
-                match interp.fs.read_file(&path) {
+                match interp.fs.read_file(&path).as_deref() {
                     Some(b) => b.to_vec(),
                     None => {
                         return CommandOutput {
@@ -1958,7 +1958,7 @@ pub fn split(interp: &mut Interpreter, args: &[String], stdin: &str) -> CommandO
         stdin.as_bytes().to_vec()
     } else {
         let path = normalize_path(&interp.cwd, &input_file);
-        match interp.fs.read_file(&path) {
+        match interp.fs.read_file(&path).as_deref() {
             Some(b) => b.to_vec(),
             None => {
                 return fail(
@@ -2165,8 +2165,14 @@ mod tests {
         bash.fs_mut().write_file("/f.txt", b"1\n2\n3\n4\n").unwrap();
         let r = run(&mut bash, "split -l 2 /f.txt /prefix");
         assert_eq!(r.exit_code, 0);
-        assert_eq!(bash.fs().read_file("/prefixaa"), Some(&b"1\n2\n"[..]));
-        assert_eq!(bash.fs().read_file("/prefixab"), Some(&b"3\n4\n"[..]));
+        assert_eq!(
+            bash.fs().read_file("/prefixaa").as_deref(),
+            Some(&b"1\n2\n"[..])
+        );
+        assert_eq!(
+            bash.fs().read_file("/prefixab").as_deref(),
+            Some(&b"3\n4\n"[..])
+        );
     }
 
     #[test]
@@ -2174,8 +2180,8 @@ mod tests {
         let mut bash = fresh();
         bash.fs_mut().write_file("/f.txt", b"1\n2\n3\n").unwrap();
         run(&mut bash, "split -l 1 -d /f.txt /p");
-        assert_eq!(bash.fs().read_file("/p00"), Some(&b"1\n"[..]));
-        assert_eq!(bash.fs().read_file("/p01"), Some(&b"2\n"[..]));
-        assert_eq!(bash.fs().read_file("/p02"), Some(&b"3\n"[..]));
+        assert_eq!(bash.fs().read_file("/p00").as_deref(), Some(&b"1\n"[..]));
+        assert_eq!(bash.fs().read_file("/p01").as_deref(), Some(&b"2\n"[..]));
+        assert_eq!(bash.fs().read_file("/p02").as_deref(), Some(&b"3\n"[..]));
     }
 }

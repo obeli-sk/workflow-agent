@@ -259,7 +259,7 @@ fn run(
             any_error = true;
             continue;
         };
-        let content = String::from_utf8_lossy(bytes);
+        let content = String::from_utf8_lossy(&bytes);
         let name = if show_filename { file.as_str() } else { "" };
         let (output, matched, _) = search(&content, &re, &opts, name);
         if matched {

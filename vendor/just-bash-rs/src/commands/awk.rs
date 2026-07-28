@@ -2038,7 +2038,7 @@ pub fn awk(interp: &mut Interpreter, args: &[String], stdin: String) -> CommandO
                     if interp.fs.is_dir(&path) {
                         (f.clone(), Err(format!("awk: {f}: Is a directory")))
                     } else {
-                        match interp.fs.read_file(&path) {
+                        match interp.fs.read_file(&path).as_deref() {
                             Some(bytes) => {
                                 (f.clone(), Ok(String::from_utf8_lossy(bytes).into_owned()))
                             }

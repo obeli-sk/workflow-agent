@@ -97,8 +97,14 @@ impl Bash {
 
         let fs = std::mem::take(&mut self.fs);
         let custom_commands = std::mem::take(&mut self.custom_commands);
-        let now_ms = (self.options.now_ms)();
-        let mut interp = Interpreter::new(self.env.clone(), start_cwd, fs, now_ms, custom_commands);
+        let mut interp = Interpreter::new(
+            self.env.clone(),
+            start_cwd,
+            fs,
+            self.options.now_ms,
+            custom_commands,
+        );
+        interp.sleep_ms = self.options.sleep_ms;
         interp.options = self.shell_options;
         interp.positional = std::mem::take(&mut self.positional);
         interp.run(&ast);

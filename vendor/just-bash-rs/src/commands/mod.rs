@@ -117,7 +117,7 @@ pub fn dispatch(
         "awk" => awk::awk(interp, rest, stdin),
         "date" => timeutil::date(interp, rest),
         "expr" => timeutil::expr(rest),
-        "sleep" => timeutil::sleep_cmd(rest),
+        "sleep" => timeutil::sleep_cmd(interp, rest),
         "timeout" => timeutil::timeout(interp, rest, stdin),
         "time" => timeutil::time_cmd(interp, rest, stdin),
         "seq" => misc::seq(rest),
@@ -200,7 +200,7 @@ fn builtin_sh(interp: &mut Interpreter, name: &str, args: &[String]) -> CommandO
         return ok(String::new());
     };
     let path = normalize_path(&interp.cwd, file);
-    match interp.fs.read_file(&path) {
+    match interp.fs.read_file(&path).as_deref() {
         Some(bytes) => {
             let src = String::from_utf8_lossy(bytes).into_owned();
             let params = args.get(idx + 1..).unwrap_or(&[]);
@@ -218,7 +218,7 @@ fn builtin_source(interp: &mut Interpreter, name: &str, args: &[String]) -> Comm
         return fail(format!("{name}: filename argument required\n"), 2);
     };
     let path = normalize_path(&interp.cwd, file);
-    match interp.fs.read_file(&path) {
+    match interp.fs.read_file(&path).as_deref() {
         Some(bytes) => {
             let src = String::from_utf8_lossy(bytes).into_owned();
             interp.run_source_with_args(&src, &args[1..])
@@ -322,7 +322,7 @@ fn run_path_script(interp: &mut Interpreter, name: &str, args: &[String]) -> Com
     if !interp.fs.is_executable(&path) {
         return fail(format!("bash: {name}: Permission denied\n"), 126);
     }
-    let src = String::from_utf8_lossy(bytes).into_owned();
+    let src = String::from_utf8_lossy(&bytes).into_owned();
     interp.run_script_isolated(&src, name, args)
 }
 
@@ -398,7 +398,7 @@ fn builtin_cat(interp: &Interpreter, args: &[String], stdin: String) -> CommandO
         if interp.fs.is_dir(&path) {
             stderr.push_str(&format!("cat: {arg}: Is a directory\n"));
             exit_code = 1;
-        } else if let Some(bytes) = interp.fs.read_file(&path) {
+        } else if let Some(bytes) = interp.fs.read_file(&path).as_deref() {
             out.push_str(&String::from_utf8_lossy(bytes));
         } else {
             stderr.push_str(&format!("cat: {arg}: No such file or directory\n"));
@@ -492,7 +492,7 @@ fn builtin_ls(interp: &Interpreter, args: &[String]) -> CommandOutput {
 /// A file's byte length; directories report 0 (as the JS reference does, this
 /// VFS having no real block accounting to improve on).
 fn ls_size(interp: &Interpreter, path: &str) -> usize {
-    interp.fs.read_file(path).map(<[u8]>::len).unwrap_or(0)
+    interp.fs.read_file(path).map(|b| b.len()).unwrap_or(0)
 }
 
 /// One `ls -l` line. The VFS tracks no owner/mtime, so the reference's fixed
@@ -800,7 +800,7 @@ pub(crate) fn read_concat(
         if interp.fs.is_dir(&path) {
             return Err(fail(format!("{cmd}: {file}: Is a directory\n"), 1));
         }
-        match interp.fs.read_file(&path) {
+        match interp.fs.read_file(&path).as_deref() {
             Some(bytes) => out.push_str(&String::from_utf8_lossy(bytes)),
             None => {
                 return Err(fail(
