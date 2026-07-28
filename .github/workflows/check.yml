@@ -76,7 +76,7 @@ jobs:
         run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Unit tests (just-bash-rs)
-        run: nix develop --command cargo test -p just-bash-rs
+        run: nix develop --command just test-rs
 
   verify:
     runs-on: ubuntu-24.04

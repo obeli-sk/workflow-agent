@@ -13,6 +13,9 @@ verify: build
 sync:
   obelisk deployment get $(obelisk deployment active) --force
 
+# Run everything: unit tests plus both end-to-end suites.
+test: test-rs test-e2e test-e2e-agent-workflow
+
 # Rust port: unit tests for the just-bash-rs interpreter.
 test-rs:
   cargo test -p just-bash-rs
