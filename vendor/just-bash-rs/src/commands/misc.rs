@@ -246,7 +246,9 @@ pub fn which(interp: &Interpreter, args: &[String]) -> CommandOutput {
             if dir.is_empty() {
                 continue;
             }
-            if (*dir == "/usr/bin" || *dir == "/bin") && registered.contains(&name.as_str()) {
+            if (*dir == "/usr/bin" || *dir == "/bin")
+                && (registered.contains(&name.as_str()) || interp.custom_commands.contains(name))
+            {
                 found = true;
                 if !silent {
                     stdout.push_str(&format!("{dir}/{name}\n"));
@@ -486,14 +488,18 @@ pub fn unalias(interp: &mut Interpreter, args: &[String]) -> CommandOutput {
 // hand-copied bash builtin manual, which is what an agent shell actually
 // needs `help` for.
 
-pub fn help(args: &[String]) -> CommandOutput {
+pub fn help(interp: &Interpreter, args: &[String]) -> CommandOutput {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         return ok("help - display available commands\n\nUsage: help [command]\n".to_string());
     }
-    let names = super::command_names();
+    let names: Vec<String> = super::command_names()
+        .into_iter()
+        .map(str::to_string)
+        .chain(interp.custom_commands.names().map(str::to_string))
+        .collect();
     if let Some(pattern) = args.iter().find(|a| !a.starts_with('-')) {
-        return if names.contains(&pattern.as_str()) {
-            ok(format!("{pattern}: a shell builtin\n"))
+        return if names.iter().any(|name| name == pattern) {
+            ok(format!("{pattern}: an available shell command\n"))
         } else {
             fail(
                 format!("bash: help: no help topics match `{pattern}'.\n"),
@@ -503,6 +509,7 @@ pub fn help(args: &[String]) -> CommandOutput {
     }
     let mut sorted = names;
     sorted.sort_unstable();
+    sorted.dedup();
     ok(format!("just-bash shell builtins\n{}\n", sorted.join(" ")))
 }
 

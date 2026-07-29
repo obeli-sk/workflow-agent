@@ -18,6 +18,7 @@ pub mod fs;
 pub mod glob;
 pub mod interpreter;
 pub mod obelisk_pack;
+pub mod obelisk_program;
 pub mod parser;
 pub mod types;
 

@@ -131,7 +131,7 @@ pub fn dispatch(
         "hostname" => misc::hostname(),
         "alias" => misc::alias(interp, rest),
         "unalias" => misc::unalias(interp, rest),
-        "help" => misc::help(rest),
+        "help" => misc::help(interp, rest),
         "clear" => misc::clear(),
         "base64" => hash::base64(interp, rest, stdin),
         "md5sum" => hash::md5sum(interp, rest, stdin),

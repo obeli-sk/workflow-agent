@@ -29,6 +29,8 @@ API_URL="http://127.0.0.1:${API_PORT}"
 RUN_FFQN="obelisk-agent:workflow/workflow.agent-loop-cancellable"
 
 export OBELISK__API__TOKEN="e2e-agent-workflow-token"
+export OBELISK_API_URL="$API_URL"
+export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 # `AGENT_MODELS` must be *set* for the manifest to load at all (its activity
 # declares `env_vars = ["AGENT_MODELS"]`, a hard requirement, not a `${:-}`
 # default) but is deliberately an empty catalog: `activity/llm-chat.js`'s own
@@ -132,7 +134,7 @@ for row in rows:
     sleep 1
 done
 
-SHELL_EVENT='{"id":"shell-e2e-1","kind":"shell","script":"printf shell-only","stdin":""}'
+SHELL_EVENT='{"id":"shell-e2e-1","kind":"shell","script":"which curl && curl --version","stdin":""}'
 SHELL_STUB="$(python3 -c 'import json,sys; print(json.dumps({"ok": sys.stdin.read()}))' <<<"$SHELL_EVENT")"
 "$OBELISK" execution stub -a "$API_URL" "$INJECTION_ID" "$SHELL_STUB"
 
@@ -158,12 +160,26 @@ value = json.load(sys.stdin)
 rows = value.get("executions", []) if isinstance(value, dict) else value
 ffqns = [row.get("ffqn") for row in rows]
 sys.exit("obelisk-agent:llm/chat.completion" in ffqns
+    or "obelisk-agent:programs/program.curl" not in ffqns
     or ffqns.count("obelisk-agent:agent/session.injection") < 2)
 ' <<<"$SESSION_EXECUTIONS"; then
-    echo ">>> shell-only E2E PASS: the direct Bash turn completed and the session returned to input without starting the agent"
+    echo ">>> shell-only E2E PASS: curl was discovered and invoked, and the session returned to input without starting the agent"
 else
-    echo ">>> shell-only E2E FAIL: a direct shell turn started an agent completion or did not return to input" >&2
+    echo ">>> shell-only E2E FAIL: curl was not invoked, an agent completion started, or the session did not return to input" >&2
     echo "$SESSION_EXECUTIONS" >&2
+    DISCOVERY_ID="$(python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+rows = value.get("executions", []) if isinstance(value, dict) else value
+for row in rows:
+    if row.get("ffqn") == "obelisk-agent:tools/webapi.list-functions":
+        print(row.get("execution_id", ""))
+        break
+' <<<"$SESSION_EXECUTIONS")"
+    if [[ -n "$DISCOVERY_ID" ]]; then
+        echo ">>> program discovery result:" >&2
+        "$OBELISK" execution result -j -a "$API_URL" "$DISCOVERY_ID" >&2 || true
+    fi
     exit 1
 fi
 "$OBELISK" execution cancel -a "$API_URL" "$SESSION_ID" >/dev/null || true

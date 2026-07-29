@@ -29,8 +29,8 @@
 
 use serde_json::{Value, json};
 
-use just_bash_rs::obelisk_pack;
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult};
+use just_bash_rs::{obelisk_pack, obelisk_program};
 
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
@@ -117,7 +117,7 @@ pub fn agent_loop_cancellable(
     bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(RealHost)));
 
     let system = format!(
-        "{system_prompt}\n\n# Shell\n\nThe only model-facing tool is bash. Its filesystem persists for this session.\n{}",
+        "{system_prompt}\n\n# Shell\n\nThe only model-facing tool is bash. Its filesystem persists for this session. Run `help` to list every built-in and discovered program available in the shell.\n{}",
         obelisk_pack::SYSTEM_PROMPT
     );
 
@@ -133,6 +133,7 @@ pub fn agent_loop_cancellable(
         .map_err(|e| format!("record-output join set: {e:?}"))?;
 
     let mut pack_mounted = false;
+    let mut programs_registered = false;
     let mut turn_index: u64 = 0;
     let mut should_call_llm = !messages.is_empty();
     let mut agent_steps = 0u32;
@@ -142,6 +143,29 @@ pub fn agent_loop_cancellable(
         // embeds the turn index because a named set's name is reserved for the
         // execution's whole history and cannot be reused across turns.
         let mut session = open_turn(turn_index)?;
+
+        if !programs_registered {
+            match obelisk_program::discover(&mut RealHost) {
+                Ok(programs) => {
+                    for program in programs {
+                        bash.register_command(
+                            &program.name,
+                            obelisk_program::command_handler(
+                                &program.name,
+                                program.ffqn,
+                                Box::new(RealHost),
+                            ),
+                        );
+                    }
+                }
+                Err(err) => {
+                    let _ = bash
+                        .fs_mut()
+                        .write_file("/workspace/.program-error", err.as_bytes());
+                }
+            }
+            programs_registered = true;
+        }
 
         if !pack_mounted {
             // Open the input offer (in open_turn) before mounting packs so

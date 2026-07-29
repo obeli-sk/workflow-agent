@@ -77,10 +77,20 @@ operator message starts the agent.
 
 The core registers a broad shell command catalog ported from just-bash, except
 `gzip`, `gunzip`, and `zcat`. This includes the standard file, path,
-text-processing, search, shell, checksum, encoding, and inspection tools.
-Network access is not a direct `curl` command: external I/O is supplied by
-durable pack executables such as `obelisk`. Python, Node.js, tar, yq, xan, and
-SQLite also require runtimes that the workflow sandbox does not provide.
+text-processing, search, shell, checksum, encoding, and inspection tools. Run
+`help` to list built-ins and dynamically discovered programs, or `which NAME`
+to check one name.
+
+External programs use one process-like Obelisk interface. At session startup,
+the workflow discovers exports under `obelisk-agent:programs/program.*` whose
+WIT is `func(stdin: string, args: list<string>) -> result<record { stdout:
+string, stderr: string, exit-code: u32 }, string>`, then registers each
+function name as a Bash command. The outer result is required for Obelisk
+activities and is unwrapped before the record reaches Bash. The first program
+is a GET-only `curl`. The command has no embedded host policy; its durable
+activity is currently limited to `https://obeli.sk` by the deployment host
+allowlist. Python, Node.js, tar, yq, xan, and SQLite require runtimes that the
+workflow sandbox does not provide.
 
 Interactive job control is not available. `jobs`, `wait`, `fg`, `bg`, signals,
 and durable background execution with `&` are not supported. The session

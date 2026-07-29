@@ -17,6 +17,25 @@ pattern = "https://obeli.sk"
 methods = ["GET"]
 request_url_regex = "^GET https://obeli\\.sk/docs/latest/llms.txt/"
 
+# --- Discoverable shell programs ---------------------------------------------
+# Every function in this interface has the same process-like signature. The
+# workflow discovers matching exports at session startup and registers each
+# function name as a just-bash command.
+
+[[activity_js]]
+name = "program_curl"
+ffqn = "obelisk-agent:programs/program.curl"
+params = [
+  { name = "stdin", type = "string" },
+  { name = "args",  type = "list<string>" },
+]
+return_type = "result<record { stdout: string, stderr: string, exit-code: u32 }, string>"
+location = "activity/curl.js"
+content_digest = "sha256:ae90ee8636fd2622e463e501d5e6952979de3ef23aa158d4f0343faff70ba9a0"
+[[activity_js.allowed_host]]
+pattern = "https://obeli.sk"
+methods = ["GET"]
+
 # Native call: run any deployed Obelisk function chosen at runtime by the model
 # (obelisk-control pack). A workflow, so obelisk.call runs durably in-loop.
 [[workflow_js]]

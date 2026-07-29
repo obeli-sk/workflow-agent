@@ -222,6 +222,32 @@ mod tests {
     }
 
     #[test]
+    fn custom_commands_are_discoverable_with_help_and_which() {
+        let mut bash = fresh();
+        bash.register_command(
+            "curl",
+            Box::new(|_, _, _| crate::interpreter::CommandOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+            }),
+        );
+
+        assert!(
+            run(&mut bash, "help")
+                .stdout
+                .split_whitespace()
+                .any(|s| s == "curl")
+        );
+        assert_eq!(
+            run(&mut bash, "help curl").stdout,
+            "curl: an available shell command\n"
+        );
+        assert_eq!(run(&mut bash, "which curl").stdout, "/usr/bin/curl\n");
+        assert_eq!(run(&mut bash, "which curl && curl --version").exit_code, 0);
+    }
+
+    #[test]
     fn redirect_write_then_read_back() {
         let mut bash = fresh();
         run(&mut bash, "echo hello > /workspace/out.txt");

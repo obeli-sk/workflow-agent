@@ -40,6 +40,10 @@ impl CustomCommands {
         self.0.contains_key(name)
     }
 
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+
     /// Temporarily take a handler out so it can be called with a `&mut
     /// Interpreter` that also owns this registry; see module docs.
     pub(crate) fn take(&mut self, name: &str) -> Option<CustomCommandHandler> {
