@@ -126,3 +126,6 @@ jobs:
 
       - name: agent workflow e2e
         run: nix develop --command just test-e2e-agent-workflow
+
+      - name: redeploy e2e
+        run: nix develop --command just test-e2e-redeploy

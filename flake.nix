@@ -40,7 +40,9 @@
             nativeBuildInputs = commonDeps;
           };
           devShells.default = pkgs.mkShell {
-            nativeBuildInputs = withObelisk;
+            nativeBuildInputs = withObelisk ++ [
+              pkgs.python3 # for e2e test
+            ];
           };
           devShells.screenshots = pkgs.mkShell {
             packages = with pkgs; [

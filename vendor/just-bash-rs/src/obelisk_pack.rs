@@ -508,10 +508,24 @@ struct SourceEntry {
     content: String,
 }
 
+/// The deployment-owned source files a submit must carry: only those the
+/// session modified locally. An unmodified file stays a lazy `pending` VFS
+/// entry, so its `content_digest` is already in the manifest and its blob is in
+/// the CAS; the submit tool's preflight matches it by digest without the agent
+/// reading or re-uploading it (the same "upload only what the server is
+/// missing" contract the real `obelisk deployment submit` follows). Skipping
+/// unmodified files keeps a redeploy from fetching every component back out of
+/// the CAS just to hand it straight back - notably the multi-MB workflow and
+/// activity WASM (lossy-decoded to a string and re-hashed to a wrong digest),
+/// and the `backtrace.sources`, which the submit tool cannot digest-match by
+/// `location` and so rejects outright.
 fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<SourceEntry> {
     let mut files = Vec::new();
     for reference in deployment_file_refs(manifest) {
         let path = format!("{dir}/{}", reference.location);
+        if fs.is_pending(&path) {
+            continue;
+        }
         if let Some(bytes) = fs.read_file(&path) {
             files.push(SourceEntry {
                 path: reference.location,
@@ -1374,6 +1388,90 @@ content_digest = \"sha256:1\"\n\
         );
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
         assert_eq!(params[4], "");
+    }
+
+    #[test]
+    fn deployment_submit_skips_unmodified_lazy_sources() {
+        // A freshly mounted deployment holds every owned source as a lazy
+        // `pending` entry. A no-op redeploy must send no edited files: the
+        // manifest already carries each digest and the blobs are in the CAS. A
+        // loader that *would* return bytes is installed so this distinguishes
+        // "skipped as unmodified" from "read failed". Regression: the WASM and
+        // the `backtrace.sources` (`src/lib.rs`) used to be fetched and sent,
+        // and the submit tool rejected the backtrace path it could not match by
+        // `location`.
+        let manifest = concat!(
+            "[[workflow_wasm]]\n",
+            "location = \"w.wasm\"\n",
+            "content_digest = \"sha256:1\"\n",
+            "[workflow_wasm.backtrace.sources]\n",
+            "\"w.wasm\" = { path = \"src/lib.rs\", content_digest = \"sha256:2\" }\n",
+        );
+        let mut i = interp("/workspace");
+        i.fs.set_blob_loader(FixtureLoader::rc(&[
+            ("sha256:1", b"wasm-bytes"),
+            ("sha256:2", b"rust source"),
+        ]));
+        i.fs.write_file(
+            "/workspace/deployment/current/deployment.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        i.fs.register_lazy("/workspace/deployment/current/w.wasm", "sha256:1");
+        i.fs.register_lazy("/workspace/deployment/current/src/lib.rs", "sha256:2");
+
+        let mut host =
+            FakeHost::new().with("obelisk-agent:tools/webapi.deployment-submit", "\"ok\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        assert_eq!(params[0], manifest);
+        let sources: Value = serde_json::from_str(params[1].as_str().unwrap()).unwrap();
+        assert_eq!(sources, json!([]));
+    }
+
+    #[test]
+    fn deployment_submit_sends_only_locally_modified_sources() {
+        let manifest = concat!(
+            "[[workflow_js]]\n",
+            "location = \"a.js\"\n",
+            "content_digest = \"sha256:a\"\n",
+            "[[workflow_js]]\n",
+            "location = \"b.js\"\n",
+            "content_digest = \"sha256:b\"\n",
+        );
+        let mut i = interp("/workspace");
+        i.fs.set_blob_loader(FixtureLoader::rc(&[
+            ("sha256:a", b"old-a"),
+            ("sha256:b", b"old-b"),
+        ]));
+        i.fs.write_file(
+            "/workspace/deployment/current/deployment.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        i.fs.register_lazy("/workspace/deployment/current/a.js", "sha256:a");
+        i.fs.register_lazy("/workspace/deployment/current/b.js", "sha256:b");
+        // Edit a.js only; b.js stays lazy/unmodified and must not be sent.
+        i.fs.write_file("/workspace/deployment/current/a.js", b"new-a")
+            .unwrap();
+
+        let mut host =
+            FakeHost::new().with("obelisk-agent:tools/webapi.deployment-submit", "\"ok\"");
+        execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            "",
+            &mut host,
+        );
+        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let sources: Value = serde_json::from_str(params[1].as_str().unwrap()).unwrap();
+        assert_eq!(sources, json!([{"path": "a.js", "content": "new-a"}]));
     }
 
     // -- wiring: registered via `Bash::register_command`, dispatched through

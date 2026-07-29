@@ -211,6 +211,16 @@ impl Vfs {
         self.files.contains_key(&path) || self.pending.contains_key(&path)
     }
 
+    /// True if `path` is a lazily-mounted file whose bytes have not been
+    /// modified locally: its `content_digest` is already known (registered by
+    /// `register_lazy`) and its blob lives in the CAS, so a caller need neither
+    /// fetch nor re-upload it. A local write clears the pending entry, so an
+    /// edited (or freshly written) file returns false. Reading a pending file
+    /// caches its bytes but leaves it pending, so a mere read stays unmodified.
+    pub fn is_pending(&self, path: &str) -> bool {
+        self.pending.contains_key(&self.resolve(path))
+    }
+
     pub fn is_dir(&self, path: &str) -> bool {
         self.dirs.contains(&self.resolve(path))
     }

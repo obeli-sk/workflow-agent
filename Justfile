@@ -13,8 +13,8 @@ verify: build
 sync:
   obelisk deployment get $(obelisk deployment active) --force
 
-# Run everything: unit tests plus both end-to-end suites.
-test: test-rs test-e2e test-e2e-agent-workflow
+# Run everything: unit tests plus all end-to-end suites.
+test: test-rs test-e2e test-e2e-agent-workflow test-e2e-redeploy
 
 # Rust port: unit tests for the just-bash-rs interpreter.
 test-rs:
@@ -28,3 +28,8 @@ test-e2e:
 # Rust port: end-to-end test of the full agent-loop/run workflow component.
 test-e2e-agent-workflow:
   ./scripts/test-e2e-agent-workflow.sh
+
+# End-to-end no-op redeploy of the current deployment via the content-addressed
+# submit tool (empty edited-files list, no source uploads).
+test-e2e-redeploy:
+  ./scripts/test-e2e-redeploy.sh
