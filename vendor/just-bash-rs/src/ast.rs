@@ -89,8 +89,8 @@ pub struct SimpleCommand {
     pub redirects: Vec<Redirect>,
 }
 
-/// A single redirection such as `> file`, `>> file`, `< file`, or an
-/// fd-duplication like `2>&1` / `1>&2`. Here-doc forms are added when needed.
+/// A single redirection such as `> file`, `>> file`, `< file`, a here-document,
+/// or an fd-duplication like `2>&1` / `1>&2`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Redirect {
     /// The descriptor being redirected. Defaults to 0 for `<` and 1 for
@@ -106,6 +106,7 @@ pub struct Redirect {
 pub enum RedirectTarget {
     File(Word),
     Dup(u32),
+    HereDoc(Word),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

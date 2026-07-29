@@ -496,6 +496,9 @@ impl Interpreter {
                         .unwrap_or_else(|| default_dest(*target_fd));
                     dests.insert(redirect.fd, dest);
                 }
+                RedirectTarget::HereDoc(body) => {
+                    stdin = self.expand_word(body)?;
+                }
             }
         }
 

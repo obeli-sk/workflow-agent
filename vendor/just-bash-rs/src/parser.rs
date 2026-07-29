@@ -1008,9 +1008,349 @@ fn as_assignment(word: &Word) -> Option<Assignment> {
 
 /// Parse a bash script into an AST.
 pub fn parse(source: &str) -> Result<Script, ParseError> {
-    let tokens = Lexer::new(source).tokenize()?;
+    let (source, here_docs) = extract_here_docs(source)?;
+    let tokens = Lexer::new(&source).tokenize()?;
     let mut parser = Parser { tokens, pos: 0 };
-    parser.parse_script()
+    let mut script = parser.parse_script()?;
+    replace_here_docs(&mut script, &here_docs);
+    Ok(script)
+}
+
+#[derive(Debug)]
+struct HereDoc {
+    placeholder: String,
+    body: Word,
+}
+
+#[derive(Debug)]
+struct HereDocSpec {
+    start: usize,
+    end: usize,
+    delimiter: String,
+    expand: bool,
+    strip_tabs: bool,
+}
+
+/// Remove here-document bodies before normal lexing and temporarily turn each
+/// `<<word` into an ordinary input redirect. This keeps body text completely
+/// opaque to the shell grammar while preserving the normal ordering of other
+/// redirects on the command line.
+fn extract_here_docs(source: &str) -> Result<(String, Vec<HereDoc>), ParseError> {
+    let lines: Vec<&str> = source.split_inclusive('\n').collect();
+    let mut output = String::new();
+    let mut here_docs = Vec::new();
+    let mut line_index = 0;
+
+    while line_index < lines.len() {
+        let line = lines[line_index];
+        let specs = find_here_doc_specs(line)?;
+        if specs.is_empty() {
+            output.push_str(line);
+            line_index += 1;
+            continue;
+        }
+
+        let mut cursor = 0;
+        line_index += 1;
+        for spec in &specs {
+            let placeholder = format!("/__just_bash_heredoc_{}__", here_docs.len());
+            output.push_str(&line[cursor..spec.start]);
+            output.push_str("< ");
+            output.push_str(&placeholder);
+            cursor = spec.end;
+
+            let mut body = String::new();
+            let mut terminated = false;
+            while line_index < lines.len() {
+                let candidate = lines[line_index];
+                let without_newline = candidate
+                    .strip_suffix('\n')
+                    .unwrap_or(candidate)
+                    .strip_suffix('\r')
+                    .unwrap_or_else(|| candidate.strip_suffix('\n').unwrap_or(candidate));
+                let comparable = if spec.strip_tabs {
+                    without_newline.trim_start_matches('\t')
+                } else {
+                    without_newline
+                };
+                if comparable == spec.delimiter {
+                    terminated = true;
+                    line_index += 1;
+                    break;
+                }
+                if spec.strip_tabs {
+                    body.push_str(candidate.trim_start_matches('\t'));
+                } else {
+                    body.push_str(candidate);
+                }
+                line_index += 1;
+            }
+            if !terminated {
+                return err(format!(
+                    "here-document delimited by end-of-file (wanted `{}`)",
+                    spec.delimiter
+                ));
+            }
+            let body = if spec.expand {
+                parse_here_doc_body(&body)?
+            } else {
+                vec![WordPart::QuotedLiteral(body)]
+            };
+            here_docs.push(HereDoc { placeholder, body });
+        }
+        output.push_str(&line[cursor..]);
+    }
+
+    Ok((output, here_docs))
+}
+
+fn find_here_doc_specs(line: &str) -> Result<Vec<HereDocSpec>, ParseError> {
+    let bytes = line.as_bytes();
+    let mut specs = Vec::new();
+    let mut i = 0;
+    let mut single_quoted = false;
+    let mut double_quoted = false;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if !single_quoted => i += 2,
+            b'\'' if !double_quoted => {
+                single_quoted = !single_quoted;
+                i += 1;
+            }
+            b'"' if !single_quoted => {
+                double_quoted = !double_quoted;
+                i += 1;
+            }
+            b'#' if !single_quoted && !double_quoted => break,
+            b'$' if !single_quoted
+                && !double_quoted
+                && bytes.get(i + 1) == Some(&b'(')
+                && bytes.get(i + 2) == Some(&b'(') =>
+            {
+                i = double_paren_end(bytes, i + 3);
+            }
+            b'(' if !single_quoted && !double_quoted && bytes.get(i + 1) == Some(&b'(') => {
+                i = double_paren_end(bytes, i + 2);
+            }
+            b'<' if !single_quoted
+                && !double_quoted
+                && bytes.get(i + 1) == Some(&b'<')
+                && bytes.get(i + 2) != Some(&b'<') =>
+            {
+                let start = i;
+                i += 2;
+                let strip_tabs = bytes.get(i) == Some(&b'-');
+                if strip_tabs {
+                    i += 1;
+                }
+                while matches!(bytes.get(i), Some(b' ' | b'\t')) {
+                    i += 1;
+                }
+                let mut delimiter = String::new();
+                let mut quoted = false;
+                let mut word_started = false;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b' ' | b'\t' | b'\r' | b'\n' | b';' | b'&' | b'|' | b'<' | b'>'
+                            if !single_quoted && !double_quoted =>
+                        {
+                            break;
+                        }
+                        b'\'' if !double_quoted => {
+                            quoted = true;
+                            word_started = true;
+                            single_quoted = !single_quoted;
+                            i += 1;
+                        }
+                        b'"' if !single_quoted => {
+                            quoted = true;
+                            word_started = true;
+                            double_quoted = !double_quoted;
+                            i += 1;
+                        }
+                        b'\\' if !single_quoted => {
+                            quoted = true;
+                            word_started = true;
+                            i += 1;
+                            let Some(&escaped) = bytes.get(i) else {
+                                return err("trailing backslash in here-document delimiter");
+                            };
+                            delimiter.push(escaped as char);
+                            i += 1;
+                        }
+                        byte => {
+                            word_started = true;
+                            delimiter.push(byte as char);
+                            i += 1;
+                        }
+                    }
+                }
+                if single_quoted || double_quoted {
+                    return err("unterminated quote in here-document delimiter");
+                }
+                if !word_started {
+                    return err("expected a delimiter after `<<`");
+                }
+                specs.push(HereDocSpec {
+                    start,
+                    end: i,
+                    delimiter,
+                    expand: !quoted,
+                    strip_tabs,
+                });
+            }
+            _ => i += 1,
+        }
+    }
+    Ok(specs)
+}
+
+fn double_paren_end(bytes: &[u8], mut i: usize) -> usize {
+    let mut depth = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' if depth > 0 => {
+                depth -= 1;
+                i += 1;
+            }
+            b')' if bytes.get(i + 1) == Some(&b')') => return i + 2,
+            _ => i += 1,
+        }
+    }
+    i
+}
+
+fn parse_here_doc_body(body: &str) -> Result<Word, ParseError> {
+    let mut lexer = Lexer::new(body);
+    let mut parts = Vec::new();
+    let mut literal = String::new();
+
+    macro_rules! flush {
+        () => {
+            if !literal.is_empty() {
+                parts.push(WordPart::QuotedLiteral(std::mem::take(&mut literal)));
+            }
+        };
+    }
+
+    while let Some(c) = lexer.peek() {
+        match c {
+            '$' => {
+                flush!();
+                parts.push(lexer.read_dollar(true)?);
+            }
+            '`' => {
+                flush!();
+                parts.push(lexer.read_backtick(true)?);
+            }
+            '\\' => {
+                lexer.bump();
+                match lexer.bump() {
+                    Some('\n') => {}
+                    Some(c @ ('\\' | '$' | '`')) => literal.push(c),
+                    Some(c) => {
+                        literal.push('\\');
+                        literal.push(c);
+                    }
+                    None => literal.push('\\'),
+                }
+            }
+            _ => {
+                lexer.bump();
+                literal.push(c);
+            }
+        }
+    }
+    flush!();
+    Ok(parts)
+}
+
+fn replace_here_docs(script: &mut Script, here_docs: &[HereDoc]) {
+    for statement in &mut script.statements {
+        for pipeline in &mut statement.pipelines {
+            for command in &mut pipeline.commands {
+                replace_here_docs_in_command(command, here_docs);
+            }
+        }
+    }
+}
+
+fn replace_here_docs_in_command(command: &mut Command, here_docs: &[HereDoc]) {
+    match command {
+        Command::Simple(command) => {
+            for redirect in &mut command.redirects {
+                let RedirectTarget::File(word) = &redirect.target else {
+                    continue;
+                };
+                let Some(path) = word_literal(word) else {
+                    continue;
+                };
+                if let Some(here_doc) = here_docs.iter().find(|doc| doc.placeholder == path) {
+                    redirect.target = RedirectTarget::HereDoc(here_doc.body.clone());
+                }
+            }
+            for word in command
+                .words
+                .iter_mut()
+                .chain(command.assignments.iter_mut().map(|a| &mut a.value))
+            {
+                replace_here_docs_in_word(word, here_docs);
+            }
+        }
+        Command::Compound(CompoundCommand::If {
+            cond,
+            body,
+            elifs,
+            else_body,
+        }) => {
+            replace_here_docs_in_statements(cond, here_docs);
+            replace_here_docs_in_statements(body, here_docs);
+            for (cond, body) in elifs {
+                replace_here_docs_in_statements(cond, here_docs);
+                replace_here_docs_in_statements(body, here_docs);
+            }
+            if let Some(body) = else_body {
+                replace_here_docs_in_statements(body, here_docs);
+            }
+        }
+        Command::Compound(CompoundCommand::For { items, body, .. }) => {
+            for word in items {
+                replace_here_docs_in_word(word, here_docs);
+            }
+            replace_here_docs_in_statements(body, here_docs);
+        }
+        Command::Compound(CompoundCommand::CStyleFor { body, .. }) => {
+            replace_here_docs_in_statements(body, here_docs);
+        }
+        Command::Compound(CompoundCommand::While { cond, body, .. }) => {
+            replace_here_docs_in_statements(cond, here_docs);
+            replace_here_docs_in_statements(body, here_docs);
+        }
+        Command::Arith(_) => {}
+    }
+}
+
+fn replace_here_docs_in_statements(statements: &mut [Statement], here_docs: &[HereDoc]) {
+    for statement in statements {
+        for pipeline in &mut statement.pipelines {
+            for command in &mut pipeline.commands {
+                replace_here_docs_in_command(command, here_docs);
+            }
+        }
+    }
+}
+
+fn replace_here_docs_in_word(word: &mut Word, here_docs: &[HereDoc]) {
+    for part in word {
+        if let WordPart::CommandSub { script, .. } = part {
+            replace_here_docs(script, here_docs);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -274,6 +274,37 @@ mod tests {
     }
 
     #[test]
+    fn quoted_here_document_writes_multiline_file_literally() {
+        let mut bash = fresh();
+        let out = run(
+            &mut bash,
+            "cat > /tmp/httpstat.b64 <<'B64EOF'\n\
+             Ly8gb2JlbGlzay1hZ2VudDpwcm9ncmFtcy9wcm9ncmFtLmh0dHBzdGF0Ogo=\n\
+             B64EOF\n\
+             echo \"placeholder test ok\"",
+        );
+        assert_eq!(out.stdout, "placeholder test ok\n");
+        assert_eq!(
+            run(&mut bash, "cat /tmp/httpstat.b64").stdout,
+            "Ly8gb2JlbGlzay1hZ2VudDpwcm9ncmFtcy9wcm9ncmFtLmh0dHBzdGF0Ogo=\n"
+        );
+    }
+
+    #[test]
+    fn here_document_expansion_respects_delimiter_quoting() {
+        let mut bash = fresh();
+        run(&mut bash, "NAME=world");
+        assert_eq!(
+            run(&mut bash, "cat <<EOF\nhello $NAME\nEOF").stdout,
+            "hello world\n"
+        );
+        assert_eq!(
+            run(&mut bash, "cat <<'EOF'\nhello $NAME\nEOF").stdout,
+            "hello $NAME\n"
+        );
+    }
+
+    #[test]
     fn cat_missing_file_reports_error() {
         let mut bash = fresh();
         let out = run(&mut bash, "cat nope.txt");
