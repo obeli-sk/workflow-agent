@@ -2,12 +2,11 @@
 //   func(deployment-id: option<string>) -> result<string, string>
 //
 // Fetch a deployment to be edited as a virtual working copy. Returns
-//   { deployment_id, active_deployment_id, deployment_toml }
+//   { deployment_id, active_deployment_id, deployment_toml, files }
 // where deployment_toml is the verbatim stored manifest. Deployment-owned
-// script/exec files are referenced by deployment-relative `location` +
-// `content_digest`; their bytes live in the CAS and are fetched on demand with
-// webapi.deployment-read-blob. The workflow splits this TOML into per-component
-// blocks for editing.
+// files carry their deployment-relative path, content digest, and byte size;
+// their bytes live in the CAS and are fetched on demand with
+// webapi.deployment-read-blob.
 //
 // When deployment-id is omitted the currently active deployment is checked out.
 export default async function deployment_checkout(deploymentId) {
@@ -26,6 +25,7 @@ export default async function deployment_checkout(deploymentId) {
         deployment_id: wanted,
         active_deployment_id: active,
         deployment_toml: record.deployment_toml,
+        files: record.files,
     });
 }
 

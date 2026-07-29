@@ -8,7 +8,8 @@
 //! port's `Vfs` (`fs.rs`) has no permission bits and no symlinks -- see
 //! each function's doc comment for the exact simplification.
 
-use super::{fail, normalize_path, ok, unknown_option};
+use super::{fail, mime_for_path, normalize_path, ok, unknown_option};
+use crate::fs::MAX_LAZY_FETCH_BYTES;
 use crate::interpreter::{CommandOutput, Interpreter};
 
 /// Join an absolute, normalized `Vfs` path with a child name.
@@ -674,6 +675,13 @@ pub fn file(interp: &Interpreter, args: &[String]) -> CommandOutput {
         }
         let (desc, mime) = if interp.fs.is_dir(&path) {
             ("directory".to_string(), "inode/directory".to_string())
+        } else if interp
+            .fs
+            .lazy_file_ref(&path)
+            .is_some_and(|reference| reference.size > MAX_LAZY_FETCH_BYTES)
+        {
+            let mime = mime_for_path(file).to_string();
+            (mime.clone(), mime)
         } else {
             let bytes = interp.fs.read_file(&path).unwrap_or_default();
             detect_file_type(file, &bytes)
@@ -786,6 +794,7 @@ fn extension_type(ext: &str) -> Option<(&'static str, &'static str)> {
         "css" => ("CSS stylesheet", "text/css"),
         "md" | "markdown" => ("Markdown document", "text/markdown"),
         "txt" => ("ASCII text", "text/plain"),
+        "wasm" => ("WebAssembly binary module", "application/wasm"),
         _ => return None,
     })
 }
@@ -848,7 +857,7 @@ fn du_walk(
         }
         total
     } else {
-        let size = interp.fs.read_file(full).map(|b| b.len()).unwrap_or(0) as u64;
+        let size = interp.fs.file_size(full).unwrap_or(0);
         if !opts.summarize && (opts.all_files || depth == 0) {
             out.push_str(&format!("{}\t{}\n", format_size(size, opts.human), display));
         }
@@ -1118,7 +1127,7 @@ mod tests {
         let mut bash = fresh();
         bash.fs_mut().set_blob_loader(loader.clone());
         bash.fs_mut()
-            .register_lazy("/dep/current/a.wasm", "sha256:w");
+            .register_lazy("/dep/current/a.wasm", "sha256:w", 10);
 
         let r = run(&mut bash, "cp /dep/current/a.wasm /dep/work.wasm");
         assert_eq!(r.exit_code, 0, "stderr: {}", r.stderr);

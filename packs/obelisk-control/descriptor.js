@@ -63,7 +63,7 @@ const TOOLS = [
 
     // --- deployment editing (stateless): read -> edit toml -> submit -> activate ---
     tool('obelisk.deployment_checkout', 'obelisk-agent:tools/webapi.deployment-checkout',
-        'Read a deployment for editing. Returns { deployment_id, active_deployment_id, deployment_toml }. Owned JS/exec sources are referenced by location + content_digest; fetch their bytes with obelisk.deployment_read_blob. Defaults to the active deployment.',
+        'Read a deployment for editing. Returns { deployment_id, active_deployment_id, deployment_toml, files }, where files contains { path, digest, size } metadata. Fetch owned source bytes with obelisk.deployment_read_blob. Defaults to the active deployment.',
         [p('deployment_id', 'option<string>')]),
     tool('obelisk.deployment_read_blob', 'obelisk-agent:tools/webapi.deployment-read-blob',
         'Read one deployment-owned source file (script/exec) from the content-addressed store by its content_digest.',

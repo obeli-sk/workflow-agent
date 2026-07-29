@@ -11,7 +11,7 @@ ffqn = "obelisk-control:agent/pack.describe"
 params = []
 return_type = "result<record { prompt: string, tools-json: string }, string>"
 location = "packs/obelisk-control/descriptor.js"
-content_digest = "sha256:169c54cb06b3558db9ce2cd1d71c58133d0fd93d71a05285d3a965f42c7a07b5"
+content_digest = "sha256:fbec634f538471a355fff5753f8d8e30b5455d3affeadc297aafce69984d5ecc"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -374,7 +374,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/deployment-checkout.js"
-content_digest = "sha256:4caac0dd3800bc227d8388b674a50e4a1196fcb71c9631921e656adaac8851a4"
+content_digest = "sha256:7787bf2773018b6e6b1ae649cd050c8793a33a5f2d904bbdbb46d595989e07bc"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"

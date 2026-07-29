@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::fs::FsError;
+use crate::fs::{FsError, MAX_LAZY_FETCH_BYTES};
 use crate::interpreter::{CommandOutput, Interpreter};
 
 mod awk;
@@ -30,13 +30,14 @@ mod timeutil;
 mod xargs;
 
 const BUILTINS: &[&str] = &[
-    "echo", "pwd", "cd", "true", "false", ":", "export", "unset", "cat", "mkdir", "ls", "rm",
-    "touch", "test", "[", "grep", "egrep", "fgrep", "sed", "wc", "sort", "uniq", "head", "tail",
-    "cut", "tr", "printf", "xargs", "find", "basename", "dirname", "jq", "awk", "date", "expr",
-    "sleep", "timeout", "time", "seq", "tee", "which", "env", "printenv", "whoami", "hostname",
-    "alias", "unalias", "help", "clear", "base64", "md5sum", "diff", "cp", "mv", "rmdir", "chmod",
-    "readlink", "ln", "file", "du", "tree", "comm", "join", "nl", "od", "rev", "fold", "expand",
-    "unexpand", "column", "paste", "strings", "split", "sh", "bash", "source", ".", "set", "shift",
+    "echo", "pwd", "cd", "true", "false", ":", "export", "unset", "cat", "mkdir", "ls", "stat",
+    "rm", "touch", "test", "[", "grep", "egrep", "fgrep", "sed", "wc", "sort", "uniq", "head",
+    "tail", "cut", "tr", "printf", "xargs", "find", "basename", "dirname", "jq", "awk", "date",
+    "expr", "sleep", "timeout", "time", "seq", "tee", "which", "env", "printenv", "whoami",
+    "hostname", "alias", "unalias", "help", "clear", "base64", "md5sum", "diff", "cp", "mv",
+    "rmdir", "chmod", "readlink", "ln", "file", "du", "tree", "comm", "join", "nl", "od", "rev",
+    "fold", "expand", "unexpand", "column", "paste", "strings", "split", "sh", "bash", "source",
+    ".", "set", "shift",
 ];
 
 /// Names of the available commands. The workflow filters this list.
@@ -94,6 +95,7 @@ pub fn dispatch(
         "cat" => builtin_cat(interp, rest, stdin),
         "mkdir" => builtin_mkdir(interp, rest),
         "ls" => builtin_ls(interp, rest),
+        "stat" => builtin_stat(interp, rest),
         "rm" => builtin_rm(interp, rest),
         "touch" => builtin_touch(interp, rest),
         "test" | "[" => builtin_test(interp, name, rest),
@@ -398,6 +400,17 @@ fn builtin_cat(interp: &Interpreter, args: &[String], stdin: String) -> CommandO
         if interp.fs.is_dir(&path) {
             stderr.push_str(&format!("cat: {arg}: Is a directory\n"));
             exit_code = 1;
+        } else if let Some(reference) = interp
+            .fs
+            .lazy_file_ref(&path)
+            .filter(|reference| reference.size > MAX_LAZY_FETCH_BYTES)
+        {
+            out.push_str(&format!(
+                "<{}, {}, {}>\n",
+                mime_for_path(arg),
+                reference.digest,
+                human_byte_size(reference.size)
+            ));
         } else if let Some(bytes) = interp.fs.read_file(&path).as_deref() {
             out.push_str(&String::from_utf8_lossy(bytes));
         } else {
@@ -436,7 +449,7 @@ fn builtin_mkdir(interp: &mut Interpreter, args: &[String]) -> CommandOutput {
                 ));
                 exit_code = 1;
             }
-            Err(FsError::IsDirectory(_)) => exit_code = 1,
+            Err(FsError::IsDirectory(_) | FsError::ReadUnavailable(_)) => exit_code = 1,
         }
     }
     CommandOutput {
@@ -491,13 +504,13 @@ fn builtin_ls(interp: &Interpreter, args: &[String]) -> CommandOutput {
 
 /// A file's byte length; directories report 0 (as the JS reference does, this
 /// VFS having no real block accounting to improve on).
-fn ls_size(interp: &Interpreter, path: &str) -> usize {
-    interp.fs.read_file(path).map(|b| b.len()).unwrap_or(0)
+fn ls_size(interp: &Interpreter, path: &str) -> u64 {
+    interp.fs.file_size(path).unwrap_or(0)
 }
 
 /// One `ls -l` line. The VFS tracks no owner/mtime, so the reference's fixed
 /// `1 user user` / `Jan  1 00:00` and `drwxr-xr-x`/`-rw-r--r--` modes are used.
-fn ls_long_line(mode: &str, size: usize, name: &str) -> String {
+fn ls_long_line(mode: &str, size: u64, name: &str) -> String {
     format!("{mode} 1 user user {size:>5} Jan  1 00:00 {name}\n")
 }
 
@@ -538,6 +551,129 @@ fn ls_dir(interp: &Interpreter, path: &str, long: bool, all: bool) -> String {
     out
 }
 
+fn builtin_stat(interp: &Interpreter, args: &[String]) -> CommandOutput {
+    let mut format: Option<&str> = None;
+    let mut files: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-c" | "--format" => {
+                let Some(value) = args.get(i + 1) else {
+                    return fail("stat: option requires an argument\n".to_string(), 1);
+                };
+                format = Some(value);
+                i += 2;
+            }
+            arg if arg.starts_with("--format=") => {
+                format = Some(&arg["--format=".len()..]);
+                i += 1;
+            }
+            "-L" | "--dereference" => i += 1,
+            arg if arg.starts_with('-') => return unknown_option("stat", arg),
+            file => {
+                files.push(file);
+                i += 1;
+            }
+        }
+    }
+    if files.is_empty() {
+        return fail("stat: missing operand\n".to_string(), 1);
+    }
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    for file in files {
+        let path = normalize_path(&interp.cwd, file);
+        if !interp.fs.exists(&path) {
+            stderr.push_str(&format!(
+                "stat: cannot statx '{file}': No such file or directory\n"
+            ));
+            continue;
+        }
+        let is_dir = interp.fs.is_dir(&path);
+        let size = if is_dir {
+            0
+        } else {
+            interp.fs.file_size(&path).unwrap_or(0)
+        };
+        let kind = if is_dir { "directory" } else { "regular file" };
+        if let Some(format) = format {
+            stdout.push_str(&stat_format(format, file, size, kind));
+            stdout.push('\n');
+        } else {
+            stdout.push_str(&format!(
+                "  File: {file}\n  Size: {size}\tBlocks: {}\tIO Block: 4096   {kind}\n",
+                size.div_ceil(512)
+            ));
+        }
+    }
+    let exit_code = if stderr.is_empty() { 0 } else { 1 };
+    CommandOutput {
+        stdout,
+        stderr,
+        exit_code,
+    }
+}
+
+fn stat_format(template: &str, name: &str, size: u64, kind: &str) -> String {
+    let mut out = String::new();
+    let mut chars = template.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('%') => out.push('%'),
+            Some('n') => out.push_str(name),
+            Some('s') => out.push_str(&size.to_string()),
+            Some('F') => out.push_str(kind),
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    out
+}
+
+fn human_byte_size(size: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    if size < 1024 {
+        format!("{size} B")
+    } else if size < 1024 * 1024 {
+        format!("{:.1} KB", size as f64 / KIB)
+    } else if size < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", size as f64 / MIB)
+    } else {
+        format!("{:.1} GB", size as f64 / GIB)
+    }
+}
+
+fn mime_for_path(path: &str) -> &'static str {
+    let extension = path.rsplit_once('.').map(|(_, extension)| extension);
+    match extension.map(str::to_ascii_lowercase).as_deref() {
+        Some("wasm") => "application/wasm",
+        Some("json") => "application/json",
+        Some("js" | "mjs" | "cjs") => "text/javascript",
+        Some("ts") => "text/typescript",
+        Some("html" | "htm") => "text/html",
+        Some("css") => "text/css",
+        Some("md" | "markdown") => "text/markdown",
+        Some("txt") => "text/plain",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("pdf") => "application/pdf",
+        Some("zip") => "application/zip",
+        Some("gz") => "application/gzip",
+        _ => "application/octet-stream",
+    }
+}
+
 fn builtin_rm(interp: &mut Interpreter, args: &[String]) -> CommandOutput {
     let (flags, operands) = split_flags(args);
     let recursive = flags.contains('r') || flags.contains('R');
@@ -563,7 +699,7 @@ fn builtin_rm(interp: &mut Interpreter, args: &[String]) -> CommandOutput {
                 stderr.push_str(&format!("rm: cannot remove '{operand}': Is a directory\n"));
                 exit_code = 1;
             }
-            Err(FsError::FileExists(_)) => exit_code = 1,
+            Err(FsError::FileExists(_) | FsError::ReadUnavailable(_)) => exit_code = 1,
         }
     }
     CommandOutput {

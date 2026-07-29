@@ -75,13 +75,14 @@ pub fn command_handler(host: Box<dyn ObeliskHost>) -> CustomCommandHandler {
     Box::new(move |interp, args, stdin| execute_obelisk(interp, args, &stdin, host.as_mut()))
 }
 
-/// Check out the active deployment's `deployment.toml` plus the *structure* of
-/// its owned source files into `/workspace/deployment/<id>/`, then symlink
+/// Check out the active deployment's `deployment.toml` plus the metadata index
+/// of its owned source files into `/workspace/deployment/<id>/`, then symlink
 /// `/workspace/deployment/current` to it. Only the manifest is fetched here;
 /// each owned source (component scripts/wasm and `backtrace.sources`) is
-/// registered as a lazy VFS entry whose bytes are pulled from the CAS on first
-/// read (see `Vfs::register_lazy` and `blob_loader`), so mounting costs two
-/// host calls regardless of how many files the deployment owns.
+/// registered as a lazy VFS entry. Bounded files are pulled from the CAS on
+/// first read, while oversized entries stay digest-only (see
+/// `Vfs::register_lazy` and `blob_loader`), so mounting costs two host calls
+/// regardless of how many files the deployment owns.
 ///
 /// Called once at session mount (`replace = false`, via `mount`) and again by
 /// `obelisk deployment refresh` (`replace = true`, re-registering every file so
@@ -116,6 +117,7 @@ pub fn refresh_deployment_mount(
         .and_then(Value::as_str)
         .ok_or_else(|| "deployment checkout returned no deployment_toml".to_string())?
         .to_string();
+    let indexed_files = checkout_file_refs(&checkout)?;
 
     let dir = format!("{DEPLOYMENT_ROOT}/{deployment_id}");
     fs.mkdir(&dir, true).map_err(fs_error_message)?;
@@ -126,12 +128,12 @@ pub fn refresh_deployment_mount(
     }
 
     let mut files = 1u32;
-    for reference in deployment_file_refs(&manifest) {
-        let path = format!("{dir}/{}", reference.location);
+    for reference in indexed_files {
+        let path = format!("{dir}/{}", reference.path);
         if !replace && fs.exists(&path) {
             continue;
         }
-        fs.register_lazy(&path, &reference.digest);
+        fs.register_lazy(&path, &reference.digest, reference.size);
         files += 1;
     }
 
@@ -180,6 +182,41 @@ pub fn blob_loader(host: Box<dyn ObeliskHost>) -> Rc<dyn BlobLoader> {
     Rc::new(HostBlobLoader {
         host: RefCell::new(host),
     })
+}
+
+struct IndexedFileRef {
+    path: String,
+    digest: String,
+    size: u64,
+}
+
+fn checkout_file_refs(checkout: &Value) -> Result<Vec<IndexedFileRef>, String> {
+    let files = checkout
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "deployment checkout returned no files index".to_string())?;
+    files
+        .iter()
+        .map(|file| {
+            let path = file
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "deployment checkout file has no path".to_string())?;
+            let digest = file
+                .get("digest")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("deployment checkout file {path} has no digest"))?;
+            let size = file
+                .get("size")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("deployment checkout file {path} has no size"))?;
+            Ok(IndexedFileRef {
+                path: path.to_string(),
+                digest: digest.to_string(),
+                size,
+            })
+        })
+        .collect()
 }
 
 fn execute_obelisk(
@@ -527,7 +564,10 @@ fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<SourceEntry> {
     let mut files = Vec::new();
     for reference in deployment_file_refs(manifest) {
         let path = format!("{dir}/{}", reference.location);
-        if fs.is_pending(&path) {
+        if fs
+            .lazy_file_ref(&path)
+            .is_some_and(|lazy| lazy.digest == reference.digest)
+        {
             continue;
         }
         if let Some(bytes) = fs.read_file(&path) {
@@ -701,6 +741,7 @@ fn fs_error_message(error: FsError) -> String {
         FsError::NotFound(p) => format!("{p}: No such file or directory"),
         FsError::IsDirectory(p) => format!("{p}: Is a directory"),
         FsError::FileExists(p) => format!("{p}: File exists"),
+        FsError::ReadUnavailable(p) => format!("{p}: File body is unavailable"),
     }
 }
 
@@ -1108,7 +1149,11 @@ backtrace.sources = { \".../src/lib.rs\" = { path = \"src/lib.rs\", content_dige
             )
             .with(
                 "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({"deployment_toml": manifest}).to_string(),
+                &json!({
+                    "deployment_toml": manifest,
+                    "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 12}]
+                })
+                .to_string(),
             );
         let mut fs = Vfs::new();
         let result = mount(&mut fs, &mut host).unwrap();
@@ -1167,7 +1212,14 @@ content_digest = \"sha256:1\"\n\
             )
             .with(
                 "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({"deployment_toml": manifest}).to_string(),
+                &json!({
+                    "deployment_toml": manifest,
+                    "files": [
+                        {"path": "components/w.wasm", "digest": "sha256:1", "size": 12},
+                        {"path": "workflow/workflow-rs/src/lib.rs", "digest": "sha256:2", "size": 16}
+                    ]
+                })
+                .to_string(),
             );
         let mut fs = Vfs::new();
         let result = mount(&mut fs, &mut host).unwrap();
@@ -1197,7 +1249,14 @@ content_digest = \"sha256:1\"\n\
             )
             .with(
                 "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!(json!({"deployment_toml": manifest}).to_string()).to_string(),
+                &json!(
+                    json!({
+                        "deployment_toml": manifest,
+                        "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 5}]
+                    })
+                    .to_string()
+                )
+                .to_string(),
             )
             .with(
                 "obelisk-agent:tools/webapi.deployment-read-blob",
@@ -1246,7 +1305,11 @@ content_digest = \"sha256:1\"\n\
             )
             .with(
                 "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({"deployment_toml": manifest_v1}).to_string(),
+                &json!({
+                    "deployment_toml": manifest_v1,
+                    "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 2}]
+                })
+                .to_string(),
             );
         let mut fs = Vfs::new();
         // A single digest-addressed loader stands in for the CAS across both
@@ -1264,7 +1327,11 @@ content_digest = \"sha256:1\"\n\
             )
             .with(
                 "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({"deployment_toml": manifest_v2}).to_string(),
+                &json!({
+                    "deployment_toml": manifest_v2,
+                    "files": [{"path": "a.wasm", "digest": "sha256:2", "size": 2}]
+                })
+                .to_string(),
             );
         let result = refresh_deployment_mount(&mut fs, &mut host_v2, true).unwrap();
         assert_eq!(result.deployment_id.as_deref(), Some("dep-2"));
@@ -1292,7 +1359,11 @@ content_digest = \"sha256:1\"\n\
             )
             .with(
                 "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({"deployment_toml": manifest}).to_string(),
+                &json!({
+                    "deployment_toml": manifest,
+                    "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 5}]
+                })
+                .to_string(),
             )
             .with(
                 "obelisk-agent:tools/webapi.deployment-read-blob",
@@ -1421,8 +1492,8 @@ content_digest = \"sha256:1\"\n\
             manifest.as_bytes(),
         )
         .unwrap();
-        i.fs.register_lazy("/workspace/deployment/current/w.wasm", "sha256:1");
-        i.fs.register_lazy("/workspace/deployment/current/src/lib.rs", "sha256:2");
+        i.fs.register_lazy("/workspace/deployment/current/w.wasm", "sha256:1", 10);
+        i.fs.register_lazy("/workspace/deployment/current/src/lib.rs", "sha256:2", 11);
 
         let mut host =
             FakeHost::new().with("obelisk-agent:tools/webapi.deployment-submit", "\"ok\"");
@@ -1459,8 +1530,8 @@ content_digest = \"sha256:1\"\n\
             manifest.as_bytes(),
         )
         .unwrap();
-        i.fs.register_lazy("/workspace/deployment/current/a.js", "sha256:a");
-        i.fs.register_lazy("/workspace/deployment/current/b.js", "sha256:b");
+        i.fs.register_lazy("/workspace/deployment/current/a.js", "sha256:a", 5);
+        i.fs.register_lazy("/workspace/deployment/current/b.js", "sha256:b", 5);
         // Edit a.js only; b.js stays lazy/unmodified and must not be sent.
         i.fs.write_file("/workspace/deployment/current/a.js", b"new-a")
             .unwrap();

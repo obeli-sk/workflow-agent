@@ -577,10 +577,18 @@ impl Interpreter {
             } else {
                 self.fs.write_file(path, b"")
             };
-            if let Err(FsError::IsDirectory(p)) = write {
-                new_err.push_str(&format!("bash: {p}: Is a directory\n"));
-                result.exit_code = 1;
-                failed.insert(path.clone());
+            match write {
+                Err(FsError::IsDirectory(p)) => {
+                    new_err.push_str(&format!("bash: {p}: Is a directory\n"));
+                    result.exit_code = 1;
+                    failed.insert(path.clone());
+                }
+                Err(FsError::ReadUnavailable(p)) => {
+                    new_err.push_str(&format!("bash: {p}: File body is unavailable\n"));
+                    result.exit_code = 1;
+                    failed.insert(path.clone());
+                }
+                _ => {}
             }
         }
 

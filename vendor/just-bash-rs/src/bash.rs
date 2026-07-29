@@ -450,6 +450,43 @@ mod tests {
     }
 
     #[test]
+    fn oversized_lazy_file_uses_metadata_without_fetching() {
+        struct NoFetch;
+        impl crate::fs::BlobLoader for NoFetch {
+            fn load(&self, digest: &str) -> Result<Vec<u8>, String> {
+                panic!("must not fetch {digest}");
+            }
+        }
+
+        let mut bash = fresh();
+        bash.fs_mut().set_blob_loader(std::rc::Rc::new(NoFetch));
+        bash.fs_mut()
+            .register_lazy("/component.wasm", "sha256:abc", 9_984_695);
+
+        assert_eq!(
+            run(&mut bash, "cat /component.wasm").stdout,
+            "<application/wasm, sha256:abc, 9.5 MB>\n"
+        );
+        assert!(
+            run(&mut bash, "ls -l /component.wasm")
+                .stdout
+                .contains("9984695")
+        );
+        assert_eq!(
+            run(&mut bash, "stat -c %s /component.wasm").stdout,
+            "9984695\n"
+        );
+        assert_eq!(
+            run(&mut bash, "du -h /component.wasm").stdout,
+            "9.5M\t/component.wasm\n"
+        );
+        assert_eq!(
+            run(&mut bash, "file -i /component.wasm").stdout,
+            "/component.wasm: application/wasm\n"
+        );
+    }
+
+    #[test]
     fn ls_hides_dotfiles_unless_all_flag() {
         let mut bash = fresh();
         run(&mut bash, "touch .hidden vis");

@@ -13,8 +13,11 @@ The core owns the agent loop, Bash session, LLM router, and web UI. A compiled
 one pack, `obelisk-control`, which mounts the active deployment under
 `/workspace/deployment` and provides an `obelisk` executable. The mount is lazy:
 the file tree (including each component's `backtrace.sources`) lists
-immediately, and a file's bytes are fetched from the content-addressed store the
-first time it is read (see `meta/designs/workflow-agent-lazy-deployment-mount.md`).
+immediately, and bounded file bodies are fetched from the content-addressed
+store the first time they are read. The mount carries each file's digest and
+byte size, so metadata commands do not fetch content. Files larger than 1 MiB
+remain digest-only and read as a short type, digest, and size placeholder (see
+`meta/designs/workflow-agent-lazy-deployment-mount.md`).
 
 ![workflow-agent web UI](docs/workflow-agent.png)
 
