@@ -30,11 +30,15 @@ const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
 /// PORT: `packs/obelisk-control/workflow-pack.js`'s `descriptor.systemPrompt`.
 /// Appended to the session system prompt by the workflow (`session.rs`).
 pub const SYSTEM_PROMPT: &str =
-    "The session has a persistent virtual filesystem rooted at /workspace.
-Use the obelisk command for external Obelisk operations and ordinary shell
-commands for inspecting and editing files. The active deployment is mounted at
-/workspace/deployment/current. Editing these files is local until an explicit
-obelisk deployment submit or apply command.";
+    "You are on a persistent virtual machine with a filesystem rooted at
+/workspace. The active Obelisk deployment has been fetched into
+/workspace/deployment/current; read and edit its deployment.toml and component
+sources with ordinary shell commands. Use the obelisk command for operations
+against the running server (functions, executions, call, and deployment
+current/refresh/check/submit/switch/apply). Edits under the deployment folder
+are local until you run `obelisk deployment submit` (store a new inactive
+deployment) or `obelisk deployment apply` (hot-redeploy); `obelisk deployment
+refresh` discards local edits and re-fetches the current deployment.";
 
 /// The one primitive the whole pack needs: dynamically invoke a deployed FFQN
 /// and get back its JSON result. Mirrors Obelisk's real

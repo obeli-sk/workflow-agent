@@ -281,6 +281,25 @@ impl Vfs {
         Ok(())
     }
 
+    /// Copy a single file from `src` to `dest`. A lazily-mounted, unmodified
+    /// (`pending`) source copies *by reference*: `dest` is registered lazy with
+    /// the same content digest, so nothing is fetched from the CAS (a component
+    /// WASM blob can be tens of MB, and the copy is meant to be as cheap as the
+    /// mount). A modified or eager source copies its bytes. Returns false if
+    /// `src` is not a readable file (a directory or a missing/unfetchable path);
+    /// `cp`/`mv` walk directories themselves.
+    pub fn copy_file(&mut self, src: &str, dest: &str) -> bool {
+        let src = self.resolve(src);
+        if let Some(digest) = self.pending.get(&src).cloned() {
+            self.register_lazy(dest, &digest);
+            return true;
+        }
+        match self.read_file(&src) {
+            Some(bytes) => self.write_file(dest, &bytes).is_ok(),
+            None => false,
+        }
+    }
+
     /// Create a directory. With `parents`, creates ancestors and succeeds if it
     /// already exists (like `mkdir -p`); otherwise fails on an existing path or
     /// a missing parent.
@@ -559,6 +578,30 @@ mod tests {
             loader.loads.borrow().is_empty(),
             "no fetch after a local write"
         );
+    }
+
+    #[test]
+    fn copying_a_lazy_file_copies_the_reference_without_fetching() {
+        let loader = Rc::new(CountingLoader {
+            blobs: BTreeMap::from([("sha256:w".to_string(), b"wasm-bytes".to_vec())]),
+            loads: RefCell::new(Vec::new()),
+        });
+        let mut fs = Vfs::new();
+        fs.set_blob_loader(loader.clone());
+        fs.register_lazy("/dep/current/a.wasm", "sha256:w");
+
+        // Copy a working copy alongside the original: no fetch, both lazy.
+        assert!(fs.copy_file("/dep/current/a.wasm", "/dep/work/a.wasm"));
+        assert!(fs.is_pending("/dep/work/a.wasm"));
+        assert!(fs.is_pending("/dep/current/a.wasm"));
+        assert!(loader.loads.borrow().is_empty(), "copy must not fetch");
+
+        // The copy resolves the same blob on demand, fetched once when read.
+        assert_eq!(
+            fs.read_file("/dep/work/a.wasm").as_deref(),
+            Some(&b"wasm-bytes"[..])
+        );
+        assert_eq!(&*loader.loads.borrow(), &["sha256:w".to_string()]);
     }
 
     #[test]

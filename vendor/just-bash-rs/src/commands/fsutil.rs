@@ -38,8 +38,10 @@ fn copy_tree(fs: &mut crate::fs::Vfs, src: &str, dest: &str) {
                 copy_tree(fs, &join_path(src, &entry), &join_path(dest, &entry));
             }
         }
-    } else if let Some(data) = fs.read_file(src) {
-        let _ = fs.write_file(dest, &data);
+    } else {
+        // A lazily-mounted, unmodified file copies by reference (its content
+        // digest), so `cp`/`mv` never pull a component blob out of the CAS.
+        fs.copy_file(src, dest);
     }
 }
 
@@ -1087,7 +1089,10 @@ pub fn tree(interp: &Interpreter, args: &[String]) -> CommandOutput {
 #[cfg(test)]
 mod tests {
     use crate::bash::Bash;
+    use crate::fs::BlobLoader;
     use crate::types::{BashOptions, ExecOptions, ExecResult};
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn fresh() -> Bash {
         Bash::new(BashOptions::default())
@@ -1095,6 +1100,36 @@ mod tests {
 
     fn run(bash: &mut Bash, script: &str) -> ExecResult {
         bash.exec(script, ExecOptions::default())
+    }
+
+    /// A loader that records the digests it is asked to fetch, so a test can
+    /// prove a `cp`/`mv` of a lazily-mounted file fetches nothing.
+    struct RecordingLoader(RefCell<Vec<String>>);
+    impl BlobLoader for RecordingLoader {
+        fn load(&self, digest: &str) -> Result<Vec<u8>, String> {
+            self.0.borrow_mut().push(digest.to_string());
+            Ok(b"wasm-bytes".to_vec())
+        }
+    }
+
+    #[test]
+    fn cp_of_a_lazy_file_copies_the_reference_without_fetching() {
+        let loader = Rc::new(RecordingLoader(RefCell::new(Vec::new())));
+        let mut bash = fresh();
+        bash.fs_mut().set_blob_loader(loader.clone());
+        bash.fs_mut()
+            .register_lazy("/dep/current/a.wasm", "sha256:w");
+
+        let r = run(&mut bash, "cp /dep/current/a.wasm /dep/work.wasm");
+        assert_eq!(r.exit_code, 0, "stderr: {}", r.stderr);
+        // The copy is still lazy (nothing fetched); reading it materializes once.
+        assert!(bash.fs().is_pending("/dep/work.wasm"));
+        assert!(loader.0.borrow().is_empty(), "cp must not fetch the blob");
+        assert_eq!(
+            bash.fs().read_file("/dep/work.wasm").as_deref(),
+            Some(&b"wasm-bytes"[..])
+        );
+        assert_eq!(&*loader.0.borrow(), &["sha256:w".to_string()]);
     }
 
     #[test]
