@@ -2,8 +2,10 @@
 //!
 //! The generic session loop: one persistent `Bash` instance, one named
 //! `record-output` join set for the whole session, and one named
-//! `operator-{turn}` join set per turn racing the LLM completion child against
-//! an always-outstanding operator-injection offer.
+//! `operator-{turn}` join set per conversation turn racing the LLM completion
+//! child against an always-outstanding operator-injection offer. Direct shell
+//! interactions are turns too: their synthetic Bash request/result pair is
+//! included in the next turn's completion request.
 //!
 //! Simplifications versus the JS version (see design doc for the full list):
 //! - No `Shell{bash, cwd}` wrapper: `Bash::exec` already persists `cwd`
@@ -86,6 +88,7 @@ enum SessionEvent {
 struct LlmReply {
     content: Vec<Value>,
     request_message_count: usize,
+    operator_input_queued: bool,
 }
 
 pub fn agent_loop_cancellable(
@@ -131,14 +134,13 @@ pub fn agent_loop_cancellable(
 
     let mut pack_mounted = false;
     let mut turn_index: u64 = 0;
-    let mut pending_prompt = !messages.is_empty();
+    let mut should_call_llm = !messages.is_empty();
+    let mut agent_steps = 0u32;
 
     loop {
-        // A turn is one operator round: open a fresh named operator set, wait
-        // for the prompt that starts it, run the model until it yields a
-        // plain response. The name embeds the turn index because a named
-        // set's name is reserved for the execution's whole history and
-        // cannot be reused across turns.
+        // A turn is one operator interaction or one model completion. The name
+        // embeds the turn index because a named set's name is reserved for the
+        // execution's whole history and cannot be reused across turns.
         let mut session = open_turn(turn_index)?;
 
         if !pack_mounted {
@@ -161,22 +163,13 @@ pub fn agent_loop_cancellable(
             }
             pack_mounted = true;
         }
-        if !pending_prompt {
-            // Idle: run operator shell commands inline and keep the offer
-            // open until a prompt arrives to start the model's work.
-            loop {
-                let text = take_operator_event(&mut session)?;
-                let event = parse_session_event(&text);
-                if apply_session_event(event, &output_join_set, &mut bash, &mut messages)? {
-                    break;
-                }
-            }
-        }
-        pending_prompt = false;
-
-        let mut step = 0u32;
-        loop {
-            if step >= MAX_TURNS {
+        if !should_call_llm {
+            let text = take_operator_event(&mut session)?;
+            let event = parse_session_event(&text);
+            apply_session_event(event, &output_join_set, &mut bash, &mut messages)?;
+            should_call_llm = true;
+        } else {
+            if agent_steps >= MAX_TURNS {
                 return Err(format!(
                     "exceeded MAX_TURNS={MAX_TURNS} without yielding an assistant response"
                 ));
@@ -190,7 +183,7 @@ pub fn agent_loop_cancellable(
                 &mut bash,
                 &output_join_set,
             )?;
-            step += 1;
+            agent_steps += 1;
             messages.insert(
                 reply.request_message_count,
                 json!({"role": "assistant", "content": reply.content}),
@@ -227,9 +220,11 @@ pub fn agent_loop_cancellable(
                     reply.request_message_count + 1,
                     json!({"role": "user", "content": result_blocks}),
                 );
-                continue;
+                should_call_llm = true;
+            } else {
+                should_call_llm = reply.operator_input_queued;
+                agent_steps = 0;
             }
-            break;
         }
         // `session.join_set` drops (closes) here at the end of the turn's
         // scope; see module docs.
@@ -272,19 +267,45 @@ fn apply_session_event(
     output_join_set: &JoinSet,
     bash: &mut Bash,
     messages: &mut Vec<Value>,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     match event {
         SessionEvent::Shell { id, script, stdin } => {
             let result = exec_shell(bash, &script, &stdin);
             let record = json!({"id": id, "script": script, "result": shell_result(&result)});
             publish_shell_result(output_join_set, &record)?;
-            Ok(false)
+            append_shell_exchange(messages, &record, &stdin);
+            Ok(())
         }
         SessionEvent::Prompt { text } => {
             messages.push(user_text(&text));
-            Ok(true)
+            Ok(())
         }
     }
+}
+
+fn append_shell_exchange(messages: &mut Vec<Value>, record: &Value, stdin: &str) {
+    let id = record.get("id").and_then(Value::as_str).unwrap_or_default();
+    let script = record
+        .get("script")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut input = json!({"script": script});
+    if !stdin.is_empty() {
+        input["stdin"] = Value::String(stdin.to_string());
+    }
+    messages.push(json!({
+        "role": "assistant",
+        "content": [{"type": "tool_use", "id": id, "name": "bash", "input": input}],
+    }));
+    let result_json = record
+        .get("result")
+        .cloned()
+        .unwrap_or_else(|| json!({}))
+        .to_string();
+    messages.push(json!({
+        "role": "user",
+        "content": [tool_ok(id, result_json)],
+    }));
 }
 
 fn publish_shell_result(output_join_set: &JoinSet, record: &Value) -> Result<(), String> {
@@ -387,10 +408,9 @@ fn shell_result(result: &ExecResult) -> Value {
     })
 }
 
-/// One LLM call raced against the operator input offer. Each shell event runs
-/// against the same Bash instance and the input offer is re-armed while the
-/// LLM child remains pending. Prompt events are appended for the next model
-/// turn.
+/// One LLM call raced against the operator input offer. Each injected event is
+/// appended after the request snapshot and therefore reaches the model on the
+/// following turn.
 #[allow(clippy::too_many_arguments)]
 fn call_llm_with_operator(
     session: &mut Session,
@@ -401,6 +421,7 @@ fn call_llm_with_operator(
     bash: &mut Bash,
     output_join_set: &JoinSet,
 ) -> Result<LlmReply, String> {
+    let mut operator_input_queued = false;
     loop {
         let request_message_count = messages.len();
         let params = json!([
@@ -428,6 +449,7 @@ fn call_llm_with_operator(
                 let decoded: String = serde_json::from_str(&json).unwrap_or(json);
                 let event = parse_session_event(&decoded);
                 apply_session_event(event, output_join_set, bash, messages)?;
+                operator_input_queued = true;
                 continue;
             }
             if completed_id.as_deref() != Some(completion_execution_id.id.as_str()) {
@@ -464,6 +486,7 @@ fn call_llm_with_operator(
             return Ok(LlmReply {
                 content,
                 request_message_count,
+                operator_input_queued,
             });
         }
         return Err(format!("unexpected llm.completion result: {res}"));
@@ -535,4 +558,43 @@ fn take_operator_event(session: &mut Session) -> Result<String, String> {
 fn submit_no_args(join_set: &JoinSet, ffqn: &str) -> Result<workflow_support::ExecutionId, String> {
     let function = split_ffqn(ffqn)?;
     workflow_support::submit_json(join_set, &function, "[]").map_err(|e| format!("{e:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_shell_exchange_is_valid_model_tool_history() {
+        let mut messages = vec![user_text("inspect the workspace")];
+        let record = json!({
+            "id": "shell-17",
+            "script": "cat note.txt",
+            "result": {"stdout": "hello\n", "stderr": "", "exit_code": 0},
+        });
+
+        append_shell_exchange(&mut messages, &record, "input\n");
+
+        assert_eq!(
+            messages[1],
+            json!({
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "shell-17",
+                    "name": "bash",
+                    "input": {"script": "cat note.txt", "stdin": "input\n"},
+                }],
+            })
+        );
+        assert_eq!(messages[2]["role"], "user");
+        let result = &messages[2]["content"][0];
+        assert_eq!(result["type"], "tool_result");
+        assert_eq!(result["tool_use_id"], "shell-17");
+        assert_eq!(result["is_error"], false);
+        assert_eq!(
+            serde_json::from_str::<Value>(result["content"].as_str().unwrap()).unwrap(),
+            record["result"]
+        );
+    }
 }

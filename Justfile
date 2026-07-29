@@ -16,9 +16,9 @@ sync:
 # Run everything: unit tests plus all end-to-end suites.
 test: test-rs test-e2e test-e2e-agent-workflow test-e2e-redeploy
 
-# Rust port: unit tests for the just-bash-rs interpreter.
+# Rust port: unit tests for the workflow and just-bash-rs interpreter.
 test-rs:
-  cargo test -p just-bash-rs
+  cargo test -p just-bash-rs -p workflow-agent-rs
 
 # Rust port: end-to-end test of the bash workflow component under Obelisk.
 test-e2e:

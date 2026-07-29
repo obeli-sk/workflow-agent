@@ -139,13 +139,17 @@ built-in Bash commands.
 ## Session lifecycle
 
 1. Construct the Bash instance and its in-memory filesystem.
-2. Create one named session join set and submit the first operator-input stub.
+2. Create a named join set for the first conversation turn and submit the
+   operator-input stub.
 3. Mount installed packs into the VFS.
-4. If there is no initial prompt, block on the operator offer. Shell events run
-   immediately; prompt events start an LLM completion.
-5. Submit LLM completion into the same join set as the next operator offer.
+4. If there is no initial prompt, block on the operator offer. A prompt or shell
+   event completes that turn.
+5. Record a direct shell event as a synthetic Bash `tool_use` plus
+   `tool_result`, then submit the next turn's LLM completion with that exchange
+   in its message history.
 6. If shell input completes first, re-arm operator input, execute the command,
-   record its structured output, and continue waiting for the same LLM child.
+   record its structured output, and queue its synthetic exchange after the
+   in-flight completion's request snapshot.
 7. If prompt input completes first, re-arm operator input and queue the text
    immediately after the assistant response and any required tool result.
 8. If the LLM child completes first, process its response and keep the operator
@@ -465,6 +469,10 @@ each consumed event, matching the current operator-channel pattern.
   or injected prompt to the final response. Model-originated Bash calls show
   latency from the completion that emitted the tool use to the next durable
   completion request containing its `tool_result`.
+- Direct shell request/result pairs are conversation turns. The workflow
+  advances its `operator-<turn>` join-set name after each pair, sends the pair
+  to the agent on the following turn, and uses the same durable turn number in
+  the transcript UI.
 - The transcript scrolls to its newest entry when the operator submits input or
   a durable transcript delta arrives. It scrolls again after asynchronous
   Markdown or Mermaid rendering changes the content height.

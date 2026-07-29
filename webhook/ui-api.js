@@ -635,9 +635,10 @@ async function loadResponses(execId, startCursor = 0) {
             const ev = wrapped?.event;
             if (!ev || ev.type !== "child_execution_finished") continue;
             const joinName = parseJoinName(wrapped.join_set_id);
+            const turnIndex = parseTurnIndex(wrapped.join_set_id);
 
             if (joinName === "completion") {
-                appendCompletionReply(replies, ev, r);
+                appendCompletionReply(replies, ev, r, turnIndex);
             } else if (joinName === "operator") {
                 // The session join set races operator input with llm.completion.
                 // Strings are injected events; completion results are objects.
@@ -649,17 +650,20 @@ async function loadResponses(execId, startCursor = 0) {
                             kind: "shell_command",
                             id: event.id || "",
                             script: event.script,
+                            stdin: event.stdin || "",
                             created_at: r.event?.created_at || "",
+                            turn_index: turnIndex,
                         });
                     } else {
                         operatorMessages.push({
                             id: event?.id || "",
                             text: event?.text || value,
                             created_at: r.event?.created_at || "",
+                            turn_index: turnIndex,
                         });
                     }
                 } else {
-                    appendCompletionReply(replies, ev, r);
+                    appendCompletionReply(replies, ev, r, turnIndex);
                 }
             } else if (joinName === "record-output") {
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
@@ -685,7 +689,7 @@ async function loadResponses(execId, startCursor = 0) {
     return { replies, toolChildren, operatorMessages, shellEvents, cursor };
 }
 
-function appendCompletionReply(replies, ev, response) {
+function appendCompletionReply(replies, ev, response, turnIndex = null) {
     const value = ev.result?.ok?.value ?? ev.result?.ok;
     const rep = value && typeof value === "object" ? value.reply : null;
     if (!rep || typeof rep !== "object" || typeof rep.content_json !== "string") return;
@@ -707,6 +711,7 @@ function appendCompletionReply(replies, ev, response) {
         blocks: [],
         narration: "",
         created_at: response.event?.created_at || "",
+        turn_index: turnIndex,
     });
 }
 
@@ -868,14 +873,20 @@ function parseJoinName(joinSetId) {
     // use "n:<name>". Each turn opens its own operator set named "operator-<turn>";
     // collapse the turn suffix so callers key off the stable name "operator".
     if (typeof joinSetId !== "string") return "";
-    let name;
-    if (joinSetId.startsWith("n:")) {
-        name = joinSetId.substring(2);
-    } else {
-        const dash = joinSetId.indexOf("-");
-        name = dash === -1 ? "" : joinSetId.substring(dash + 1);
-    }
+    const name = rawJoinName(joinSetId);
     return /^operator-\d+$/.test(name) ? "operator" : name;
+}
+
+function parseTurnIndex(joinSetId) {
+    const match = /^operator-(\d+)$/.exec(rawJoinName(joinSetId));
+    return match ? Number(match[1]) : null;
+}
+
+function rawJoinName(joinSetId) {
+    if (typeof joinSetId !== "string") return "";
+    if (joinSetId.startsWith("n:")) return joinSetId.substring(2);
+    const dash = joinSetId.indexOf("-");
+    return dash === -1 ? "" : joinSetId.substring(dash + 1);
 }
 
 // ----- mutations --------------------------------------------------------
@@ -1434,7 +1445,7 @@ function refreshDetail() {
       detail.turns = buildCachedTurns(detail.created_at, detail.prompt);
       delete detail.transcript;
       if (state.pendingShell && detail.turns.some((turn) =>
-        turn.kind === 'shell_output' && turn.id === state.pendingShell.id)) {
+        turn.kind === 'shell_turn' && turn.id === state.pendingShell.id && turn.result)) {
         state.pendingShell = null;
       }
       state.detail = detail;
@@ -1551,9 +1562,23 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
     if (!reply || typeof reply !== 'object') continue;
     const responseText = typeof reply.response === 'string' ? reply.response : reply.final;
     if (typeof responseText === 'string') {
-      turns.push({ kind: 'assistant_response', text: responseText, blocks, created_at: item.created_at, sequence: sequence++ });
+      turns.push({
+        kind: 'assistant_response',
+        text: responseText,
+        blocks,
+        created_at: item.created_at,
+        turn_index: item.turn_index,
+        sequence: sequence++,
+      });
     } else if (typeof reply.error === 'string') {
-      turns.push({ kind: 'error', text: reply.error, blocks, created_at: item.created_at, sequence: sequence++ });
+      turns.push({
+        kind: 'error',
+        text: reply.error,
+        blocks,
+        created_at: item.created_at,
+        turn_index: item.turn_index,
+        sequence: sequence++,
+      });
     } else if (Array.isArray(reply.tool_calls)) {
       const calls = reply.tool_calls.map((call) => {
         const sent = call?.id ? sentResultsById.get(call.id) : null;
@@ -1570,7 +1595,14 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         else if (result && 'err' in result) rendered.err = result.err;
         return rendered;
       });
-      turns.push({ kind: 'tool_calls', calls, blocks, created_at: item.created_at, sequence: sequence++ });
+      turns.push({
+        kind: 'tool_calls',
+        calls,
+        blocks,
+        created_at: item.created_at,
+        turn_index: item.turn_index,
+        sequence: sequence++,
+      });
     }
   }
   for (const msg of cached.operator_messages || []) {
@@ -1580,22 +1612,39 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       id: msg.id || '',
       text: msg.text,
       created_at: msg.created_at,
+      turn_index: msg.turn_index,
       sequence: sequence++,
     });
   }
-  const shellStartedAt = new Map();
+  const shellTurns = new Map();
   for (const event of cached.shell_events || []) {
     if (!event || typeof event.kind !== 'string') continue;
-    if (event.kind === 'shell_command' && event.id) {
-      shellStartedAt.set(event.id, event.created_at);
+    let turn = event.id ? shellTurns.get(event.id) : null;
+    if (!turn) {
+      turn = {
+        kind: 'shell_turn',
+        id: event.id || '',
+        script: event.script || '',
+        stdin: event.stdin || '',
+        result: null,
+        created_at: event.created_at,
+        turn_index: event.turn_index,
+        sequence: sequence++,
+      };
+      if (event.id) shellTurns.set(event.id, turn);
+      turns.push(turn);
     }
-    turns.push({
-      ...event,
-      latency_ms: event.kind === 'shell_output'
-        ? elapsedMs(shellStartedAt.get(event.id), event.created_at)
-        : null,
-      sequence: sequence++,
-    });
+    if (event.kind === 'shell_command') {
+      turn.script = event.script || turn.script;
+      turn.stdin = event.stdin || turn.stdin;
+      turn.created_at = event.created_at || turn.created_at;
+      turn.turn_index = event.turn_index ?? turn.turn_index;
+    } else if (event.kind === 'shell_output') {
+      turn.script = event.script || turn.script;
+      turn.result = event.result || {};
+      turn.output_created_at = event.created_at;
+    }
+    turn.latency_ms = elapsedMs(turn.created_at, turn.output_created_at);
   }
   turns.sort((a, b) => {
     if (a.created_at && b.created_at && a.created_at !== b.created_at) {
@@ -1615,15 +1664,14 @@ function elapsedMs(start, end) {
 }
 
 function annotateAgentLatencies(turns, initialPromptAt) {
-  let startedAt = initialPromptAt || null;
+  const startedAt = initialPromptAt ? [initialPromptAt] : [];
   for (const turn of turns) {
-    if (turn.kind === 'operator_message') {
-      if (!startedAt) startedAt = turn.created_at;
+    if (turn.kind === 'operator_message' || (turn.kind === 'shell_turn' && turn.result)) {
+      startedAt.push(turn.output_created_at || turn.created_at);
       continue;
     }
     if (turn.kind === 'assistant_response' || turn.kind === 'final' || turn.kind === 'error') {
-      turn.latency_ms = elapsedMs(startedAt, turn.created_at);
-      startedAt = null;
+      turn.latency_ms = elapsedMs(startedAt.shift(), turn.created_at);
     }
   }
 }
@@ -1822,8 +1870,7 @@ function shellIsWorking(d) {
   if (state.pendingShell && state.pendingShell.runId === state.selected) return true;
   const pending = new Set();
   for (const turn of d?.turns || []) {
-    if (turn.kind === 'shell_command' && turn.id) pending.add(turn.id);
-    if (turn.kind === 'shell_output' && turn.id) pending.delete(turn.id);
+    if (turn.kind === 'shell_turn' && turn.id && !turn.result) pending.add(turn.id);
     if (turn.kind === 'tool_calls' && (turn.calls || []).some((call) =>
       call?.name === 'bash' && !('ok' in call) && !('err' in call))) return true;
   }
@@ -1832,14 +1879,14 @@ function shellIsWorking(d) {
 function agentIsWorking(d) {
   if (!d || runPhase(d.status) !== 'active' || hasHumanGate(d)) return false;
   if (d.pending_completion) return true;
-  let awaitingResponse = Boolean(d.prompt);
+  let awaitingResponses = d.prompt ? 1 : 0;
   for (const turn of d.turns || []) {
-    if (turn.kind === 'operator_message') awaitingResponse = true;
+    if (turn.kind === 'operator_message' || (turn.kind === 'shell_turn' && turn.result)) awaitingResponses += 1;
     if (turn.kind === 'assistant_response' || turn.kind === 'final' || turn.kind === 'error') {
-      awaitingResponse = false;
+      awaitingResponses = Math.max(0, awaitingResponses - 1);
     }
   }
-  return awaitingResponse;
+  return awaitingResponses > 0;
 }
 function composerMode() {
   const d = state.detail;
@@ -2104,40 +2151,60 @@ function renderMermaidWhenReady(nodes, attempt, keepAtBottom) {
 }
 
 function renderTurn(t, i) {
-  if (t.kind === 'shell_command') {
-    return '<div class="bubble user"><div class="label">shell</div><pre>$ ' + esc(t.script) + '</pre></div>';
-  }
-  if (t.kind === 'shell_output') {
+  if (t.kind === 'shell_turn') {
     const result = t.result || {};
     const output = (result.stdout || '') + (result.stderr || '');
-    return '<div class="call"><div class="result"><div class="response-head"><div class="key">exit '
-      + esc(result.exit_code ?? '?') + '</div>' + latencyHtml(t.latency_ms)
-      + '</div><pre>' + esc(output || '(no output)') + '</pre></div></div>';
+    const resultHtml = t.result
+      ? '<div class="call"><div class="result"><div class="response-head"><div class="key">exit '
+        + esc(result.exit_code ?? '?') + '</div>' + latencyHtml(t.latency_ms)
+        + '</div><pre>' + esc(output || '(no output)') + '</pre></div></div>'
+      : '<div class="call"><span class="status-pill pending">pending</span></div>';
+    return '<div class="turn">'
+      + turnHeader(t, 'shell tool call')
+      + '<div class="bubble user"><div class="label">shell request</div><pre>$ ' + esc(t.script)
+      + (t.stdin ? '\n\nstdin:\n' + esc(t.stdin) : '') + '</pre></div>'
+      + resultHtml
+      + '</div>';
   }
   if (t.kind === 'operator_message') {
-    return '<div class="bubble user"><div class="label">operator</div><pre>' + esc(t.text) + '</pre></div>';
+    return '<div class="turn">' + turnHeader(t, 'operator message')
+      + '<div class="bubble user"><div class="label">operator</div><pre>' + esc(t.text) + '</pre></div></div>';
   }
   if (t.kind === 'assistant_response' || t.kind === 'final') {
-    return displayBlocksHtml(t.blocks, t.latency_ms);
+    const blocks = displayBlocksHtml(t.blocks, t.latency_ms);
+    return Number.isInteger(t.turn_index)
+      ? '<div class="turn">' + turnHeader(t, 'agent response') + blocks + '</div>'
+      : blocks;
   }
   if (t.kind === 'error') {
-    return displayBlocksHtml(t.blocks)
+    const body = displayBlocksHtml(t.blocks)
       + '<div class="bubble error"><div class="bubble-head"><div class="label">error</div>'
       + latencyHtml(t.latency_ms) + '</div><pre>' + esc(t.text) + '</pre></div>';
+    return Number.isInteger(t.turn_index)
+      ? '<div class="turn">' + turnHeader(t, 'agent error') + body + '</div>'
+      : body;
   }
   if (t.kind !== 'tool_calls') return '';
 
-  // Turn numbering = index among tool_calls turns + 1.
-  let turnNo = 0;
-  for (let j = 0; j <= i; j += 1) {
-    if (state.detail.turns[j].kind === 'tool_calls') turnNo += 1;
-  }
   const items = t.calls.map((c, k) => renderCall(c, i, k)).join('');
   return '<div class="turn">'
-    + '<div class="turn-header">Turn ' + turnNo + ' &middot; ' + t.calls.length + ' tool call' + (t.calls.length === 1 ? '' : 's') + '</div>'
+    + turnHeader(t, t.calls.length + ' tool call' + (t.calls.length === 1 ? '' : 's'), i)
     + displayBlocksHtml(t.blocks)
     + '<div class="calls">' + items + '</div>'
     + '</div>';
+}
+
+function turnHeader(turn, detail, index = -1) {
+  let number = Number.isInteger(turn?.turn_index) ? turn.turn_index + 1 : null;
+  if (number === null && index >= 0) {
+    number = 0;
+    for (let i = 0; i <= index; i += 1) {
+      if (state.detail.turns[i].kind === 'tool_calls') number += 1;
+    }
+  }
+  return '<div class="turn-header">'
+    + (number === null ? '' : 'Turn ' + number + ' &middot; ')
+    + esc(detail) + '</div>';
 }
 
 function renderCall(call, turnIndex, callIndex) {
