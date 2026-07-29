@@ -109,6 +109,65 @@ until "$OBELISK" component list -a "$API_URL" >/dev/null 2>&1; do
 done
 echo ">>> deployment loaded successfully; workflow_agent_rs.wasm exports matched the WIT-declared FFQNs"
 
+echo ">>> creating an empty session and running one direct shell turn"
+SESSION_ID="$("$OBELISK" generate execution-id)"
+"$OBELISK" execution submit -a "$API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
+    '["", "You are a test system prompt.", "[]", "", ""]'
+
+SECONDS=0
+while true; do
+    SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$API_URL" \
+        -e "$SESSION_ID" --show-derived --limit 100)"
+    INJECTION_ID="$(python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+rows = value.get("executions", []) if isinstance(value, dict) else value
+for row in rows:
+    if row.get("ffqn") == "obelisk-agent:agent/session.injection":
+        print(row.get("execution_id", ""))
+        break
+' <<<"$SESSION_EXECUTIONS")"
+    [[ -n "$INJECTION_ID" ]] && break
+    [[ $SECONDS -ge 30 ]] && { echo "empty session did not expose its input offer: $SESSION_EXECUTIONS" >&2; exit 1; }
+    sleep 1
+done
+
+SHELL_EVENT='{"id":"shell-e2e-1","kind":"shell","script":"printf shell-only","stdin":""}'
+SHELL_STUB="$(python3 -c 'import json,sys; print(json.dumps({"ok": sys.stdin.read()}))' <<<"$SHELL_EVENT")"
+"$OBELISK" execution stub -a "$API_URL" "$INJECTION_ID" "$SHELL_STUB"
+
+SECONDS=0
+while true; do
+    SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$API_URL" \
+        -e "$SESSION_ID" --show-derived --limit 100)"
+    python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+rows = value.get("executions", []) if isinstance(value, dict) else value
+sys.exit(not any(row.get("ffqn") == "obelisk-agent:agent/session.record-output" for row in rows))
+' <<<"$SESSION_EXECUTIONS" && break
+    [[ $SECONDS -ge 30 ]] && { echo "shell output was not published: $SESSION_EXECUTIONS" >&2; exit 1; }
+    sleep 1
+done
+sleep 1
+SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$API_URL" \
+    -e "$SESSION_ID" --show-derived --limit 100)"
+if python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+rows = value.get("executions", []) if isinstance(value, dict) else value
+ffqns = [row.get("ffqn") for row in rows]
+sys.exit("obelisk-agent:llm/chat.completion" in ffqns
+    or ffqns.count("obelisk-agent:agent/session.injection") < 2)
+' <<<"$SESSION_EXECUTIONS"; then
+    echo ">>> shell-only E2E PASS: the direct Bash turn completed and the session returned to input without starting the agent"
+else
+    echo ">>> shell-only E2E FAIL: a direct shell turn started an agent completion or did not return to input" >&2
+    echo "$SESSION_EXECUTIONS" >&2
+    exit 1
+fi
+"$OBELISK" execution cancel -a "$API_URL" "$SESSION_ID" >/dev/null || true
+
 EXEC_ID="$("$OBELISK" generate execution-id)"
 echo ">>> submitting $RUN_FFQN as $EXEC_ID"
 "$OBELISK" execution submit -a "$API_URL" -e "$EXEC_ID" "$RUN_FFQN" \

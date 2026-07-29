@@ -88,7 +88,7 @@ enum SessionEvent {
 struct LlmReply {
     content: Vec<Value>,
     request_message_count: usize,
-    operator_input_queued: bool,
+    prompt_queued: bool,
 }
 
 pub fn agent_loop_cancellable(
@@ -166,8 +166,8 @@ pub fn agent_loop_cancellable(
         if !should_call_llm {
             let text = take_operator_event(&mut session)?;
             let event = parse_session_event(&text);
-            apply_session_event(event, &output_join_set, &mut bash, &mut messages)?;
-            should_call_llm = true;
+            should_call_llm =
+                apply_session_event(event, &output_join_set, &mut bash, &mut messages)?;
         } else {
             if agent_steps >= MAX_TURNS {
                 return Err(format!(
@@ -222,7 +222,7 @@ pub fn agent_loop_cancellable(
                 );
                 should_call_llm = true;
             } else {
-                should_call_llm = reply.operator_input_queued;
+                should_call_llm = reply.prompt_queued;
                 agent_steps = 0;
             }
         }
@@ -267,18 +267,18 @@ fn apply_session_event(
     output_join_set: &JoinSet,
     bash: &mut Bash,
     messages: &mut Vec<Value>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     match event {
         SessionEvent::Shell { id, script, stdin } => {
             let result = exec_shell(bash, &script, &stdin);
             let record = json!({"id": id, "script": script, "result": shell_result(&result)});
             publish_shell_result(output_join_set, &record)?;
             append_shell_exchange(messages, &record, &stdin);
-            Ok(())
+            Ok(false)
         }
         SessionEvent::Prompt { text } => {
             messages.push(user_text(&text));
-            Ok(())
+            Ok(true)
         }
     }
 }
@@ -421,7 +421,7 @@ fn call_llm_with_operator(
     bash: &mut Bash,
     output_join_set: &JoinSet,
 ) -> Result<LlmReply, String> {
-    let mut operator_input_queued = false;
+    let mut prompt_queued = false;
     loop {
         let request_message_count = messages.len();
         let params = json!([
@@ -448,8 +448,7 @@ fn call_llm_with_operator(
                     .ok_or_else(|| "injection text must be a non-empty string".to_string())?;
                 let decoded: String = serde_json::from_str(&json).unwrap_or(json);
                 let event = parse_session_event(&decoded);
-                apply_session_event(event, output_join_set, bash, messages)?;
-                operator_input_queued = true;
+                prompt_queued |= apply_session_event(event, output_join_set, bash, messages)?;
                 continue;
             }
             if completed_id.as_deref() != Some(completion_execution_id.id.as_str()) {
@@ -486,7 +485,7 @@ fn call_llm_with_operator(
             return Ok(LlmReply {
                 content,
                 request_message_count,
-                operator_input_queued,
+                prompt_queued,
             });
         }
         return Err(format!("unexpected llm.completion result: {res}"));

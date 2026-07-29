@@ -145,8 +145,8 @@ built-in Bash commands.
 4. If there is no initial prompt, block on the operator offer. A prompt or shell
    event completes that turn.
 5. Record a direct shell event as a synthetic Bash `tool_use` plus
-   `tool_result`, then submit the next turn's LLM completion with that exchange
-   in its message history.
+   `tool_result`, then wait for another operator event. The next prompt starts
+   an LLM completion with that exchange in its message history.
 6. If shell input completes first, re-arm operator input, execute the command,
    record its structured output, and queue its synthetic exchange after the
    in-flight completion's request snapshot.
@@ -470,9 +470,9 @@ each consumed event, matching the current operator-channel pattern.
   latency from the completion that emitted the tool use to the next durable
   completion request containing its `tool_result`.
 - Direct shell request/result pairs are conversation turns. The workflow
-  advances its `operator-<turn>` join-set name after each pair, sends the pair
-  to the agent on the following turn, and uses the same durable turn number in
-  the transcript UI.
+  advances its `operator-<turn>` join-set name after each pair, waits for a
+  later prompt before calling the agent, and uses the same durable turn number
+  in the transcript UI.
 - The transcript scrolls to its newest entry when the operator submits input or
   a durable transcript delta arrives. It scrolls again after asynchronous
   Markdown or Mermaid rendering changes the content height.

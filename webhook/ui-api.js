@@ -1173,6 +1173,7 @@ const SHELL_HTML = `<!doctype html>
   .call summary .status-pill.pending { background: #f0f0f0; color: var(--muted); }
   .call .args, .call .result { padding: 0 0.8em 0.6em; }
   .call pre { margin: 0; padding: 0.5em 0.8em; background: #f7f7f7; border-radius: 4px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; max-height: 14em; overflow-y: auto; }
+  .call pre.stderr { color: var(--err); background: var(--err-bg); }
   .call .args .key, .call .result .key { color: var(--muted); font-size: 0.8em; margin: 0.5em 0 0.2em; }
   form.ask { background: #fffaf2; border: 1px solid #f0d8a8; border-radius: 6px; padding: 0.8em 1em; margin: 1.4em 0; max-width: 720px; }
   form.ask p { margin: 0 0 0.5em; font-weight: 600; }
@@ -1445,7 +1446,8 @@ function refreshDetail() {
       detail.turns = buildCachedTurns(detail.created_at, detail.prompt);
       delete detail.transcript;
       if (state.pendingShell && detail.turns.some((turn) =>
-        turn.kind === 'shell_turn' && turn.id === state.pendingShell.id && turn.result)) {
+        turn.source === 'shell' && turn.id === state.pendingShell.id
+          && turn.calls?.[0] && 'ok' in turn.calls[0])) {
         state.pendingShell = null;
       }
       state.detail = detail;
@@ -1622,11 +1624,19 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
     let turn = event.id ? shellTurns.get(event.id) : null;
     if (!turn) {
       turn = {
-        kind: 'shell_turn',
+        kind: 'tool_calls',
+        source: 'shell',
         id: event.id || '',
-        script: event.script || '',
-        stdin: event.stdin || '',
-        result: null,
+        calls: [{
+          id: event.id || '',
+          name: 'bash',
+          open: true,
+          args: {
+            script: event.script || '',
+            ...(event.stdin ? { stdin: event.stdin } : {}),
+          },
+        }],
+        blocks: [],
         created_at: event.created_at,
         turn_index: event.turn_index,
         sequence: sequence++,
@@ -1634,17 +1644,18 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       if (event.id) shellTurns.set(event.id, turn);
       turns.push(turn);
     }
+    const call = turn.calls[0];
     if (event.kind === 'shell_command') {
-      turn.script = event.script || turn.script;
-      turn.stdin = event.stdin || turn.stdin;
+      call.args.script = event.script || call.args.script;
+      if (event.stdin) call.args.stdin = event.stdin;
       turn.created_at = event.created_at || turn.created_at;
       turn.turn_index = event.turn_index ?? turn.turn_index;
     } else if (event.kind === 'shell_output') {
-      turn.script = event.script || turn.script;
-      turn.result = event.result || {};
+      call.args.script = event.script || call.args.script;
+      call.ok = event.result || {};
       turn.output_created_at = event.created_at;
     }
-    turn.latency_ms = elapsedMs(turn.created_at, turn.output_created_at);
+    call.latency_ms = elapsedMs(turn.created_at, turn.output_created_at);
   }
   turns.sort((a, b) => {
     if (a.created_at && b.created_at && a.created_at !== b.created_at) {
@@ -1666,8 +1677,8 @@ function elapsedMs(start, end) {
 function annotateAgentLatencies(turns, initialPromptAt) {
   const startedAt = initialPromptAt ? [initialPromptAt] : [];
   for (const turn of turns) {
-    if (turn.kind === 'operator_message' || (turn.kind === 'shell_turn' && turn.result)) {
-      startedAt.push(turn.output_created_at || turn.created_at);
+    if (turn.kind === 'operator_message') {
+      startedAt.push(turn.created_at);
       continue;
     }
     if (turn.kind === 'assistant_response' || turn.kind === 'final' || turn.kind === 'error') {
@@ -1870,7 +1881,9 @@ function shellIsWorking(d) {
   if (state.pendingShell && state.pendingShell.runId === state.selected) return true;
   const pending = new Set();
   for (const turn of d?.turns || []) {
-    if (turn.kind === 'shell_turn' && turn.id && !turn.result) pending.add(turn.id);
+    if (turn.source === 'shell' && turn.id && turn.calls?.[0] && !('ok' in turn.calls[0])) {
+      pending.add(turn.id);
+    }
     if (turn.kind === 'tool_calls' && (turn.calls || []).some((call) =>
       call?.name === 'bash' && !('ok' in call) && !('err' in call))) return true;
   }
@@ -1881,7 +1894,7 @@ function agentIsWorking(d) {
   if (d.pending_completion) return true;
   let awaitingResponses = d.prompt ? 1 : 0;
   for (const turn of d.turns || []) {
-    if (turn.kind === 'operator_message' || (turn.kind === 'shell_turn' && turn.result)) awaitingResponses += 1;
+    if (turn.kind === 'operator_message') awaitingResponses += 1;
     if (turn.kind === 'assistant_response' || turn.kind === 'final' || turn.kind === 'error') {
       awaitingResponses = Math.max(0, awaitingResponses - 1);
     }
@@ -2151,21 +2164,6 @@ function renderMermaidWhenReady(nodes, attempt, keepAtBottom) {
 }
 
 function renderTurn(t, i) {
-  if (t.kind === 'shell_turn') {
-    const result = t.result || {};
-    const output = (result.stdout || '') + (result.stderr || '');
-    const resultHtml = t.result
-      ? '<div class="call"><div class="result"><div class="response-head"><div class="key">exit '
-        + esc(result.exit_code ?? '?') + '</div>' + latencyHtml(t.latency_ms)
-        + '</div><pre>' + esc(output || '(no output)') + '</pre></div></div>'
-      : '<div class="call"><span class="status-pill pending">pending</span></div>';
-    return '<div class="turn">'
-      + turnHeader(t, 'shell tool call')
-      + '<div class="bubble user"><div class="label">shell request</div><pre>$ ' + esc(t.script)
-      + (t.stdin ? '\n\nstdin:\n' + esc(t.stdin) : '') + '</pre></div>'
-      + resultHtml
-      + '</div>';
-  }
   if (t.kind === 'operator_message') {
     return '<div class="turn">' + turnHeader(t, 'operator message')
       + '<div class="bubble user"><div class="label">operator</div><pre>' + esc(t.text) + '</pre></div></div>';
@@ -2218,9 +2216,22 @@ function renderCall(call, turnIndex, callIndex) {
   let pill, resultBlock;
   if ('ok' in call) {
     pill = '<span class="status-pill ok">ok</span>';
-    const out = typeof call.ok === 'string' ? call.ok : JSON.stringify(call.ok, null, 2);
-    resultBlock = '<div class="result"><div class="response-head"><div class="key">ok</div>'
-      + latencyHtml(call.latency_ms) + '</div><pre>' + esc(out) + '</pre></div>';
+    if (name === 'bash' && isShellResult(call.ok)) {
+      const stdout = String(call.ok.stdout || '');
+      const stderr = String(call.ok.stderr || '');
+      let streams = stdout ? '<pre>' + esc(stdout) + '</pre>' : '';
+      if (stderr) {
+        streams += '<div class="key">stderr</div><pre class="stderr">' + esc(stderr) + '</pre>';
+      }
+      if (!streams) streams = '<pre>(no output)</pre>';
+      resultBlock = '<div class="result"><div class="response-head"><div class="key">exit '
+        + esc(call.ok.exit_code) + '</div>' + latencyHtml(call.latency_ms)
+        + '</div>' + streams + '</div>';
+    } else {
+      const out = typeof call.ok === 'string' ? call.ok : JSON.stringify(call.ok, null, 2);
+      resultBlock = '<div class="result"><div class="response-head"><div class="key">ok</div>'
+        + latencyHtml(call.latency_ms) + '</div><pre>' + esc(out) + '</pre></div>';
+    }
   } else if ('err' in call) {
     pill = '<span class="status-pill err">err</span>';
     resultBlock = '<div class="result"><div class="response-head"><div class="key">err</div>'
@@ -2230,11 +2241,18 @@ function renderCall(call, turnIndex, callIndex) {
     resultBlock = '';
   }
 
-  return '<details class="call" data-key="' + esc(key) + '">'
+  return '<details class="call" data-key="' + esc(key) + '"' + (call.open ? ' open' : '') + '>'
     + '<summary><code>' + esc(name) + '</code>' + childLink + pill + '</summary>'
     + argsBlock
     + resultBlock
     + '</details>';
+}
+
+function isShellResult(value) {
+  return value && typeof value === 'object'
+    && typeof value.stdout === 'string'
+    && typeof value.stderr === 'string'
+    && Number.isInteger(value.exit_code);
 }
 
 // The bash tool's only meaningful arg is a multi-line shell script; show it

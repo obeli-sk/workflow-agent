@@ -72,7 +72,8 @@ operator input offer remains live while an LLM completion is pending, so shell
 commands can inspect and edit the session VFS during the model wait. A prompt
 sent during that wait is queued for the next model turn. Each direct shell
 command is also a conversation turn: its Bash tool request and structured
-result are included in the agent's next completion request.
+result are included in the agent's next completion request after a later
+operator message starts the agent.
 
 The core registers a broad shell command catalog ported from just-bash, except
 `gzip`, `gunzip`, and `zcat`. This includes the standard file, path,
