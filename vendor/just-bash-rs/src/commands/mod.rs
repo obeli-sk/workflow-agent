@@ -29,12 +29,13 @@ mod textutil2;
 mod timeutil;
 mod xargs;
 
+#[rustfmt::skip]
 const BUILTINS: &[&str] = &[
     "echo", "pwd", "cd", "true", "false", ":", "export", "unset", "cat", "mkdir", "ls", "stat",
     "rm", "touch", "test", "[", "grep", "egrep", "fgrep", "sed", "wc", "sort", "uniq", "head",
     "tail", "cut", "tr", "printf", "xargs", "find", "basename", "dirname", "jq", "awk", "date",
     "expr", "sleep", "timeout", "time", "seq", "tee", "which", "env", "printenv", "whoami",
-    "hostname", "alias", "unalias", "help", "clear", "base64", "md5sum", "diff", "cp", "mv",
+    "hostname", "alias", "unalias", "help", "clear", "base64", "md5sum", "sha256sum", "diff", "cp", "mv",
     "rmdir", "chmod", "readlink", "ln", "file", "du", "tree", "comm", "join", "nl", "od", "rev",
     "fold", "expand", "unexpand", "column", "paste", "strings", "split", "sh", "bash", "source",
     ".", "set", "shift",
@@ -135,6 +136,7 @@ pub fn dispatch(
         "clear" => misc::clear(),
         "base64" => hash::base64(interp, rest, stdin),
         "md5sum" => hash::md5sum(interp, rest, stdin),
+        "sha256sum" => hash::sha256sum(interp, rest, stdin),
         "diff" => diff::diff(interp, rest, stdin),
         "cp" => fsutil::cp(interp, rest),
         "mv" => fsutil::mv(interp, rest),

@@ -19,6 +19,8 @@ byte size, so metadata commands do not fetch content. Files larger than 1 MiB
 remain digest-only and read as a short type, digest, and size placeholder (see
 `meta/designs/workflow-agent-lazy-deployment-mount.md`). Because the requested
 body was not read, `cat` returns a nonzero status after printing the placeholder.
+`sha256sum` uses a mounted file's stored digest without fetching its body, and
+computes a new digest after the file is modified locally.
 
 ![workflow-agent web UI](docs/workflow-agent.png)
 
