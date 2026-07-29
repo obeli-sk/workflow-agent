@@ -9,7 +9,7 @@
 //! each function's doc comment for the exact simplification.
 
 use super::{fail, mime_for_path, normalize_path, ok, unknown_option};
-use crate::fs::MAX_LAZY_FETCH_BYTES;
+use crate::fs::FileReadError;
 use crate::interpreter::{CommandOutput, Interpreter};
 
 /// Join an absolute, normalized `Vfs` path with a child name.
@@ -675,16 +675,18 @@ pub fn file(interp: &Interpreter, args: &[String]) -> CommandOutput {
         }
         let (desc, mime) = if interp.fs.is_dir(&path) {
             ("directory".to_string(), "inode/directory".to_string())
-        } else if interp
-            .fs
-            .lazy_file_ref(&path)
-            .is_some_and(|reference| reference.size > MAX_LAZY_FETCH_BYTES)
-        {
-            let mime = mime_for_path(file).to_string();
-            (mime.clone(), mime)
         } else {
-            let bytes = interp.fs.read_file(&path).unwrap_or_default();
-            detect_file_type(file, &bytes)
+            match interp.fs.read_file_checked(&path) {
+                Ok(bytes) => detect_file_type(file, &bytes),
+                Err(FileReadError::TooLarge { .. }) => {
+                    let mime = mime_for_path(file).to_string();
+                    (mime.clone(), mime)
+                }
+                Err(FileReadError::NotFound(_) | FileReadError::Unavailable(_)) => (
+                    "cannot open".to_string(),
+                    "application/octet-stream".to_string(),
+                ),
+            }
         };
         let result = if mime_mode { &mime } else { &desc };
         stdout.push_str(&if brief {

@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::fs::{FsError, MAX_LAZY_FETCH_BYTES};
+use crate::fs::{FileReadError, FsError};
 use crate::interpreter::{CommandOutput, Interpreter};
 
 mod awk;
@@ -400,22 +400,27 @@ fn builtin_cat(interp: &Interpreter, args: &[String], stdin: String) -> CommandO
         if interp.fs.is_dir(&path) {
             stderr.push_str(&format!("cat: {arg}: Is a directory\n"));
             exit_code = 1;
-        } else if let Some(reference) = interp
-            .fs
-            .lazy_file_ref(&path)
-            .filter(|reference| reference.size > MAX_LAZY_FETCH_BYTES)
-        {
-            out.push_str(&format!(
-                "<{}, {}, {}>\n",
-                mime_for_path(arg),
-                reference.digest,
-                human_byte_size(reference.size)
-            ));
-        } else if let Some(bytes) = interp.fs.read_file(&path).as_deref() {
-            out.push_str(&String::from_utf8_lossy(bytes));
         } else {
-            stderr.push_str(&format!("cat: {arg}: No such file or directory\n"));
-            exit_code = 1;
+            match interp.fs.read_file_checked(&path) {
+                Ok(bytes) => out.push_str(&String::from_utf8_lossy(&bytes)),
+                Err(FileReadError::TooLarge { reference, .. }) => {
+                    out.push_str(&format!(
+                        "<{}, {}, {}>\n",
+                        mime_for_path(arg),
+                        reference.digest,
+                        human_byte_size(reference.size)
+                    ));
+                    exit_code = 1;
+                }
+                Err(FileReadError::NotFound(_)) => {
+                    stderr.push_str(&format!("cat: {arg}: No such file or directory\n"));
+                    exit_code = 1;
+                }
+                Err(FileReadError::Unavailable(_)) => {
+                    stderr.push_str(&format!("cat: {arg}: File body is unavailable\n"));
+                    exit_code = 1;
+                }
+            }
         }
     }
     CommandOutput {

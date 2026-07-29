@@ -31,6 +31,16 @@ pub struct LazyFileRef {
     pub size: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileReadError {
+    NotFound(String),
+    Unavailable(String),
+    TooLarge {
+        path: String,
+        reference: LazyFileRef,
+    },
+}
+
 /// An in-memory tree of text files keyed by absolute, normalized path.
 ///
 /// Directories are tracked explicitly (including ancestors) so `readdir` can
@@ -255,29 +265,50 @@ impl Vfs {
         self.dirs.contains(&self.resolve(path))
     }
 
-    /// Read a file's bytes. A bounded `pending` file is fetched from the CAS via
-    /// the installed `loader` on first read and cached. An oversized file, a
-    /// fetch failure, or no loader reads as absent. Returns owned bytes so a
-    /// cached lazy body can be handed back without lending out the
-    /// interior-mutable cache.
-    pub fn read_file(&self, path: &str) -> Option<Vec<u8>> {
+    /// Read a file's bytes, returning mounted metadata when the size limit
+    /// rejects the read. A bounded `pending` file is fetched from the CAS via
+    /// the installed `loader` on first read and cached.
+    pub fn read_file_checked(&self, path: &str) -> Result<Vec<u8>, FileReadError> {
         let path = self.resolve(path);
         if let Some(bytes) = self.files.get(&path) {
-            return Some(bytes.clone());
+            return Ok(bytes.clone());
         }
         if let Some(bytes) = self.lazy_cache.borrow().get(&path) {
-            return Some(bytes.clone());
+            return Ok(bytes.clone());
         }
-        let reference = self.pending.get(&path)?;
+        let reference = self
+            .pending
+            .get(&path)
+            .ok_or_else(|| FileReadError::NotFound(path.clone()))?;
         if reference.size > MAX_LAZY_FETCH_BYTES {
-            return None;
+            return Err(FileReadError::TooLarge {
+                path,
+                reference: reference.clone(),
+            });
         }
-        let bytes = self.loader.as_ref()?.load(&reference.digest).ok()?;
+        let bytes = self
+            .loader
+            .as_ref()
+            .ok_or_else(|| FileReadError::Unavailable(path.clone()))?
+            .load(&reference.digest)
+            .map_err(|_| FileReadError::Unavailable(path.clone()))?;
         if bytes.len() as u64 > MAX_LAZY_FETCH_BYTES {
-            return None;
+            return Err(FileReadError::TooLarge {
+                path,
+                reference: LazyFileRef {
+                    digest: reference.digest.clone(),
+                    size: bytes.len() as u64,
+                },
+            });
         }
         self.lazy_cache.borrow_mut().insert(path, bytes.clone());
-        Some(bytes)
+        Ok(bytes)
+    }
+
+    /// Read a file for callers whose existing interface treats every read
+    /// failure as absence.
+    pub fn read_file(&self, path: &str) -> Option<Vec<u8>> {
+        self.read_file_checked(path).ok()
     }
 
     /// Write (truncating) a file, creating parent directories as needed. Fails
@@ -309,8 +340,8 @@ impl Vfs {
         // preserved rather than replaced by the appended tail.
         if self.pending.contains_key(&path) {
             let existing = self
-                .read_file(&path)
-                .ok_or_else(|| FsError::ReadUnavailable(path.clone()))?;
+                .read_file_checked(&path)
+                .map_err(|_| FsError::ReadUnavailable(path.clone()))?;
             self.pending.remove(&path);
             self.lazy_cache.borrow_mut().remove(&path);
             self.files.insert(path.clone(), existing);
@@ -669,6 +700,16 @@ mod tests {
         assert_eq!(
             fs.file_size("/dep/component.wasm"),
             Some(MAX_LAZY_FETCH_BYTES + 1)
+        );
+        assert_eq!(
+            fs.read_file_checked("/dep/component.wasm"),
+            Err(FileReadError::TooLarge {
+                path: "/dep/component.wasm".to_string(),
+                reference: LazyFileRef {
+                    digest: "sha256:big".to_string(),
+                    size: MAX_LAZY_FETCH_BYTES + 1,
+                },
+            })
         );
         assert_eq!(fs.read_file("/dep/component.wasm"), None);
         assert!(loader.loads.borrow().is_empty());

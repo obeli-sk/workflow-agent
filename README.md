@@ -17,7 +17,8 @@ immediately, and bounded file bodies are fetched from the content-addressed
 store the first time they are read. The mount carries each file's digest and
 byte size, so metadata commands do not fetch content. Files larger than 1 MiB
 remain digest-only and read as a short type, digest, and size placeholder (see
-`meta/designs/workflow-agent-lazy-deployment-mount.md`).
+`meta/designs/workflow-agent-lazy-deployment-mount.md`). Because the requested
+body was not read, `cat` returns a nonzero status after printing the placeholder.
 
 ![workflow-agent web UI](docs/workflow-agent.png)
 

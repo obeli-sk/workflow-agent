@@ -463,10 +463,9 @@ mod tests {
         bash.fs_mut()
             .register_lazy("/component.wasm", "sha256:abc", 9_984_695);
 
-        assert_eq!(
-            run(&mut bash, "cat /component.wasm").stdout,
-            "<application/wasm, sha256:abc, 9.5 MB>\n"
-        );
+        let cat = run(&mut bash, "cat /component.wasm");
+        assert_eq!(cat.stdout, "<application/wasm, sha256:abc, 9.5 MB>\n");
+        assert_eq!(cat.exit_code, 1);
         assert!(
             run(&mut bash, "ls -l /component.wasm")
                 .stdout
