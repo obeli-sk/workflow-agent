@@ -606,7 +606,10 @@ mod tests {
         let mut bash = fresh();
         // The `;`-separated header used to be eaten by the single-expression
         // arithmetic lexer and rejected with "syntax error near `; i<=5; i++`".
-        let out = run(&mut bash, "for ((i=1; i<=5; i++)); do echo \"Iteration $i\"; done");
+        let out = run(
+            &mut bash,
+            "for ((i=1; i<=5; i++)); do echo \"Iteration $i\"; done",
+        );
         assert_eq!(
             out.stdout,
             "Iteration 1\nIteration 2\nIteration 3\nIteration 4\nIteration 5\n"
