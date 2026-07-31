@@ -78,7 +78,7 @@ env_vars = [
   "AGENT_MODELS",
   { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
 ]
-content_digest = "sha256:8403f51deb1ba0d46ff32247dd27931070e362a0e4cc5da2f662d336c84afd70"
+content_digest = "sha256:594f7555c6b92dc80de75d3bb8e13c44ec1de942fe1403d3c1273d49bf4281fb"
 
 # Single LLM endpoint. The origin comes from LLM_BASE_URL and every model in the
 # catalog shares it; the per-model `path` prefix plus the adapter route land under

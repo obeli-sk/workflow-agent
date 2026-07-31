@@ -228,7 +228,9 @@ async function callOpenAIResponses(cfg, system, messages, tools, toolNames, leve
         }
     }
 
-    const body = { model: wireModel(cfg), input };
+    // store:false keeps the call stateless (we resend the full input each turn and
+    // never fetch a stored response); some gateways also reject store:true outright.
+    const body = { model: wireModel(cfg), input, store: false };
     if (level) {
         // gpt-5.x-codex rejects reasoning.effort="minimal" (HTTP 400); clamp to low.
         const effort = level === 'minimal' && /codex/.test(wireModel(cfg)) ? 'low' : level;
