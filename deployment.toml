@@ -54,10 +54,11 @@ content_digest = "sha256:0f4f6665f325da48de089137d6963764262948e488dfef85b2dfa37
 # openai-chat-completions, openai-responses) based on the AGENT_MODELS catalog.
 #
 # AGENT_MODELS is a JSON array of models: each entry has
-#   { id, label, api_type, base_url, wire_model, key_env?, max_tokens? }
+#   { id, label, api_type, path?, wire_model, max_tokens? }
 # It is REQUIRED (no built-in default): set it in the environment before serving
-# (see .envrc-example / models.*.json). Each model's endpoint must have a matching
-# allowed_host below; keyed providers also need the matching secret.
+# (see .envrc-example / models.*.json). The endpoint origin is shared across the
+# catalog via LLM_BASE_URL, and a single LLM_API_KEY secret authenticates it; the
+# per-model `path` is only the provider prefix appended to that origin.
 
 [[activity_js]]
 name = "llm_chat"
@@ -75,31 +76,23 @@ exec.lock_expiry.minutes = 10
 max_retries = 3
 env_vars = [
   "AGENT_MODELS",
+  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
 ]
-content_digest = "sha256:b6ff3524f6fa42f57d721b2bc4f338b8579b0d096af9ba6fa16de4d5e972ee3a"
+content_digest = "sha256:8403f51deb1ba0d46ff32247dd27931070e362a0e4cc5da2f662d336c84afd70"
 
-# Emulate an LLM server locally using codex/claude locally: See https://github.com/obeli-sk/agent-backed-llm-server
-# Switch to it by setting AGENT_MODELS in .envrc (see .envrc-example / models.local.json).
+# Single LLM endpoint. The origin comes from LLM_BASE_URL and every model in the
+# catalog shares it; the per-model `path` prefix plus the adapter route land under
+# /v1/(messages|chat/completions|responses). One LLM_API_KEY bearer token
+# authenticates the endpoint (unset for the keyless local backend). Switch
+# endpoints by setting AGENT_MODELS + LLM_BASE_URL (+ LLM_API_KEY) together:
+#   local     http://127.0.0.1:9190          (keyless, models.local.json)
+#   exe.dev   http://localhost:7070          (gateway, models.exe-gateway.json)
+#   openrouter https://openrouter.ai/api     (models.openrouter.json)
 [[activity_js.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
-request_url_regex = "^POST http[s]?://[^/]+/v1/(chat/completions|responses)$"
-
-# exe.dev LLM gateway
-# Switch to it by setting AGENT_MODELS and optionally LLM_GATEWAY_API_KEY in .envrc (see .envrc-example / models.exe-gateway.json).
-[[activity_js.allowed_host]]
-pattern = "${LLM_GATEWAY:-http://localhost:7070}"
-methods = ["POST"]
-request_url_regex = "^POST http[s]?://[^/]+/gateway/llm/(anthropic/v1/messages|openai/v1/(chat/completions|responses)|fireworks/inference/v1/chat/completions)$"
-secrets = ["LLM_GATEWAY_API_KEY"]
-replace_in = ["headers"]
-
-# OpenRouter
-# Switch to it by setting AGENT_MODELS and OPENROUTER_API_KEY in .envrc (see .envrc-example / models.openrouter.json).
-[[activity_js.allowed_host]]
-pattern = "https://openrouter.ai"
-methods = ["POST"]
-secrets = ["OPENROUTER_API_KEY"]
+request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
+secrets = ["LLM_API_KEY"]
 replace_in = ["headers"]
 
 # --- LLM-facing tools ---------------------------------------------------------

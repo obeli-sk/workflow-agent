@@ -32,36 +32,39 @@ computes a new digest after the file is modified locally.
   (`workflow/workflow-rs`) built with the toolchain the flake pins. `just build`
   compiles it. The shell it runs is a Rust port of just-bash, vendored at
   `vendor/just-bash-rs` (Apache-2.0, see its LICENSE/NOTICE).
-- **`AGENT_MODELS`**: the model catalog, **required**: a JSON array pointing each
-  model at an OpenAI- or Anthropic-shaped HTTP endpoint. Two ready-made catalogs
-  ship:
-  - `models.local.json`: the sibling
-    [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server)
-    (a Claude/Codex subscription in docker, keyless on `:9190`).
-  - `models.exe-gateway.json`: the exe.dev LLM gateway (Anthropic + OpenAI +
-    Fireworks). Requires an exe.dev account; the entries point at
-    `http://localhost:7070`, so forward the gateway to that local port first:
+- **LLM endpoint**: one endpoint serves the whole catalog, configured by three
+  env vars set together: `AGENT_MODELS` (the catalog JSON, **required**),
+  `LLM_BASE_URL` (the endpoint origin, default `http://127.0.0.1:9190`), and
+  `LLM_API_KEY` (the bearer token; unset for a keyless endpoint). Each catalog
+  entry points a model at an OpenAI- or Anthropic-shaped route under that origin.
+  Three ready-made catalogs ship:
+  - `models.local.json` (`LLM_BASE_URL=http://127.0.0.1:9190`, keyless): the
+    sibling [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server)
+    (a Claude/Codex subscription in docker on `:9190`).
+  - `models.exe-gateway.json` (`LLM_BASE_URL=http://localhost:7070` + `LLM_API_KEY`):
+    the exe.dev LLM gateway (Anthropic + OpenAI + Fireworks). Requires an exe.dev
+    account; forward the gateway to that local port first:
     ```sh
     ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz
     ```
-  - `models.openrouter.json`: [OpenRouter](https://openrouter.ai) (Claude, GPT,
-    DeepSeek, and a free Qwen3 Coder model). Needs an API key; the key stays
-    secret (injected into the outbound header at the edge, never seen by the JS):
-    ```sh
-    export OPENROUTER_API_KEY=sk-or-...
-    ```
+  - `models.openrouter.json` (`LLM_BASE_URL=https://openrouter.ai/api` +
+    `LLM_API_KEY`): [OpenRouter](https://openrouter.ai) (Claude, GPT, DeepSeek,
+    and a free Qwen3 Coder model). The key stays secret, injected into the
+    outbound header at the edge and never seen by the JS.
 
   Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama, …)
-  works too. Add an entry pointing at it.
+  works too: point `LLM_BASE_URL` at it and add catalog entries (with a `path`
+  prefix if the endpoint fronts several providers).
 
 ## Run
 
-Build the workflow component and set the required catalog:
+Build the workflow component and set the required catalog + endpoint:
 
 ```sh
 just build
 ln -sf models.local.json models.json      # pick a catalog
 export AGENT_MODELS="$(cat models.json)"   # or use direnv (.envrc-example)
+export LLM_BASE_URL=http://127.0.0.1:9190  # match the catalog's endpoint
 ```
 
 `just serve` starts the app (it runs `obelisk server run -d deployment.toml`

@@ -3,33 +3,24 @@ pattern = "http://127.0.0.1:5005"
 [[outbound_http.allowed_host]]
 pattern = "http://localhost:5005"
 
+# Single LLM endpoint: origin from LLM_BASE_URL, shared LLM_API_KEY bearer token.
+# The optional per-model `path` prefix (e.g. /gateway/llm/anthropic) plus the
+# adapter route land under /v1/(messages|chat/completions|responses).
 [[outbound_http.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
-request_url_regex = "^POST http[s]?://[^/]+/v1/(chat/completions|responses)$"
+request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
+secrets = ["LLM_API_KEY"]
+replace_in = ["headers"]
 
 [secrets]
-LLM_GATEWAY_API_KEY = { env = "LLM_GATEWAY_API_KEY" }
+LLM_API_KEY = { env = "LLM_API_KEY" }
 OBELISK__API__TOKEN = { env = "OBELISK__API__TOKEN" }
-OPENROUTER_API_KEY = { env = "OPENROUTER_API_KEY" }
 WORKFLOW_AGENT_GITHUB_TOKEN = { env = "WORKFLOW_AGENT_GITHUB_TOKEN" }
 
 [[outbound_http.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
-
-[[outbound_http.allowed_host]]
-pattern = "${LLM_GATEWAY:-http://localhost:7070}"
-methods = ["POST"]
-request_url_regex = "^POST http[s]?://[^/]+/gateway/llm/(anthropic/v1/messages|openai/v1/(chat/completions|responses)|fireworks/inference/v1/chat/completions)$"
-secrets = ["LLM_GATEWAY_API_KEY"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "openrouter.ai"
-methods = ["POST"]
-secrets = ["OPENROUTER_API_KEY"]
-replace_in = ["headers"]
 
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"

@@ -43,10 +43,12 @@ export default async function completion(system, messagesJson, toolsJson, model,
 
 // ----- model catalog ----------------------------------------------------------
 
-// AGENT_MODELS is a JSON array of { id, label, api_type, base_url, wire_model,
-// auth_header?, auth_value?, max_tokens? }. The requested model id selects one
-// entry; an empty id selects the first. base_url is the origin (+ provider path);
-// each adapter appends its route.
+// AGENT_MODELS is a JSON array of { id, label, api_type, path?, wire_model,
+// max_tokens? }. The requested model id selects one entry; an empty id selects
+// the first. The endpoint origin is shared across the whole catalog and comes
+// from LLM_BASE_URL; each model's optional `path` is a provider prefix appended
+// to it (e.g. "/gateway/llm/anthropic"), and each adapter appends its own route
+// (/v1/messages, /v1/chat/completions, /v1/responses).
 function resolveModel(model) {
     const raw = process.env['AGENT_MODELS'];
     if (!raw) throw 'AGENT_MODELS is not configured';
@@ -57,24 +59,34 @@ function resolveModel(model) {
     const id = typeof model === 'string' ? model.trim() : '';
     const cfg = id ? catalog.find((m) => m && m.id === id) : catalog[0];
     if (!cfg) throw `model '${id}' is not in AGENT_MODELS`;
-    if (!cfg.api_type || !cfg.base_url) throw `model '${cfg.id || id}' is missing api_type or base_url`;
+    if (!cfg.api_type) throw `model '${cfg.id || id}' is missing api_type`;
     return cfg;
 }
 
-function baseOf(cfg) { return String(cfg.base_url).replace(/\/$/, ''); }
+// The endpoint origin, shared by every model in the catalog. A single catalog
+// targets a single endpoint (gateway, OpenRouter, or the local backend); switch
+// endpoints by switching both AGENT_MODELS and LLM_BASE_URL together.
+function endpointBase() {
+    const base = process.env['LLM_BASE_URL'];
+    if (!base) throw 'LLM_BASE_URL is not configured';
+    return String(base).replace(/\/$/, '');
+}
+function pathOf(cfg) {
+    const p = cfg.path ? String(cfg.path).trim() : '';
+    if (!p) return '';
+    return (p.startsWith('/') ? p : '/' + p).replace(/\/$/, '');
+}
+function baseOf(cfg) { return endpointBase() + pathOf(cfg); }
 function wireModel(cfg) { return cfg.wire_model || cfg.id; }
 function maxTokens(cfg) { return Number.isFinite(cfg.max_tokens) && cfg.max_tokens > 0 ? Math.trunc(cfg.max_tokens) : DEFAULT_MAX_TOKENS; }
 
-// Auth is configured per model: send header `auth_header` with `auth_value`.
-// auth_value may embed ${ENV_VAR} references; each is replaced with that env
-// var's value, which under Obelisk is a short-lived placeholder the runtime swaps
-// for the real secret in the outbound header (allowed_host.secrets). A literal
-// value (e.g. the exe.dev gateway's public "implicit" token) needs no env var or
-// secret. Omit both => no auth header (keyless endpoint, e.g. the local backend).
-function applyAuth(cfg, headers) {
-    if (!cfg.auth_header || cfg.auth_value == null) return;
-    headers[String(cfg.auth_header).toLowerCase()] =
-        String(cfg.auth_value).replace(/\$\{(\w+)\}/g, (_, name) => process.env[name] || '');
+// Auth is one shared bearer token for the whole endpoint: send
+// `Authorization: Bearer ${LLM_API_KEY}`. Under Obelisk LLM_API_KEY is a
+// short-lived placeholder the runtime swaps for the real secret in the outbound
+// header (allowed_host.secrets). Unset => no auth header (keyless local backend).
+function applyAuth(headers) {
+    const key = process.env['LLM_API_KEY'];
+    if (key) headers['authorization'] = `Bearer ${key}`;
 }
 
 // ----- reasoning effort -------------------------------------------------------
@@ -135,7 +147,7 @@ async function callAnthropic(cfg, system, messages, tools, toolNames, level) {
     if (tools.length > 0) body.tools = tools.map((t) => ({ name: toolNames.encode(t.name), description: t.description, input_schema: t.input_schema }));
 
     const headers = { 'content-type': 'application/json', accept: 'application/json', 'anthropic-version': '2023-06-01' };
-    applyAuth(cfg, headers);
+    applyAuth(headers);
 
     const { data, rate_limited } = await post(`${baseOf(cfg)}/v1/messages`, headers, body);
     if (rate_limited) return { rate_limited };
@@ -181,7 +193,7 @@ async function callOpenAIChat(cfg, system, messages, tools, toolNames, level) {
     }
 
     const headers = { 'content-type': 'application/json', accept: 'application/json' };
-    applyAuth(cfg, headers);
+    applyAuth(headers);
 
     const { data, rate_limited } = await post(`${baseOf(cfg)}/v1/chat/completions`, headers, body);
     if (rate_limited) return { rate_limited };
@@ -229,7 +241,7 @@ async function callOpenAIResponses(cfg, system, messages, tools, toolNames, leve
     }
 
     const headers = { 'content-type': 'application/json', accept: 'application/json' };
-    applyAuth(cfg, headers);
+    applyAuth(headers);
 
     const { data, rate_limited } = await post(`${baseOf(cfg)}/v1/responses`, headers, body);
     if (rate_limited) return { rate_limited };

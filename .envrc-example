@@ -2,38 +2,10 @@ use flake .
 
 export OBELISK__API__TOKEN=$(obelisk generate token --json | jq -r .token)
 
-# --- LLM model catalog --------------------------------------------------------
-# AGENT_MODELS (read by activity/llm-chat.js and the web UI) is the list of models
-# in the UI dropdown. It is REQUIRED: deployment.toml has no built-in default, so
-# the server won't serve until it is set here (direnv loads it).
-#
-# Three ready-made catalogs ship as JSON files:
-#   models.local.json         agent-backed-llm-server on :9190 (keyless)
-#   models.exe-gateway.json   exe.dev gateway: Anthropic + OpenAI + Fireworks (22 models)
-#                             needs an exe.dev account; its entries point at
-#                             http://localhost:7070, so forward the gateway first:
-#                               ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz
-#   models.openrouter.json    OpenRouter (keyed); needs OPENROUTER_API_KEY set below
-#
-# Symlink a canonical models.json and switch catalogs with a single ln -sf:
-#   ln -sf models.local.json models.json
-export AGENT_MODELS="$(cat models.json)"
-# ...or point AGENT_MODELS at either file (or any JSON) directly:
-# export AGENT_MODELS="$(cat models.exe-gateway.json)"
-
-# Each entry: { id, label, api_type, base_url, wire_model, auth_header?, auth_value?, max_tokens? }
-#   api_type   anthropic-messages | openai-responses | openai-chat-completions
-#   base_url   origin + provider path; the adapter appends /v1/messages, /v1/responses, ...
-#   wire_model the exact id the provider wants (differs from the friendly id/label)
-#   auth_header / auth_value  the auth header to send and its value. auth_value may
-#              embed \${ENV_VAR}; for a real key make ENV_VAR an allowed_host.secrets
-#              entry in deployment.toml so the JS only ever sees a placeholder. A
-#              literal (e.g. the gateway's public "implicit") needs no secret.
-
-# --- OpenRouter (keyed provider reached directly) -----------------------------
-# The API key stays secret: the catalog sends "Bearer ${OPENROUTER_API_KEY}", the
-# deployment.toml openrouter allowed_host.secrets block swaps the placeholder for
-# the real key at the network edge, and the JS only ever sees the placeholder. To
-# use models.openrouter.json, set the key and select that catalog:
-# export OPENROUTER_API_KEY=sk-or-...
-# export AGENT_MODELS="$(cat models.openrouter.json)"
+# Pick a catalog + endpoint (README has the details):
+#   models.local.json        LLM_BASE_URL=http://127.0.0.1:9190     (keyless)
+#   models.exe-gateway.json  LLM_BASE_URL=http://localhost:7070     + LLM_API_KEY
+#   models.openrouter.json   LLM_BASE_URL=https://openrouter.ai/api + LLM_API_KEY
+export AGENT_MODELS="$(cat models.json)"        # ln -sf models.local.json models.json
+export LLM_BASE_URL=http://127.0.0.1:9190
+# export LLM_API_KEY=...
