@@ -1,5 +1,14 @@
 [
   {
+    "id": "claude-sonnet-5",
+    "label": "claude-sonnet-5",
+    "api_type": "anthropic-messages",
+    "base_url": "https://openrouter.ai/api",
+    "wire_model": "anthropic/claude-sonnet-5",
+    "auth_header": "authorization",
+    "auth_value": "Bearer ${OPENROUTER_API_KEY}"
+  },
+  {
     "id": "qwen3-coder-free",
     "label": "Qwen3 Coder (free)",
     "api_type": "openai-chat-completions",

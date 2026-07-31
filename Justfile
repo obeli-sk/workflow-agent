@@ -1,6 +1,5 @@
 serve:
-  obelisk server run -d deployment.toml
-
+  obelisk server run -d deployment.toml --server-config server.toml 
 # deployment.toml's [[workflow_wasm]] entry points at it; the crate's
 # .cargo/config.toml pins the wasm32-unknown-unknown target.
 # Build the native Rust workflow component (workflow/workflow-rs).
@@ -8,7 +7,7 @@ build:
   cd workflow/workflow-rs && cargo build --release
 
 verify: build
-  obelisk server verify --deployment deployment.toml --allow-unavailable-runtime-config
+  obelisk server verify --deployment deployment.toml --server-config server.toml --allow-unavailable-runtime-config
 
 sync:
   obelisk deployment get $(obelisk deployment active) --force

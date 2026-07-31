@@ -37,7 +37,3 @@ export AGENT_MODELS="$(cat models.json)"
 # use models.openrouter.json, set the key and select that catalog:
 # export OPENROUTER_API_KEY=sk-or-...
 # export AGENT_MODELS="$(cat models.openrouter.json)"
-
-# --- GitHub export (optional) -------------------------------------------------
-export WORKFLOW_AGENT_GITHUB_TOKEN="..."
-export TARGET_REPOSITORY="your-account/new-repo"

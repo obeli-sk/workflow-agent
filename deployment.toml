@@ -84,9 +84,6 @@ content_digest = "sha256:b6ff3524f6fa42f57d721b2bc4f338b8579b0d096af9ba6fa16de4d
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
 request_url_regex = "^POST http[s]?://[^/]+/v1/(chat/completions|responses)$"
-[activity_js.allowed_host.secrets]
-env_vars = [{ key = "LLM_API_KEY", value = "${LLM_API_KEY:-}" }]
-replace_in = ["headers"]
 
 # exe.dev LLM gateway
 # Switch to it by setting AGENT_MODELS and optionally LLM_GATEWAY_API_KEY in .envrc (see .envrc-example / models.exe-gateway.json).
@@ -94,8 +91,7 @@ replace_in = ["headers"]
 pattern = "${LLM_GATEWAY:-http://localhost:7070}"
 methods = ["POST"]
 request_url_regex = "^POST http[s]?://[^/]+/gateway/llm/(anthropic/v1/messages|openai/v1/(chat/completions|responses)|fireworks/inference/v1/chat/completions)$"
-[activity_js.allowed_host.secrets]
-env_vars = [{ key = "LLM_GATEWAY_API_KEY", value = "${LLM_GATEWAY_API_KEY:-}" }]
+secrets = ["LLM_GATEWAY_API_KEY"]
 replace_in = ["headers"]
 
 # OpenRouter
@@ -103,9 +99,7 @@ replace_in = ["headers"]
 [[activity_js.allowed_host]]
 pattern = "https://openrouter.ai"
 methods = ["POST"]
-request_url_regex = "^POST https://openrouter\\.ai/api/v1/(chat/completions|responses)$"
-[activity_js.allowed_host.secrets]
-env_vars = [{ key = "OPENROUTER_API_KEY", value = "${OPENROUTER_API_KEY:-}" }]
+secrets = ["OPENROUTER_API_KEY"]
 replace_in = ["headers"]
 
 # --- LLM-facing tools ---------------------------------------------------------
@@ -125,8 +119,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/functions"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -143,8 +136,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/functions/wit"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -170,8 +162,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -188,8 +179,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -206,8 +196,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -228,8 +217,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -249,8 +237,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -276,8 +263,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -295,8 +281,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -315,8 +300,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -337,8 +321,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -358,8 +341,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/deployments/|/v1/files/)"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -373,8 +355,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployment-id"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 # --- Deployment editing: checkout -> edit one component -> submit -------------
@@ -399,8 +380,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/deployment-id|/v1/deployments/)"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -417,8 +397,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/files/"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -443,8 +422,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["POST"]
 request_url_regex = "^POST ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments$"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -464,8 +442,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["PUT"]
 request_url_regex = "^PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/Dep_[^/]+/switch$"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -485,8 +462,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -503,8 +479,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/pause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -521,8 +496,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/unpause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -539,8 +513,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/cancel|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -558,8 +531,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 # --- Stub activity: human-in-the-loop -----------------------------------------
@@ -686,8 +658,7 @@ content_digest = "sha256:1115c913ae61730b9de1e3cdafabd59c119980e35f85ad7cc26adee
 pattern = "https://api.github.com"
 methods = ["GET", "POST"]
 request_url_regex = "^(POST https://api\\.github\\.com/repos/[^/]+/[^/]+/git/refs|GET https://api\\.github\\.com/repos/[^/]+/[^/]+/git/ref/heads/[^/]+)$"
-[activity_js.allowed_host.secrets]
-env_vars = [{ key = "WORKFLOW_AGENT_GITHUB_TOKEN", value = "${WORKFLOW_AGENT_GITHUB_TOKEN:-}" }]
+secrets = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
 replace_in = ["headers"]
 
 
@@ -713,8 +684,7 @@ content_digest = "sha256:acb6050c33231f3cf3119591752ed75e1f8770318417043c1775a24
 pattern = "https://api.github.com"
 methods = ["POST"]
 request_url_regex = "^POST https://api\\.github\\.com/graphql$"
-[activity_js.allowed_host.secrets]
-env_vars = [{ key = "WORKFLOW_AGENT_GITHUB_TOKEN", value = "${WORKFLOW_AGENT_GITHUB_TOKEN:-}" }]
+secrets = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
 replace_in = ["headers"]
 
 
@@ -737,8 +707,7 @@ content_digest = "sha256:5286f48a82db83dd4f3a275ebd5015452e6ce2e53772cdb33e2a71a
 pattern = "https://api.github.com"
 methods = ["GET", "POST"]
 request_url_regex = "^(GET|POST) https://api\\.github\\.com/repos/[^/]+/[^/]+/pulls$"
-[activity_js.allowed_host.secrets]
-env_vars = [{ key = "WORKFLOW_AGENT_GITHUB_TOKEN", value = "${WORKFLOW_AGENT_GITHUB_TOKEN:-}" }]
+secrets = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
 replace_in = ["headers"]
 
 [[workflow_js]]
@@ -785,8 +754,7 @@ content_digest = "sha256:fba18d6c524f657d7031076e7df5a2c0fe596a35c85c432f91622b7
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/)"
-[webhook_endpoint_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 
@@ -806,6 +774,5 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["PUT"]
 request_url_regex = "^PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/Dep_[^/]+/switch$"
-[activity_js.allowed_host.secrets]
-env_vars = ["OBELISK__API__TOKEN"]
+secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
