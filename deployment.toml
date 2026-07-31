@@ -11,7 +11,7 @@ ffqn = "obelisk-control:agent/pack.describe"
 params = []
 return_type = "result<record { prompt: string, tools-json: string }, string>"
 location = "packs/obelisk-control/descriptor.js"
-content_digest = "sha256:fbec634f538471a355fff5753f8d8e30b5455d3affeadc297aafce69984d5ecc"
+content_digest = "sha256:497de8e327c92fc2d7fd7c49ea1094adf24f168ba6b64530aa4ebf6c157cb010"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
