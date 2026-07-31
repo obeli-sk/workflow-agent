@@ -56,6 +56,16 @@ fn host_sleep_ms(ms: u64) {
     let _ = workflow_support::sleep(ScheduleAt::In(Duration::Milliseconds(ms)), None);
 }
 
+/// The active deployment's id, used only to detect a redeploy between turns and
+/// re-register program commands. The value is compared verbatim (a redeploy
+/// yields a new id), so the exact JSON-string framing does not matter.
+fn current_deployment_id() -> Result<String, String> {
+    use just_bash_rs::obelisk_pack::ObeliskHost;
+    RealHost
+        .call_json("obelisk-agent:tools/webapi.current-deployment-id", "[]")?
+        .ok_or_else(|| "current-deployment-id returned no body".to_string())
+}
+
 const MAX_TURNS: u32 = 30;
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const INJECTION_FFQN: &str = "obelisk-agent:agent/session.injection";
@@ -133,7 +143,15 @@ pub fn agent_loop_cancellable(
         .map_err(|e| format!("record-output join set: {e:?}"))?;
 
     let mut pack_mounted = false;
+    // Program.* shell commands are (re-)registered whenever the active
+    // deployment changes, so a redeploy that adds program functions surfaces
+    // them as commands mid-session. `programs_registered` forces the first
+    // pass even when the deployment-id read is unavailable; `active_deployment_id`
+    // gates subsequent re-discovery; `registered_programs` keeps registration
+    // idempotent across turns.
     let mut programs_registered = false;
+    let mut active_deployment_id: Option<String> = None;
+    let mut registered_programs: std::collections::BTreeSet<String> = Default::default();
     let mut turn_index: u64 = 0;
     let mut should_call_llm = !messages.is_empty();
     let mut agent_steps = 0u32;
@@ -144,18 +162,33 @@ pub fn agent_loop_cancellable(
         // execution's whole history and cannot be reused across turns.
         let mut session = open_turn(turn_index)?;
 
-        if !programs_registered {
+        // Re-discover program commands on the first turn and whenever the
+        // active deployment changes (a successful redeploy). Both the
+        // deployment-id read and discovery are recorded host calls, so replay
+        // stays deterministic. Newly deployed program.* functions are added;
+        // commands from a prior deployment stay registered (their child call
+        // simply fails if the function is gone). Files are left untouched here:
+        // the model refreshes sources explicitly with `obelisk deployment
+        // refresh`, which would otherwise discard its in-progress edits.
+        let current_deployment = current_deployment_id();
+        let deployment_changed = match &current_deployment {
+            Ok(id) => active_deployment_id.as_deref() != Some(id.as_str()),
+            Err(_) => false,
+        };
+        if !programs_registered || deployment_changed {
             match obelisk_program::discover(&mut RealHost) {
                 Ok(programs) => {
                     for program in programs {
-                        bash.register_command(
-                            &program.name,
-                            obelisk_program::command_handler(
+                        if registered_programs.insert(program.name.clone()) {
+                            bash.register_command(
                                 &program.name,
-                                program.ffqn,
-                                Box::new(RealHost),
-                            ),
-                        );
+                                obelisk_program::command_handler(
+                                    &program.name,
+                                    program.ffqn,
+                                    Box::new(RealHost),
+                                ),
+                            );
+                        }
                     }
                 }
                 Err(err) => {
@@ -165,6 +198,9 @@ pub fn agent_loop_cancellable(
                 }
             }
             programs_registered = true;
+            if let Ok(id) = current_deployment {
+                active_deployment_id = Some(id);
+            }
         }
 
         if !pack_mounted {
