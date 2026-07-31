@@ -294,14 +294,18 @@ async function post(url, headers, body) {
 }
 
 // The Responses API is called with stream:true, so the body is an SSE stream of
-// `data: {json}` lines. Every response.* lifecycle event carries the full
-// response object under `.response`; the terminal one (response.completed /
-// .incomplete / .failed) has the final output array and status, so return the
-// last such object for the non-streaming parser above to read.
+// `data: {json}` lines. Each `response.output_item.done` carries a finished output
+// item (message / function_call / reasoning); the terminal `response.completed`
+// (or .incomplete / .failed) carries the final status. We accumulate the item.done
+// items rather than trusting the terminal event's `output`, because some gateways
+// (exe.dev) send an empty `output` on that event. Fall back to the terminal
+// event's `output` if no item.done events arrived.
 async function postResponsesStream(url, headers, body) {
     const { text, rate_limited } = await postRaw(url, headers, body);
     if (rate_limited) return { rate_limited };
-    let data = null;
+    const items = [];
+    let terminal = null;
+    const seen = {};
     for (const line of text.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed.startsWith('data:')) continue;
@@ -309,11 +313,16 @@ async function postResponsesStream(url, headers, body) {
         if (!payload || payload === '[DONE]') continue;
         let evt;
         try { evt = JSON.parse(payload); } catch (_) { continue; }
-        if (evt && evt.response && typeof evt.type === 'string' && evt.type.startsWith('response.')) data = evt.response;
+        const type = typeof evt.type === 'string' ? evt.type : '';
+        seen[type] = (seen[type] || 0) + 1;
+        if (type === 'response.output_item.done' && evt.item) items.push(evt.item);
+        else if (type === 'response.completed' || type === 'response.incomplete' || type === 'response.failed') terminal = evt.response || {};
     }
-    if (!data) throw `LLM stream had no response event: ${text.slice(0, 500)}`;
-    if (data.status === 'failed') throw `LLM stream failed: ${JSON.stringify(data.error || {}).slice(0, 500)}`;
-    return { data };
+    console.debug(`responses stream events: ${JSON.stringify(seen)}; items=${items.length}`);
+    if (terminal && terminal.status === 'failed') throw `LLM stream failed: ${JSON.stringify(terminal.error || {}).slice(0, 500)}`;
+    const output = items.length ? items : arr(terminal && terminal.output);
+    if (!terminal && output.length === 0) throw `LLM stream had no response event: ${text.slice(0, 500)}`;
+    return { data: { output, status: terminal ? terminal.status : 'completed' } };
 }
 
 function parseJson(text, label, fallback) {
