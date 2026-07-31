@@ -841,6 +841,19 @@ impl Parser {
                 Ok(Expr::Group(Box::new(inner)))
             }
             Some(Tok::Ident(name)) => {
+                // `getline` and user-defined functions are out of scope (see
+                // the skip list in the module docs). They are not lexed as
+                // keywords, so without this guard `getline var < file` silently
+                // mis-parses as a comparison (`getline` var concatenated with
+                // `var < "file"`, which is `1` forever), and a `function name`
+                // definition parses as a pattern-action rule calling an
+                // undefined function. Reject both loudly instead.
+                if name == "getline" {
+                    return Err("getline is not supported".to_string());
+                }
+                if name == "function" {
+                    return Err("user-defined functions are not supported".to_string());
+                }
                 if self.peek_punct("(") {
                     self.pos += 1;
                     let mut args = Vec::new();
@@ -2160,6 +2173,31 @@ mod tests {
             run(&mut bash, r#"awk 'BEGIN { print "0\061\62x\0645" }'"#).stdout,
             "012x45\n"
         );
+    }
+
+    #[test]
+    fn getline_is_rejected_not_silently_mishandled() {
+        // Without the guard this loops forever: `getline l < file` mis-parses
+        // as a comparison that is always 1, so the `>0` loop never ends.
+        let mut bash = with_file("/src.txt", "a\nb\n");
+        let out = run(
+            &mut bash,
+            "awk 'BEGIN{ while((getline l < \"/src.txt\")>0) s=s l; print s }'",
+        );
+        assert_eq!(out.exit_code, 1);
+        assert_eq!(out.stdout, "");
+        assert!(out.stderr.contains("getline is not supported"), "{}", out.stderr);
+    }
+
+    #[test]
+    fn user_defined_function_is_rejected_not_silently_mishandled() {
+        // Without the guard the `function` definition parses as a rule and the
+        // call hits "calling undefined function" at runtime with empty stdout.
+        let mut bash = fresh();
+        let out = run(&mut bash, "echo hi | awk 'function f(x){return x x} {print f($0)}'");
+        assert_eq!(out.exit_code, 1);
+        assert_eq!(out.stdout, "");
+        assert!(out.stderr.contains("user-defined functions are not supported"), "{}", out.stderr);
     }
 
     #[test]

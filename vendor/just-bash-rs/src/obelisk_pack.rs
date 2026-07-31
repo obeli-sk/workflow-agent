@@ -314,6 +314,15 @@ fn try_execute_obelisk(
     }
     if group == "call" {
         let ffqn = required(Some(action), "ffqn")?;
+        // A params-json positional that is present but empty is almost always a
+        // shell expansion that produced nothing (e.g. `"$(cat missing.json)"`).
+        // Silently defaulting it to `[]` dispatches zero arguments and surfaces
+        // as a confusing server-side cardinality mismatch, so reject it here.
+        // Only a genuinely absent argument (with empty stdin) defaults to `[]`,
+        // which is correct for a target that takes no parameters.
+        if matches!(rest.first(), Some(p) if p.is_empty()) {
+            return Err("call: params-json argument is empty (a shell expansion likely produced nothing); pass a JSON array such as [] explicitly".to_string());
+        }
         let params_json = rest
             .first()
             .map(String::as_str)
@@ -999,6 +1008,19 @@ mod tests {
         let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
         execute_obelisk(&mut i, &words(&["call", "some:ffqn"]), "", &mut host);
         assert_eq!(host.calls[0].1, "[\"some:ffqn\",\"[]\"]");
+    }
+
+    #[test]
+    fn call_rejects_explicitly_empty_params_arg() {
+        // `obelisk call ffqn "$(cat missing.json)"` where the substitution is
+        // empty: reject instead of silently sending `[]` (which the server then
+        // rejects with a confusing cardinality mismatch).
+        let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["call", "some:ffqn", ""]), "", &mut host);
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stderr.contains("params-json argument is empty"), "{}", out.stderr);
+        assert!(host.calls.is_empty());
     }
 
     #[test]
