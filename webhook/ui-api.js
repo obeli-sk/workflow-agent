@@ -2536,7 +2536,13 @@ document.getElementById('composer-input').addEventListener('keydown', (ev) => {
 });
 
 document.getElementById('new-convo').addEventListener('click', () => {
-  createEmptySession();
+  // Reset to the empty 'new' composer so the model/effort pickers are visible and
+  // the user can choose before starting. The run is created on the first prompt
+  // (submitPrompt) or shell command (createSessionForShell), both of which read
+  // the chosen model; creating a session here instead would lock in the default.
+  setSelected(null);
+  document.getElementById('composer-input').value = '';
+  focusComposer();
 });
 
 async function loadModels() {
