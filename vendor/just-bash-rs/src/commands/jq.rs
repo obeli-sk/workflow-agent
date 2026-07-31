@@ -19,12 +19,12 @@
 //! merge on `+`, deep merge on `*` of two objects, string split on `/`),
 //! literals, and the builtins `length keys keys_unsorted has empty not type
 //! select map add range floor ceil round sqrt abs tostring tonumber split
-//! join`. CLI flags: `-r`/`-c`/`-n`/`-s`/`-e`/`--tab`/`-S`.
+//! join`. CLI flags: `-r`/`-R`/`-c`/`-n`/`-s`/`-e`/`--tab`/`-S`.
 //!
 //! Explicitly out of scope (skipped, not started): `reduce`/`foreach`,
 //! custom `def`, `try`/`catch` (bare `?` is supported, full `try` is not),
 //! `path()`/`paths`, variables (`... as $x |`), `@base64`/`@csv`-style format
-//! strings, module imports, `input`/`inputs` streaming, `-R`/raw-input mode,
+//! strings, module imports, `input`/`inputs` streaming,
 //! regex builtins (`test`/`match`/`sub`/`gsub`/`capture`), and resource
 //! limits (upstream's `ExecutionLimitError` machinery).
 
@@ -1456,6 +1456,7 @@ fn append_json(out: &mut String, value: &Value, compact: bool, sort_keys: bool, 
 
 struct JqOptions {
     raw: bool,
+    raw_input: bool,
     compact: bool,
     null_input: bool,
     slurp: bool,
@@ -1466,6 +1467,7 @@ struct JqOptions {
 pub fn jq(args: &[String], stdin: String) -> CommandOutput {
     let mut opts = JqOptions {
         raw: false,
+        raw_input: false,
         compact: false,
         null_input: false,
         slurp: false,
@@ -1476,6 +1478,7 @@ pub fn jq(args: &[String], stdin: String) -> CommandOutput {
     for arg in args {
         match arg.as_str() {
             "-r" | "--raw-output" => opts.raw = true,
+            "-R" | "--raw-input" => opts.raw_input = true,
             "-c" | "--compact-output" => opts.compact = true,
             "-n" | "--null-input" => opts.null_input = true,
             "-s" | "--slurp" => opts.slurp = true,
@@ -1485,6 +1488,7 @@ pub fn jq(args: &[String], stdin: String) -> CommandOutput {
                 for c in arg[1..].chars() {
                     match c {
                         'r' => opts.raw = true,
+                        'R' => opts.raw_input = true,
                         'c' => opts.compact = true,
                         'n' => opts.null_input = true,
                         's' => opts.slurp = true,
@@ -1507,7 +1511,22 @@ pub fn jq(args: &[String], stdin: String) -> CommandOutput {
     };
 
     let mut inputs: Vec<Value> = Vec::new();
-    if !opts.null_input {
+    if opts.null_input {
+        inputs = vec![Value::Null];
+    } else if opts.raw_input {
+        // Raw input: treat stdin as text, not JSON. With --slurp the whole input
+        // (trailing newline included) is one string; otherwise each line becomes
+        // a string and a single trailing newline does not yield an empty element,
+        // matching upstream `jq -R`.
+        if opts.slurp {
+            inputs = vec![Value::String(stdin.clone())];
+        } else if !stdin.is_empty() {
+            let body = stdin.strip_suffix('\n').unwrap_or(&stdin);
+            for line in body.split('\n') {
+                inputs.push(Value::String(line.to_string()));
+            }
+        }
+    } else {
         let mut stream = serde_json::Deserializer::from_str(&stdin).into_iter::<Value>();
         for item in &mut stream {
             match item {
@@ -1515,12 +1534,9 @@ pub fn jq(args: &[String], stdin: String) -> CommandOutput {
                 Err(e) => return fail(format!("jq: parse error: {e}\n"), 2),
             }
         }
-    }
-    if opts.slurp {
-        inputs = vec![Value::Array(inputs)];
-    }
-    if opts.null_input {
-        inputs = vec![Value::Null];
+        if opts.slurp {
+            inputs = vec![Value::Array(inputs)];
+        }
     }
 
     let mut outputs = Vec::new();
@@ -1943,6 +1959,30 @@ mod tests {
         let mut bash = fresh();
         let r = run(&mut bash, "printf '1\\n2\\n3\\n' | jq -s 'add'");
         assert_eq!(r.stdout, "6\n");
+    }
+
+    #[test]
+    fn raw_input_slurp_encodes_whole_input_as_json_string() {
+        // The redeploy path needs to JSON-encode a file's contents; `jq -Rs .`
+        // is the primitive for it. Trailing newline is preserved.
+        let mut bash = fresh();
+        let r = run(&mut bash, r#"printf 'a\nb"c\n' | jq -Rs '.'"#);
+        assert_eq!(r.stdout, "\"a\\nb\\\"c\\n\"\n");
+        assert_eq!(r.exit_code, 0);
+    }
+
+    #[test]
+    fn raw_input_emits_one_string_per_line() {
+        let mut bash = fresh();
+        let r = run(&mut bash, r#"printf 'a\nb\n' | jq -R '.'"#);
+        assert_eq!(r.stdout, "\"a\"\n\"b\"\n");
+    }
+
+    #[test]
+    fn raw_input_slurp_on_empty_is_empty_string() {
+        let mut bash = fresh();
+        let r = run(&mut bash, r#"printf '' | jq -Rs '.'"#);
+        assert_eq!(r.stdout, "\"\"\n");
     }
 
     #[test]
