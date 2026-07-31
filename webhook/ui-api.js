@@ -709,7 +709,10 @@ function appendCompletionReply(replies, ev, response, turnIndex = null) {
         reply,
         presentation: "",
         blocks: [],
-        narration: "",
+        // A narrated turn carries both text and a tool_use; the reply above keeps
+        // only the tool calls, so surface the accompanying markdown as narration
+        // (a "thinking" bubble). Text-only turns already render it as the response.
+        narration: toolUses.length > 0 ? text : "",
         created_at: response.event?.created_at || "",
         turn_index: turnIndex,
     });
