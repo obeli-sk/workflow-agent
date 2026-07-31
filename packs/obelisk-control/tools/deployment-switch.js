@@ -19,7 +19,7 @@ export default async function deployment_switch(deploymentId, allowMissing) {
         {
             method: "PUT",
             headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}`, "content-type": "application/json" },
-            body: JSON.stringify({ hot_redeploy: false, allow_missing_runtime_config: Boolean(allowMissing) }),
+            body: JSON.stringify({ hot_redeploy: false, allow_unavailable_runtime_config: Boolean(allowMissing) }),
         },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;

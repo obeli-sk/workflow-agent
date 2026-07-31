@@ -57,7 +57,7 @@ export default async function deployment_submit(
         ? deploymentId.trim() : null;
 
     // 1) Preflight: JSON submit with no blobs.
-    const body = { deployment_toml: toml, allow_missing_runtime_config: Boolean(allowMissing) };
+    const body = { deployment_toml: toml, allow_unavailable_runtime_config: Boolean(allowMissing) };
     if (typeof description === "string" && description.trim()) body.description = description.trim();
     if (wantedId) body.deployment_id = wantedId;
 
@@ -89,11 +89,15 @@ export default async function deployment_submit(
         attach.push({ digest: issue.digest, path: issue.path, content });
     }
 
+    // The server's multipart parser recognizes exactly these text field names and
+    // treats every other part as a file blob (name = digest, filename = path). A
+    // stale `allow_missing_runtime_config` name would be read as a bogus empty-path
+    // file and rejected with a `files[path=]` digest mismatch.
     const boundary = `----obelisk${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
     const multipartBody = buildMultipart(boundary, {
         deployment_toml: toml,
         description: (typeof description === "string" && description.trim()) ? description.trim() : null,
-        allow_missing_runtime_config: Boolean(allowMissing) ? "true" : "false",
+        allow_unavailable_runtime_config: Boolean(allowMissing) ? "true" : "false",
         deployment_id: wantedId,
     }, attach);
 

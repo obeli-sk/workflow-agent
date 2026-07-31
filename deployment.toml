@@ -409,7 +409,7 @@ return_type = "result<string, string>"
 exec.lock_expiry.minutes = 5
 max_retries = 0
 location = "packs/obelisk-control/tools/deployment-submit.js"
-content_digest = "sha256:fd626521000ad2ebf7b765dcd6f096383e31078e024130998800e0c6a0611a23"
+content_digest = "sha256:5c73adf630a487bd8968b8b5a22c8ac858a9d02106326d9843fed09a9338788a"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -429,7 +429,7 @@ return_type = "result<string, string>"
 # A cold switch re-verifies (compile + link) before enqueuing.
 exec.lock_expiry.minutes = 5
 location = "packs/obelisk-control/tools/deployment-switch.js"
-content_digest = "sha256:da2d4df3ea7de76d90888d74705e76d8a312d0d07abe80dc6be744111ea6f153"
+content_digest = "sha256:125e381f7194d228eabb8515c5e96c23013ebeceea7253799a6b630bdd9c9e42"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
