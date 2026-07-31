@@ -20,6 +20,7 @@ mod find;
 mod fsutil;
 mod grep;
 mod hash;
+pub(crate) use hash::sha256_hex;
 mod jq;
 mod misc;
 mod sed;

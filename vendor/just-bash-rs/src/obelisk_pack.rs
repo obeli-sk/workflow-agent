@@ -18,7 +18,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde_json::{Value, json};
 
-use crate::commands::normalize_path;
+use crate::commands::{normalize_path, sha256_hex};
 use crate::custom_command::CustomCommandHandler;
 use crate::fs::{BlobLoader, FsError, Vfs};
 use crate::interpreter::{CommandOutput, Interpreter};
@@ -38,7 +38,11 @@ against the running server (functions, executions, call, and deployment
 current/refresh/check/submit/switch/apply). Edits under the deployment folder
 are local until you run `obelisk deployment submit` (store a new inactive
 deployment) or `obelisk deployment apply` (hot-redeploy); `obelisk deployment
-refresh` discards local edits and re-fetches the current deployment.";
+refresh` discards local edits and re-fetches the current deployment. Do not set
+or maintain `content_digest` in deployment.toml: submit computes each digest
+from the file bytes for you. Add a component by writing its source and its
+[[activity_js]]/[[workflow_js]] table (name, location, params, return_type),
+nothing more.";
 
 /// The one primitive the whole pack needs: dynamically invoke a deployed FFQN
 /// and get back its JSON result. Mirrors Obelisk's real
@@ -121,9 +125,12 @@ pub fn refresh_deployment_mount(
 
     let dir = format!("{DEPLOYMENT_ROOT}/{deployment_id}");
     fs.mkdir(&dir, true).map_err(fs_error_message)?;
+    // The agent edits and re-submits this manifest by hand, so hide the pinned
+    // `content_digest` lines it never needs to maintain: `deployment submit`
+    // recomputes each digest from the file's current bytes.
     let manifest_path = format!("{dir}/deployment.toml");
     if replace || !fs.exists(&manifest_path) {
-        fs.write_file(&manifest_path, manifest.as_bytes())
+        fs.write_file(&manifest_path, strip_owned_digests(&manifest).as_bytes())
             .map_err(fs_error_message)?;
     }
 
@@ -386,6 +393,10 @@ fn execute_deployment(
                     .collect::<Vec<_>>(),
             )
             .expect("json");
+            // The server pins a `content_digest` for every owned source, so put
+            // them back (stripped from the mounted copy the agent edits): each
+            // unchanged file keeps its CAS digest, each changed one is re-hashed.
+            let manifest = manifest_with_digests(&interp.fs, &dir, &manifest);
             let deployment_id = if basename(&dir) == "current" {
                 String::new()
             } else {
@@ -422,44 +433,34 @@ fn execute_deployment(
     }
 }
 
-struct ScriptRef {
-    location: String,
-    digest: String,
-}
-
-/// Every deployment-owned source file to mount, by deployment-relative
-/// `location` + `content_digest`: the top-level component scripts/wasm
-/// (`owned_script_refs`) plus each `backtrace.sources` entry
-/// (`backtrace_source_refs`), which the component scanner does not see because
-/// it lives in a nested table. Deduplicated on `location` (a wasm component and
-/// its backtrace source never collide, but a source file listed twice should
-/// mount once).
-fn deployment_file_refs(toml: &str) -> Vec<ScriptRef> {
+/// Every deployment-owned source location the submit pipeline tracks: `location`
+/// keys in the top-level component tables (`top_level_source_locations`) plus
+/// `path` keys in each `backtrace.sources` entry (`backtrace_source_locations`),
+/// which the component scanner does not see because they live in a nested table.
+/// Digests are deliberately not read here: the mounted manifest has them
+/// stripped, and `deployment submit` recomputes each from the file's current
+/// bytes. `oci://` refs are skipped; deduplicated on location, first wins.
+fn owned_source_locations(toml: &str) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
-    owned_script_refs(toml)
+    top_level_source_locations(toml)
         .into_iter()
-        .chain(backtrace_source_refs(toml))
-        .filter(|r| seen.insert(r.location.clone()))
+        .chain(backtrace_source_locations(toml))
+        .filter(|loc| seen.insert(loc.clone()))
         .collect()
 }
 
-/// The `backtrace.sources` entries the component scanner misses. Obelisk stores
-/// each as an inline table `{ path = "<loc>", content_digest = "sha256:..." }`,
-/// either under a `[<section>.backtrace.sources]` header or inline as
-/// `backtrace.sources = { "<key>" = { path = ..., content_digest = ... } }`
-/// (see `obelisk/src/config/manifest.rs`). Both forms are picked up by scanning
-/// each `{ ... }` chunk in a backtrace region for the `path`/`content_digest`
-/// pair; a digest-less entry (the pre-submit shorthand, never seen in a stored
-/// manifest) cannot be fetched, so it is skipped.
-fn backtrace_source_refs(toml: &str) -> Vec<ScriptRef> {
+/// The `path` entries the top-level scanner misses, under a
+/// `[<section>.backtrace.sources]` header or an inline `backtrace.sources =
+/// { ... }`. Obelisk stores each as an inline table `{ path = "<loc>",
+/// content_digest = "sha256:..." }` (see `obelisk/src/config/manifest.rs`); we
+/// read the `path` from every `{ ... }` chunk in a backtrace region.
+fn backtrace_source_locations(toml: &str) -> Vec<String> {
     static ENTRY: OnceLock<Regex> = OnceLock::new();
     static PATH: OnceLock<Regex> = OnceLock::new();
-    static DIGEST: OnceLock<Regex> = OnceLock::new();
     let entry = ENTRY.get_or_init(|| Regex::new(r"\{[^{}]*\}").unwrap());
     let path = PATH.get_or_init(|| Regex::new(r#"\bpath\s*=\s*"([^"]+)""#).unwrap());
-    let digest = DIGEST.get_or_init(|| Regex::new(r#"\bcontent_digest\s*=\s*"([^"]+)""#).unwrap());
 
-    let mut refs = Vec::new();
+    let mut locations = Vec::new();
     let mut in_table = false;
     for line in toml.split('\n') {
         let text = line.trim();
@@ -473,52 +474,29 @@ fn backtrace_source_refs(toml: &str) -> Vec<ScriptRef> {
             continue;
         }
         for chunk in entry.find_iter(line) {
-            let chunk = chunk.as_str();
-            let (Some(loc), Some(dig)) = (path.captures(chunk), digest.captures(chunk)) else {
+            let Some(loc) = path.captures(chunk.as_str()) else {
                 continue;
             };
             let location = loc[1].to_string();
             if location.starts_with("oci://") {
                 continue;
             }
-            refs.push(ScriptRef {
-                location,
-                digest: dig[1].to_string(),
-            });
+            locations.push(location);
         }
     }
-    refs
+    locations
 }
 
-/// A tiny hand-rolled TOML scanner, line-based and deliberately minimal (not
-/// a real TOML parser - see the design doc): finds `location`/`content_digest`
-/// keys inside the deployment manifest's top-level `[[...]]` array-of-tables
-/// (`[[activity_wasm]]`-style), skipping any `oci://`-located entry (not a
-/// locally-owned source file).
-fn owned_script_refs(toml: &str) -> Vec<ScriptRef> {
-    fn flush(
-        location: &mut Option<String>,
-        digest: &mut Option<String>,
-        refs: &mut Vec<ScriptRef>,
-    ) {
-        if let (Some(loc), Some(dig)) = (location.take(), digest.take())
-            && !loc.starts_with("oci://")
-        {
-            refs.push(ScriptRef {
-                location: loc,
-                digest: dig,
-            });
-        }
-    }
-
-    let mut refs = Vec::new();
-    let mut location: Option<String> = None;
-    let mut digest: Option<String> = None;
+/// A tiny hand-rolled TOML scanner, line-based and deliberately minimal (not a
+/// real TOML parser - see the design doc): the `location` keys inside the
+/// manifest's top-level `[[...]]` array-of-tables (`[[activity_wasm]]`-style),
+/// skipping any `oci://`-located entry (not a locally-owned source file).
+fn top_level_source_locations(toml: &str) -> Vec<String> {
+    let mut locations = Vec::new();
     let mut in_main = false;
     for line in toml.split('\n') {
         let text = line.trim();
         if text.starts_with("[[") && !text.contains('.') {
-            flush(&mut location, &mut digest, &mut refs);
             in_main = true;
             continue;
         }
@@ -529,15 +507,70 @@ fn owned_script_refs(toml: &str) -> Vec<ScriptRef> {
         if !in_main {
             continue;
         }
-        if let Some(value) = toml_value(text, "location") {
-            location = Some(value);
-        }
-        if let Some(value) = toml_value(text, "content_digest") {
-            digest = Some(value);
+        if let Some(location) = toml_value(text, "location")
+            && !location.starts_with("oci://")
+        {
+            locations.push(location);
         }
     }
-    flush(&mut location, &mut digest, &mut refs);
-    refs
+    locations
+}
+
+/// Drop the pinned `content_digest = "..."` lines from a manifest. These are the
+/// standalone digest lines in top-level component tables; the inline digests in
+/// `backtrace.sources` tables sit on `{ ... }` lines and are left intact.
+fn strip_owned_digests(manifest: &str) -> String {
+    let mut out = String::with_capacity(manifest.len());
+    for line in manifest.split_inclusive('\n') {
+        if toml_value(line.trim(), "content_digest").is_some() {
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+/// Rebuild the manifest the server expects from the digest-stripped copy the
+/// agent edits: re-emit a `content_digest` line after each top-level `location`.
+/// An unchanged (still-lazy) file keeps its CAS digest; a changed one is
+/// re-hashed from the exact bytes `deployment_sources` uploads.
+fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str) -> String {
+    let stripped = strip_owned_digests(manifest);
+    let mut out = String::with_capacity(stripped.len() + 128);
+    let mut in_main = false;
+    for line in stripped.split_inclusive('\n') {
+        let text = line.trim();
+        if text.starts_with("[[") && !text.contains('.') {
+            in_main = true;
+        } else if text.starts_with('[') {
+            in_main = false;
+        }
+        out.push_str(line);
+        if in_main
+            && let Some(location) = toml_value(text, "location")
+            && !location.starts_with("oci://")
+            && let Some(digest) = owned_source_digest(fs, &format!("{dir}/{location}"))
+        {
+            if !line.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&format!("content_digest = \"{digest}\"\n"));
+        }
+    }
+    out
+}
+
+/// The `content_digest` for a deployment-owned source at submit time: an
+/// unchanged file is still a lazy `pending` VFS entry and keeps its CAS digest;
+/// a changed or newly created file is re-hashed from the same lossy-decoded
+/// bytes `deployment_sources` transmits, so the server's re-hash matches.
+fn owned_source_digest(fs: &Vfs, path: &str) -> Option<String> {
+    if let Some(lazy) = fs.lazy_file_ref(path) {
+        return Some(lazy.digest);
+    }
+    let bytes = fs.read_file(path)?;
+    let content = String::from_utf8_lossy(&bytes);
+    Some(format!("sha256:{}", sha256_hex(content.as_bytes())))
 }
 
 fn toml_value(line: &str, key: &str) -> Option<String> {
@@ -559,29 +592,26 @@ struct SourceEntry {
 }
 
 /// The deployment-owned source files a submit must carry: only those the
-/// session modified locally. An unmodified file stays a lazy `pending` VFS
-/// entry, so its `content_digest` is already in the manifest and its blob is in
-/// the CAS; the submit tool's preflight matches it by digest without the agent
-/// reading or re-uploading it (the same "upload only what the server is
-/// missing" contract the real `obelisk deployment submit` follows). Skipping
-/// unmodified files keeps a redeploy from fetching every component back out of
-/// the CAS just to hand it straight back - notably the multi-MB workflow and
-/// activity WASM (lossy-decoded to a string and re-hashed to a wrong digest),
-/// and the `backtrace.sources`, which the submit tool cannot digest-match by
-/// `location` and so rejects outright.
+/// session modified locally. An unmodified file stays a lazy `pending` VFS entry
+/// whose blob is already in the CAS, so `manifest_with_digests` re-pins its
+/// existing digest without the agent reading or re-uploading it (the same
+/// "upload only what the server is missing" contract the real `obelisk
+/// deployment submit` follows). Skipping unmodified files keeps a redeploy from
+/// fetching every component back out of the CAS just to hand it straight back -
+/// notably the multi-MB workflow and activity WASM (which lossy-decoded to a
+/// string and re-hashed would carry a wrong digest).
 fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<SourceEntry> {
     let mut files = Vec::new();
-    for reference in deployment_file_refs(manifest) {
-        let path = format!("{dir}/{}", reference.location);
-        if fs
-            .lazy_file_ref(&path)
-            .is_some_and(|lazy| lazy.digest == reference.digest)
-        {
+    for location in owned_source_locations(manifest) {
+        let path = format!("{dir}/{location}");
+        // A local write clears the pending flag; a mere read does not. So a file
+        // still pending is unmodified and already in the CAS - skip it.
+        if fs.is_pending(&path) {
             continue;
         }
         if let Some(bytes) = fs.read_file(&path) {
             files.push(SourceEntry {
-                path: reference.location,
+                path: location,
                 content: String::from_utf8_lossy(&bytes).into_owned(),
             });
         }
@@ -1096,7 +1126,7 @@ mod tests {
     // -- the TOML scanner --
 
     #[test]
-    fn owned_script_refs_scans_top_level_tables_and_skips_oci_and_nested() {
+    fn top_level_source_locations_scans_tables_and_skips_oci_and_nested() {
         let toml = "[[activity_wasm]]\n\
 location = \"a.wasm\"\n\
 content_digest = \"sha256:1\"\n\
@@ -1108,14 +1138,11 @@ content_digest = \"sha256:2\"\n\
 [[webhook_endpoint.other]]\n\
 location = \"nested.wasm\"\n\
 content_digest = \"sha256:3\"\n";
-        let refs = owned_script_refs(toml);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].location, "a.wasm");
-        assert_eq!(refs[0].digest, "sha256:1");
+        assert_eq!(top_level_source_locations(toml), vec!["a.wasm".to_string()]);
     }
 
     #[test]
-    fn backtrace_source_refs_reads_nested_table_and_inline_forms() {
+    fn backtrace_source_locations_read_nested_table_and_inline_forms() {
         // Nested-table form (obelisk's stored shape) with two entries.
         let table = "[[workflow_wasm]]\n\
 name = \"wf\"\n\
@@ -1125,14 +1152,12 @@ content_digest = \"sha256:9\"\n\
 [workflow_wasm.backtrace.sources]\n\
 \".../src/lib.rs\" = { path = \"src/lib.rs\", content_digest = \"sha256:1\" }\n\
 \".../src/util.rs\" = { path = \"src/util.rs\", content_digest = \"sha256:2\" }\n";
-        let refs = backtrace_source_refs(table);
-        assert_eq!(refs.len(), 2);
-        assert_eq!(refs[0].location, "src/lib.rs");
-        assert_eq!(refs[0].digest, "sha256:1");
-        assert_eq!(refs[1].location, "src/util.rs");
-        assert_eq!(refs[1].digest, "sha256:2");
-        // The component scanner does not see them; only the wasm location.
-        assert_eq!(deployment_file_refs(table).len(), 3);
+        assert_eq!(
+            backtrace_source_locations(table),
+            vec!["src/lib.rs".to_string(), "src/util.rs".to_string()]
+        );
+        // The wasm location plus both backtrace sources, deduped.
+        assert_eq!(owned_source_locations(table).len(), 3);
 
         // Inline form within the `[[workflow_wasm]]` table (nested inline table).
         let inline = "[[workflow_wasm]]\n\
@@ -1140,10 +1165,25 @@ name = \"wf\"\n\
 location = \"w.wasm\"\n\
 content_digest = \"sha256:9\"\n\
 backtrace.sources = { \".../src/lib.rs\" = { path = \"src/lib.rs\", content_digest = \"sha256:1\" } }\n";
-        let refs = backtrace_source_refs(inline);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].location, "src/lib.rs");
-        assert_eq!(refs[0].digest, "sha256:1");
+        assert_eq!(
+            backtrace_source_locations(inline),
+            vec!["src/lib.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn strip_owned_digests_drops_standalone_lines_keeps_backtrace_inline() {
+        let toml = "[[activity_wasm]]\n\
+location = \"a.wasm\"\n\
+content_digest = \"sha256:1\"\n\
+\n\
+[workflow_wasm.backtrace.sources]\n\
+\".../src/lib.rs\" = { path = \"src/lib.rs\", content_digest = \"sha256:2\" }\n";
+        let stripped = strip_owned_digests(toml);
+        assert!(!stripped.contains("content_digest = \"sha256:1\""));
+        // Inline backtrace digest is on a `{ ... }` line and survives.
+        assert!(stripped.contains("path = \"src/lib.rs\", content_digest = \"sha256:2\""));
+        assert!(stripped.contains("location = \"a.wasm\""));
     }
 
     #[test]
@@ -1194,10 +1234,12 @@ backtrace.sources = { \".../src/lib.rs\" = { path = \"src/lib.rs\", content_dige
                 .any(|(ffqn, _)| ffqn == "obelisk-agent:tools/webapi.deployment-read-blob")
         );
         assert!(fs.is_dir("/workspace/deployment/current"));
+        // The mounted manifest has the pinned `content_digest` stripped so the
+        // agent never has to maintain it.
         assert_eq!(
             fs.read_file("/workspace/deployment/current/deployment.toml")
                 .as_deref(),
-            Some(manifest.as_bytes())
+            Some(strip_owned_digests(manifest).as_bytes())
         );
         // The owned source lists immediately but holds no bytes until a loader
         // is installed and the file is read.
@@ -1458,7 +1500,13 @@ content_digest = \"sha256:1\"\n\
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
-        assert_eq!(params[0], manifest);
+        // a.wasm is a plain (non-lazy) local file, so submit re-pins its digest
+        // from the bytes it uploads rather than trusting the stale manifest.
+        let expected = format!(
+            "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:{}\"\n",
+            sha256_hex(b"bytes")
+        );
+        assert_eq!(params[0], expected);
         let sources: Value = serde_json::from_str(params[1].as_str().unwrap()).unwrap();
         assert_eq!(sources, json!([{"path": "a.wasm", "content": "bytes"}]));
         assert_eq!(params[2], "Submitted from workflow-agent VFS");
@@ -1569,6 +1617,50 @@ content_digest = \"sha256:1\"\n\
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
         let sources: Value = serde_json::from_str(params[1].as_str().unwrap()).unwrap();
         assert_eq!(sources, json!([{"path": "a.js", "content": "new-a"}]));
+    }
+
+    #[test]
+    fn deployment_submit_pins_digest_for_a_new_activity_with_no_digest_line() {
+        // The headline flow: the agent adds a component and its source but never
+        // writes a `content_digest` (the mounted manifest has none to copy).
+        // Submit must pin the digest itself from the file bytes, not reject.
+        let manifest = concat!(
+            "[[activity_js]]\n",
+            "name = \"program_http\"\n",
+            "location = \"activity/http.js\"\n",
+        );
+        let mut i = interp("/workspace");
+        i.fs.write_file(
+            "/workspace/deployment/current/deployment.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        i.fs.write_file(
+            "/workspace/deployment/current/activity/http.js",
+            b"export default 1",
+        )
+        .unwrap();
+
+        let mut host =
+            FakeHost::new().with("obelisk-agent:tools/webapi.deployment-submit", "\"ok\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let expected = format!(
+            "[[activity_js]]\nname = \"program_http\"\nlocation = \"activity/http.js\"\ncontent_digest = \"sha256:{}\"\n",
+            sha256_hex(b"export default 1")
+        );
+        assert_eq!(params[0], expected);
+        let sources: Value = serde_json::from_str(params[1].as_str().unwrap()).unwrap();
+        assert_eq!(
+            sources,
+            json!([{"path": "activity/http.js", "content": "export default 1"}])
+        );
     }
 
     // -- wiring: registered via `Bash::register_command`, dispatched through
