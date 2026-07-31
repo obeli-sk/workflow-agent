@@ -229,8 +229,9 @@ async function callOpenAIResponses(cfg, system, messages, tools, toolNames, leve
     }
 
     // store:false keeps the call stateless (we resend the full input each turn and
-    // never fetch a stored response); some gateways also reject store:true outright.
-    const body = { model: wireModel(cfg), input, store: false };
+    // never fetch a stored response); stream:true returns the answer as SSE, which
+    // some gateways require. Both are rejected as HTTP 400 otherwise on exe.dev.
+    const body = { model: wireModel(cfg), input, store: false, stream: true };
     if (level) {
         // gpt-5.x-codex rejects reasoning.effort="minimal" (HTTP 400); clamp to low.
         const effort = level === 'minimal' && /codex/.test(wireModel(cfg)) ? 'low' : level;
@@ -242,10 +243,10 @@ async function callOpenAIResponses(cfg, system, messages, tools, toolNames, leve
         body.tool_choice = 'auto';
     }
 
-    const headers = { 'content-type': 'application/json', accept: 'application/json' };
+    const headers = { 'content-type': 'application/json', accept: 'text/event-stream' };
     applyAuth(headers);
 
-    const { data, rate_limited } = await post(`${baseOf(cfg)}/v1/responses`, headers, body);
+    const { data, rate_limited } = await postResponsesStream(`${baseOf(cfg)}/v1/responses`, headers, body);
     if (rate_limited) return { rate_limited };
 
     const content = [];
@@ -266,7 +267,9 @@ async function callOpenAIResponses(cfg, system, messages, tools, toolNames, leve
 
 // ----- http + helpers ---------------------------------------------------------
 
-async function post(url, headers, body) {
+// Fetch and return the raw response body text, or `rate_limited` on 429. A
+// non-2xx status other than 429 is a hard error (Obelisk retries per max_retries).
+async function postRaw(url, headers, body) {
     let resp;
     console.debug(`Fetching from ${url}`);
     try { resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) }); }
@@ -278,9 +281,38 @@ async function post(url, headers, body) {
     }
     const text = await safeText(resp);
     if (!resp.ok) throw `LLM HTTP ${resp.status}: ${text.slice(0, 1000)}`;
+    return { text };
+}
+
+async function post(url, headers, body) {
+    const { text, rate_limited } = await postRaw(url, headers, body);
+    if (rate_limited) return { rate_limited };
     let data;
     try { data = JSON.parse(text); }
     catch (e) { throw `LLM returned non-JSON: ${text.slice(0, 500)}`; }
+    return { data };
+}
+
+// The Responses API is called with stream:true, so the body is an SSE stream of
+// `data: {json}` lines. Every response.* lifecycle event carries the full
+// response object under `.response`; the terminal one (response.completed /
+// .incomplete / .failed) has the final output array and status, so return the
+// last such object for the non-streaming parser above to read.
+async function postResponsesStream(url, headers, body) {
+    const { text, rate_limited } = await postRaw(url, headers, body);
+    if (rate_limited) return { rate_limited };
+    let data = null;
+    for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const payload = trimmed.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        let evt;
+        try { evt = JSON.parse(payload); } catch (_) { continue; }
+        if (evt && evt.response && typeof evt.type === 'string' && evt.type.startsWith('response.')) data = evt.response;
+    }
+    if (!data) throw `LLM stream had no response event: ${text.slice(0, 500)}`;
+    if (data.status === 'failed') throw `LLM stream failed: ${JSON.stringify(data.error || {}).slice(0, 500)}`;
     return { data };
 }
 
