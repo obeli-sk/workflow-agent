@@ -1049,7 +1049,11 @@ mod tests {
         let mut i = interp("/workspace");
         let out = execute_obelisk(&mut i, &words(&["call", "some:ffqn", ""]), "", &mut host);
         assert_eq!(out.exit_code, 2);
-        assert!(out.stderr.contains("params-json argument is empty"), "{}", out.stderr);
+        assert!(
+            out.stderr.contains("params-json argument is empty"),
+            "{}",
+            out.stderr
+        );
         assert!(host.calls.is_empty());
     }
 

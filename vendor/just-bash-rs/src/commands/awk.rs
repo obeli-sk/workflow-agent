@@ -2186,7 +2186,11 @@ mod tests {
         );
         assert_eq!(out.exit_code, 1);
         assert_eq!(out.stdout, "");
-        assert!(out.stderr.contains("getline is not supported"), "{}", out.stderr);
+        assert!(
+            out.stderr.contains("getline is not supported"),
+            "{}",
+            out.stderr
+        );
     }
 
     #[test]
@@ -2194,10 +2198,18 @@ mod tests {
         // Without the guard the `function` definition parses as a rule and the
         // call hits "calling undefined function" at runtime with empty stdout.
         let mut bash = fresh();
-        let out = run(&mut bash, "echo hi | awk 'function f(x){return x x} {print f($0)}'");
+        let out = run(
+            &mut bash,
+            "echo hi | awk 'function f(x){return x x} {print f($0)}'",
+        );
         assert_eq!(out.exit_code, 1);
         assert_eq!(out.stdout, "");
-        assert!(out.stderr.contains("user-defined functions are not supported"), "{}", out.stderr);
+        assert!(
+            out.stderr
+                .contains("user-defined functions are not supported"),
+            "{}",
+            out.stderr
+        );
     }
 
     #[test]
