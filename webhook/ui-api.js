@@ -2290,7 +2290,7 @@ function renderFinal(d) {
   if (typeof r.ok === 'string') return '<div class="bubble final"><div class="label">final</div><pre>' + esc(r.ok) + '</pre></div>';
   if (r.err === 'agent session cancelled') return '<p style="color: var(--muted)">Session cancelled.</p>';
   if (r.err !== undefined) return '<div class="err-box">Workflow err: ' + esc(String(r.err)) + '</div>';
-  if (r.execution_error !== undefined) return '<div class="err-box">Execution error: ' + esc(JSON.stringify(r.execution_error)) + '</div>';
+  if (r.execution_failed !== undefined) return '<div class="err-box">Execution error: ' + esc(JSON.stringify(r.execution_failed)) + '</div>';
   return '';
 }
 

@@ -1,5 +1,0 @@
-api.listening_addr = "127.0.0.1:15015"
-api.token = "${OBELISK__API__TOKEN}"
-webui.enabled = false
-external.listening_addr = "127.0.0.1:15090"
-database.sqlite.directory = "/tmp/workflow-agent-just-bash/obelisk-sqlite"

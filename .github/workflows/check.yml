@@ -96,12 +96,12 @@ jobs:
         run: nix develop --command echo
 
       # deployment.toml's [[workflow_wasm]] points at the release artifact, so
-      # build it before verifying (obelisk server verify does not compile it).
+      # build it before verifying.
       - name: Build the workflow component
         run: nix develop --command just build
 
-      - name: obelisk server verify
-        run: nix develop --command obelisk server verify -d deployment.toml --allow-unavailable-runtime-config
+      - name: obelisk deployment verify
+        run: nix develop --command obelisk deployment verify -d deployment.toml -s server.toml --allow-unavailable-runtime-config
 
   e2e:
     name: End-to-end tests

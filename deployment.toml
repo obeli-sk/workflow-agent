@@ -46,7 +46,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/native-call.js"
-content_digest = "sha256:0f4f6665f325da48de089137d6963764262948e488dfef85b2dfa3731c91f3a5"
+content_digest = "sha256:a8b27fd57bc35ebee7e261f07cce497b092b5873be089f4ed9a2879c4999652a"
 
 # --- LLM endpoint: multi-provider client --------------------------------------
 # The only way the agent talks to a model. It speaks a provider-neutral message
@@ -739,7 +739,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   "AGENT_MODELS",
 ]
-content_digest = "sha256:4c901a723deeb44bbcfae43a5f7ac5e91bcdd388efd5424c6d07366043056da9"
+content_digest = "sha256:2586368d1d9cd862a4ef8bf5f0024db3aca169fd27363f0c497f77a26b320334"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.

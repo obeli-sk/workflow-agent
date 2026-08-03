@@ -1,6 +1,6 @@
 use flake .
 
-export OBELISK__API__TOKEN=$(obelisk generate token --json | jq -r .token)
+export OBELISK__API__TOKEN=$(obelisk generate token)
 
 # Pick a catalog + endpoint (README has the details):
 #   models.local.json        LLM_BASE_URL=http://127.0.0.1:9190     (keyless)

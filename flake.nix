@@ -41,7 +41,7 @@
           };
           devShells.default = pkgs.mkShell {
             nativeBuildInputs = withObelisk ++ [
-              pkgs.python3 # for e2e test
+              pkgs.nodejs # for e2e test JSON handling
             ];
           };
           devShells.screenshots = pkgs.mkShell {

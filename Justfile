@@ -7,7 +7,7 @@ build:
   cd workflow/workflow-rs && cargo build --release
 
 verify: build
-  obelisk server verify --deployment deployment.toml --server-config server.toml --allow-unavailable-runtime-config
+  obelisk deployment verify --deployment deployment.toml --server-config server.toml --allow-unavailable-runtime-config
 
 sync:
   obelisk deployment get $(obelisk deployment active) --force
