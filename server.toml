@@ -1,17 +1,6 @@
 [[outbound_http.allowed_host]]
-pattern = "http://127.0.0.1:5005"
-[[outbound_http.allowed_host]]
-pattern = "http://localhost:5005"
-
-# Single LLM endpoint: origin from LLM_BASE_URL, shared LLM_API_KEY bearer token.
-# The optional per-model `path` prefix (e.g. /gateway/llm/anthropic) plus the
-# adapter route land under /v1/(messages|chat/completions|responses).
-[[outbound_http.allowed_host]]
-pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
-methods = ["POST"]
-request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
-secrets = ["LLM_API_KEY"]
-replace_in = ["headers"]
+pattern = "https://obeli.sk"
+methods = ["GET"]
 
 [secrets]
 LLM_API_KEY = { env = "LLM_API_KEY" }
@@ -19,153 +8,20 @@ OBELISK__API__TOKEN = { env = "OBELISK__API__TOKEN" }
 WORKFLOW_AGENT_GITHUB_TOKEN = { env = "WORKFLOW_AGENT_GITHUB_TOKEN" }
 
 [[outbound_http.allowed_host]]
-pattern = "https://obeli.sk"
-methods = ["GET"]
-
-[[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-request_url_regex = '^GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/functions'
+methods = ["GET", "POST", "PUT"]
 secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-request_url_regex = '^GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/functions/wit'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-request_url_regex = '^GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-request_url_regex = '^GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions/'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-request_url_regex = '^GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/deployments'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-request_url_regex = '^GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/deployments/'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-request_url_regex = '^GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}(/v1/deployments/|/v1/files/)'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-request_url_regex = '^GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/deployment-id'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-request_url_regex = '^GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}(/v1/deployment-id|/v1/deployments/)'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-request_url_regex = '^GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/files/'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
-request_url_regex = '^POST ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/deployments$'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["PUT"]
-request_url_regex = '^PUT ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/deployments/Dep_[^/]+/switch$'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "PUT"]
-request_url_regex = '^(PUT ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions/E_[^/]+|GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions/E_[^/]+/status)$'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "PUT"]
-request_url_regex = '^(PUT ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions/E_[^/]+/pause|GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions/E_[^/]+/status)$'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "PUT"]
-request_url_regex = '^(PUT ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions/E_[^/]+/unpause|GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions/E_[^/]+/status)$'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "PUT"]
-request_url_regex = '^(PUT ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions/E_[^/]+/cancel|GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions/E_[^/]+/status)$'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "PUT"]
-request_url_regex = '^(PUT ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions/E_[^/]+/stub|GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}/v1/executions/E_[^/]+/status)$'
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
+secrets = ["LLM_API_KEY"]
 replace_in = ["headers"]
 
 [[outbound_http.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET", "POST"]
-request_url_regex = '^(POST https://api\.github\.com/repos/[^/]+/[^/]+/git/refs|GET https://api\.github\.com/repos/[^/]+/[^/]+/git/ref/heads/[^/]+)$'
 secrets = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
 replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "https://api.github.com"
-methods = ["POST"]
-request_url_regex = '^POST https://api\.github\.com/graphql$'
-secrets = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "https://api.github.com"
-methods = ["GET", "POST"]
-request_url_regex = '^(GET|POST) https://api\.github\.com/repos/[^/]+/[^/]+/pulls$'
-secrets = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-request_url_regex = '^GET ${OBELISK_API_URL_REGEX:-http://127\.0\.0\.1:5005}(/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/)'
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-

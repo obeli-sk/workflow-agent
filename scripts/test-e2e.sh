@@ -63,6 +63,9 @@ webui.enabled = false
 external.listening_addr = "127.0.0.1:${EXTERNAL_PORT}"
 database.sqlite.directory = "${TMP}/obelisk-sqlite"
 
+[secrets]
+LLM_API_KEY = { env = "LLM_API_KEY" }
+
 [log.console]
 level = "warn"
 EOF

@@ -88,6 +88,20 @@ webui.enabled = false
 external.listening_addr = "127.0.0.1:${EXTERNAL_PORT}"
 database.sqlite.directory = "${TMP}/obelisk-sqlite"
 
+[secrets]
+LLM_API_KEY = { env = "LLM_API_KEY" }
+
+[[outbound_http.allowed_host]]
+pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+methods = ["POST"]
+request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
+secrets = ["LLM_API_KEY"]
+replace_in = ["headers"]
+
+[[outbound_http.allowed_host]]
+pattern = "https://obeli.sk"
+methods = ["GET"]
+
 [log.console]
 level = "warn"
 EOF
