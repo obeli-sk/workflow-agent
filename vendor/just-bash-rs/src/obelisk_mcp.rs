@@ -16,11 +16,13 @@
 //! See `apps/workflow-agent/docs/mcp.md` for the design.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
 
 use crate::custom_command::CustomCommandHandler;
+use crate::fs::{BlobLoader, Vfs};
 use crate::interpreter::CommandOutput;
 use crate::obelisk_pack::ObeliskHost;
 
@@ -82,6 +84,237 @@ pub fn discover(host: &mut dyn ObeliskHost) -> Result<Vec<Server>, String> {
     }
     servers.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(servers)
+}
+
+// ===== resources: an MCP server's files, mounted lazily into the VFS ==========
+//
+// A server that exposes files does so through the standard MCP resource
+// methods: `resources/list` enumerates them (cheap, metadata only), and
+// `resources/read` returns one resource's bytes on demand. This mirrors what
+// the obelisk-control pack does today with `deployment-checkout` (one listing)
+// plus `deployment-read-blob` (lazy per-file fetch), so an MCP server can back
+// the session VFS with no pack-specific host calls.
+//
+// The conventions this layer adds on top of the base spec:
+//
+//   * A resource's content digest travels in `_meta` under
+//     [`RESOURCE_DIGEST_META_KEY`], because `resources/list` has a standard
+//     `size` field but no digest. The digest is the file's content identity,
+//     used exactly as `deployment-checkout` digests are: the lazy-fetch/dedup
+//     key and (later) submit re-pinning.
+//   * The resource's VFS path is its `name` (the spec's logical/programmatic
+//     name), so `uri` stays fully opaque: a stateless server is free to encode
+//     the digest in the `uri` and answer `resources/read` in one call without
+//     re-listing. A server that omits `name` falls back to a path derived from
+//     the `uri`. The loader passes `uri` through verbatim and keeps a
+//     digest -> uri map from the listing; the VFS itself only ever sees the
+//     path and the sha256 digest it already understands, never a uri.
+
+/// `_meta` key carrying a resource's `sha256:<hex>` content digest in
+/// `resources/list` output. `_meta` keys are namespaced (reverse-DNS prefix
+/// before the `/`); this is obeli.sk's. Change here and in the webhook together.
+pub const RESOURCE_DIGEST_META_KEY: &str = "sk.obeli/content-digest";
+
+/// Guard against a server that never stops paginating `resources/list`.
+const MAX_RESOURCE_PAGES: usize = 1000;
+
+/// One resource from `resources/list`, reduced to what the VFS mount needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceRef {
+    /// The opaque MCP URI; the key `resources/read` fetches by.
+    pub uri: String,
+    /// VFS-relative path derived from the URI (scheme and authority stripped).
+    pub path: String,
+    /// `sha256:<hex>` content identity, read from `_meta`.
+    pub digest: String,
+    /// Authoritative byte length, from the resource's `size` field.
+    pub size: u64,
+}
+
+/// Enumerate a server's resources, following `nextCursor` across pages. Each
+/// entry must carry `size` and the [`RESOURCE_DIGEST_META_KEY`] digest, matching
+/// what `deployment-checkout` file entries provide today.
+pub fn list_resources(host: &mut dyn ObeliskHost, ffqn: &str) -> Result<Vec<ResourceRef>, String> {
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_RESOURCE_PAGES {
+        let params = match &cursor {
+            Some(c) => json!({ "cursor": c }),
+            None => json!({}),
+        };
+        let page = rpc(host, ffqn, "resources/list", params)?;
+        let resources = page
+            .get("resources")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "resources/list returned no resources array".to_string())?;
+        for resource in resources {
+            out.push(parse_resource(resource)?);
+        }
+        match page.get("nextCursor").and_then(Value::as_str) {
+            Some(next) if !next.is_empty() => cursor = Some(next.to_string()),
+            _ => return Ok(out),
+        }
+    }
+    Err("resources/list exceeded the maximum page count".to_string())
+}
+
+fn parse_resource(resource: &Value) -> Result<ResourceRef, String> {
+    let uri = resource
+        .get("uri")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "resource entry has no uri".to_string())?;
+    let size = resource
+        .get("size")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("resource {uri} has no size"))?;
+    let digest = resource
+        .get("_meta")
+        .and_then(|meta| meta.get(RESOURCE_DIGEST_META_KEY))
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("resource {uri} has no {RESOURCE_DIGEST_META_KEY} in _meta"))?;
+    let path = resource
+        .get("name")
+        .and_then(Value::as_str)
+        .map(|name| name.trim_start_matches('/').to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| uri_to_path(uri));
+    Ok(ResourceRef {
+        uri: uri.to_string(),
+        path,
+        digest: digest.to_string(),
+        size,
+    })
+}
+
+/// The VFS-relative path for a resource URI: everything after
+/// `scheme://authority`, with any leading slash removed. `file:///a/b.toml` ->
+/// `a/b.toml`; `obelisk://host/components/w.wasm` -> `components/w.wasm`; a URI
+/// with no `://` is taken verbatim (leading slash trimmed).
+fn uri_to_path(uri: &str) -> String {
+    let after_scheme = match uri.split_once("://") {
+        Some((_, rest)) => rest.split_once('/').map(|(_authority, path)| path).unwrap_or(""),
+        None => uri,
+    };
+    after_scheme.trim_start_matches('/').to_string()
+}
+
+/// Mount a server's resources into `fs` under `mount_dir`, lazily: list them
+/// once, register each as a `pending` VFS entry keyed by its sha256 digest, and
+/// install a loader that fetches a bounded file's bytes via `resources/read` on
+/// first access. `list_host` drives the listing; `loader_host` is owned by the
+/// installed loader (a `&self` fetch on read, like the CAS loader). Returns the
+/// mounted refs.
+///
+/// One loader backs the whole VFS, so this is single-server today; mounting a
+/// second resource server would need per-mount loaders (deferred).
+pub fn mount_resources(
+    fs: &mut Vfs,
+    list_host: &mut dyn ObeliskHost,
+    loader_host: Box<dyn ObeliskHost>,
+    ffqn: &str,
+    mount_dir: &str,
+) -> Result<Vec<ResourceRef>, String> {
+    let refs = list_resources(list_host, ffqn)?;
+    let dir = mount_dir.trim_end_matches('/');
+    for reference in &refs {
+        fs.register_lazy(
+            &format!("{dir}/{}", reference.path),
+            &reference.digest,
+            reference.size,
+        );
+    }
+    fs.set_blob_loader(resource_loader(loader_host, ffqn, &refs));
+    Ok(refs)
+}
+
+/// The VFS blob loader for a resource-backed mount: read a file's bytes via
+/// `resources/read`, resolving the digest the VFS holds back to the URI the
+/// listing paired it with. Two resources with identical content share a digest
+/// and thus one URI, which is fine (the bytes are identical).
+struct McpResourceLoader {
+    host: RefCell<Box<dyn ObeliskHost>>,
+    ffqn: String,
+    uri_by_digest: BTreeMap<String, String>,
+}
+
+impl BlobLoader for McpResourceLoader {
+    fn load(&self, digest: &str) -> Result<Vec<u8>, String> {
+        let uri = self
+            .uri_by_digest
+            .get(digest)
+            .ok_or_else(|| format!("no MCP resource for digest {digest}"))?;
+        let result = rpc(
+            &mut **self.host.borrow_mut(),
+            &self.ffqn,
+            "resources/read",
+            json!({ "uri": uri }),
+        )?;
+        resource_bytes(&result)
+    }
+}
+
+fn resource_loader(
+    host: Box<dyn ObeliskHost>,
+    ffqn: impl Into<String>,
+    refs: &[ResourceRef],
+) -> Rc<dyn BlobLoader> {
+    let uri_by_digest = refs
+        .iter()
+        .map(|reference| (reference.digest.clone(), reference.uri.clone()))
+        .collect();
+    Rc::new(McpResourceLoader {
+        host: RefCell::new(host),
+        ffqn: ffqn.into(),
+        uri_by_digest,
+    })
+}
+
+/// Decode the first content item of a `resources/read` result to raw bytes: a
+/// `text` item is UTF-8; a `blob` item is base64 (RFC 4648).
+fn resource_bytes(result: &Value) -> Result<Vec<u8>, String> {
+    let first = result
+        .get("contents")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .ok_or_else(|| "resources/read returned no contents".to_string())?;
+    if let Some(text) = first.get("text").and_then(Value::as_str) {
+        return Ok(text.as_bytes().to_vec());
+    }
+    if let Some(blob) = first.get("blob").and_then(Value::as_str) {
+        return base64_decode(blob);
+    }
+    Err("resources/read content has neither text nor blob".to_string())
+}
+
+/// Standard base64 decode (RFC 4648), skipping padding and any whitespace. No
+/// base64 crate is in the dependency set and blob resources are the only caller.
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    fn sextet(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::new();
+    let mut acc = 0u32;
+    let mut bits = 0u32;
+    for &byte in input.as_bytes() {
+        if byte == b'=' || byte.is_ascii_whitespace() {
+            continue;
+        }
+        let value = sextet(byte).ok_or_else(|| format!("invalid base64 byte {byte:#x}"))? as u32;
+        acc = (acc << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Ok(out)
 }
 
 /// Adapt one discovered server to a just-bash command:
@@ -673,5 +906,191 @@ mod tests {
         let out = run_registry(&registry, &words(&["list"]), &mut host).unwrap();
         assert_eq!(out.stdout, "No MCP servers are configured.\n");
         assert!(host.calls.is_empty());
+    }
+
+    // -- resources: listing, uri->path mapping, and lazy read-by-uri --
+
+    /// A host that routes by MCP method (and, for reads, by resource uri) so one
+    /// fake can answer `resources/list` pages and `resources/read` calls. The
+    /// params handed to `call_json` are `["<method>", "<params-json>"]`, and the
+    /// ok arm is double-encoded exactly like `FakeHost`'s (see `ok_arm`).
+    struct ResourceHost {
+        pages: Vec<String>,
+        reads: BTreeMap<String, String>,
+        calls: Vec<(String, String)>,
+    }
+
+    impl ResourceHost {
+        fn new() -> Self {
+            Self {
+                pages: Vec::new(),
+                reads: BTreeMap::new(),
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl ObeliskHost for ResourceHost {
+        fn call_json(&mut self, ffqn: &str, params_json: &str) -> Result<Option<String>, String> {
+            self.calls.push((ffqn.to_string(), params_json.to_string()));
+            let outer: Value = serde_json::from_str(params_json).unwrap();
+            let method = outer.get(0).and_then(Value::as_str).unwrap_or("");
+            let inner: Value =
+                serde_json::from_str(outer.get(1).and_then(Value::as_str).unwrap_or("{}")).unwrap();
+            match method {
+                "resources/list" => {
+                    let idx = match inner.get("cursor").and_then(Value::as_str) {
+                        Some(cursor) => cursor.trim_start_matches('p').parse::<usize>().unwrap_or(0),
+                        None => 0,
+                    };
+                    self.pages
+                        .get(idx)
+                        .cloned()
+                        .map(Some)
+                        .ok_or_else(|| format!("no page {idx}"))
+                }
+                "resources/read" => {
+                    let uri = inner.get("uri").and_then(Value::as_str).unwrap_or("");
+                    self.reads
+                        .get(uri)
+                        .cloned()
+                        .map(Some)
+                        .ok_or_else(|| format!("no read fixture for {uri}"))
+                }
+                other => Err(format!("unexpected method {other}")),
+            }
+        }
+    }
+
+    #[test]
+    fn list_resources_reads_size_and_meta_digest_and_maps_uri_to_path() {
+        assert_eq!(RESOURCE_DIGEST_META_KEY, "sk.obeli/content-digest");
+        let ffqn = "obelisk-agent:mcp/server.obelisk";
+        let mut host = ResourceHost::new();
+        host.pages.push(ok_arm(json!({
+            "resources": [
+                // Opaque digest-encoded uri with a logical `name` path.
+                {"uri": "obelisk-blob:sha256:aa", "name": "deployment.toml", "size": 12,
+                 "_meta": {"sk.obeli/content-digest": "sha256:aa"}},
+                // No `name`: the path falls back to the uri.
+                {"uri": "obelisk://srv/components/w.wasm", "size": 3_000_000,
+                 "_meta": {"sk.obeli/content-digest": "sha256:bb"}}
+            ]
+        })));
+        let refs = list_resources(&mut host, ffqn).unwrap();
+        assert_eq!(
+            refs,
+            vec![
+                ResourceRef {
+                    uri: "obelisk-blob:sha256:aa".into(),
+                    path: "deployment.toml".into(),
+                    digest: "sha256:aa".into(),
+                    size: 12,
+                },
+                ResourceRef {
+                    uri: "obelisk://srv/components/w.wasm".into(),
+                    path: "components/w.wasm".into(),
+                    digest: "sha256:bb".into(),
+                    size: 3_000_000,
+                },
+            ]
+        );
+        assert_eq!(host.calls[0].1, "[\"resources/list\",\"{}\"]");
+    }
+
+    #[test]
+    fn list_resources_follows_next_cursor() {
+        let ffqn = "obelisk-agent:mcp/server.obelisk";
+        let mut host = ResourceHost::new();
+        host.pages.push(ok_arm(json!({
+            "resources": [{"uri": "file:///a", "size": 1,
+                           "_meta": {"sk.obeli/content-digest": "sha256:a"}}],
+            "nextCursor": "p1"
+        })));
+        host.pages.push(ok_arm(json!({
+            "resources": [{"uri": "file:///b", "size": 1,
+                           "_meta": {"sk.obeli/content-digest": "sha256:b"}}]
+        })));
+        let refs = list_resources(&mut host, ffqn).unwrap();
+        assert_eq!(
+            refs.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(host.calls.len(), 2);
+        assert!(host.calls[1].1.contains("cursor") && host.calls[1].1.contains("p1"));
+    }
+
+    #[test]
+    fn parse_resource_requires_size_and_digest() {
+        let no_size = json!({"uri": "file:///a", "_meta": {"sk.obeli/content-digest": "sha256:a"}});
+        assert!(parse_resource(&no_size).unwrap_err().contains("no size"));
+        let no_digest = json!({"uri": "file:///a", "size": 1});
+        assert!(
+            parse_resource(&no_digest)
+                .unwrap_err()
+                .contains("sk.obeli/content-digest")
+        );
+    }
+
+    #[test]
+    fn mount_resources_registers_lazy_then_reads_text_and_blob_by_uri() {
+        let ffqn = "obelisk-agent:mcp/server.obelisk";
+        let mut list_host = ResourceHost::new();
+        list_host.pages.push(ok_arm(json!({
+            "resources": [
+                {"uri": "file:///deployment.toml", "size": 5,
+                 "_meta": {"sk.obeli/content-digest": "sha256:t"}},
+                {"uri": "file:///x.bin", "size": 3,
+                 "_meta": {"sk.obeli/content-digest": "sha256:b"}}
+            ]
+        })));
+        let mut loader_host = ResourceHost::new();
+        loader_host.reads.insert(
+            "file:///deployment.toml".into(),
+            ok_arm(json!({"contents": [{"uri": "file:///deployment.toml", "text": "hello"}]})),
+        );
+        // base64 "AAEC" -> bytes 0x00 0x01 0x02.
+        loader_host.reads.insert(
+            "file:///x.bin".into(),
+            ok_arm(json!({"contents": [{"uri": "file:///x.bin", "blob": "AAEC"}]})),
+        );
+
+        let mut fs = Vfs::new();
+        let refs = mount_resources(
+            &mut fs,
+            &mut list_host,
+            Box::new(loader_host),
+            ffqn,
+            "/workspace/deployment/current",
+        )
+        .unwrap();
+        assert_eq!(refs.len(), 2);
+        // Listing registers structure without fetching any body.
+        assert!(fs.is_file("/workspace/deployment/current/deployment.toml"));
+        assert!(
+            list_host
+                .calls
+                .iter()
+                .all(|(_, params)| params.contains("resources/list"))
+        );
+
+        assert_eq!(
+            fs.read_file("/workspace/deployment/current/deployment.toml")
+                .as_deref(),
+            Some(&b"hello"[..])
+        );
+        assert_eq!(
+            fs.read_file("/workspace/deployment/current/x.bin")
+                .as_deref(),
+            Some(&[0u8, 1, 2][..])
+        );
+    }
+
+    #[test]
+    fn base64_decode_handles_padding_and_whitespace() {
+        assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(base64_decode("aGVs bG8=\n").unwrap(), b"hello");
+        assert_eq!(base64_decode("AAEC").unwrap(), vec![0u8, 1, 2]);
+        assert!(base64_decode("!!!!").is_err());
     }
 }
