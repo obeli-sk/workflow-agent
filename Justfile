@@ -13,7 +13,7 @@ sync:
   obelisk deployment get $(obelisk deployment active) --force
 
 # Run everything: unit tests plus all end-to-end suites.
-test: test-rs test-e2e test-e2e-agent-workflow test-e2e-redeploy
+test: test-rs test-e2e test-e2e-agent-workflow test-e2e-redeploy test-e2e-mcp
 
 # Rust port: unit tests for the workflow and just-bash-rs interpreter.
 test-rs:
@@ -32,3 +32,10 @@ test-e2e-agent-workflow:
 # submit tool (empty edited-files list, no source uploads).
 test-e2e-redeploy:
   ./scripts/test-e2e-redeploy.sh
+
+# End-to-end MCP: runs a stateless MCP server in a docker/podman container and
+# drives discovery, the `mcp` registry, and tool/prompt calls over real HTTP.
+# SKIPs when no container runtime is on PATH (the nix devshell ships neither
+# docker nor podman, so run this where docker is available).
+test-e2e-mcp:
+  ./scripts/test-e2e-mcp.sh

@@ -769,3 +769,34 @@ methods = ["PUT"]
 request_url_regex = "^PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/Dep_[^/]+/switch$"
 secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
+
+# --- MCP servers (stateless) --------------------------------------------------
+# Each configured MCP server is one activity block plus one outbound-host grant,
+# mirroring the single-LLM-endpoint precedent. The function name after
+# `obelisk-agent:mcp/server.` is the server name; the workflow discovers matching
+# exports and registers each as a shell command (`<server> tools|call|prompts|
+# prompt|info`), with a global `mcp` registry command over them. A single
+# activity/mcp.js is reused by every server: each block sets the fixed env var
+# MCP_SERVER_URL (the full endpoint the activity POSTs to) and, for an
+# authenticated server, exposes the fixed secret MCP_SERVER_TOKEN (a placeholder
+# bearer the runtime swaps for the real secret in the outbound header). Every
+# activity instance has its own env, so URLs differ per block freely; one
+# server.toml can name only one MCP_SERVER_TOKEN, so >1 authenticated server is a
+# v1 limitation. Copy the block below, rename the server, point MCP_SERVER_URL at
+# it, and add the matching server.toml grant. See docs/mcp.md.
+#
+# [[activity_js]]
+# name = "mcp_obelisk_local"
+# ffqn = "obelisk-agent:mcp/server.obelisk-local"
+# params = [
+#   { name = "method",      type = "string" },
+#   { name = "params-json", type = "string" },
+# ]
+# return_type = "result<string, string>"
+# location = "activity/mcp.js"
+# env_vars = [{ key = "MCP_SERVER_URL", value = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071/mcp}" }]
+# [[activity_js.allowed_host]]
+# pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
+# methods = ["POST"]
+# secrets = ["MCP_SERVER_TOKEN"]   # optional bearer; omit this and the server.toml secret for a keyless server
+# replace_in = ["headers"]

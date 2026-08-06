@@ -10,7 +10,6 @@ interface workflow {
   agent-loop-cancellable: func(
     prompt: string,
     system-prompt: string,
-    tools-json: string,
     model: string,
     effort: string,
   ) -> result<_, string>;

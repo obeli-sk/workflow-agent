@@ -27,10 +27,14 @@
 //!   randomness this WIT provides for exactly this purpose, instead of a
 //!   host `Math.random()` shim.
 
+use std::cell::RefCell;
+use std::collections::BTreeSet;
+use std::rc::Rc;
+
 use serde_json::{Value, json};
 
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult};
-use just_bash_rs::{obelisk_pack, obelisk_program};
+use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
 
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
@@ -104,7 +108,6 @@ struct LlmReply {
 pub fn agent_loop_cancellable(
     prompt: String,
     system_prompt: String,
-    _tools_json: String,
     model: String,
     effort: String,
 ) -> Result<(), String> {
@@ -125,6 +128,22 @@ pub fn agent_loop_cancellable(
         ..Default::default()
     });
     bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(RealHost)));
+
+    // Configured MCP servers surface as one shell command each; the global `mcp`
+    // command is the registry over them. The registry is shared with the servers
+    // discovered below (updated between turns on a redeploy) and read at command
+    // time, so `mcp` always lists the current set.
+    let mcp_registry: obelisk_mcp::ServerRegistry = Rc::new(RefCell::new(Vec::new()));
+    bash.register_command(
+        "mcp",
+        obelisk_mcp::registry_command_handler(mcp_registry.clone(), Box::new(RealHost)),
+    );
+    // A server whose name would shadow a builtin, the `obelisk`/`mcp` command, or
+    // a discovered program is skipped (the reason recorded to `.mcp-error`),
+    // mirroring the program/mount error convention.
+    let mut reserved: BTreeSet<&str> = just_bash_rs::command_names().into_iter().collect();
+    reserved.insert("obelisk");
+    reserved.insert("mcp");
 
     let system = format!(
         "{system_prompt}\n\n# Shell\n\nThe only model-facing tool is bash. Its filesystem persists for this session. Run `help` to list every built-in and discovered program available in the shell.\n{}",
@@ -151,7 +170,8 @@ pub fn agent_loop_cancellable(
     // idempotent across turns.
     let mut programs_registered = false;
     let mut active_deployment_id: Option<String> = None;
-    let mut registered_programs: std::collections::BTreeSet<String> = Default::default();
+    let mut registered_programs: BTreeSet<String> = Default::default();
+    let mut registered_mcp_servers: BTreeSet<String> = Default::default();
     let mut turn_index: u64 = 0;
     let mut should_call_llm = !messages.is_empty();
     let mut agent_steps = 0u32;
@@ -195,6 +215,49 @@ pub fn agent_loop_cancellable(
                     let _ = bash
                         .fs_mut()
                         .write_file("/workspace/.program-error", err.as_bytes());
+                }
+            }
+            // MCP servers are discovered the same way as programs (a recorded
+            // list-functions call), on the first turn and on every redeploy.
+            // Registration is idempotent; a server whose name collides is
+            // skipped and the reason recorded.
+            match obelisk_mcp::discover(&mut RealHost) {
+                Ok(servers) => {
+                    let mut skipped: Vec<String> = Vec::new();
+                    for server in servers {
+                        if registered_mcp_servers.contains(&server.name) {
+                            continue;
+                        }
+                        if reserved.contains(server.name.as_str())
+                            || registered_programs.contains(&server.name)
+                        {
+                            skipped.push(format!(
+                                "{}: name shadows a builtin, the obelisk/mcp command, or a program; command not registered",
+                                server.name
+                            ));
+                            continue;
+                        }
+                        registered_mcp_servers.insert(server.name.clone());
+                        mcp_registry.borrow_mut().push(server.clone());
+                        bash.register_command(
+                            &server.name,
+                            obelisk_mcp::server_command_handler(
+                                &server.name,
+                                server.ffqn,
+                                Box::new(RealHost),
+                            ),
+                        );
+                    }
+                    if !skipped.is_empty() {
+                        let _ = bash
+                            .fs_mut()
+                            .write_file("/workspace/.mcp-error", skipped.join("\n").as_bytes());
+                    }
+                }
+                Err(err) => {
+                    let _ = bash
+                        .fs_mut()
+                        .write_file("/workspace/.mcp-error", err.as_bytes());
                 }
             }
             programs_registered = true;

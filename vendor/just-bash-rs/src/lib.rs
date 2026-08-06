@@ -17,6 +17,7 @@ pub mod expansion;
 pub mod fs;
 pub mod glob;
 pub mod interpreter;
+pub mod obelisk_mcp;
 pub mod obelisk_pack;
 pub mod obelisk_program;
 pub mod parser;

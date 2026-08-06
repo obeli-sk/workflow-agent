@@ -50,21 +50,13 @@ pub fn run(
         Ok(Err(value)) => return Err(decode_string_or_raw(value.as_deref().unwrap_or("null"))),
         Err(err) => return Err(format!("{err:?}")),
     }
-    .ok_or_else(|| format!("descriptor {descriptor} did not return {{ prompt, tools-json }}"))?;
+    .ok_or_else(|| format!("descriptor {descriptor} did not return {{ prompt }}"))?;
     let described: Value = serde_json::from_str(&described_json)
         .map_err(|e| format!("descriptor {descriptor} returned invalid JSON: {e}"))?;
     let system_prompt_base = described
         .get("prompt")
         .and_then(Value::as_str)
-        .ok_or_else(|| {
-            format!("descriptor {descriptor} did not return {{ prompt, tools-json }}")
-        })?;
-    let tools_json = described
-        .get("tools_json")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            format!("descriptor {descriptor} did not return {{ prompt, tools-json }}")
-        })?;
+        .ok_or_else(|| format!("descriptor {descriptor} did not return {{ prompt }}"))?;
 
     let system_prompt = format!(
         "{system_prompt_base}\n\n\
@@ -77,7 +69,7 @@ obelisk.get_execution / obelisk.get_logs to inspect your own run.",
     // One-off join set: `run` submits exactly one child and awaits it once.
     let join_set = workflow_support::join_set_create();
     let agent_loop_function = split_ffqn(AGENT_LOOP_FFQN)?;
-    let params = json!([prompt, system_prompt, tools_json, model_id, effort_level]).to_string();
+    let params = json!([prompt, system_prompt, model_id, effort_level]).to_string();
     let child_id = workflow_support::submit_json(&join_set, &agent_loop_function, &params)
         .map_err(|e| format!("{e:?}"))?;
 

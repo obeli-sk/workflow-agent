@@ -19,7 +19,7 @@ RUN_FFQN="obelisk-agent:workflow/workflow.agent-loop-cancellable"
 echo ">>> creating an empty session and running one direct shell turn"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
-    '["", "You are a test system prompt.", "[]", "", ""]'
+    '["", "You are a test system prompt.", "", ""]'
 
 SECONDS=0
 while true; do
@@ -54,7 +54,7 @@ echo ">>> shell-only E2E PASS: curl was discovered and invoked without starting 
 EXEC_ID="$("$OBELISK" generate execution-id)"
 echo ">>> submitting $RUN_FFQN as $EXEC_ID"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$EXEC_ID" "$RUN_FFQN" \
-    '["hello from the e2e test", "You are a test system prompt.", "[]", "", ""]'
+    '["hello from the e2e test", "You are a test system prompt.", "", ""]'
 
 echo ">>> fetching result"
 RESULT="$("$OBELISK" execution result --follow -j -a "$E2E_API_URL" "$EXEC_ID")"

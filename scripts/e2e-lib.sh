@@ -75,7 +75,7 @@ e2e_start_server() {
 
     echo ">>> starting ISOLATED obelisk server on ${E2E_API_URL} (sqlite: ${E2E_TMP}/obelisk-sqlite)"
     "$OBELISK" server run \
-        --server-config "$ROOT/server.toml" \
+        --server-config "${E2E_SERVER_CONFIG:-$ROOT/server.toml}" \
         --deployment "$deployment" \
         > "$E2E_TMP/server.log" 2>&1 &
     E2E_SERVER_PID=$!

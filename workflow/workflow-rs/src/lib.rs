@@ -26,11 +26,10 @@ impl Guest for Component {
     fn agent_loop_cancellable(
         prompt: String,
         system_prompt: String,
-        tools_json: String,
         model: String,
         effort: String,
     ) -> Result<(), String> {
-        session::agent_loop_cancellable(prompt, system_prompt, tools_json, model, effort)
+        session::agent_loop_cancellable(prompt, system_prompt, model, effort)
     }
 
     fn run(

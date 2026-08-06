@@ -25,3 +25,18 @@ pattern = "https://api.github.com"
 methods = ["GET", "POST"]
 secrets = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
 replace_in = ["headers"]
+
+# --- MCP servers (stateless) --------------------------------------------------
+# One outbound-host grant per MCP server, paired with its deployment.toml
+# activity block (see docs/mcp.md). For an authenticated server, name the secret
+# MCP_SERVER_TOKEN (the fixed placeholder activity/mcp.js reads) and source it
+# from any host env var. Omit the secret entirely for a keyless server.
+#
+# [secrets]
+# MCP_SERVER_TOKEN = { env = "MCP_OBELISK_LOCAL_TOKEN" }
+#
+# [[outbound_http.allowed_host]]
+# pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
+# methods = ["POST"]
+# secrets = ["MCP_SERVER_TOKEN"]
+# replace_in = ["headers"]

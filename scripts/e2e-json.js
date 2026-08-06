@@ -30,6 +30,38 @@ switch (command) {
     case "wrap-ok":
         process.stdout.write(JSON.stringify({ ok: input().trimEnd() }));
         break;
+    case "shell-event": {
+        // Build the injection stub payload for one shell turn: a session event
+        // {id, kind:"shell", script, stdin} encoded as a JSON string, wrapped in
+        // the {ok: ...} the injection stub expects. Script is read from a file so
+        // multi-line scripts need no shell-side escaping.
+        const id = process.argv[3];
+        const script = fs.readFileSync(process.argv[4], "utf8");
+        const event = JSON.stringify({ id, kind: "shell", script, stdin: "" });
+        process.stdout.write(JSON.stringify({ ok: event }));
+        break;
+    }
+    case "shell-stdout": {
+        // Extract stdout from a record-output result. `execution result -j`
+        // yields {ok: "<record-json>"}; the record is {id, script, result:
+        // {stdout, stderr, exit_code}}. Tolerate an err arm, a bare string, or
+        // the record object directly. Stderr and a non-zero exit go to stderr so
+        // a failing turn is visible in the test log.
+        const outer = json();
+        if (outer && typeof outer === "object" && outer.err !== undefined) {
+            console.error(`record-output returned an error: ${JSON.stringify(outer.err)}`);
+            process.exit(1);
+        }
+        const inner = typeof outer === "string" ? outer
+            : outer && typeof outer.ok === "string" ? outer.ok
+            : outer;
+        const record = typeof inner === "string" ? JSON.parse(inner) : inner;
+        const result = record.result ?? {};
+        process.stdout.write(result.stdout ?? "");
+        if (result.stderr) process.stderr.write(result.stderr);
+        if (result.exit_code) process.stderr.write(`\n[exit ${result.exit_code}]\n`);
+        break;
+    }
     case "redeploy-params": {
         const manifest = fs.readFileSync(process.argv[3], "utf8");
         process.stdout.write(JSON.stringify([manifest, "[]", "e2e no-op redeploy", false, ""]));
