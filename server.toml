@@ -35,8 +35,8 @@ replace_in = ["headers"]
 # [secrets]
 # MCP_SERVER_TOKEN = { env = "MCP_OBELISK_LOCAL_TOKEN" }
 #
-# [[outbound_http.allowed_host]]
-# pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
-# methods = ["POST"]
+[[outbound_http.allowed_host]]
+pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
+methods = ["POST"]
 # secrets = ["MCP_SERVER_TOKEN"]
 # replace_in = ["headers"]

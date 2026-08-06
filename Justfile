@@ -1,5 +1,9 @@
 serve:
   obelisk server run -d deployment.toml --server-config server.toml 
+
+# Run the keyless stateless MCP example used by the interactive guide and E2E.
+sample-mcp-server:
+  node examples/stateless-mcp-server.mjs
 # deployment.toml's [[workflow_wasm]] entry points at it; the crate's
 # .cargo/config.toml pins the wasm32-unknown-unknown target.
 # Build the native Rust workflow component (workflow/workflow-rs).

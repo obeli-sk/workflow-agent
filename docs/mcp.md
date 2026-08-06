@@ -1,6 +1,6 @@
 # Stateless MCP support
 
-Status: implemented (v1). Discovery, per-server commands, and the `mcp`
+Status: implemented. Discovery, per-server commands, and the `mcp`
 registry live in `vendor/just-bash-rs/src/obelisk_mcp.rs`, wired into the
 session loop in `workflow/workflow-rs/src/session.rs`; the transport is
 `activity/mcp.js`; a commented server block ships in `deployment.toml` /
@@ -58,8 +58,7 @@ Split along the seam the codebase already uses for the shipped `curl` program:
 
 MCP tools cannot be modeled as static `program.*` WIT exports, because they are
 discovered from the server at runtime and are not known at deploy time. Hence
-the small, unavoidable workflow addition. It is deliberately kept minimal (see
-"No startup fan-out" below).
+the small, unavoidable workflow addition. It is deliberately kept minimal.
 
 ## Command surface: one command per server, `mcp` as the registry
 
@@ -68,8 +67,11 @@ MCP primitives as subcommands:
 
 ```
 obelisk-local tools
-obelisk-local call <tool> '<json-args>'
+obelisk-local tools <tool> --help
+obelisk-local tools <tool> --arg k=v
+obelisk-local call <tool> '<json-args>'       # compatibility form
 obelisk-local prompts
+obelisk-local prompt <name> --help
 obelisk-local prompt <name> --arg k=v
 obelisk-local info                       # server/discover metadata
 ```
@@ -84,18 +86,19 @@ Rationale (name collisions): server names are operator-chosen in
 `deployment.toml`, and there are few of them, so the collision surface is small
 and controllable. Tool names, which are arbitrary and may repeat across servers
 (two servers each exposing `fetch`), never reach the top level: they are always
-`<server> call <tool>`. Naming a server `obelisk-local` also sidesteps the
+`<server> tools <tool>`. Naming a server `obelisk-local` also sidesteps the
 existing `obelisk` builtin. A server whose name would shadow a builtin or the
 `obelisk` command is skipped, and the reason recorded (mirroring how program and
 mount errors are written to `/workspace/.program-error` /
 `/workspace/.mount-error` today).
 
-### No startup fan-out
+### Startup network calls
 
-Server commands are registered from cheap function-list metadata alone; opening
-a session does not call any MCP server. The live `tools/list` / `tools/call` /
-`prompts/*` requests fire only when the user or model actually runs a
-subcommand. Server commands still appear in `help` immediately.
+Server commands are registered from cheap function-list metadata. Opening a
+session calls `resources/list` on each server so its resource tree can be
+mounted. Tool, prompt, and resource body requests remain on demand. A server
+whose resource listing fails still gets its shell command, and the mount error
+is recorded in `/workspace/.mcp-error`.
 
 ## Prompts: discoverable, not auto-fed
 
@@ -108,14 +111,18 @@ the system prompt at startup: auto-feeding every server's prompts bloats context
 and inverts the user-controlled semantics. This matches the "everything is a
 program that writes to stdout" model the shell already uses.
 
-## Resources: deferred
+## Resources: lazy VFS mounts
 
-Resources are the third MCP primitive: read-only, URI-addressed,
-application-controlled context (`resources/list`, `resources/read`). They are
-out of scope for v1. When added they follow the same shape with no new
-machinery: `<server> resources` to list, `<server> resource <uri>` to print
-content to stdout, and optionally a lazy VFS mount reusing the CAS blob-loader
-pattern from the deployment mount.
+Resources are mounted under `/workspace/mcp/<server-name>`. The session follows
+`resources/list` pagination and registers the tree from metadata only. Reading
+a bounded file issues `resources/read` once and caches the returned text or
+base64 blob in the session VFS.
+
+The resource `name` is its relative VFS path; when absent, a path is derived
+from its URI. Each listing entry must include its byte `size` and a
+`sha256:<hex>` digest in `_meta["sk.obeli/content-digest"]`. This extension lets
+the VFS list and inspect metadata without downloading content, retain the 1 MiB
+lazy-read limit, and route each file to the correct server-specific loader.
 
 ## Configuration (deployment.toml + server.toml)
 
@@ -192,16 +199,17 @@ implementation touches nothing else.
   output.
 - **In-ecosystem alternative:** rmcp `examples/servers/src/
   counter_streamhttp.rs` (Rust, stateless by default on `2026-07-28`).
-- **Ad hoc:** Python FastMCP with `stateless_http=True` for a minimal custom
-  server.
+- **Local sample:** `examples/stateless-mcp-server.mjs`, started with
+  `just sample-mcp-server`, covers tools, prompts, and lazy resources without
+  third-party dependencies.
 
-## v1 scope
+## Scope
 
 - Tools and prompts. Per-server command with `tools`, `call`, `prompts`,
   `prompt`, `info` subcommands; global `mcp` registry command.
 - Prompts discoverable (render to stdout), not auto-fed.
 - Transport as a JS activity, swappable to an rmcp-backed WASM activity later.
-- Resources deferred, trivially addable with the same `<server> resource` shape.
+- Resources mounted lazily into the session VFS.
 
 ## References
 

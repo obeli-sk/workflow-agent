@@ -172,12 +172,18 @@ fn parse_resource(resource: &Value) -> Result<ResourceRef, String> {
         .and_then(|meta| meta.get(RESOURCE_DIGEST_META_KEY))
         .and_then(Value::as_str)
         .ok_or_else(|| format!("resource {uri} has no {RESOURCE_DIGEST_META_KEY} in _meta"))?;
+    if !valid_sha256_digest(digest) {
+        return Err(format!("resource {uri} has an invalid sha256 digest"));
+    }
     let path = resource
         .get("name")
         .and_then(Value::as_str)
         .map(|name| name.trim_start_matches('/').to_string())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| uri_to_path(uri));
+    if path.is_empty() || path.split('/').any(|part| part == "." || part == "..") {
+        return Err(format!("resource {uri} has an unsafe VFS path"));
+    }
     Ok(ResourceRef {
         uri: uri.to_string(),
         path,
@@ -186,13 +192,22 @@ fn parse_resource(resource: &Value) -> Result<ResourceRef, String> {
     })
 }
 
+fn valid_sha256_digest(digest: &str) -> bool {
+    digest
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
 /// The VFS-relative path for a resource URI: everything after
 /// `scheme://authority`, with any leading slash removed. `file:///a/b.toml` ->
 /// `a/b.toml`; `obelisk://host/components/w.wasm` -> `components/w.wasm`; a URI
 /// with no `://` is taken verbatim (leading slash trimmed).
 fn uri_to_path(uri: &str) -> String {
     let after_scheme = match uri.split_once("://") {
-        Some((_, rest)) => rest.split_once('/').map(|(_authority, path)| path).unwrap_or(""),
+        Some((_, rest)) => rest
+            .split_once('/')
+            .map(|(_authority, path)| path)
+            .unwrap_or(""),
         None => uri,
     };
     after_scheme.trim_start_matches('/').to_string()
@@ -205,8 +220,6 @@ fn uri_to_path(uri: &str) -> String {
 /// installed loader (a `&self` fetch on read, like the CAS loader). Returns the
 /// mounted refs.
 ///
-/// One loader backs the whole VFS, so this is single-server today; mounting a
-/// second resource server would need per-mount loaders (deferred).
 pub fn mount_resources(
     fs: &mut Vfs,
     list_host: &mut dyn ObeliskHost,
@@ -216,14 +229,15 @@ pub fn mount_resources(
 ) -> Result<Vec<ResourceRef>, String> {
     let refs = list_resources(list_host, ffqn)?;
     let dir = mount_dir.trim_end_matches('/');
+    let loader = resource_loader(loader_host, ffqn, &refs);
     for reference in &refs {
-        fs.register_lazy(
+        fs.register_lazy_with_loader(
             &format!("{dir}/{}", reference.path),
             &reference.digest,
             reference.size,
+            loader.clone(),
         );
     }
-    fs.set_blob_loader(resource_loader(loader_host, ffqn, &refs));
     Ok(refs)
 }
 
@@ -361,27 +375,26 @@ fn run_server(
     let rest: &[String] = if args.len() > 1 { &args[1..] } else { &[] };
     match sub {
         "" | "--help" | "help" => Ok(ok(server_help(server))),
-        "tools" => {
-            let result = rpc(host, ffqn, "tools/list", json!({}))?;
-            Ok(ok(pretty_list(&result, "tools")))
-        }
+        "tools" => run_tools(server, ffqn, rest, stdin, host),
         "call" => {
+            if rest == ["--help"] {
+                return Ok(ok(call_help(server)));
+            }
             let tool = required(rest.first().map(String::as_str), "tool name")?;
-            let arguments = tool_arguments(rest.get(1).map(String::as_str), stdin)?;
-            let result = rpc(
-                host,
-                ffqn,
-                "tools/call",
-                json!({"name": tool, "arguments": arguments}),
-            )?;
-            Ok(render_tool_result(&result))
+            if rest.get(1).map(String::as_str) == Some("--help") {
+                return Ok(ok(tool_help_for(server, "call", tool, ffqn, host)?));
+            }
+            call_tool(ffqn, tool, &rest[1..], stdin, host)
         }
-        "prompts" => {
-            let result = rpc(host, ffqn, "prompts/list", json!({}))?;
-            Ok(ok(pretty_list(&result, "prompts")))
-        }
+        "prompts" => run_prompts(server, ffqn, rest, host),
         "prompt" => {
+            if rest == ["--help"] {
+                return Ok(ok(prompt_collection_help(server, "prompt")));
+            }
             let name = required(rest.first().map(String::as_str), "prompt name")?;
+            if rest.get(1).map(String::as_str) == Some("--help") {
+                return Ok(ok(prompt_help_for(server, "prompt", name, ffqn, host)?));
+            }
             let arguments = prompt_arguments(&rest[1..])?;
             let result = rpc(
                 host,
@@ -392,6 +405,11 @@ fn run_server(
             Ok(ok(render_prompt(&result)))
         }
         "info" => {
+            if rest == ["--help"] {
+                return Ok(ok(format!(
+                    "Usage: {server} info\n\nShow server metadata and capabilities.\n"
+                )));
+            }
             let result = rpc(host, ffqn, "server/discover", json!({}))?;
             Ok(ok(ensure_newline(pretty(&result))))
         }
@@ -402,6 +420,69 @@ fn run_server(
     }
 }
 
+fn run_tools(
+    server: &str,
+    ffqn: &str,
+    args: &[String],
+    stdin: &str,
+    host: &mut dyn ObeliskHost,
+) -> Result<CommandOutput, String> {
+    if args == ["--help"] {
+        return Ok(ok(tools_help(server)));
+    }
+    let Some(tool) = args.first().map(String::as_str) else {
+        let result = rpc(host, ffqn, "tools/list", json!({}))?;
+        return Ok(ok(pretty_list(&result, "tools")));
+    };
+    if args.get(1).map(String::as_str) == Some("--help") {
+        return Ok(ok(tool_help_for(server, "tools", tool, ffqn, host)?));
+    }
+    call_tool(ffqn, tool, &args[1..], stdin, host)
+}
+
+fn call_tool(
+    ffqn: &str,
+    tool: &str,
+    args: &[String],
+    stdin: &str,
+    host: &mut dyn ObeliskHost,
+) -> Result<CommandOutput, String> {
+    let arguments = tool_arguments(args, stdin)?;
+    let result = rpc(
+        host,
+        ffqn,
+        "tools/call",
+        json!({"name": tool, "arguments": arguments}),
+    )?;
+    Ok(render_tool_result(&result))
+}
+
+fn run_prompts(
+    server: &str,
+    ffqn: &str,
+    args: &[String],
+    host: &mut dyn ObeliskHost,
+) -> Result<CommandOutput, String> {
+    if args == ["--help"] {
+        return Ok(ok(prompt_collection_help(server, "prompts")));
+    }
+    let Some(name) = args.first().map(String::as_str) else {
+        let result = rpc(host, ffqn, "prompts/list", json!({}))?;
+        return Ok(ok(pretty_list(&result, "prompts")));
+    };
+    if args.get(1).map(String::as_str) == Some("--help") {
+        return Ok(ok(prompt_help_for(server, "prompts", name, ffqn, host)?));
+    }
+    let arguments = prompt_arguments(&args[1..])?;
+    let result = rpc(
+        host,
+        ffqn,
+        "prompts/get",
+        json!({"name": name, "arguments": arguments}),
+    )?;
+    Ok(ok(render_prompt(&result)))
+}
+
 fn run_registry(
     registry: &ServerRegistry,
     args: &[String],
@@ -410,6 +491,11 @@ fn run_registry(
     let action = args.first().map(String::as_str).unwrap_or("");
     let servers = registry.borrow().clone();
     match action {
+        "--help" | "help" => Ok(ok(registry_help())),
+        "list" if args.get(1).map(String::as_str) == Some("--help") => Ok(ok(
+            "Usage: mcp list\n\nList configured MCP servers with URL and auth status.\n"
+                .to_string(),
+        )),
         "" | "list" => {
             if servers.is_empty() {
                 return Ok(ok("No MCP servers are configured.\n".to_string()));
@@ -442,6 +528,9 @@ fn run_registry(
             }
             Ok(ok(out))
         }
+        "tools" if args.get(1).map(String::as_str) == Some("--help") => Ok(ok(
+            "Usage: mcp tools\n\nList tools across all configured MCP servers.\n".to_string(),
+        )),
         "tools" => {
             let mut out = String::new();
             for server in &servers {
@@ -556,40 +645,95 @@ fn content_text(content: Option<&Value>) -> String {
     }
 }
 
-/// `<server> call <tool> <json-args>`: explicit JSON positional, else stdin,
-/// else an empty object. A present-but-empty positional is a shell expansion
-/// that produced nothing (mirrors the `obelisk call` guard).
-fn tool_arguments(arg: Option<&str>, stdin: &str) -> Result<Value, String> {
-    if matches!(arg, Some("")) {
+/// Accept one JSON object, `--arg key=value`, or ordinary `--key value` flags.
+fn tool_arguments(args: &[String], stdin: &str) -> Result<Value, String> {
+    if matches!(args.first().map(String::as_str), Some("")) {
         return Err("call: arguments argument is empty (a shell expansion likely produced nothing); pass a JSON object such as {} explicitly".to_string());
     }
-    let text = arg
-        .filter(|s| !s.is_empty())
-        .or_else(|| Some(stdin).filter(|s| !s.trim().is_empty()))
-        .unwrap_or("{}");
-    serde_json::from_str(text).map_err(|e| format!("call: arguments is not valid JSON: {e}"))
+    if let Some(first) = args.first().filter(|arg| !arg.starts_with("--")) {
+        if args.len() != 1 {
+            return Err("call: JSON arguments must be a single positional value".to_string());
+        }
+        return parse_argument_object(first);
+    }
+    if args.is_empty() {
+        return match stdin.trim() {
+            "" => Ok(json!({})),
+            text => parse_argument_object(text),
+        };
+    }
+    flag_arguments(args, "call", true)
 }
 
-/// `<server> prompt <name> [--arg k=v ...]`: collect `--arg k=v` pairs into a
-/// string-valued arguments object.
+fn parse_argument_object(text: &str) -> Result<Value, String> {
+    let value: Value = serde_json::from_str(text)
+        .map_err(|e| format!("call: arguments is not valid JSON: {e}"))?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        Err("call: arguments must be a JSON object".to_string())
+    }
+}
+
+/// Prompt arguments are strings in MCP, but accept both generic and named flags.
 fn prompt_arguments(args: &[String]) -> Result<Value, String> {
+    flag_arguments(args, "prompt", false)
+}
+
+fn flag_arguments(
+    args: &[String],
+    command: &str,
+    parse_json_values: bool,
+) -> Result<Value, String> {
     let mut map = serde_json::Map::new();
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--arg" {
             let pair = args
                 .get(i + 1)
-                .ok_or_else(|| "prompt: --arg requires a k=v value".to_string())?;
+                .ok_or_else(|| format!("{command}: --arg requires a k=v value"))?;
             let (key, value) = pair
                 .split_once('=')
-                .ok_or_else(|| format!("prompt: --arg value '{pair}' is not k=v"))?;
-            map.insert(key.to_string(), Value::String(value.to_string()));
+                .ok_or_else(|| format!("{command}: --arg value '{pair}' is not k=v"))?;
+            insert_flag_value(&mut map, key, value, parse_json_values)?;
             i += 2;
+        } else if let Some(flag) = args[i].strip_prefix("--") {
+            if flag.is_empty() {
+                return Err(format!("{command}: invalid argument '--'"));
+            }
+            if let Some((key, value)) = flag.split_once('=') {
+                insert_flag_value(&mut map, key, value, parse_json_values)?;
+                i += 1;
+            } else {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| format!("{command}: --{flag} requires a value"))?;
+                insert_flag_value(&mut map, flag, value, parse_json_values)?;
+                i += 2;
+            }
         } else {
-            return Err(format!("prompt: unexpected argument '{}'", args[i]));
+            return Err(format!("{command}: unexpected argument '{}'", args[i]));
         }
     }
     Ok(Value::Object(map))
+}
+
+fn insert_flag_value(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: &str,
+    parse_json_value: bool,
+) -> Result<(), String> {
+    if key.is_empty() {
+        return Err("argument name cannot be empty".to_string());
+    }
+    let value = if parse_json_value {
+        serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()))
+    } else {
+        Value::String(value.to_string())
+    };
+    map.insert(key.to_string(), value);
+    Ok(())
 }
 
 fn valid_server_name(name: &str) -> bool {
@@ -647,15 +791,132 @@ fn fail(stderr: String) -> CommandOutput {
     }
 }
 
+fn tool_help_for(
+    server: &str,
+    command: &str,
+    name: &str,
+    ffqn: &str,
+    host: &mut dyn ObeliskHost,
+) -> Result<String, String> {
+    let result = rpc(host, ffqn, "tools/list", json!({}))?;
+    let tool = named_entry(&result, "tools", name)
+        .ok_or_else(|| format!("tool '{name}' was not found"))?;
+    let mut out = format!("Usage: {server} {command} {name} [OPTIONS]\n");
+    if let Some(description) = tool.get("description").and_then(Value::as_str) {
+        out.push_str(&format!("\n{description}\n"));
+    }
+    out.push_str("\nOptions:\n");
+    let schema = tool.get("inputSchema").or_else(|| tool.get("input_schema"));
+    let properties = schema
+        .and_then(|value| value.get("properties"))
+        .and_then(Value::as_object);
+    let required = schema
+        .and_then(|value| value.get("required"))
+        .and_then(Value::as_array);
+    if let Some(properties) = properties {
+        for (key, property) in properties {
+            let kind = property
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("value");
+            let marker = if required
+                .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(key)))
+            {
+                " (required)"
+            } else {
+                ""
+            };
+            let description = property
+                .get("description")
+                .and_then(Value::as_str)
+                .map(|text| format!("  {text}"))
+                .unwrap_or_default();
+            out.push_str(&format!("  --{key} <{kind}>{marker}{description}\n"));
+        }
+    }
+    out.push_str("  --arg KEY=VALUE       Generic argument form; repeatable\n");
+    out.push_str("  --help                Show this help\n");
+    out.push_str("\nA JSON object can also be passed as one positional argument.\n");
+    Ok(out)
+}
+
+fn prompt_help_for(
+    server: &str,
+    command: &str,
+    name: &str,
+    ffqn: &str,
+    host: &mut dyn ObeliskHost,
+) -> Result<String, String> {
+    let result = rpc(host, ffqn, "prompts/list", json!({}))?;
+    let prompt = named_entry(&result, "prompts", name)
+        .ok_or_else(|| format!("prompt '{name}' was not found"))?;
+    let mut out = format!("Usage: {server} {command} {name} [OPTIONS]\n");
+    if let Some(description) = prompt.get("description").and_then(Value::as_str) {
+        out.push_str(&format!("\n{description}\n"));
+    }
+    out.push_str("\nOptions:\n");
+    if let Some(arguments) = prompt.get("arguments").and_then(Value::as_array) {
+        for argument in arguments {
+            let Some(key) = argument.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let marker = if argument
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                " (required)"
+            } else {
+                ""
+            };
+            let description = argument
+                .get("description")
+                .and_then(Value::as_str)
+                .map(|text| format!("  {text}"))
+                .unwrap_or_default();
+            out.push_str(&format!("  --{key} <string>{marker}{description}\n"));
+        }
+    }
+    out.push_str("  --arg KEY=VALUE       Generic argument form; repeatable\n");
+    out.push_str("  --help                Show this help\n");
+    Ok(out)
+}
+
+fn named_entry<'a>(result: &'a Value, collection: &str, name: &str) -> Option<&'a Value> {
+    result
+        .get(collection)
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|entry| entry.get("name").and_then(Value::as_str) == Some(name))
+}
+
+fn tools_help(server: &str) -> String {
+    format!(
+        "Usage: {server} tools [TOOL [OPTIONS]]\n\nList tools, or invoke TOOL directly.\n\nExamples:\n  {server} tools\n  {server} tools TOOL --help\n  {server} tools TOOL --arg key=value\n  {server} tools TOOL --key value\n"
+    )
+}
+
+fn call_help(server: &str) -> String {
+    format!(
+        "Usage: {server} call TOOL [OPTIONS|JSON-ARGS]\n\nCall a tool. Run `{server} call TOOL --help` for its schema.\n"
+    )
+}
+
+fn prompt_collection_help(server: &str, command: &str) -> String {
+    format!(
+        "Usage: {server} {command} [NAME [OPTIONS]]\n\nList prompts when NAME is omitted, or render one by name.\nRun `{server} {command} NAME --help` for its arguments.\n"
+    )
+}
+
 fn server_help(server: &str) -> String {
     format!(
         "Usage: {server} <subcommand>\n\
 \n\
 Subcommands:\n\
-  tools                     List the server's tools (tools/list)\n\
-  call TOOL [JSON-ARGS]     Call a tool (tools/call); args from stdin if omitted\n\
-  prompts                   List the server's prompts (prompts/list)\n\
-  prompt NAME [--arg k=v]   Render a prompt to stdout (prompts/get)\n\
+  tools [TOOL [OPTIONS]]    List tools or invoke one directly\n\
+  call TOOL [OPTIONS|JSON]  Call a tool; args from stdin if omitted\n\
+  prompts [NAME [OPTIONS]]  List prompts or render one directly\n\
+  prompt NAME [OPTIONS]     Render a prompt to stdout\n\
   info                      Show server metadata (server/discover)\n"
     )
 }
@@ -767,6 +1028,58 @@ mod tests {
     }
 
     #[test]
+    fn tool_help_is_generated_from_its_input_schema() {
+        let ffqn = "obelisk-agent:mcp/server.demo";
+        let mut host = FakeHost::new().with(
+            ffqn,
+            &ok_arm(json!({"tools": [{
+                "name": "add",
+                "description": "Add two numbers",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"a": {"type": "number", "description": "First number"}, "b": {"type": "number"}},
+                    "required": ["a", "b"]
+                }
+            }]})),
+        );
+        let out = run_server(
+            "demo",
+            ffqn,
+            &words(&["tools", "add", "--help"]),
+            "",
+            &mut host,
+        )
+        .unwrap();
+        assert_eq!(out.exit_code, 0);
+        assert!(out.stdout.contains("Usage: demo tools add [OPTIONS]"));
+        assert!(out.stdout.contains("--a <number> (required)  First number"));
+        assert!(out.stdout.contains("--arg KEY=VALUE"));
+        assert_eq!(host.calls[0].1, "[\"tools/list\",\"{}\"]");
+    }
+
+    #[test]
+    fn tools_invokes_a_named_tool_with_typed_flags() {
+        let ffqn = "obelisk-agent:mcp/server.demo";
+        let mut host = FakeHost::new().with(
+            ffqn,
+            &ok_arm(json!({"content": [{"type": "text", "text": "4"}]})),
+        );
+        let out = run_server(
+            "demo",
+            ffqn,
+            &words(&["tools", "add", "--arg", "a=1", "--b", "3"]),
+            "",
+            &mut host,
+        )
+        .unwrap();
+        assert_eq!(out.stdout, "4\n");
+        assert_eq!(
+            host.calls[0].1,
+            "[\"tools/call\",\"{\\\"name\\\":\\\"add\\\",\\\"arguments\\\":{\\\"a\\\":1,\\\"b\\\":3}}\"]"
+        );
+    }
+
+    #[test]
     fn call_forwards_tool_name_and_arguments_and_renders_text() {
         let ffqn = "obelisk-agent:mcp/server.demo";
         let mut host = FakeHost::new().with(
@@ -851,6 +1164,52 @@ mod tests {
         assert_eq!(
             host.calls[0].1,
             "[\"prompts/get\",\"{\\\"name\\\":\\\"design-next-tool\\\",\\\"arguments\\\":{\\\"topic\\\":\\\"math\\\"}}\"]"
+        );
+    }
+
+    #[test]
+    fn prompt_help_and_named_flags_use_discovered_arguments() {
+        let ffqn = "obelisk-agent:mcp/server.demo";
+        let listing = ok_arm(json!({"prompts": [{
+            "name": "greeting",
+            "description": "Greet someone",
+            "arguments": [{"name": "name", "description": "Who to greet", "required": true}]
+        }]}));
+        let mut help_host = FakeHost::new().with(ffqn, &listing);
+        let help = run_server(
+            "demo",
+            ffqn,
+            &words(&["prompt", "greeting", "--help"]),
+            "",
+            &mut help_host,
+        )
+        .unwrap();
+        assert!(
+            help.stdout
+                .contains("Usage: demo prompt greeting [OPTIONS]")
+        );
+        assert!(
+            help.stdout
+                .contains("--name <string> (required)  Who to greet")
+        );
+
+        let mut call_host = FakeHost::new().with(
+            ffqn,
+            &ok_arm(
+                json!({"messages": [{"role": "user", "content": {"type": "text", "text": "hi"}}]}),
+            ),
+        );
+        run_server(
+            "demo",
+            ffqn,
+            &words(&["prompt", "greeting", "--name", "foo"]),
+            "",
+            &mut call_host,
+        )
+        .unwrap();
+        assert_eq!(
+            call_host.calls[0].1,
+            "[\"prompts/get\",\"{\\\"name\\\":\\\"greeting\\\",\\\"arguments\\\":{\\\"name\\\":\\\"foo\\\"}}\"]"
         );
     }
 
@@ -940,7 +1299,9 @@ mod tests {
             match method {
                 "resources/list" => {
                     let idx = match inner.get("cursor").and_then(Value::as_str) {
-                        Some(cursor) => cursor.trim_start_matches('p').parse::<usize>().unwrap_or(0),
+                        Some(cursor) => {
+                            cursor.trim_start_matches('p').parse::<usize>().unwrap_or(0)
+                        }
                         None => 0,
                     };
                     self.pages
@@ -971,10 +1332,10 @@ mod tests {
             "resources": [
                 // Opaque digest-encoded uri with a logical `name` path.
                 {"uri": "obelisk-blob:sha256:aa", "name": "deployment.toml", "size": 12,
-                 "_meta": {"sk.obeli/content-digest": "sha256:aa"}},
+                 "_meta": {"sk.obeli/content-digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
                 // No `name`: the path falls back to the uri.
                 {"uri": "obelisk://srv/components/w.wasm", "size": 3_000_000,
-                 "_meta": {"sk.obeli/content-digest": "sha256:bb"}}
+                 "_meta": {"sk.obeli/content-digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
             ]
         })));
         let refs = list_resources(&mut host, ffqn).unwrap();
@@ -984,13 +1345,17 @@ mod tests {
                 ResourceRef {
                     uri: "obelisk-blob:sha256:aa".into(),
                     path: "deployment.toml".into(),
-                    digest: "sha256:aa".into(),
+                    digest:
+                        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .into(),
                     size: 12,
                 },
                 ResourceRef {
                     uri: "obelisk://srv/components/w.wasm".into(),
                     path: "components/w.wasm".into(),
-                    digest: "sha256:bb".into(),
+                    digest:
+                        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                            .into(),
                     size: 3_000_000,
                 },
             ]
@@ -1004,12 +1369,12 @@ mod tests {
         let mut host = ResourceHost::new();
         host.pages.push(ok_arm(json!({
             "resources": [{"uri": "file:///a", "size": 1,
-                           "_meta": {"sk.obeli/content-digest": "sha256:a"}}],
+                           "_meta": {"sk.obeli/content-digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}],
             "nextCursor": "p1"
         })));
         host.pages.push(ok_arm(json!({
             "resources": [{"uri": "file:///b", "size": 1,
-                           "_meta": {"sk.obeli/content-digest": "sha256:b"}}]
+                           "_meta": {"sk.obeli/content-digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}]
         })));
         let refs = list_resources(&mut host, ffqn).unwrap();
         assert_eq!(
@@ -1022,13 +1387,24 @@ mod tests {
 
     #[test]
     fn parse_resource_requires_size_and_digest() {
-        let no_size = json!({"uri": "file:///a", "_meta": {"sk.obeli/content-digest": "sha256:a"}});
+        let no_size = json!({"uri": "file:///a", "_meta": {"sk.obeli/content-digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}});
         assert!(parse_resource(&no_size).unwrap_err().contains("no size"));
         let no_digest = json!({"uri": "file:///a", "size": 1});
         assert!(
             parse_resource(&no_digest)
                 .unwrap_err()
                 .contains("sk.obeli/content-digest")
+        );
+        let unsafe_path = json!({
+            "uri": "sample://files/escape",
+            "name": "../../escape",
+            "size": 1,
+            "_meta": {"sk.obeli/content-digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+        });
+        assert!(
+            parse_resource(&unsafe_path)
+                .unwrap_err()
+                .contains("unsafe VFS path")
         );
     }
 
@@ -1039,9 +1415,9 @@ mod tests {
         list_host.pages.push(ok_arm(json!({
             "resources": [
                 {"uri": "file:///deployment.toml", "size": 5,
-                 "_meta": {"sk.obeli/content-digest": "sha256:t"}},
+                 "_meta": {"sk.obeli/content-digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
                 {"uri": "file:///x.bin", "size": 3,
-                 "_meta": {"sk.obeli/content-digest": "sha256:b"}}
+                 "_meta": {"sk.obeli/content-digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
             ]
         })));
         let mut loader_host = ResourceHost::new();

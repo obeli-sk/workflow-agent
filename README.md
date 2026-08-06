@@ -80,6 +80,34 @@ command is also a conversation turn: its Bash tool request and structured
 result are included in the agent's next completion request after a later
 operator message starts the agent.
 
+## Try the stateless MCP sample
+
+The dependency-free sample server exposes tools, a prompt, and two resources.
+In one terminal, start it with `just sample-mcp-server`. Then uncomment the
+`mcp_obelisk_local` activity at the bottom of `deployment.toml` and the keyless
+outbound host block at the bottom of `server.toml` (leave the secret lines
+commented), build, and run the app normally.
+
+Create a new empty session after deploying, then run:
+
+```sh
+mcp list
+obelisk-local --help
+obelisk-local info
+obelisk-local tools
+obelisk-local tools add --help
+obelisk-local tools add --a 2 --b 3
+obelisk-local prompts
+obelisk-local prompt greeting --help
+obelisk-local prompt greeting --name world
+find /workspace/mcp/obelisk-local -type f
+cat /workspace/mcp/obelisk-local/README.md
+cat /workspace/mcp/obelisk-local/config/settings.json
+```
+
+Resources are listed when the session mounts the server and fetched through
+`resources/read` only when a command first reads their VFS path.
+
 The core registers a broad shell command catalog ported from just-bash, except
 `gzip`, `gunzip`, and `zcat`. This includes the standard file, path,
 text-processing, search, shell, checksum, encoding, and inspection tools. Run

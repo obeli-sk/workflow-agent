@@ -70,6 +70,8 @@ pub struct Vfs {
     /// Loader for `pending` bytes. `None` outside a mounted session (the bare
     /// interpreter and unit tests), where nothing is ever `pending`.
     loader: Option<Rc<dyn BlobLoader>>,
+    /// Path-specific loaders for mounts backed by a different blob source.
+    mounted_loaders: BTreeMap<String, Rc<dyn BlobLoader>>,
 }
 
 impl std::fmt::Debug for Vfs {
@@ -82,6 +84,7 @@ impl std::fmt::Debug for Vfs {
             .field("pending", &self.pending)
             .field("lazy_cache", &self.lazy_cache)
             .field("loader", &self.loader.as_ref().map(|_| "..."))
+            .field("mounted_loaders", &self.mounted_loaders.keys())
             .finish()
     }
 }
@@ -98,6 +101,7 @@ impl Vfs {
             pending: BTreeMap::new(),
             lazy_cache: RefCell::new(BTreeMap::new()),
             loader: None,
+            mounted_loaders: BTreeMap::new(),
         }
     }
 
@@ -112,10 +116,39 @@ impl Vfs {
     /// including a previously fetched/cached body (so `deployment refresh` can
     /// re-point a file at a new digest and discard the stale bytes).
     pub fn register_lazy(&mut self, path: &str, digest: &str, size: u64) {
+        self.register_lazy_inner(path, digest, size, None);
+    }
+
+    /// Register a lazy file whose bytes come from a mount-specific loader.
+    pub fn register_lazy_with_loader(
+        &mut self,
+        path: &str,
+        digest: &str,
+        size: u64,
+        loader: Rc<dyn BlobLoader>,
+    ) {
+        self.register_lazy_inner(path, digest, size, Some(loader));
+    }
+
+    fn register_lazy_inner(
+        &mut self,
+        path: &str,
+        digest: &str,
+        size: u64,
+        loader: Option<Rc<dyn BlobLoader>>,
+    ) {
         let path = self.resolve(path);
         self.files.remove(&path);
         self.executable.remove(&path);
         self.lazy_cache.borrow_mut().remove(&path);
+        match loader {
+            Some(loader) => {
+                self.mounted_loaders.insert(path.clone(), loader);
+            }
+            None => {
+                self.mounted_loaders.remove(&path);
+            }
+        }
         if let Some(parent) = Self::parent(&path) {
             self.ensure_dirs(&parent);
         }
@@ -287,8 +320,9 @@ impl Vfs {
             });
         }
         let bytes = self
-            .loader
-            .as_ref()
+            .mounted_loaders
+            .get(&path)
+            .or(self.loader.as_ref())
             .ok_or_else(|| FileReadError::Unavailable(path.clone()))?
             .load(&reference.digest)
             .map_err(|_| FileReadError::Unavailable(path.clone()))?;
@@ -323,6 +357,7 @@ impl Vfs {
         }
         // A truncating write discards any not-yet-fetched (or cached) lazy body.
         self.pending.remove(&path);
+        self.mounted_loaders.remove(&path);
         self.lazy_cache.borrow_mut().remove(&path);
         self.files.insert(path, data.to_vec());
         Ok(())
@@ -343,6 +378,7 @@ impl Vfs {
                 .read_file_checked(&path)
                 .map_err(|_| FsError::ReadUnavailable(path.clone()))?;
             self.pending.remove(&path);
+            self.mounted_loaders.remove(&path);
             self.lazy_cache.borrow_mut().remove(&path);
             self.files.insert(path.clone(), existing);
         }
@@ -360,7 +396,12 @@ impl Vfs {
     pub fn copy_file(&mut self, src: &str, dest: &str) -> bool {
         let src = self.resolve(src);
         if let Some(reference) = self.pending.get(&src).cloned() {
-            self.register_lazy(dest, &reference.digest, reference.size);
+            match self.mounted_loaders.get(&src).cloned() {
+                Some(loader) => {
+                    self.register_lazy_with_loader(dest, &reference.digest, reference.size, loader)
+                }
+                None => self.register_lazy(dest, &reference.digest, reference.size),
+            }
             return true;
         }
         match self.read_file(&src) {
@@ -432,6 +473,7 @@ impl Vfs {
         let path = self.resolve(path);
         if self.files.remove(&path).is_some() || self.pending.remove(&path).is_some() {
             self.executable.remove(&path);
+            self.mounted_loaders.remove(&path);
             self.lazy_cache.borrow_mut().remove(&path);
             return Ok(());
         }
@@ -449,6 +491,8 @@ impl Vfs {
             self.executable
                 .retain(|k| k != &path && !k.starts_with(&prefix));
             self.pending
+                .retain(|k, _| k != &path && !k.starts_with(&prefix));
+            self.mounted_loaders
                 .retain(|k, _| k != &path && !k.starts_with(&prefix));
             self.lazy_cache
                 .borrow_mut()
@@ -631,6 +675,30 @@ mod tests {
         assert_eq!(fs.read_file("/dep/a.txt").as_deref(), Some(&b"hello"[..]));
         assert_eq!(fs.read_file("/dep/a.txt").as_deref(), Some(&b"hello"[..]));
         assert_eq!(&*loader.loads.borrow(), &["sha256:a".to_string()]);
+    }
+
+    #[test]
+    fn mount_specific_loader_coexists_with_default_loader() {
+        let deployment_loader = Rc::new(CountingLoader {
+            blobs: BTreeMap::from([("sha256:deployment".to_string(), b"deployment".to_vec())]),
+            loads: RefCell::new(Vec::new()),
+        });
+        let mcp_loader = Rc::new(CountingLoader {
+            blobs: BTreeMap::from([("sha256:mcp".to_string(), b"resource".to_vec())]),
+            loads: RefCell::new(Vec::new()),
+        });
+        let mut fs = Vfs::new();
+        fs.set_blob_loader(deployment_loader.clone());
+        fs.register_lazy("/deployment/file", "sha256:deployment", 10);
+        fs.register_lazy_with_loader("/mcp/file", "sha256:mcp", 8, mcp_loader.clone());
+
+        assert_eq!(
+            fs.read_file("/deployment/file").as_deref(),
+            Some(&b"deployment"[..])
+        );
+        assert_eq!(fs.read_file("/mcp/file").as_deref(), Some(&b"resource"[..]));
+        assert_eq!(&*deployment_loader.loads.borrow(), &["sha256:deployment"]);
+        assert_eq!(&*mcp_loader.loads.borrow(), &["sha256:mcp"]);
     }
 
     #[test]

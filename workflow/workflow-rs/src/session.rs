@@ -243,10 +243,22 @@ pub fn agent_loop_cancellable(
                             &server.name,
                             obelisk_mcp::server_command_handler(
                                 &server.name,
-                                server.ffqn,
+                                &server.ffqn,
                                 Box::new(RealHost),
                             ),
                         );
+                        let mount_dir = format!("/workspace/mcp/{}", server.name);
+                        match obelisk_mcp::mount_resources(
+                            bash.fs_mut(),
+                            &mut RealHost,
+                            Box::new(RealHost),
+                            &server.ffqn,
+                            &mount_dir,
+                        ) {
+                            Ok(_) => {}
+                            Err(err) => skipped
+                                .push(format!("{}: resources not mounted: {err}", server.name)),
+                        }
                     }
                     if !skipped.is_empty() {
                         let _ = bash

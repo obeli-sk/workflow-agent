@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# End-to-end test for stateless MCP support (docs/mcp.md). Runs a self-contained
-# stateless MCP server (scripts/e2e-mcp-server.mjs) in a stock node container,
+# End-to-end test for stateless MCP support (docs/mcp.md). Runs the self-contained
+# sample server (examples/stateless-mcp-server.mjs) in a stock node container,
 # deploys one MCP activity block pointed at it, opens a session, and drives the
-# shell command surface (`mcp list`, `<server> info|tools|call|prompts|prompt`)
-# through one operator shell turn, asserting the rendered output.
+# shell command surface and lazily mounted resources through one operator shell
+# turn, asserting the rendered output.
 #
 # Requires docker or podman. When neither is present the test SKIPs (exit 0) so
 # environments without a container runtime stay green; the skip is logged.
@@ -51,7 +51,7 @@ echo ">>> starting stateless MCP server ($MCP_IMAGE) on :${MCP_PORT}"
 "$CRT" run -d --name "$MCP_CONTAINER" \
     -p "127.0.0.1:${MCP_PORT}:${MCP_PORT}" \
     -e "PORT=${MCP_PORT}" \
-    -v "$ROOT/scripts/e2e-mcp-server.mjs:/srv/server.mjs:ro" \
+    -v "$ROOT/examples/stateless-mcp-server.mjs:/srv/server.mjs:ro" \
     "$MCP_IMAGE" node /srv/server.mjs >/dev/null
 
 # The nix devshell ships node but not curl, so probe readiness with node.
@@ -130,18 +130,28 @@ TURN_SCRIPT="$E2E_TMP/mcp-turn.sh"
 cat > "$TURN_SCRIPT" <<EOF
 echo '### mcp list'
 mcp list
+echo '### server help'
+${SERVER_NAME} --help
 echo '### info'
 ${SERVER_NAME} info
 echo '### tools'
 ${SERVER_NAME} tools
+echo '### tool help'
+${SERVER_NAME} tools add --help
 echo '### call add'
-${SERVER_NAME} call add '{"a":2,"b":3}'
+${SERVER_NAME} tools add --arg a=2 --b 3
 echo '### call echo'
-${SERVER_NAME} call echo '{"text":"hi there"}'
+${SERVER_NAME} tools echo --text 'hi there'
 echo '### prompts'
 ${SERVER_NAME} prompts
+echo '### prompt help'
+${SERVER_NAME} prompt greeting --help
 echo '### prompt'
-${SERVER_NAME} prompt greeting --arg name=world
+${SERVER_NAME} prompt greeting --name world
+echo '### resources'
+find /workspace/mcp/${SERVER_NAME} -type f
+cat /workspace/mcp/${SERVER_NAME}/README.md
+cat /workspace/mcp/${SERVER_NAME}/config/settings.json
 EOF
 
 echo ">>> stubbing the input offer with the MCP shell turn"
@@ -181,12 +191,18 @@ require() {
     fi
 }
 require "${SERVER_NAME}  url=${MCP_URL}  auth=no"   # mcp list registry
-require "e2e-mcp-stateless"                          # info -> server/discover
+require "workflow-agent-stateless-sample"            # info -> server/discover
 require "\"add\""                                    # tools/list
 require "\"echo\""                                   # tools/list
+require "Usage: ${SERVER_NAME} tools add [OPTIONS]"    # schema-driven help
+require "--a <number> (required)"                    # tool input schema
 require "echo: hi there"                             # tools/call echo
 require "greeting"                                   # prompts/list
+require "--name <string> (required)"                 # prompt arguments
 require "[user] Hello, world!"                       # prompts/get render
+require "/workspace/mcp/${SERVER_NAME}/README.md"    # resources/list -> VFS
+require "This file was fetched lazily"               # resources/read text
+require '"mode":"stateless","answer":42'           # nested resource path
 if ! grep -qx "5" <<<"$STDOUT"; then                 # tools/call add
     echo ">>> MCP E2E FAIL: expected 'add' tool to return 5" >&2
     fail=1
@@ -197,4 +213,4 @@ if [[ $fail -ne 0 ]]; then
     sed -n '1,80p' "$E2E_TMP/server.log" >&2 || true
     exit 1
 fi
-echo ">>> MCP E2E PASS: discovery, registry, tools, call, and prompts all worked over real HTTP"
+echo ">>> MCP E2E PASS: registry, tools, prompts, and lazy VFS resources worked over real HTTP"
