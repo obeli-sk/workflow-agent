@@ -786,18 +786,18 @@ replace_in = ["headers"]
 # v1 limitation. Copy the block below, rename the server, point MCP_SERVER_URL at
 # it, and add the matching server.toml grant. See docs/mcp.md.
 #
-[[activity_js]]
-name = "mcp_obelisk_local"
-ffqn = "obelisk-agent:mcp/server.obelisk-local"
-params = [
-  { name = "method",      type = "string" },
-  { name = "params-json", type = "string" },
-]
-return_type = "result<string, string>"
-location = "activity/mcp.js"
-env_vars = [{ key = "MCP_SERVER_URL", value = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071/mcp}" }]
-[[activity_js.allowed_host]]
-pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
-methods = ["POST"]
+# [[activity_js]]
+# name = "mcp_obelisk_local"
+# ffqn = "obelisk-agent:mcp/server.obelisk-local"
+# params = [
+#   { name = "method",      type = "string" },
+#   { name = "params-json", type = "string" },
+# ]
+# return_type = "result<string, string>"
+# location = "activity/mcp.js"
+# env_vars = [{ key = "MCP_SERVER_URL", value = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071/mcp}" }]
+# [[activity_js.allowed_host]]
+# pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
+# methods = ["POST"]
 # secrets = ["MCP_SERVER_TOKEN"]   # optional bearer; omit this and the server.toml secret for a keyless server
 # replace_in = ["headers"]
