@@ -347,7 +347,7 @@ async function detailRun(id, cursorState) {
             tool_children: walk.toolChildren,
             operator_messages: walk.operatorMessages,
             shell_events: walk.shellEvents,
-            sent_results: sent.results,
+            sent_results: [...walk.toolResults, ...sent.results],
             completion_requests: sent.completion_requests,
             response_cursor: walk.cursor,
             history_version: sent.version,
@@ -621,6 +621,7 @@ function lineDiff(oldText, newText) {
 async function loadResponses(execId, startCursor = 0) {
     const replies = [];
     const toolChildren = [];
+    const toolResults = [];
     const operatorMessages = [];
     const shellEvents = [];
     let cursor = startCursor;
@@ -670,13 +671,30 @@ async function loadResponses(execId, startCursor = 0) {
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
                 try {
                     const record = JSON.parse(String(value));
-                    shellEvents.push({
-                        kind: "shell_output",
-                        id: record.id || "",
-                        script: record.script || "",
-                        result: record.result || {},
-                        created_at: r.event?.created_at || "",
-                    });
+                    if (record.kind === "agent_error" && typeof record.text === "string") {
+                        replies.push({
+                            reply: { error: record.text },
+                            presentation: "",
+                            blocks: [],
+                            narration: "",
+                            created_at: r.event?.created_at || "",
+                            completion_id: "",
+                            turn_index: Number.isInteger(record.turn_index) ? record.turn_index : null,
+                        });
+                    } else if (record.kind === "tool_result" && record.block) {
+                        toolResults.push(normalizeToolResultBlock(
+                            record.block,
+                            r.event?.created_at || "",
+                        ));
+                    } else {
+                        shellEvents.push({
+                            kind: "shell_output",
+                            id: record.id || "",
+                            script: record.script || "",
+                            result: record.result || {},
+                            created_at: r.event?.created_at || "",
+                        });
+                    }
                 } catch (_) { }
             }
         }
@@ -687,7 +705,7 @@ async function loadResponses(execId, startCursor = 0) {
         including = false;
         if (responses.length < 200) break;
     }
-    return { replies, toolChildren, operatorMessages, shellEvents, cursor };
+    return { replies, toolChildren, toolResults, operatorMessages, shellEvents, cursor };
 }
 
 function appendCompletionReply(replies, ev, response, turnIndex = null) {
@@ -806,10 +824,7 @@ function findMatchingBrace(text, start) {
     return -1;
 }
 
-// The tool responses *as the model received them* are the `tool_result` blocks
-// in the message history passed to each llm.completion. Those are not in
-// /responses when dispatch fails before a child execution is started, so read
-// the completion request params and flatten them in dispatch order.
+// backcompat: 0.41.0 sessions before durable tool-result records exposed results only in the next completion request.
 async function loadSentResults(execId, startVersion = 0) {
     const sent = [];
     const completionRequests = [];

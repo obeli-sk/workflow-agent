@@ -177,6 +177,28 @@ pub fn agent_loop_cancellable(
     let mut agent_steps = 0u32;
 
     loop {
+        if should_call_llm && agent_steps >= MAX_TURNS {
+            let message =
+                format!("exceeded MAX_TURNS={MAX_TURNS} without yielding an assistant response");
+            messages.push(json!({
+                "role": "assistant",
+                "content": [{"type": "text", "text": message}],
+            }));
+            publish_session_record(
+                &output_join_set,
+                &json!({
+                    "id": format!("turn-limit-{turn_index}"),
+                    "kind": "agent_error",
+                    "text": message,
+                    "turn_index": turn_index,
+                }),
+            )?;
+            should_call_llm = false;
+            agent_steps = 0;
+            turn_index += 1;
+            continue;
+        }
+
         // A turn is one operator interaction or one model completion. The name
         // embeds the turn index because a named set's name is reserved for the
         // execution's whole history and cannot be reused across turns.
@@ -304,11 +326,6 @@ pub fn agent_loop_cancellable(
             should_call_llm =
                 apply_session_event(event, &output_join_set, &mut bash, &mut messages)?;
         } else {
-            if agent_steps >= MAX_TURNS {
-                return Err(format!(
-                    "exceeded MAX_TURNS={MAX_TURNS} without yielding an assistant response"
-                ));
-            }
             let reply = call_llm_with_operator(
                 &mut session,
                 &system,
@@ -347,10 +364,19 @@ pub fn agent_loop_cancellable(
                 })
                 .collect();
             if !calls.is_empty() {
-                let result_blocks: Vec<Value> = calls
-                    .iter()
-                    .map(|call| dispatch_bash(call, &mut bash))
-                    .collect();
+                let mut result_blocks = Vec::with_capacity(calls.len());
+                for call in &calls {
+                    let block = dispatch_bash(call, &mut bash);
+                    publish_session_record(
+                        &output_join_set,
+                        &json!({
+                            "id": call.id,
+                            "kind": "tool_result",
+                            "block": block,
+                        }),
+                    )?;
+                    result_blocks.push(block);
+                }
                 messages.insert(
                     reply.request_message_count + 1,
                     json!({"role": "user", "content": result_blocks}),
@@ -407,7 +433,7 @@ fn apply_session_event(
         SessionEvent::Shell { id, script, stdin } => {
             let result = exec_shell(bash, &script, &stdin);
             let record = json!({"id": id, "script": script, "result": shell_result(&result)});
-            publish_shell_result(output_join_set, &record)?;
+            publish_session_record(output_join_set, &record)?;
             append_shell_exchange(messages, &record, &stdin);
             Ok(false)
         }
@@ -443,7 +469,7 @@ fn append_shell_exchange(messages: &mut Vec<Value>, record: &Value, stdin: &str)
     }));
 }
 
-fn publish_shell_result(output_join_set: &JoinSet, record: &Value) -> Result<(), String> {
+fn publish_session_record(output_join_set: &JoinSet, record: &Value) -> Result<(), String> {
     let record_json = record.to_string();
     let event_id = record.get("id").and_then(Value::as_str).unwrap_or_default();
     let function = split_ffqn(OUTPUT_FFQN)?;
@@ -460,7 +486,7 @@ fn publish_shell_result(output_join_set: &JoinSet, record: &Value) -> Result<(),
         .and_then(|json| serde_json::from_str::<String>(&json).ok())
         .unwrap_or_default();
     if last_id.as_deref() != Some(execution_id.id.as_str()) || published != record_json {
-        return Err(format!("unexpected shell output response: {last_id:?}"));
+        return Err(format!("unexpected session output response: {last_id:?}"));
     }
     Ok(())
 }
