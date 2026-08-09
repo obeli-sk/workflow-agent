@@ -637,14 +637,27 @@ fn json_call(
     params: Value,
 ) -> Result<CommandOutput, String> {
     let value = call_value(host, ffqn, &params.to_string())?;
-    // PORT: `jsonCall`'s `typeof value === "string" ? value : JSON.stringify(value)`:
-    // a string result prints verbatim (the endpoints return JSON *text*),
-    // anything else is re-serialized. `Ok(None)` (no body) stayed `null`.
-    let text = match value {
-        Value::String(s) => s,
-        other => other.to_string(),
-    };
-    Ok(ok(ensure_trailing_newline(text)))
+    Ok(ok(ensure_trailing_newline(render_output(value))))
+}
+
+/// Render an FFQN result for the shell. The endpoints return JSON *text*, so a
+/// structural result (array/object) is pretty-printed - one element/field per
+/// line - to stay readable and greppable rather than a single dense line. A
+/// string body that is not itself structural JSON (WIT text, execution logs, a
+/// bare deployment id) prints verbatim, as does a scalar. `Ok(None)` (no body)
+/// stayed `null`.
+fn render_output(value: Value) -> String {
+    match value {
+        Value::String(s) => match serde_json::from_str::<Value>(&s) {
+            Ok(inner) if inner.is_array() || inner.is_object() => pretty_json(&inner),
+            _ => s,
+        },
+        other => pretty_json(&other),
+    }
+}
+
+fn pretty_json(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
 /// PORT: the JS `obelisk.call` builtin. `RealHost::call_json` returns raw JSON
@@ -669,11 +682,10 @@ fn ensure_trailing_newline(text: String) -> String {
 }
 
 fn mount_result_json(result: &MountResult) -> String {
-    json!({
+    pretty_json(&json!({
         "deployment_id": result.deployment_id,
         "files": result.files,
-    })
-    .to_string()
+    }))
 }
 
 /// PORT: `decodeString`. `value` is the already-peeled `call_value` result. A
@@ -922,7 +934,8 @@ mod tests {
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
-        assert_eq!(out.stdout, "[\"a\",\"b\"]\n");
+        // Structural JSON is pretty-printed for readability/grepping.
+        assert_eq!(out.stdout, "[\n  \"a\",\n  \"b\"\n]\n");
         assert_eq!(
             host.calls,
             vec![(
@@ -938,6 +951,38 @@ mod tests {
         let mut i = interp("/workspace");
         execute_obelisk(&mut i, &words(&["functions", "list"]), "", &mut host);
         assert_eq!(host.calls[0].1, "[\"\",100]");
+    }
+
+    #[test]
+    fn functions_list_pretty_prints_a_json_string_body() {
+        // Real `list-functions` returns its array via `JSON.stringify`, so the
+        // body arrives as a JSON *string* (the `Value::String` branch), not a
+        // raw array. It must still be reflowed, not printed as one dense line.
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.list-functions",
+            "\"[{\\\"ffqn\\\":\\\"a\\\"}]\"",
+        );
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["functions", "list"]), "", &mut host);
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(out.stdout, "[\n  {\n    \"ffqn\": \"a\"\n  }\n]\n");
+    }
+
+    #[test]
+    fn functions_wit_prints_non_json_text_verbatim() {
+        // A WIT body is plain text, not JSON: it must pass through untouched
+        // rather than being mangled by the JSON pretty-printer.
+        let wit = "\"interface foo { bar: func() }\"";
+        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.get-function-wit", wit);
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["functions", "wit", "a:b/c.d"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(out.stdout, "interface foo { bar: func() }\n");
     }
 
     #[test]
@@ -1011,7 +1056,7 @@ mod tests {
             "",
             &mut host,
         );
-        assert_eq!(out.stdout, "{\"ok\":1}\n");
+        assert_eq!(out.stdout, "{\n  \"ok\": 1\n}\n");
     }
 
     #[test]
@@ -1440,7 +1485,10 @@ content_digest = \"sha256:1\"\n\
         let mut i = interp("/workspace");
         let out = execute_obelisk(&mut i, &words(&["deployment", "refresh"]), "", &mut host);
         assert_eq!(out.exit_code, 0);
-        assert_eq!(out.stdout, "{\"deployment_id\":\"dep-1\",\"files\":2}\n");
+        assert_eq!(
+            out.stdout,
+            "{\n  \"deployment_id\": \"dep-1\",\n  \"files\": 2\n}\n"
+        );
     }
 
     #[test]
