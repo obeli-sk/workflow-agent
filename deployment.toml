@@ -739,7 +739,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   "AGENT_MODELS",
 ]
-content_digest = "sha256:71f5cdc3011445f6da81509c734bb5119013b3c7ef157e6fb83f35490728ea88"
+content_digest = "sha256:f9a600ca8b0008a4897213091692a5ff5c87904975ada2e15fdc769b6555185d"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.

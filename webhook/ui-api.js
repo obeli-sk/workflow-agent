@@ -1184,7 +1184,9 @@ const SHELL_HTML = `<!doctype html>
   .meta a:hover { text-decoration: underline; }
   .meta button { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
   .meta button:hover { text-decoration: underline; }
-  .call summary .status-pill { margin-left: auto; font-size: 0.8em; padding: 0.05em 0.5em; border-radius: 3px; }
+  .call summary .call-meta { margin-left: auto; display: flex; align-items: baseline; gap: 0.5em; }
+  .call summary .call-meta .latency { margin-left: 0; }
+  .call summary .status-pill { font-size: 0.8em; padding: 0.05em 0.5em; border-radius: 3px; }
   .call summary .status-pill.ok { background: var(--ok-bg); color: var(--ok); }
   .call summary .status-pill.err { background: var(--err-bg); color: var(--err); }
   .call summary .status-pill.pending { background: #f0f0f0; color: var(--muted); }
@@ -2130,15 +2132,15 @@ function displayBlocksHtml(blocks, latencyMs) {
   }).join('');
 }
 
-function latencyHtml(milliseconds, title = 'latency') {
+function latencyHtml(milliseconds, title = 'latency', prefix = '') {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '';
   let label;
-  if (milliseconds < 1000) label = Math.round(milliseconds) + ' ms';
-  else if (milliseconds < 10000) label = (milliseconds / 1000).toFixed(2) + ' s';
-  else if (milliseconds < 60000) label = (milliseconds / 1000).toFixed(1) + ' s';
+  if (milliseconds < 1000) label = Math.round(milliseconds) + 'ms';
+  else if (milliseconds < 10000) label = (milliseconds / 1000).toFixed(2) + 's';
+  else if (milliseconds < 60000) label = (milliseconds / 1000).toFixed(1) + 's';
   else label = Math.floor(milliseconds / 60000) + 'm '
     + Math.round((milliseconds % 60000) / 1000) + 's';
-  return '<span class="latency" title="' + esc(title) + '">' + esc(label) + '</span>';
+  return '<span class="latency" title="' + esc(title) + '">' + esc(prefix + label) + '</span>';
 }
 
 function sourceData(source) {
@@ -2252,6 +2254,10 @@ function renderCall(call, turnIndex, callIndex) {
     ? ' <a class="child-link" href="' + esc(execLink(call.child_id)) + '" target="_blank" rel="noopener" title="open in obelisk web UI">' + esc(shortChildId(call.child_id)) + '</a>'
     : '';
 
+  // Surface the latency in the summary so it is visible without expanding the
+  // call; drop it from the expanded result heads to avoid duplication.
+  const summaryLatency = latencyHtml(call.latency_ms, callLatencyTitle, 'in ');
+
   let pill, resultBlock;
   if ('ok' in call) {
     pill = '<span class="status-pill ok">ok</span>';
@@ -2264,24 +2270,24 @@ function renderCall(call, turnIndex, callIndex) {
       }
       if (!streams) streams = '<pre>(no output)</pre>';
       resultBlock = '<div class="result"><div class="response-head"><div class="key">exit '
-        + esc(call.ok.exit_code) + '</div>' + latencyHtml(call.latency_ms, callLatencyTitle)
-        + '</div>' + streams + '</div>';
+        + esc(call.ok.exit_code) + '</div></div>' + streams + '</div>';
     } else {
       const out = typeof call.ok === 'string' ? call.ok : JSON.stringify(call.ok, null, 2);
       resultBlock = '<div class="result"><div class="response-head"><div class="key">ok</div>'
-        + latencyHtml(call.latency_ms, callLatencyTitle) + '</div><pre>' + esc(out) + '</pre></div>';
+        + '</div><pre>' + esc(out) + '</pre></div>';
     }
   } else if ('err' in call) {
     pill = '<span class="status-pill err">err</span>';
     resultBlock = '<div class="result"><div class="response-head"><div class="key">err</div>'
-      + latencyHtml(call.latency_ms, callLatencyTitle) + '</div><pre>' + esc(String(call.err)) + '</pre></div>';
+      + '</div><pre>' + esc(String(call.err)) + '</pre></div>';
   } else {
     pill = '<span class="status-pill pending">pending</span>';
     resultBlock = '';
   }
 
   return '<details class="call" data-key="' + esc(key) + '"' + (call.open ? ' open' : '') + '>'
-    + '<summary><code>' + esc(name) + '</code>' + childLink + pill + '</summary>'
+    + '<summary><code>' + esc(name) + '</code>' + childLink
+    + '<span class="call-meta">' + pill + summaryLatency + '</span></summary>'
     + argsBlock
     + resultBlock
     + '</details>';

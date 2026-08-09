@@ -13,6 +13,9 @@ build:
 verify: build
   obelisk deployment verify --deployment deployment.toml --server-config server.toml --allow-unavailable-runtime-config
 
+fix: build
+  obelisk deployment verify --deployment deployment.toml --server-config server.toml --fix
+
 sync:
   obelisk deployment get $(obelisk deployment active) --force
 
