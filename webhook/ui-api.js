@@ -348,6 +348,7 @@ async function detailRun(id, cursorState) {
             operator_messages: walk.operatorMessages,
             shell_events: walk.shellEvents,
             sent_results: sent.results,
+            completion_requests: sent.completion_requests,
             response_cursor: walk.cursor,
             history_version: sent.version,
         },
@@ -714,6 +715,9 @@ function appendCompletionReply(replies, ev, response, turnIndex = null) {
         // (a "thinking" bubble). Text-only turns already render it as the response.
         narration: toolUses.length > 0 ? text : "",
         created_at: response.event?.created_at || "",
+        // The completion child id pairs this reply (finish time) with its
+        // request event (start time) so the UI can report the LLM latency.
+        completion_id: ev.child_execution_id || "",
         turn_index: turnIndex,
     });
 }
@@ -808,6 +812,7 @@ function findMatchingBrace(text, start) {
 // the completion request params and flatten them in dispatch order.
 async function loadSentResults(execId, startVersion = 0) {
     const sent = [];
+    const completionRequests = [];
     const seenToolResults = new Set();
     let version = startVersion;
     let including = startVersion === 0;
@@ -825,6 +830,11 @@ async function loadSentResults(execId, startVersion = 0) {
                 || (he.request?.type === "child_execution_request"
                     && he.request.target_ffqn === COMPLETION_FFQN);
             if (isCompletion) {
+                // The request event's created_at is when the completion child was
+                // submitted (the model started); paired by child id with the
+                // reply's finish time, it yields the per-turn LLM latency.
+                const childId = String(he.request?.child_execution_id || "");
+                if (childId) completionRequests.push({ id: childId, created_at: e.created_at || "" });
                 const messages = parseMessagesParam(he.request?.params?.[1]);
                 for (const msg of messages) {
                     for (const block of Array.isArray(msg?.content) ? msg.content : []) {
@@ -832,6 +842,9 @@ async function loadSentResults(execId, startVersion = 0) {
                         const id = String(block.tool_use_id || "");
                         if (id && seenToolResults.has(id)) continue;
                         if (id) seenToolResults.add(id);
+                        // Keep the *first* request that carried this result: every
+                        // later completion re-sends the whole history, so a later
+                        // created_at would inflate the bash latency to span the run.
                         sent.push(normalizeToolResultBlock(block, e.created_at || ""));
                     }
                 }
@@ -844,7 +857,7 @@ async function loadSentResults(execId, startVersion = 0) {
         including = false;
         if (events.length < 200) break;
     }
-    return { results: sent, version };
+    return { results: sent, completion_requests: completionRequests, version };
 }
 
 function parseMessagesParam(value) {
@@ -1159,7 +1172,8 @@ const SHELL_HTML = `<!doctype html>
   .bubble.mermaid-block .render-error { color: var(--err); white-space: pre-wrap; }
   .label { font-size: 0.75em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.25em; }
   .turn { margin: 1em 0; }
-  .turn-header { font-weight: 600; color: var(--muted); font-size: 0.85em; margin-bottom: 0.3em; }
+  .turn .bubble { max-width: none; }
+  .turn-header { display: flex; align-items: baseline; gap: 0.7em; font-weight: 600; color: var(--muted); font-size: 0.85em; margin-bottom: 0.3em; }
   .calls { display: flex; flex-direction: column; gap: 0.4em; }
   .call { border: 1px solid var(--line); border-radius: 6px; background: white; }
   .call summary { padding: 0.5em 0.8em; cursor: pointer; display: flex; gap: 0.5em; align-items: baseline; }
@@ -1486,21 +1500,25 @@ function mergeTranscript(delta) {
       operator_messages: [],
       shell_events: [],
       sent_results: [],
+      completion_requests: [],
       response_cursor: 0,
       history_version: 0,
     };
   }
+  if (!state.transcript.completion_requests) state.transcript.completion_requests = [];
   const contentChanged = reset
     || (delta.replies || []).length > 0
     || (delta.tool_children || []).length > 0
     || (delta.operator_messages || []).length > 0
     || (delta.shell_events || []).length > 0
-    || (delta.sent_results || []).length > 0;
+    || (delta.sent_results || []).length > 0
+    || (delta.completion_requests || []).length > 0;
   state.transcript.replies.push(...(delta.replies || []));
   state.transcript.tool_children.push(...(delta.tool_children || []));
   mergeOperatorMessages(state.transcript.operator_messages, delta.operator_messages || []);
   mergeShellEvents(state.transcript.shell_events, delta.shell_events || []);
   mergeSentResults(state.transcript.sent_results, delta.sent_results || []);
+  mergeSentResults(state.transcript.completion_requests, delta.completion_requests || []);
   state.transcript.response_cursor = delta.response_cursor || state.transcript.response_cursor;
   state.transcript.history_version = delta.history_version || state.transcript.history_version;
   return contentChanged;
@@ -1533,16 +1551,17 @@ function mergeShellEvents(target, incoming) {
   }
 }
 
+// Keep the first-recorded entry per id. A tool_result (and its created_at)
+// re-appears in every later completion request because the whole history is
+// re-sent each turn; overwriting with the latest would push its created_at to
+// the end of the run, inflating the bash latency. The first occurrence is the
+// request that actually carried the result back to the model.
 function mergeSentResults(target, incoming) {
-  const byId = new Map(target.map((item) => [item?.id, item]).filter(([id]) => id));
+  const byId = new Set(target.map((item) => item?.id).filter(Boolean));
   for (const item of incoming) {
     if (!item) continue;
-    const existing = item.id ? byId.get(item.id) : null;
-    if (existing) {
-      Object.assign(existing, item);
-      continue;
-    }
-    if (item.id) byId.set(item.id, item);
+    if (item.id && byId.has(item.id)) continue;
+    if (item.id) byId.add(item.id);
     target.push(item);
   }
 }
@@ -1553,6 +1572,9 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
   const turns = [];
   const sentResultsById = new Map(
     (cached.sent_results || []).filter((result) => result?.id).map((result) => [result.id, result]),
+  );
+  const requestTimeById = new Map(
+    (cached.completion_requests || []).filter((r) => r?.id).map((r) => [r.id, r.created_at]),
   );
   let legacyToolCursor = 0;
   let sequence = 0;
@@ -1565,12 +1587,19 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       reply,
     );
     if (!reply || typeof reply !== 'object') continue;
+    // The completion request (model start) begins the turn; its reply (finish)
+    // ends the LLM portion, shown on the thinking bubble. The turn total runs to
+    // when the tool results were fed back (the next request), shown in the header.
+    const requestAt = item.completion_id ? requestTimeById.get(item.completion_id) : null;
+    const llmLatency = elapsedMs(requestAt, item.created_at);
     const responseText = typeof reply.response === 'string' ? reply.response : reply.final;
     if (typeof responseText === 'string') {
       turns.push({
         kind: 'assistant_response',
         text: responseText,
         blocks,
+        llm_latency_ms: llmLatency,
+        total_latency_ms: llmLatency,
         created_at: item.created_at,
         turn_index: item.turn_index,
         sequence: sequence++,
@@ -1580,11 +1609,14 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         kind: 'error',
         text: reply.error,
         blocks,
+        llm_latency_ms: llmLatency,
+        total_latency_ms: llmLatency,
         created_at: item.created_at,
         turn_index: item.turn_index,
         sequence: sequence++,
       });
     } else if (Array.isArray(reply.tool_calls)) {
+      let latestSent = null;
       const calls = reply.tool_calls.map((call) => {
         const sent = call?.id ? sentResultsById.get(call.id) : null;
         const child = sent || call?.name === 'bash' ? null : cached.tool_children[legacyToolCursor++];
@@ -1596,14 +1628,20 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         };
         const result = sent || child?.result;
         rendered.latency_ms = elapsedMs(item.created_at, sent?.created_at);
+        if (sent?.created_at && (!latestSent || sent.created_at > latestSent)) latestSent = sent.created_at;
         if (result && 'ok' in result) rendered.ok = result.ok;
         else if (result && 'err' in result) rendered.err = result.err;
         return rendered;
       });
+      // Total spans the LLM reply plus the tool run (request to the last result
+      // being sent back); falls back to the LLM latency while a tool is pending.
+      const totalLatency = latestSent ? elapsedMs(requestAt, latestSent) : llmLatency;
       turns.push({
         kind: 'tool_calls',
         calls,
         blocks,
+        llm_latency_ms: llmLatency,
+        total_latency_ms: totalLatency,
         created_at: item.created_at,
         turn_index: item.turn_index,
         sequence: sequence++,
@@ -1666,7 +1704,6 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
     }
     return a.sequence - b.sequence;
   });
-  annotateAgentLatencies(turns, initialPrompt ? initialPromptAt : null);
   return turns;
 }
 
@@ -1675,19 +1712,6 @@ function elapsedMs(start, end) {
   const endMs = Date.parse(end || '');
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return null;
   return endMs - startMs;
-}
-
-function annotateAgentLatencies(turns, initialPromptAt) {
-  const startedAt = initialPromptAt ? [initialPromptAt] : [];
-  for (const turn of turns) {
-    if (turn.kind === 'operator_message') {
-      startedAt.push(turn.created_at);
-      continue;
-    }
-    if (turn.kind === 'assistant_response' || turn.kind === 'final' || turn.kind === 'error') {
-      turn.latency_ms = elapsedMs(startedAt.shift(), turn.created_at);
-    }
-  }
 }
 
 function parseCachedArgs(json) {
@@ -2083,8 +2107,14 @@ function renderDiffLines(lines) {
 
 function displayBlocksHtml(blocks, latencyMs) {
   const list = blocks || [];
+  // The LLM latency (request to reply) covers the whole completion, so anchor it
+  // to the thinking bubble when the model narrated its reasoning; otherwise fall
+  // back to the last block so the latency is never dropped.
+  let anchor = -1;
+  for (let i = 0; i < list.length; i += 1) if (list[i].kind === 'thinking') anchor = i;
+  if (anchor === -1) anchor = list.length - 1;
   return list.map((block, index) => {
-    const latency = index === list.length - 1 ? latencyHtml(latencyMs) : '';
+    const latency = index === anchor ? latencyHtml(latencyMs, 'LLM latency') : '';
     if (block.kind === 'thinking') {
       return '<div class="bubble thinking"><div class="bubble-head"><div class="label">thinking</div>'
         + latency + '</div>'
@@ -2100,7 +2130,7 @@ function displayBlocksHtml(blocks, latencyMs) {
   }).join('');
 }
 
-function latencyHtml(milliseconds) {
+function latencyHtml(milliseconds, title = 'latency') {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '';
   let label;
   if (milliseconds < 1000) label = Math.round(milliseconds) + ' ms';
@@ -2108,7 +2138,7 @@ function latencyHtml(milliseconds) {
   else if (milliseconds < 60000) label = (milliseconds / 1000).toFixed(1) + ' s';
   else label = Math.floor(milliseconds / 60000) + 'm '
     + Math.round((milliseconds % 60000) / 1000) + 's';
-  return '<span class="latency" title="End-to-end latency">' + esc(label) + '</span>';
+  return '<span class="latency" title="' + esc(title) + '">' + esc(label) + '</span>';
 }
 
 function sourceData(source) {
@@ -2172,30 +2202,35 @@ function renderTurn(t, i) {
       + '<div class="bubble user"><div class="label">operator</div><pre>' + esc(t.text) + '</pre></div></div>';
   }
   if (t.kind === 'assistant_response' || t.kind === 'final') {
-    const blocks = displayBlocksHtml(t.blocks, t.latency_ms);
-    return Number.isInteger(t.turn_index)
-      ? '<div class="turn">' + turnHeader(t, 'agent response') + blocks + '</div>'
+    const headed = Number.isInteger(t.turn_index);
+    // The header carries the total when present; otherwise fall back to the bubble.
+    const blocks = displayBlocksHtml(t.blocks, headed ? null : t.total_latency_ms);
+    return headed
+      ? '<div class="turn">' + turnHeader(t, 'agent response', -1, t.total_latency_ms) + blocks + '</div>'
       : blocks;
   }
   if (t.kind === 'error') {
+    const headed = Number.isInteger(t.turn_index);
     const body = displayBlocksHtml(t.blocks)
       + '<div class="bubble error"><div class="bubble-head"><div class="label">error</div>'
-      + latencyHtml(t.latency_ms) + '</div><pre>' + esc(t.text) + '</pre></div>';
-    return Number.isInteger(t.turn_index)
-      ? '<div class="turn">' + turnHeader(t, 'agent error') + body + '</div>'
+      + (headed ? '' : latencyHtml(t.total_latency_ms, 'total latency')) + '</div><pre>' + esc(t.text) + '</pre></div>';
+    return headed
+      ? '<div class="turn">' + turnHeader(t, 'agent error', -1, t.total_latency_ms) + body + '</div>'
       : body;
   }
   if (t.kind !== 'tool_calls') return '';
 
   const items = t.calls.map((c, k) => renderCall(c, i, k)).join('');
+  // Header shows the whole-turn total; the thinking bubble keeps the LLM latency
+  // and each call keeps its own, so the breakdown is visible alongside the total.
   return '<div class="turn">'
-    + turnHeader(t, t.calls.length + ' tool call' + (t.calls.length === 1 ? '' : 's'), i)
-    + displayBlocksHtml(t.blocks)
+    + turnHeader(t, t.calls.length + ' tool call' + (t.calls.length === 1 ? '' : 's'), i, t.total_latency_ms)
+    + displayBlocksHtml(t.blocks, t.llm_latency_ms)
     + '<div class="calls">' + items + '</div>'
     + '</div>';
 }
 
-function turnHeader(turn, detail, index = -1) {
+function turnHeader(turn, detail, index = -1, totalLatencyMs = null) {
   let number = Number.isInteger(turn?.turn_index) ? turn.turn_index + 1 : null;
   if (number === null && index >= 0) {
     number = 0;
@@ -2204,12 +2239,13 @@ function turnHeader(turn, detail, index = -1) {
     }
   }
   return '<div class="turn-header">'
-    + (number === null ? '' : 'Turn ' + number + ' &middot; ')
-    + esc(detail) + '</div>';
+    + '<span>' + (number === null ? '' : 'Turn ' + number + ' &middot; ') + esc(detail) + '</span>'
+    + latencyHtml(totalLatencyMs, 'total latency') + '</div>';
 }
 
 function renderCall(call, turnIndex, callIndex) {
   const name = call && typeof call.name === 'string' ? call.name : '?';
+  const callLatencyTitle = name === 'bash' ? 'bash latency' : 'tool latency';
   const argsBlock = renderCallArgs(name, call && call.args);
   const key = call.child_id || (name + '#' + turnIndex + ':' + callIndex);
   const childLink = call.child_id
@@ -2228,17 +2264,17 @@ function renderCall(call, turnIndex, callIndex) {
       }
       if (!streams) streams = '<pre>(no output)</pre>';
       resultBlock = '<div class="result"><div class="response-head"><div class="key">exit '
-        + esc(call.ok.exit_code) + '</div>' + latencyHtml(call.latency_ms)
+        + esc(call.ok.exit_code) + '</div>' + latencyHtml(call.latency_ms, callLatencyTitle)
         + '</div>' + streams + '</div>';
     } else {
       const out = typeof call.ok === 'string' ? call.ok : JSON.stringify(call.ok, null, 2);
       resultBlock = '<div class="result"><div class="response-head"><div class="key">ok</div>'
-        + latencyHtml(call.latency_ms) + '</div><pre>' + esc(out) + '</pre></div>';
+        + latencyHtml(call.latency_ms, callLatencyTitle) + '</div><pre>' + esc(out) + '</pre></div>';
     }
   } else if ('err' in call) {
     pill = '<span class="status-pill err">err</span>';
     resultBlock = '<div class="result"><div class="response-head"><div class="key">err</div>'
-      + latencyHtml(call.latency_ms) + '</div><pre>' + esc(String(call.err)) + '</pre></div>';
+      + latencyHtml(call.latency_ms, callLatencyTitle) + '</div><pre>' + esc(String(call.err)) + '</pre></div>';
   } else {
     pill = '<span class="status-pill pending">pending</span>';
     resultBlock = '';
