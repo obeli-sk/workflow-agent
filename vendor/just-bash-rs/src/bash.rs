@@ -157,6 +157,24 @@ mod tests {
     }
 
     #[test]
+    fn jq_tsv_pipeline_sorts_by_tab_delimited_field() {
+        let mut bash = fresh();
+        let input = r#"[{"execution_id":"E_2","ffqn":"b","created_at":"2026-08-09T09:00:00Z","pending_state":{"status":"running"}},{"execution_id":"E_1","ffqn":"a","created_at":"2026-08-09T10:00:00Z","pending_state":{"status":"finished","result_kind":{"err":{"execution_failure":"timed_out"}}}}]"#;
+        bash.fs_mut()
+            .write_file("/executions.json", input.as_bytes())
+            .unwrap();
+        let out = run(
+            &mut bash,
+            r#"cat /executions.json | jq -r '.[] | select(.created_at >= "2026-08-09T08:29:00Z") | [.execution_id, .ffqn, .pending_state.status, (.pending_state.result_kind // "pending" | if type == "object" then keys[0] else . end)] | @tsv' | sort -t$'\t' -k3,3"#,
+        );
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(
+            out.stdout,
+            "E_1\ta\tfinished\terr\nE_2\tb\trunning\tpending\n"
+        );
+    }
+
+    #[test]
     fn variables_persist_across_exec() {
         let mut bash = fresh();
         run(&mut bash, "X=42");

@@ -260,7 +260,11 @@ impl Lexer {
                 }
                 Some('$') => {
                     flush!();
-                    parts.push(self.read_dollar(false)?);
+                    if self.peek2() == Some('\'') {
+                        parts.push(WordPart::QuotedLiteral(self.read_ansi_c_quoted()?));
+                    } else {
+                        parts.push(self.read_dollar(false)?);
+                    }
                 }
                 Some('`') => {
                     flush!();
@@ -285,6 +289,44 @@ impl Lexer {
         }
         flush!();
         Ok(parts)
+    }
+
+    /// Read Bash's `$'...'` form, including control-character escapes.
+    fn read_ansi_c_quoted(&mut self) -> Result<String, ParseError> {
+        debug_assert_eq!(self.peek(), Some('$'));
+        debug_assert_eq!(self.peek2(), Some('\''));
+        self.bump();
+        self.bump();
+        let mut out = String::new();
+        loop {
+            match self.bump() {
+                None => return err("unterminated ANSI-C quote"),
+                Some('\'') => return Ok(out),
+                Some('\\') => {
+                    let escaped = match self.bump() {
+                        None => return err("unterminated ANSI-C quote"),
+                        Some('a') => '\u{7}',
+                        Some('b') => '\u{8}',
+                        Some('e' | 'E') => '\u{1b}',
+                        Some('f') => '\u{c}',
+                        Some('n') => '\n',
+                        Some('r') => '\r',
+                        Some('t') => '\t',
+                        Some('v') => '\u{b}',
+                        Some('\\') => '\\',
+                        Some('\'') => '\'',
+                        Some('"') => '"',
+                        Some('\n') => continue,
+                        Some(c) => {
+                            out.push('\\');
+                            c
+                        }
+                    };
+                    out.push(escaped);
+                }
+                Some(c) => out.push(c),
+            }
+        }
     }
 
     /// Read the body of a `"..."` double-quoted span (the opening quote is
@@ -1420,6 +1462,13 @@ mod tests {
         let script = parse(r#"echo """#).unwrap();
         let cmd = simple(&script.statements[0].pipelines[0].commands[0]);
         assert_eq!(cmd.words[1], vec![qlit("")]);
+    }
+
+    #[test]
+    fn ansi_c_quote_decodes_control_characters() {
+        let script = parse(r#"printf $'a\tb\n'"#).unwrap();
+        let cmd = simple(&script.statements[0].pipelines[0].commands[0]);
+        assert_eq!(cmd.words[1], vec![qlit("a\tb\n")]);
     }
 
     #[test]

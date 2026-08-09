@@ -17,7 +17,7 @@
 //! ordering: null < bool < number < string < array < object), arithmetic
 //! `+ - * / %` with jq's per-type rules (string/array concat, shallow object
 //! merge on `+`, deep merge on `*` of two objects, string split on `/`),
-//! literals, and the builtins `length keys keys_unsorted has empty not type
+//! literals, the `@tsv` formatter, and the builtins `length keys keys_unsorted has empty not type
 //! select map add range floor ceil round sqrt abs tostring tonumber split
 //! join`. CLI flags: `-r`/`-R`/`-c`/`-n`/`-s`/`-e`/`--tab`/`-S`.
 //!
@@ -26,7 +26,8 @@
 //! `path()`/`paths`, variables (`... as $x |`), `@base64`/`@csv`-style format
 //! strings, module imports, `input`/`inputs` streaming,
 //! regex builtins (`test`/`match`/`sub`/`gsub`/`capture`), and resource
-//! limits (upstream's `ExecutionLimitError` machinery).
+//! other `@` format strings, and resource limits (upstream's
+//! `ExecutionLimitError` machinery).
 
 use serde_json::{Map, Number, Value};
 
@@ -49,6 +50,7 @@ enum Filter {
     Comma(Box<Filter>, Box<Filter>),
     Literal(Value),
     StringInterp(Vec<StrPart>),
+    Format(String),
     ArrayConstruct(Option<Box<Filter>>),
     ObjectConstruct(Vec<(ObjKey, Filter)>),
     Call(String, Vec<Filter>),
@@ -450,6 +452,15 @@ impl Parser {
             Some('"') => {
                 let parts = self.parse_string_parts()?;
                 Ok(string_parts_to_filter(parts))
+            }
+            Some('@') => {
+                self.pos += 1;
+                let name = self.read_ident();
+                if name == "tsv" {
+                    Ok(Filter::Format(name))
+                } else {
+                    Err(format!("unsupported format '@{name}'"))
+                }
             }
             Some(c) if c.is_ascii_digit() => self.parse_number(),
             Some(c) if c.is_alphabetic() || c == '_' => {
@@ -986,6 +997,31 @@ fn interp_to_string(v: &Value) -> String {
     }
 }
 
+fn format_tsv(value: &Value) -> Result<String, String> {
+    let Value::Array(values) = value else {
+        return Err(format!(
+            "{} cannot be tsv-formatted, only an array",
+            type_name(value)
+        ));
+    };
+    values
+        .iter()
+        .map(|value| match value {
+            Value::Null => Ok(String::new()),
+            Value::Bool(_) | Value::Number(_) => Ok(format_json(value, true, false, 0)),
+            Value::String(s) => Ok(s
+                .replace('\\', "\\\\")
+                .replace('\t', "\\t")
+                .replace('\r', "\\r")
+                .replace('\n', "\\n")),
+            Value::Array(_) | Value::Object(_) => {
+                Err(format!("{} is not valid in a tsv row", type_name(value)))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|fields| fields.join("\t"))
+}
+
 fn evaluate(filter: &Filter, value: &Value) -> EResult {
     match filter {
         Filter::Identity => Ok(vec![value.clone()]),
@@ -1090,6 +1126,10 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
             }
             Ok(acc.into_iter().map(Value::String).collect())
         }
+        Filter::Format(name) => match name.as_str() {
+            "tsv" => Ok(vec![Value::String(format_tsv(value)?)]),
+            _ => unreachable!("unsupported jq format {name}"),
+        },
         Filter::ArrayConstruct(inner) => match inner {
             None => Ok(vec![Value::Array(vec![])]),
             Some(f) => Ok(vec![Value::Array(evaluate(f, value)?)]),
