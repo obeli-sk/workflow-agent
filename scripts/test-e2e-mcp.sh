@@ -108,11 +108,11 @@ export E2E_SERVER_CONFIG="$SERVER_CFG"
 e2e_start_server "$DEPLOY"
 
 # --- open a session and drive one MCP shell turn ------------------------------
-RUN_FFQN="obelisk-agent:workflow/workflow.agent-loop-cancellable"
+RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 echo ">>> creating an empty session as $SESSION_ID"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
-    '["", "You are a test system prompt.", "", ""]'
+    '["", null, null, null]'
 
 echo ">>> waiting for the session input offer"
 SECONDS=0

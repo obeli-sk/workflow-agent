@@ -1,6 +1,6 @@
 // obelisk-control pack descriptor. This is the single source of truth for the
 // agent's system prompt for the "control this Obelisk instance" use case. The
-// generic core (workflow.agent-loop) calls this FFQN once at loop start and
+// generic session loop calls this FFQN once at startup and
 // prepends the returned prompt to the session system prompt.
 //
 // obelisk-control:agent/pack.describe:

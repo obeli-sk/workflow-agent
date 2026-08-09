@@ -1,31 +1,14 @@
 //! PORT: workflow/agent.js
 //!
-//! Public supervisor workflow. Resolves a pack descriptor (system prompt +
-//! tool catalog), then delegates to the generic session loop
-//! (`session::agent_loop_cancellable`, exported as
-//! `obelisk-agent:workflow/workflow.agent-loop-cancellable`).
-//!
-//! Design choice (per the design doc): JS's `run` calls `agentLoopCancellable`
-//! through an *imported* cross-function binding
-//! (`import { agentLoopCancellable } from "obelisk-agent:workflow/workflow"`),
-//! which the JS workflow runtime treats as a real child call so an operator
-//! can cancel just the session (the `-cancellable` FFQN suffix) without
-//! killing this supervisor. A bare Rust function call would forfeit that:
-//! two ordinary function calls in the same component share one execution and
-//! can't be cancelled independently. So this port reproduces the same
-//! semantics explicitly: submit `agent-loop-cancellable` as a genuine child
-//! execution (a one-off join set, since `run` submits exactly one child and
-//! is done), then await it and translate a cancelled/failed child into an
-//! error the same way `callErrorMessage` would.
+//! Public workflow. Resolves a pack descriptor (system prompt + tool catalog),
+//! then runs the generic session loop in the same execution.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::generated::obelisk::types::execution::ExecutionFailureKind;
 use crate::generated::obelisk::workflow::workflow_support;
 use crate::support::{decode_string_or_raw, split_ffqn};
 
 const DEFAULT_DESCRIPTOR_FFQN: &str = "obelisk-control:agent/pack.describe";
-const AGENT_LOOP_FFQN: &str = "obelisk-agent:workflow/workflow.agent-loop-cancellable";
 
 pub fn run(
     prompt: String,
@@ -66,27 +49,5 @@ obelisk.get_execution / obelisk.get_logs to inspect your own run.",
         execution_id.id
     );
 
-    // One-off join set: `run` submits exactly one child and awaits it once.
-    let join_set = workflow_support::join_set_create();
-    let agent_loop_function = split_ffqn(AGENT_LOOP_FFQN)?;
-    let params = json!([prompt, system_prompt, model_id, effort_level]).to_string();
-    let child_id = workflow_support::submit_json(&join_set, &agent_loop_function, &params)
-        .map_err(|e| format!("{e:?}"))?;
-
-    match workflow_support::join_next(&join_set) {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(Some(json))) => Err(decode_string_or_raw(&json)),
-        Ok(Err(None)) => {
-            let cancelled = matches!(
-                workflow_support::get_execution_failure_kind(&child_id),
-                Ok(Some(ExecutionFailureKind::Cancelled))
-            );
-            Err(if cancelled {
-                "agent session cancelled".to_string()
-            } else {
-                "agent session failed".to_string()
-            })
-        }
-        Err(e) => Err(format!("{e:?}")),
-    }
+    crate::session::agent_loop(prompt, system_prompt, model_id, effort_level)
 }

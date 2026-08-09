@@ -16,9 +16,9 @@
 // bottom and a specific agent/shell activity indicator directly above it.
 
 import * as webapi from "obelisk-agent:tools/webapi";
+import { runCancellableSchedule } from "obelisk-agent:workflow-obelisk-schedule/workflow";
 
-const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run";
-const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop-cancellable";
+const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
 const CONFIRM_FFQN = "obelisk-agent:tools/deploy.confirm-apply";
 const INJECTION_FFQN = "obelisk-agent:agent/session.injection";
@@ -39,7 +39,7 @@ export default async function handle(request) {
             const id = decodeURIComponent(path.substring("/api/runs/".length));
             if (!id) return jsonError(400, "missing run id");
             return jsonResponse(await detailRun(id, {
-                agentLoopId: query.agent_loop_id || "",
+                workflowId: query.workflow_id || "",
                 responseCursor: nonNegativeInteger(query.response_cursor),
                 historyVersion: nonNegativeInteger(query.history_version),
             }));
@@ -200,10 +200,6 @@ function stubObeliskExecution(id, result) {
     return activityJson(`stub-execution ${id}`, webapi.stubExecution(id, JSON.stringify(result)));
 }
 
-function submitWorkflowExecution(id, prompt, backend, effort) {
-    return activityJson(`submit-workflow-execution ${id}`, webapi.submitWorkflowExecution(id, prompt, backend, effort));
-}
-
 function jsonResponse(value, status = 200) {
     return new Response(JSON.stringify(value), {
         status,
@@ -262,19 +258,8 @@ function loadModels() {
 
 // ----- list -------------------------------------------------------------
 
-// The run's live phase lives on the agent-loop *child*, not the top-level
-// workflow.run. The parent spends the whole run blocked on the direct child call,
-// so its pending state never tells "working" apart from "waiting for the
-// operator". While the parent is still delegating, report the child's
-// pending_state; once the parent reaches a terminal/paused state it is
-// authoritative for the whole run.
-function pickRunState(parentStatus, childStatus) {
-    const parent = parentStatus?.pending_state || null;
-    const phase = parent?.status;
-    const parentAuthoritative = !childStatus
-        || phase === "finished" || phase === "paused"
-        || (typeof phase === "string" && phase.startsWith("permanently"));
-    const ps = parentAuthoritative ? parent : (childStatus.pending_state || parent);
+function pickRunState(workflowStatus) {
+    const ps = workflowStatus?.pending_state || null;
     return {
         status: ps?.status || "unknown",
         result_kind: ps?.result_kind ?? null,
@@ -286,12 +271,8 @@ async function listRuns() {
     const executions = await listExecutions(WORKFLOW_FFQN, "", false, false, 50);
     const runs = await Promise.all(executions.map(async (e) => {
         const id = e.execution_id;
-        const [childId, prompt_preview] = await Promise.all([
-            loadAgentLoopExecution(id),
-            loadPromptPreview(id),
-        ]);
-        const childStatus = childId ? await loadStatus(childId) : null;
-        const runState = pickRunState(e, childStatus);
+        const prompt_preview = await loadPromptPreview(id);
+        const runState = pickRunState(e);
         // A run blocked on the shared operator set is either awaiting the operator
         // ("your turn") or mid-completion ("thinking"); the join name cannot tell
         // them apart, so consult the pending completion child (only for such runs).
@@ -317,16 +298,14 @@ async function loadPromptPreview(execId) {
 // ----- detail -----------------------------------------------------------
 
 async function detailRun(id, cursorState) {
-    const agentLoopId = await loadAgentLoopExecution(id);
-    const resetTranscript = !agentLoopId || cursorState.agentLoopId !== agentLoopId;
+    const resetTranscript = cursorState.workflowId !== id;
     const responseCursor = resetTranscript ? 0 : cursorState.responseCursor;
     const historyVersion = resetTranscript ? 0 : cursorState.historyVersion;
-    const [status, childStatus, created, walk, sent, finalResult, pendingAsks, pendingConfirms, pendingInjection, pendingCompletion] = await Promise.all([
+    const [status, created, walk, sent, finalResult, pendingAsks, pendingConfirms, pendingInjection, pendingCompletion] = await Promise.all([
         loadStatus(id),
-        agentLoopId ? loadStatus(agentLoopId) : Promise.resolve(null),
         loadCreated(id),
-        loadResponses(agentLoopId || id, responseCursor),
-        loadSentResults(agentLoopId || id, historyVersion),
+        loadResponses(id, responseCursor),
+        loadSentResults(id, historyVersion),
         loadFinalResult(id),
         loadPendingAsks(id),
         loadPendingConfirms(id),
@@ -335,14 +314,14 @@ async function detailRun(id, cursorState) {
     ]);
     return {
         id,
-        ...pickRunState(status, childStatus),
+        ...pickRunState(status),
         created_at: status?.created_at || "",
         prompt: created?.prompt ?? null,
         backend: created?.backend ?? null,
         effort: created?.effort ?? null,
         transcript: {
             reset: resetTranscript,
-            agent_loop_id: agentLoopId,
+            workflow_id: id,
             replies: walk.replies,
             tool_children: walk.toolChildren,
             operator_messages: walk.operatorMessages,
@@ -360,22 +339,12 @@ async function detailRun(id, cursorState) {
     };
 }
 
-async function loadAgentLoopExecution(workflowId) {
-    let candidates;
-    try {
-        candidates = await listExecutions(AGENT_LOOP_FFQN, workflowId, true, false, 10);
-    } catch (_) { return null; }
-    const mine = candidates.filter((e) => typeof e.execution_id === "string"
-        && e.execution_id.startsWith(workflowId + "."));
-    return mine.length > 0 ? mine[mine.length - 1].execution_id : null;
-}
-
 async function loadStatus(id) {
     try { return await getExecutionStatus(id); }
     catch (_) { return null; }
 }
 
-// The workflow.run creation params are [prompt, model, descriptor-ffqn, effort].
+// The workflow.run-cancellable creation params are [prompt, model, descriptor-ffqn, effort].
 // version 0 is the `created` event; without including_cursor=true the server
 // skips it and returns the `locked` event at version 1, which has no params.
 async function loadCreated(id) {
@@ -937,8 +906,8 @@ async function submit(request) {
     const backend = (typeof payload?.backend === "string" && payload.backend) ? payload.backend : null;
     // effort is the reasoning level (option<string>): null => provider default.
     const effort = (typeof payload?.effort === "string" && payload.effort) ? payload.effort : null;
-    const execId = obelisk.executionIdGenerate();
-    try { submitWorkflowExecution(execId, prompt, backend, effort); }
+    let execId;
+    try { execId = runCancellableSchedule(null, prompt, backend, null, effort); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }
@@ -953,17 +922,16 @@ async function createSession(request) {
     }
     const backend = typeof payload.backend === "string" && payload.backend ? payload.backend : null;
     const effort = typeof payload.effort === "string" && payload.effort ? payload.effort : null;
-    const execId = obelisk.executionIdGenerate();
-    try { submitWorkflowExecution(execId, "", backend, effort); }
+    let execId;
+    try { execId = runCancellableSchedule(null, "", backend, null, effort); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }
 
 // Pause or unpause a run via the native execution endpoints. A paused execution
 // reports pending_state.status == "paused". Obelisk pauses a single execution,
-// but the agent loop runs in a nested child workflow (the `n:session_1`
-// `workflow.agent-loop` execution), so pausing only the root leaves the session
-// running. Pause/unpause every non-terminal workflow in the run as well.
+// Pause/unpause every non-terminal workflow in the run as well, since programs
+// invoked by the agent may themselves be workflows.
 async function pauseExecution(id, unpause) {
     if (!id) return jsonError(400, "missing run id");
     const verb = unpause ? "unpause" : "pause";
@@ -983,8 +951,8 @@ async function pauseExecution(id, unpause) {
     return jsonResponse({ ok: true, paused: targets });
 }
 
-// Non-terminal nested workflow executions of a run (e.g. the agent-loop session
-// child). Excludes the run itself; activities/stubs are not paused.
+// Non-terminal nested workflow executions of a run. Excludes the run itself;
+// activities and stubs are not paused.
 async function childWorkflowIds(runId) {
     let executions;
     try {
@@ -995,10 +963,7 @@ async function childWorkflowIds(runId) {
         .map((e) => e.execution_id);
 }
 
-// Cancel a run. Obelisk only cancels executions whose FFQN ends with
-// `-cancellable`; for a run that is the nested agent-loop session, not the
-// top-level workflow.run. Cancelling it unwinds the run through workflow.run's
-// direct call await.
+// Cancel a run and any nested cancellable workflows.
 async function cancelRun(id) {
     if (!id) return jsonError(400, "missing run id");
     let executions;
@@ -1460,8 +1425,8 @@ function refreshDetail() {
   const promise = (async () => {
     try {
       const query = new URLSearchParams();
-      if (state.transcript?.agent_loop_id) {
-        query.set('agent_loop_id', state.transcript.agent_loop_id);
+      if (state.transcript?.workflow_id) {
+        query.set('workflow_id', state.transcript.workflow_id);
         query.set('response_cursor', String(state.transcript.response_cursor || 0));
         query.set('history_version', String(state.transcript.history_version || 0));
       }
@@ -1508,10 +1473,10 @@ function refreshDetail() {
 function mergeTranscript(delta) {
   if (!delta) return false;
   const reset = delta.reset || !state.transcript
-    || state.transcript.agent_loop_id !== delta.agent_loop_id;
+    || state.transcript.workflow_id !== delta.workflow_id;
   if (reset) {
     state.transcript = {
-      agent_loop_id: delta.agent_loop_id || '',
+      workflow_id: delta.workflow_id || '',
       replies: [],
       tool_children: [],
       operator_messages: [],

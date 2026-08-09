@@ -105,7 +105,7 @@ struct LlmReply {
     prompt_queued: bool,
 }
 
-pub fn agent_loop_cancellable(
+pub fn agent_loop(
     prompt: String,
     system_prompt: String,
     model: String,

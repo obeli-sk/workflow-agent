@@ -23,16 +23,7 @@ struct Component;
 export!(Component with_types_in generated);
 
 impl Guest for Component {
-    fn agent_loop_cancellable(
-        prompt: String,
-        system_prompt: String,
-        model: String,
-        effort: String,
-    ) -> Result<(), String> {
-        session::agent_loop_cancellable(prompt, system_prompt, model, effort)
-    }
-
-    fn run(
+    fn run_cancellable(
         prompt: String,
         model: Option<String>,
         descriptor_ffqn: Option<String>,

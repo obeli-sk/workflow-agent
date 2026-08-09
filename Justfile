@@ -31,7 +31,7 @@ test-e2e:
   ./scripts/test-e2e.sh
 
 # deployed via the real deployment.toml.
-# Rust port: end-to-end test of the full agent-loop/run workflow component.
+# Rust port: end-to-end test of the full workflow component.
 test-e2e-agent-workflow:
   ./scripts/test-e2e-agent-workflow.sh
 

@@ -1,9 +1,9 @@
 # --- Pack descriptor: system prompt + tool catalog ----------------------------
 # The obelisk-control use case (control this Obelisk instance). Returns the
 # system prompt and the tool catalog (name, description, ffqn, WIT param specs).
-# The generic core (workflow.agent-loop) calls this once, exposes the tools to
+# The generic session loop calls this once, exposes the tools to
 # the model, and dispatches each call to its ffqn via obelisk.call. Swap this
-# FFQN (workflow.run descriptor-ffqn) to host a different use case.
+# FFQN (workflow.run-cancellable descriptor-ffqn) to host a different use case.
 
 [[activity_js]]
 name = "pack_describe"
@@ -11,7 +11,7 @@ ffqn = "obelisk-control:agent/pack.describe"
 params = []
 return_type = "result<record { prompt: string, tools-json: string }, string>"
 location = "packs/obelisk-control/descriptor.js"
-content_digest = "sha256:ab396c480bb50e92589894d9483c7231d5aa76f40fbc89a9eae00ef80cc3de49"
+content_digest = "sha256:d9f6e7327101a23ba1efeeecab5253b764212e75abf677e57bce46dcde9a7e69"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -439,26 +439,6 @@ secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
-name = "tool_submit_workflow_execution"
-ffqn = "obelisk-agent:tools/webapi.submit-workflow-execution"
-params = [
-  { name = "execution-id", type = "string" },
-  { name = "prompt", type = "string" },
-  { name = "backend", type = "option<string>" },
-  { name = "effort", type = "option<string>" },
-]
-return_type = "result<string, string>"
-location = "packs/obelisk-control/tools/submit-workflow-execution.js"
-content_digest = "sha256:e718b6eb2bcbeb947930a3611e952086ed4fb144a0c0f8185e0886e1c96ac9b5"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "PUT"]
-request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
-secrets = ["OBELISK__API__TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
 name = "tool_pause_execution"
 ffqn = "obelisk-agent:tools/webapi.pause-execution"
 params = [
@@ -550,7 +530,7 @@ params = [
 ]
 return_type = "result<_, string>"
 
-# One generic operator-message offer owned by workflow.agent-loop. The UI may
+# One generic operator-message offer owned by the session loop. The UI may
 # fulfil it only while this concrete stub execution is pending. The workflow
 # appends it as the next user message and immediately opens another offer.
 [[activity_stub]]
@@ -568,16 +548,9 @@ params = [
 return_type = "result<string, string>"
 
 # --- Workflow -----------------------------------------------------------------
-# Native Rust workflow (workflow/workflow-rs), replacing the two JS workflows
-# above (agent-loop.js / agent.js). The WIT world (workflow/workflow-rs/wit/
-# impl.wit) declares both exports under the exact same FFQNs the JS versions
-# used (obelisk-agent:workflow/workflow.{agent-loop-cancellable,run}), so no
-# caller (webhook, obelisk-control pack's submit-workflow-execution tool)
-# needs to change. Params/return types now come from the WIT, not this file.
-# The `-cancellable` suffix on agent-loop-cancellable still opts it into
-# operator cancellation (the UI can cancel the session without killing the
-# `run` supervisor); see workflow/workflow-rs/src/agent.rs for how `run`
-# preserves that by submitting agent-loop-cancellable as a real child call.
+# Native Rust workflow (workflow/workflow-rs). The public run-cancellable
+# export resolves the descriptor and runs the session loop in one execution.
+# Params and the return type come from the WIT, not this file.
 
 [[workflow_wasm]]
 name = "workflow_agent_rs"
@@ -739,7 +712,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   "AGENT_MODELS",
 ]
-content_digest = "sha256:dd73edc021bc51cd1a1ca5f6831ca74f0a823a2d20cf348354213f96a73a326a"
+content_digest = "sha256:0cf303594a760ba6bc65532a19c1f504b3a0a03b1df6e6b41336f51e24e1b510"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.
