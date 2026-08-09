@@ -70,7 +70,7 @@ fn current_deployment_id() -> Result<String, String> {
         .ok_or_else(|| "current-deployment-id returned no body".to_string())
 }
 
-const MAX_TURNS: u32 = 30;
+const MAX_TURNS: u32 = 10;
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const INJECTION_FFQN: &str = "obelisk-agent:agent/session.injection";
 const OUTPUT_FFQN: &str = "obelisk-agent:agent/session.record-output";
