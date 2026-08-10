@@ -1,0 +1,6 @@
+// Selected from `obelisk generate wit-deps` output for deployment.toml.
+package obelisk-agent:tools;
+
+interface webapi {
+  current-deployment-id: func() -> result<string, string>;
+}

@@ -22,30 +22,34 @@
 //!   equivalent: this port's command catalog (`just_bash_rs::commands`) never
 //!   included those commands in the first place, so there is nothing to
 //!   filter out of `Bash`'s fixed builtin table.
-//! - The fallback random event id (`String(Math.random())` in JS) uses
-//!   `workflow_support::random_string`, the durable/deterministic source of
-//!   randomness this WIT provides for exactly this purpose, instead of a
-//!   host `Math.random()` shim.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult};
 use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
 
+use crate::generated::obelisk::types::execution::AwaitNextExtensionError;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::agent::session::{
-    AgentErrorEvent, AssistantReplyEvent, OperatorMessageEvent, SessionEvent, SessionStartedEvent,
-    ShellOutputEvent, ShellResult, ShellStartedEvent, ToolOutput, ToolResultEvent,
-    TurnCompletedEvent,
+    T0 as PromptInput, T1 as ShellInput, T2 as SessionInput, T3 as SessionStartedEvent,
+    T4 as OperatorMessageEvent, T5 as ShellStartedEvent, T6 as AssistantReplyEvent,
+    T7 as TurnCompletedEvent, T8 as ShellResult, T9 as ToolOutput, T10 as ToolResultEvent,
+    T11 as ShellOutputEvent, T12 as SessionEvent,
 };
+use crate::generated::obelisk_agent::agent_obelisk_ext::session as session_ext;
+use crate::generated::obelisk_agent::agent_obelisk_stub::session as session_stub;
+use crate::generated::obelisk_agent::llm::chat::T2 as CompletionResult;
+use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
+use crate::generated::obelisk_agent::tools::webapi;
 use crate::host::RealHost;
-use crate::support::{child_error_message, last_response_execution_id, split_ffqn};
+use crate::support::last_response_execution_id;
+
+type AgentErrorEvent = OperatorMessageEvent;
 
 /// `date`'s clock: the current time from the durable Obelisk `sleep(now)` host
 /// activity, as Unix epoch milliseconds. Read on demand by `date`, so a script
@@ -70,16 +74,11 @@ fn host_sleep_ms(ms: u64) {
 /// re-register program commands. The value is compared verbatim (a redeploy
 /// yields a new id), so the exact JSON-string framing does not matter.
 fn current_deployment_id() -> Result<String, String> {
-    use just_bash_rs::obelisk_pack::ObeliskHost;
-    RealHost
-        .call_json("obelisk-agent:tools/webapi.current-deployment-id", "[]")?
-        .ok_or_else(|| "current-deployment-id returned no body".to_string())
+    webapi::current_deployment_id()
 }
 
 const MAX_TURNS: u32 = 10;
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
-const INJECTION_FFQN: &str = "obelisk-agent:agent/session.injection";
-const COMPLETION_FFQN: &str = "obelisk-agent:llm/chat.completion";
 const SESSION_EVENTS_JOIN_SET: &str = "session-events";
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
@@ -93,20 +92,6 @@ struct Session {
     join_set: JoinSet,
     injection_execution_id: workflow_support::ExecutionId,
     turn_index: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum SessionInput {
-    Shell {
-        id: String,
-        script: String,
-        stdin: String,
-    },
-    Prompt {
-        id: String,
-        text: String,
-    },
 }
 
 struct LlmReply {
@@ -164,26 +149,11 @@ impl NotificationJoinSets {
             SessionEvent::ToolResult(event) => event.id.clone(),
             SessionEvent::ShellOutput(event) => event.id.clone(),
         };
-        // Inline activity stubs describe anonymous structural types, so this is
-        // the one dynamic boundary. The application payload on either side is
-        // still the WIT-generated `SessionEvent` type.
-        let function = split_ffqn("obelisk-agent:agent/session.record-output")?;
-        let execution_id =
-            workflow_support::submit_json(join_set, &function, &json!([event_id]).to_string())
-                .map_err(|e| format!("{e:?}"))?;
-        let event_json = serde_json::to_string(event)
-            .map_err(|e| format!("cannot encode session event: {e}"))?;
-        workflow_support::stub_json(&execution_id, &format!(r#"{{"ok":{event_json}}}"#))
-            .map_err(|e| format!("{e:?}"))?;
-
-        let inner = workflow_support::join_next(join_set).map_err(|e| format!("{e:?}"))?;
-        let published: SessionEvent = inner
-            .map_err(child_error_message)?
-            .ok_or_else(|| "session event response was empty".to_string())
-            .and_then(|json| {
-                serde_json::from_str(&json)
-                    .map_err(|e| format!("cannot decode session event response: {e}"))
-            })?;
+        let execution_id = session_ext::record_output_submit(join_set, &event_id);
+        session_stub::record_output_stub(&execution_id, Ok(event)).map_err(|e| format!("{e:?}"))?;
+        let published = session_ext::record_output_await_next(join_set)
+            .map_err(|e| format!("{e:?}"))?
+            .map_err(|e| format!("session event failed: {e}"))?;
         let last_id = last_response_execution_id(join_set);
         if last_id.as_deref() != Some(execution_id.id.as_str()) || published != *event {
             return Err(format!("unexpected session event response: {last_id:?}"));
@@ -546,7 +516,7 @@ fn apply_session_input(
     messages: &mut Vec<Value>,
 ) -> Result<bool, String> {
     match event {
-        SessionInput::Shell { id, script, stdin } => {
+        SessionInput::Shell(ShellInput { id, script, stdin }) => {
             notifications.notify(
                 SESSION_EVENTS_JOIN_SET,
                 &SessionEvent::ShellStarted(ShellStartedEvent {
@@ -580,7 +550,7 @@ fn apply_session_input(
             append_shell_exchange(messages, &record, &stdin);
             Ok(false)
         }
-        SessionInput::Prompt { id, text } => {
+        SessionInput::Prompt(PromptInput { id, text }) => {
             notifications.notify(
                 SESSION_EVENTS_JOIN_SET,
                 &SessionEvent::OperatorMessage(OperatorMessageEvent {
@@ -638,72 +608,6 @@ fn contains_background_statement(script: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn parse_legacy_session_event(text: &str) -> SessionInput {
-    if let Ok(value) = serde_json::from_str::<Value>(text) {
-        if value.get("kind").and_then(Value::as_str) == Some("shell")
-            && let Some(script) = value.get("script").and_then(Value::as_str)
-        {
-            let id = value
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(random_event_id);
-            let stdin = value
-                .get("stdin")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            return SessionInput::Shell {
-                id,
-                script: script.to_string(),
-                stdin,
-            };
-        }
-        if value.get("kind").and_then(Value::as_str) == Some("prompt")
-            && let Some(t) = value.get("text").and_then(Value::as_str)
-            && !t.trim().is_empty()
-        {
-            return SessionInput::Prompt {
-                id: value
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                text: t.trim().to_string(),
-            };
-        }
-    }
-    SessionInput::Prompt {
-        id: String::new(),
-        text: text.trim().to_string(),
-    }
-}
-
-fn decode_session_event(json: &str) -> Result<SessionInput, String> {
-    if let Ok(event) = serde_json::from_str(json) {
-        return Ok(event);
-    }
-    // backcompat: 0.1.0 session injection encoded the event as a JSON string.
-    let decoded: String = serde_json::from_str(json).unwrap_or_else(|_| json.to_string());
-    let event = parse_legacy_session_event(&decoded);
-    let empty = match &event {
-        SessionInput::Prompt { text, .. } => text.is_empty(),
-        SessionInput::Shell { script, .. } => script.is_empty(),
-    };
-    if empty {
-        Err("injection event must have non-empty text or script".to_string())
-    } else {
-        Ok(event)
-    }
-}
-
-/// Durable, deterministic fallback event id (JS uses `String(Math.random())`;
-/// this WIT provides `random-string` for exactly this purpose).
-fn random_event_id() -> String {
-    workflow_support::random_string(16, 17)
-}
-
 fn shell_result(result: ExecResult) -> ShellResult {
     ShellResult {
         stdout: result.stdout,
@@ -728,74 +632,68 @@ fn call_llm_with_operator(
     let mut prompt_queued = false;
     loop {
         let request_message_count = messages.len();
-        let params = json!([
+        let messages_json = serde_json::to_string(messages).expect("json");
+        let started_at = host_now_ms();
+        let completion_execution_id = llm_ext::completion_submit(
+            &session.join_set,
             system,
-            serde_json::to_string(messages).expect("json"),
+            &messages_json,
             BASH_TOOLS_JSON,
             model,
             effort,
-        ])
-        .to_string();
-        let function = split_ffqn(COMPLETION_FFQN)?;
-        let started_at = host_now_ms();
-        let completion_execution_id =
-            workflow_support::submit_json(&session.join_set, &function, &params)
-                .map_err(|e| format!("{e:?}"))?;
+        );
 
-        let res: Value = loop {
-            let inner =
-                workflow_support::join_next(&session.join_set).map_err(|e| format!("{e:?}"))?;
-            let completed_id = last_response_execution_id(&session.join_set);
-            if completed_id.as_deref() == Some(session.injection_execution_id.id.as_str()) {
-                rearm_operator(session)?;
-                let json = inner
-                    .map_err(child_error_message)?
-                    .ok_or_else(|| "injection text must be a non-empty string".to_string())?;
-                let event = decode_session_event(&json)?;
-                prompt_queued |=
-                    apply_session_input(event, session.turn_index, notifications, bash, messages)?;
-                continue;
+        let res = loop {
+            match llm_ext::completion_await_next(&session.join_set) {
+                Ok(result) => {
+                    let completed_id = last_response_execution_id(&session.join_set);
+                    if completed_id.as_deref() != Some(completion_execution_id.id.as_str()) {
+                        return Err(format!("unexpected session response: {completed_id:?}"));
+                    }
+                    break result.map_err(|e| format!("llm.completion failed: {e}"))?;
+                }
+                Err(AwaitNextExtensionError::FunctionMismatch(_)) => {
+                    let event = session_ext::injection_await_next(&session.join_set)
+                        .map_err(|e| format!("{e:?}"))?
+                        .map_err(|e| format!("session injection failed: {e}"))?;
+                    let completed_id = last_response_execution_id(&session.join_set);
+                    if completed_id.as_deref() != Some(session.injection_execution_id.id.as_str()) {
+                        return Err(format!("unexpected session response: {completed_id:?}"));
+                    }
+                    rearm_operator(session);
+                    prompt_queued |= apply_session_input(
+                        event,
+                        session.turn_index,
+                        notifications,
+                        bash,
+                        messages,
+                    )?;
+                }
+                Err(err) => return Err(format!("{err:?}")),
             }
-            if completed_id.as_deref() != Some(completion_execution_id.id.as_str()) {
-                return Err(format!("unexpected session response: {completed_id:?}"));
-            }
-            let value = inner
-                .map_err(child_error_message)?
-                .ok_or_else(|| "unexpected llm.completion result: no value".to_string())?;
-            break serde_json::from_str(&value)
-                .map_err(|e| format!("unexpected llm.completion result: {e}"))?;
         };
 
-        if let Some(rate_limited) = res.get("rate_limited") {
-            let seconds = rate_limited
-                .get("retry_after_seconds")
-                .and_then(Value::as_u64)
-                .filter(|s| *s > 0)
-                .unwrap_or(1);
-            workflow_support::sleep(ScheduleAt::In(Duration::Seconds(seconds)), None)
-                .map_err(|_| "sleep was cancelled".to_string())?;
-            continue;
+        match res {
+            CompletionResult::RateLimited(rate_limited) => {
+                let seconds = u64::from(rate_limited.retry_after_seconds.max(1));
+                workflow_support::sleep(ScheduleAt::In(Duration::Seconds(seconds)), None)
+                    .map_err(|_| "sleep was cancelled".to_string())?;
+            }
+            CompletionResult::Reply(reply) => {
+                let content: Value = serde_json::from_str(&reply.content_json)
+                    .map_err(|e| format!("llm reply content_json is not valid JSON: {e}"))?;
+                let content = content.as_array().cloned().ok_or_else(|| {
+                    "llm reply content must be a JSON array of blocks".to_string()
+                })?;
+                return Ok(LlmReply {
+                    content,
+                    content_json: reply.content_json,
+                    duration_milliseconds: elapsed_milliseconds(started_at, host_now_ms()),
+                    request_message_count,
+                    prompt_queued,
+                });
+            }
         }
-        if let Some(reply) = res.get("reply") {
-            let content_json = reply
-                .get("content_json")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "llm reply content_json is not valid JSON".to_string())?;
-            let content: Value = serde_json::from_str(content_json)
-                .map_err(|e| format!("llm reply content_json is not valid JSON: {e}"))?;
-            let content = content
-                .as_array()
-                .cloned()
-                .ok_or_else(|| "llm reply content must be a JSON array of blocks".to_string())?;
-            return Ok(LlmReply {
-                content,
-                content_json: content_json.to_string(),
-                duration_milliseconds: elapsed_milliseconds(started_at, host_now_ms()),
-                request_message_count,
-                prompt_queued,
-            });
-        }
-        return Err(format!("unexpected llm.completion result: {res}"));
     }
 }
 
@@ -837,7 +735,7 @@ fn tool_error(id: &str, message: &str) -> ToolResultBlock {
 fn open_turn(turn_index: u64) -> Result<Session, String> {
     let join_set = workflow_support::join_set_create_named(&format!("operator-{turn_index}"))
         .map_err(|e| format!("{e:?}"))?;
-    let injection_execution_id = submit_no_args(&join_set, INJECTION_FFQN)?;
+    let injection_execution_id = session_ext::injection_submit(&join_set);
     Ok(Session {
         join_set,
         injection_execution_id,
@@ -845,29 +743,22 @@ fn open_turn(turn_index: u64) -> Result<Session, String> {
     })
 }
 
-fn rearm_operator(session: &mut Session) -> Result<(), String> {
-    session.injection_execution_id = submit_no_args(&session.join_set, INJECTION_FFQN)?;
-    Ok(())
+fn rearm_operator(session: &mut Session) {
+    session.injection_execution_id = session_ext::injection_submit(&session.join_set);
 }
 
 fn take_operator_event(session: &mut Session) -> Result<SessionInput, String> {
-    let inner = workflow_support::join_next(&session.join_set).map_err(|e| format!("{e:?}"))?;
+    let event = session_ext::injection_await_next(&session.join_set)
+        .map_err(|e| format!("{e:?}"))?
+        .map_err(|e| format!("session injection failed: {e}"))?;
     let completed_id = last_response_execution_id(&session.join_set);
     if completed_id.as_deref() != Some(session.injection_execution_id.id.as_str()) {
         return Err(format!(
             "unexpected session response while idle: {completed_id:?}"
         ));
     }
-    let json = inner
-        .map_err(child_error_message)?
-        .ok_or_else(|| "injection text must be a non-empty string".to_string())?;
-    rearm_operator(session)?;
-    decode_session_event(&json)
-}
-
-fn submit_no_args(join_set: &JoinSet, ffqn: &str) -> Result<workflow_support::ExecutionId, String> {
-    let function = split_ffqn(ffqn)?;
-    workflow_support::submit_json(join_set, &function, "[]").map_err(|e| format!("{e:?}"))
+    rearm_operator(session);
+    Ok(event)
 }
 
 #[cfg(test)]
@@ -944,22 +835,5 @@ mod tests {
                 },
             })
         );
-    }
-
-    #[test]
-    fn session_injection_decodes_typed_and_legacy_events() {
-        for json in [
-            r#"{"shell":{"id":"s1","script":"pwd","stdin":""}}"#,
-            r#""{\"id\":\"s1\",\"kind\":\"shell\",\"script\":\"pwd\",\"stdin\":\"\"}""#,
-        ] {
-            let SessionInput::Shell { id, script, stdin } = decode_session_event(json).unwrap()
-            else {
-                panic!("expected shell event");
-            };
-            assert_eq!(
-                (id.as_str(), script.as_str(), stdin.as_str()),
-                ("s1", "pwd", "")
-            );
-        }
     }
 }
