@@ -37,9 +37,8 @@ use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::agent::session::{
     T0 as PromptInput, T1 as ShellInput, T2 as SessionInput, T3 as SessionStartedEvent,
-    T4 as OperatorMessageEvent, T5 as ShellStartedEvent, T6 as AssistantReplyEvent,
-    T7 as TurnCompletedEvent, T8 as ShellResult, T9 as ToolOutput, T10 as ToolResultEvent,
-    T11 as ShellOutputEvent, T12 as SessionEvent,
+    T4 as OperatorMessageEvent, T5 as AssistantReplyEvent, T6 as ShellResult, T7 as ToolOutput,
+    T8 as ToolResultEvent, T9 as ShellOutputEvent, T10 as SessionEvent,
 };
 use crate::generated::obelisk_agent::agent_obelisk_ext::session as session_ext;
 use crate::generated::obelisk_agent::agent_obelisk_stub::session as session_stub;
@@ -142,9 +141,7 @@ impl NotificationJoinSets {
         let event_id = match event {
             SessionEvent::SessionStarted(_) => "session-started".to_string(),
             SessionEvent::OperatorMessage(event) => event.id.clone(),
-            SessionEvent::ShellStarted(event) => event.id.clone(),
             SessionEvent::AssistantReply(event) => format!("turn-{}", event.turn_index),
-            SessionEvent::TurnCompleted(event) => format!("turn-{}-completed", event.turn_index),
             SessionEvent::AgentError(event) => event.id.clone(),
             SessionEvent::ToolResult(event) => event.id.clone(),
             SessionEvent::ShellOutput(event) => event.id.clone(),
@@ -403,7 +400,6 @@ pub fn agent_loop(
                 &mut notifications,
             )?;
             agent_steps += 1;
-            let mut turn_duration_milliseconds = reply.duration_milliseconds;
             notifications.notify(
                 SESSION_EVENTS_JOIN_SET,
                 &SessionEvent::AssistantReply(AssistantReplyEvent {
@@ -445,8 +441,6 @@ pub fn agent_loop(
                     let started_at = host_now_ms();
                     let block = dispatch_bash(call, &mut bash);
                     let duration_milliseconds = elapsed_milliseconds(started_at, host_now_ms());
-                    turn_duration_milliseconds =
-                        turn_duration_milliseconds.saturating_add(duration_milliseconds);
                     notifications.notify(
                         SESSION_EVENTS_JOIN_SET,
                         &SessionEvent::ToolResult(ToolResultEvent {
@@ -467,13 +461,6 @@ pub fn agent_loop(
                 should_call_llm = reply.prompt_queued;
                 agent_steps = 0;
             }
-            notifications.notify(
-                SESSION_EVENTS_JOIN_SET,
-                &SessionEvent::TurnCompleted(TurnCompletedEvent {
-                    turn_index,
-                    duration_milliseconds: turn_duration_milliseconds,
-                }),
-            )?;
         }
         // `session.join_set` drops (closes) here at the end of the turn's
         // scope; see module docs.
@@ -517,15 +504,9 @@ fn apply_session_input(
 ) -> Result<bool, String> {
     match event {
         SessionInput::Shell(ShellInput { id, script, stdin }) => {
-            notifications.notify(
-                SESSION_EVENTS_JOIN_SET,
-                &SessionEvent::ShellStarted(ShellStartedEvent {
-                    id: id.clone(),
-                    script: script.clone(),
-                    stdin: stdin.clone(),
-                    turn_index,
-                }),
-            )?;
+            // One durable record per command (like the model-driven tool path):
+            // `shell-output` carries the script and result, so the webui echoes
+            // the command and shows its output from this single event.
             let started_at = host_now_ms();
             let result = exec_shell(bash, &script, &stdin);
             let duration_milliseconds = elapsed_milliseconds(started_at, host_now_ms());
@@ -539,13 +520,6 @@ fn apply_session_input(
             notifications.notify(
                 SESSION_EVENTS_JOIN_SET,
                 &SessionEvent::ShellOutput(record.clone()),
-            )?;
-            notifications.notify(
-                SESSION_EVENTS_JOIN_SET,
-                &SessionEvent::TurnCompleted(TurnCompletedEvent {
-                    turn_index,
-                    duration_milliseconds,
-                }),
             )?;
             append_shell_exchange(messages, &record, &stdin);
             Ok(false)

@@ -7,30 +7,26 @@ interface session {
   variant t2 { prompt(t0), shell(t1) }
   record t3 { protocol-version: u32 }
   record t4 { id: string, text: string, turn-index: u64 }
-  record t5 { id: string, script: string, stdin: string, turn-index: u64 }
-  record t6 { content-json: string, turn-index: u64, duration-milliseconds: u64 }
-  record t7 { turn-index: u64, duration-milliseconds: u64 }
-  record t8 { stdout: string, stderr: string, exit-code: s32 }
-  variant t9 { ok(t8), error(string) }
-  record t10 { id: string, output: t9, turn-index: u64, duration-milliseconds: u64 }
-  record t11 {
+  record t5 { content-json: string, turn-index: u64, duration-milliseconds: u64 }
+  record t6 { stdout: string, stderr: string, exit-code: s32 }
+  variant t7 { ok(t6), error(string) }
+  record t8 { id: string, output: t7, turn-index: u64, duration-milliseconds: u64 }
+  record t9 {
     id: string,
     script: string,
-    %result: t8,
+    %result: t6,
     turn-index: u64,
     duration-milliseconds: u64,
   }
-  variant t12 {
+  variant t10 {
     session-started(t3),
     operator-message(t4),
-    shell-started(t5),
-    assistant-reply(t6),
-    turn-completed(t7),
+    assistant-reply(t5),
     agent-error(t4),
-    tool-result(t10),
-    shell-output(t11),
+    tool-result(t8),
+    shell-output(t9),
   }
 
   injection: func() -> result<t2, string>;
-  record-output: func(event-id: string) -> result<t12, string>;
+  record-output: func(event-id: string) -> result<t10, string>;
 }

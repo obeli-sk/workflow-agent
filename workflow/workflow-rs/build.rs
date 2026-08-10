@@ -16,7 +16,11 @@ fn main() -> Result<()> {
     .generate_to_out_dir(None)?;
 
     let contents = std::fs::read_to_string(&path)?;
-    let enum_re = regex::Regex::new(r"(pub enum (?:T2|T9|T12))").unwrap();
+    // The JSON-serialized variant enums need snake_case tags. wit-bindgen names
+    // them by their generated `tN` index, so these track the session schema:
+    // T2 = session-input and llm completion-result, T7 = tool-output,
+    // T10 = session-event. Update these if the schema's type ordering changes.
+    let enum_re = regex::Regex::new(r"(pub enum (?:T2|T7|T10))").unwrap();
     let contents = enum_re
         .replace_all(&contents, "#[serde(rename_all = \"snake_case\")]\n$1")
         .into_owned();

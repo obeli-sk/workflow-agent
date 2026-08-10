@@ -329,7 +329,6 @@ async function detailRun(id, cursorState) {
             tool_children: walk.toolChildren,
             operator_messages: walk.operatorMessages,
             shell_events: walk.shellEvents,
-            turn_durations: walk.turnDurations,
             sent_results: [...walk.toolResults, ...sent.results],
             completion_requests: sent.completion_requests,
             response_cursor: walk.cursor,
@@ -595,7 +594,6 @@ async function loadResponses(execId, startCursor = 0, sessionEventFeed = false) 
     const toolResults = [];
     const operatorMessages = [];
     const shellEvents = [];
-    const turnDurations = [];
     let cursor = startCursor;
     let including = startCursor === 0;
     while (true) {
@@ -614,7 +612,7 @@ async function loadResponses(execId, startCursor = 0, sessionEventFeed = false) 
             if (joinName === "session-events") {
                 sessionEventFeed = true;
                 appendSessionEvent(
-                    { replies, toolResults, operatorMessages, shellEvents, turnDurations },
+                    { replies, toolResults, operatorMessages, shellEvents },
                     ev.result?.ok?.value ?? ev.result?.ok,
                     r,
                 );
@@ -692,7 +690,6 @@ async function loadResponses(execId, startCursor = 0, sessionEventFeed = false) 
         toolResults,
         operatorMessages,
         shellEvents,
-        turnDurations,
         cursor,
         sessionEventFeed,
     };
@@ -708,16 +705,6 @@ function appendSessionEvent(target, event, response) {
             text: message.text || "",
             created_at: createdAt,
             turn_index: Number.isInteger(message.turn_index) ? message.turn_index : null,
-        });
-    } else if (event.shell_started) {
-        const shell = event.shell_started;
-        target.shellEvents.push({
-            kind: "shell_command",
-            id: shell.id || "",
-            script: shell.script || "",
-            stdin: shell.stdin || "",
-            created_at: createdAt,
-            turn_index: Number.isInteger(shell.turn_index) ? shell.turn_index : null,
         });
     } else if (event.assistant_reply) {
         const reply = event.assistant_reply;
@@ -741,12 +728,6 @@ function appendSessionEvent(target, event, response) {
         });
     } else if (event.tool_result) {
         target.toolResults.push(normalizeSessionToolResult(event.tool_result, createdAt));
-    } else if (event.turn_completed) {
-        const turn = event.turn_completed;
-        target.turnDurations.push({
-            turn_index: Number.isInteger(turn.turn_index) ? turn.turn_index : null,
-            duration_milliseconds: turn.duration_milliseconds,
-        });
     } else if (event.shell_output) {
         const output = event.shell_output;
         target.shellEvents.push({
@@ -799,12 +780,9 @@ function appendCompletionReply(replies, ev, response, turnIndex = null, duration
         // (a "thinking" bubble). Text-only turns already render it as the response.
         narration: toolUses.length > 0 ? text : "",
         created_at: response.event?.created_at || "",
-        // The completion child id pairs this reply (finish time) with its
-        // request event (start time) so the UI can report the LLM latency.
         completion_id: ev.child_execution_id || "",
         turn_index: turnIndex,
-        duration_milliseconds: Number.isFinite(durationMilliseconds)
-            ? durationMilliseconds : null,
+        duration_milliseconds: durationMilliseconds,
     });
 }
 
@@ -979,9 +957,7 @@ function normalizeSessionToolResult(result, createdAt) {
     const out = { id: String(result.id || ""), created_at: createdAt };
     if (result.output && "ok" in result.output) out.ok = result.output.ok;
     else if (result.output && "error" in result.output) out.err = result.output.error;
-    if (Number.isFinite(result.duration_milliseconds)) {
-        out.duration_milliseconds = result.duration_milliseconds;
-    }
+    out.duration_milliseconds = result.duration_milliseconds;
     if (Number.isInteger(result.turn_index)) out.turn_index = result.turn_index;
     return out;
 }
@@ -1599,7 +1575,6 @@ function mergeTranscript(delta) {
       tool_children: [],
       operator_messages: [],
       shell_events: [],
-      turn_durations: [],
       sent_results: [],
       completion_requests: [],
       response_cursor: 0,
@@ -1608,20 +1583,17 @@ function mergeTranscript(delta) {
     };
   }
   if (!state.transcript.completion_requests) state.transcript.completion_requests = [];
-  if (!state.transcript.turn_durations) state.transcript.turn_durations = [];
   const contentChanged = reset
     || (delta.replies || []).length > 0
     || (delta.tool_children || []).length > 0
     || (delta.operator_messages || []).length > 0
     || (delta.shell_events || []).length > 0
-    || (delta.turn_durations || []).length > 0
     || (delta.sent_results || []).length > 0
     || (delta.completion_requests || []).length > 0;
   state.transcript.replies.push(...(delta.replies || []));
   state.transcript.tool_children.push(...(delta.tool_children || []));
   mergeOperatorMessages(state.transcript.operator_messages, delta.operator_messages || []);
   mergeShellEvents(state.transcript.shell_events, delta.shell_events || []);
-  mergeTurnDurations(state.transcript.turn_durations, delta.turn_durations || []);
   mergeSentResults(state.transcript.sent_results, delta.sent_results || []);
   mergeSentResults(state.transcript.completion_requests, delta.completion_requests || []);
   state.transcript.response_cursor = delta.response_cursor || state.transcript.response_cursor;
@@ -1674,29 +1646,12 @@ function mergeSentResults(target, incoming) {
   }
 }
 
-function mergeTurnDurations(target, incoming) {
-  for (const duration of incoming) {
-    if (!Number.isInteger(duration?.turn_index)) continue;
-    const existing = target.find((item) => item?.turn_index === duration.turn_index);
-    if (existing) Object.assign(existing, duration);
-    else target.push(duration);
-  }
-}
-
 function buildCachedTurns(initialPromptAt, initialPrompt) {
   const cached = state.transcript;
   if (!cached) return [];
   const turns = [];
   const sentResultsById = new Map(
     (cached.sent_results || []).filter((result) => result?.id).map((result) => [result.id, result]),
-  );
-  const requestTimeById = new Map(
-    (cached.completion_requests || []).filter((r) => r?.id).map((r) => [r.id, r.created_at]),
-  );
-  const turnDurationByIndex = new Map(
-    (cached.turn_durations || [])
-      .filter((duration) => Number.isInteger(duration?.turn_index))
-      .map((duration) => [duration.turn_index, duration.duration_milliseconds]),
   );
   let legacyToolCursor = 0;
   let sequence = 0;
@@ -1709,14 +1664,7 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       reply,
     );
     if (!reply || typeof reply !== 'object') continue;
-    // The completion request (model start) begins the turn; its reply (finish)
-    // ends the LLM portion, shown on the thinking bubble. The turn total runs to
-    // when the tool results were fed back (the next request), shown in the header.
-    const requestAt = item.completion_id ? requestTimeById.get(item.completion_id) : null;
-    const llmLatency = Number.isFinite(item.duration_milliseconds)
-      ? item.duration_milliseconds : elapsedMs(requestAt, item.created_at);
-    const turnLatency = Number.isFinite(turnDurationByIndex.get(item.turn_index))
-      ? turnDurationByIndex.get(item.turn_index) : null;
+    const llmLatency = item.duration_milliseconds;
     const responseText = typeof reply.response === 'string' ? reply.response : reply.final;
     if (typeof responseText === 'string') {
       turns.push({
@@ -1724,7 +1672,7 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         text: responseText,
         blocks,
         llm_latency_ms: llmLatency,
-        total_latency_ms: turnLatency ?? llmLatency,
+        total_latency_ms: llmLatency,
         created_at: item.created_at,
         turn_index: item.turn_index,
         sequence: sequence++,
@@ -1735,15 +1683,13 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         text: reply.error,
         blocks,
         llm_latency_ms: llmLatency,
-        total_latency_ms: turnLatency ?? llmLatency,
+        total_latency_ms: llmLatency,
         created_at: item.created_at,
         turn_index: item.turn_index,
         sequence: sequence++,
       });
     } else if (Array.isArray(reply.tool_calls)) {
-      let latestSent = null;
       let toolDurationTotal = 0;
-      let hasEventDurations = true;
       const calls = reply.tool_calls.map((call) => {
         const sent = call?.id ? sentResultsById.get(call.id) : null;
         const child = sent || call?.name === 'bash' ? null : cached.tool_children[legacyToolCursor++];
@@ -1754,23 +1700,15 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
           child_id: child?.id ?? null,
         };
         const result = sent || child?.result;
-        rendered.latency_ms = Number.isFinite(sent?.duration_milliseconds)
-          ? sent.duration_milliseconds : elapsedMs(item.created_at, sent?.created_at);
+        rendered.latency_ms = sent?.duration_milliseconds;
         if (Number.isFinite(sent?.duration_milliseconds)) {
           toolDurationTotal += sent.duration_milliseconds;
-        } else {
-          hasEventDurations = false;
         }
-        if (sent?.created_at && (!latestSent || sent.created_at > latestSent)) latestSent = sent.created_at;
         if (result && 'ok' in result) rendered.ok = result.ok;
         else if (result && 'err' in result) rendered.err = result.err;
         return rendered;
       });
-      // Total spans the LLM reply plus the tool run (request to the last result
-      // being sent back); falls back to the LLM latency while a tool is pending.
-      const totalLatency = turnLatency ?? (Number.isFinite(llmLatency) && hasEventDurations
-        ? llmLatency + toolDurationTotal
-        : (latestSent ? elapsedMs(requestAt, latestSent) : llmLatency));
+      const totalLatency = llmLatency + toolDurationTotal;
       turns.push({
         kind: 'tool_calls',
         calls,
@@ -1794,6 +1732,9 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       sequence: sequence++,
     });
   }
+  // Feed sessions surface an interactive command as one shell_output event
+  // (carrying script + result); non-feed sessions reconstruct a shell_command
+  // start event from the operator injection, so handle both.
   const shellTurns = new Map();
   for (const event of cached.shell_events || []) {
     if (!event || typeof event.kind !== 'string') continue;
@@ -1831,10 +1772,8 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       call.ok = event.result || {};
       turn.output_created_at = event.created_at;
     }
-    call.latency_ms = Number.isFinite(event.duration_milliseconds)
-      ? event.duration_milliseconds : elapsedMs(turn.created_at, turn.output_created_at);
-    const turnDuration = turnDurationByIndex.get(turn.turn_index);
-    turn.total_latency_ms = Number.isFinite(turnDuration) ? turnDuration : call.latency_ms;
+    call.latency_ms = event.duration_milliseconds;
+    turn.total_latency_ms = call.latency_ms;
   }
   turns.sort((a, b) => {
     if (a.created_at && b.created_at && a.created_at !== b.created_at) {
@@ -1843,13 +1782,6 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
     return a.sequence - b.sequence;
   });
   return turns;
-}
-
-function elapsedMs(start, end) {
-  const startMs = Date.parse(start || '');
-  const endMs = Date.parse(end || '');
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return null;
-  return endMs - startMs;
 }
 
 function parseCachedArgs(json) {
