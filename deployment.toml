@@ -11,7 +11,6 @@ ffqn = "obelisk-control:agent/pack.describe"
 params = []
 return_type = "result<record { prompt: string, tools-json: string }, string>"
 location = "packs/obelisk-control/descriptor.js"
-content_digest = "sha256:d9f6e7327101a23ba1efeeecab5253b764212e75abf677e57bce46dcde9a7e69"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -31,7 +30,6 @@ params = [
 ]
 return_type = "result<record { stdout: string, stderr: string, exit-code: u32 }, string>"
 location = "activity/curl.js"
-content_digest = "sha256:ae90ee8636fd2622e463e501d5e6952979de3ef23aa158d4f0343faff70ba9a0"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -46,7 +44,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/native-call.js"
-content_digest = "sha256:a8b27fd57bc35ebee7e261f07cce497b092b5873be089f4ed9a2879c4999652a"
 
 # --- LLM endpoint: multi-provider client --------------------------------------
 # The only way the agent talks to a model. It speaks a provider-neutral message
@@ -84,7 +81,6 @@ env_vars = [
   "AGENT_MODELS",
   { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
 ]
-content_digest = "sha256:eb37869838f32d15f9d68dcc0871a2ed10e087dbfe0a7cb9313e5160485b75f2"
 
 # Single LLM endpoint. The origin comes from LLM_BASE_URL and every model in the
 # catalog shares it; the per-model `path` prefix plus the adapter route land under
@@ -112,7 +108,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/list-functions.js"
-content_digest = "sha256:d4f54abbe8b45deefcad04c4bb5b55a9d925ecb14d83e6332ac7ba50c368e09c"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -129,7 +124,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-function-wit.js"
-content_digest = "sha256:12c9da962a8912862ecc783dd793d06e8ceac3d49782d9318637e836b926c1b0"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -155,7 +149,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/list-executions.js"
-content_digest = "sha256:46a6c77e00153f101cfad4988719f1c979403dd8b8af46fc41e21d8f1ff3604b"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -172,7 +165,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-execution.js"
-content_digest = "sha256:08e213ebc5f7e15f51098145f334a7c70302dd7ba6564b65184b68724b6154dd"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -189,7 +181,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-execution-record.js"
-content_digest = "sha256:4123ba39f05345c7815e290451cca527b96ac337394469ff739c0d889350293f"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -210,7 +201,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-events.js"
-content_digest = "sha256:544527e45fc317db52aea81d4478c4e1a578046d1bb6f7b7f41f4a496a3a51cf"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -230,7 +220,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-responses.js"
-content_digest = "sha256:e9aaa480885445f0513eaa0297c9ed727311d1019a506cda04da96fc0ea85acf"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -256,7 +245,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-logs.js"
-content_digest = "sha256:1e843ac415b72fa38b8a0d257ac8550b1e7993a734166cbf7ceddc663b63c41f"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -274,7 +262,6 @@ params = [
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-result.js"
 exec.lock_expiry.minutes = 10
-content_digest = "sha256:52084e96b00ef2686263ec9811441775c71067f98b96d3ba251ca4c89cd7fed5"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -293,7 +280,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/list-deployments.js"
-content_digest = "sha256:9c61d8372c2296a94962ca784cfc00ec74e8f74823d1780a66a37fc09faf237d"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -314,7 +300,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-deployment.js"
-content_digest = "sha256:7d05e1a21ab5a5496867252caf40a119f3c2e90aef6baa0f5456497dc2c26ae5"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -334,7 +319,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/get-component-source.js"
-content_digest = "sha256:c45b95f47e289d96673e893254298b6c95900ecb51cb2d89955221e5dedeb319"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -348,7 +332,6 @@ name = "tool_current_deployment"
 ffqn = "obelisk-agent:tools/webapi.current-deployment-id"
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/current-deployment.js"
-content_digest = "sha256:4b0d1ead09073c77e332e3cd0e047b4da0a889de7fc7dce7cbe35ef783499a8e"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -373,7 +356,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/deployment-checkout.js"
-content_digest = "sha256:7787bf2773018b6e6b1ae649cd050c8793a33a5f2d904bbdbb46d595989e07bc"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -390,7 +372,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/deployment-read-blob.js"
-content_digest = "sha256:41b939fb646ed5c434a83f2ede29bd9dc6ff0ad08409fc322aeea32a57bbcb8f"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -415,7 +396,6 @@ return_type = "result<string, string>"
 exec.lock_expiry.minutes = 5
 max_retries = 0
 location = "packs/obelisk-control/tools/deployment-submit.js"
-content_digest = "sha256:5c73adf630a487bd8968b8b5a22c8ac858a9d02106326d9843fed09a9338788a"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -435,7 +415,6 @@ return_type = "result<string, string>"
 # A cold switch re-verifies (compile + link) before enqueuing.
 exec.lock_expiry.minutes = 5
 location = "packs/obelisk-control/tools/deployment-switch.js"
-content_digest = "sha256:125e381f7194d228eabb8515c5e96c23013ebeceea7253799a6b630bdd9c9e42"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -452,7 +431,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/pause-execution.js"
-content_digest = "sha256:102f0dcc9bc636cc5dcd967bcf28f5c32e9fc86b7aabc6aef575205c5faf7eda"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -469,7 +447,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/unpause-execution.js"
-content_digest = "sha256:222f288717edc1177c5fdf74716cc5457f73b73950786d210c2edfffe0542b24"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -486,7 +463,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/cancel-execution.js"
-content_digest = "sha256:aa3e873b0f0b7ef3a1e030a9f4bfbd5810fc651e974baede2d1fcd0cc2e42572"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -504,7 +480,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/tools/stub-execution.js"
-content_digest = "sha256:6246e136f476e06053c4c34a0896f0fd9c91d899882d3687e97e8285464fa931"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -631,7 +606,6 @@ params = [
 return_type = "result<string, string>"
 location = "packs/obelisk-control/github/create-branch.js"
 exec.lock_expiry.seconds = 30
-content_digest = "sha256:1115c913ae61730b9de1e3cdafabd59c119980e35f85ad7cc26adeee37bc7eb0"
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET", "POST"]
@@ -657,7 +631,6 @@ return_type = "result<string, string>"
 location = "packs/obelisk-control/github/push-file.js"
 exec.lock_expiry.seconds = 60
 max_retries = 0
-content_digest = "sha256:acb6050c33231f3cf3119591752ed75e1f8770318417043c1775a2480368dc67"
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["POST"]
@@ -680,7 +653,6 @@ params = [
 return_type = "result<string, string>"
 location = "packs/obelisk-control/github/create-pr.js"
 exec.lock_expiry.seconds = 60
-content_digest = "sha256:5286f48a82db83dd4f3a275ebd5015452e6ce2e53772cdb33e2a71a273131a99"
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET", "POST"]
@@ -697,7 +669,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/push-deployment.js"
-content_digest = "sha256:768bab2e86d15fb577e8e1b3e260b71bcda4eaaaf89fff9329bd82ee29b2b973"
 
 
 [[webhook_endpoint_js]]
@@ -724,7 +695,6 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   "AGENT_MODELS",
 ]
-content_digest = "sha256:632cde53bbe7458fc347581a4c516c230e3fda1584d1602ab186930735d8ec4d"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.
@@ -746,7 +716,6 @@ return_type = "result<string, string>"
 # A hot redeploy re-verifies (compile + link) before swapping executors.
 exec.lock_expiry.minutes = 5
 location = "packs/obelisk-control/tools/apply-deployment.js"
-content_digest = "sha256:153dc86da7089b9f6f3b99721be76df8ce6adcc577821f9d4e956dbc8ef55a61"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
