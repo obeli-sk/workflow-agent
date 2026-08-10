@@ -317,7 +317,7 @@ params = [
   { name = "offset", type = "u32" },
   { name = "length", type = "u32" },
 ]
-return_type = "result<string, string>"
+return_type = "result<record { section: string, ffqn: option<string>, name: option<string>, location: option<string>, content-digest: string, source-bytes: u64, offset: u64, length: u64, next-offset: option<u64>, raw-body: string }, string>"
 location = "packs/obelisk-control/tools/get-component-source.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]

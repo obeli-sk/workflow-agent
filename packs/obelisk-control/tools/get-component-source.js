@@ -1,6 +1,10 @@
 // obelisk-agent:tools/webapi.get-component-source:
 //   func(deployment-id: string, component: string,
-//        offset: u32, length: u32) -> result<string, string>
+//        offset: u32, length: u32)
+//     -> result<record { section: string, ffqn: option<string>,
+//          name: option<string>, location: option<string>, content-digest: string,
+//          source-bytes: u64, offset: u64, length: u64,
+//          next-offset: option<u64>, raw-body: string }, string>
 //
 // One component's owned script/exec source, fetched from the content-addressed
 // store and sliced by character offset (length 0 => default page). Doing the
@@ -46,7 +50,7 @@ export default async function get_component_source(deploymentId, component, offs
     if (len > MAX_PAGE) len = MAX_PAGE;
     const slice = content.slice(off, off + len);
     const nextOffset = off + slice.length;
-    return JSON.stringify({
+    return {
         section: match.section,
         ffqn: match.ffqn || null,
         name: match.name || null,
@@ -57,7 +61,7 @@ export default async function get_component_source(deploymentId, component, offs
         length: slice.length,
         next_offset: nextOffset < total ? nextOffset : null,
         raw_body: slice,
-    });
+    };
 }
 
 // Scan the manifest's top-level component blocks and return the first whose
