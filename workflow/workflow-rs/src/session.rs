@@ -124,23 +124,33 @@ struct AgentErrorRecord {
 #[derive(Serialize)]
 struct ToolResultRecord {
     id: String,
-    block: ToolResultBlock,
+    output: ToolOutput,
 }
 
 #[derive(Clone, Serialize)]
 struct ToolResultBlock {
     tool_use_id: String,
-    content: String,
-    is_error: bool,
+    output: ToolOutput,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ToolOutput {
+    Ok(ShellResult),
+    Error(String),
 }
 
 impl ToolResultBlock {
     fn into_message_value(self) -> Value {
+        let (content, is_error) = match self.output {
+            ToolOutput::Ok(result) => (serde_json::to_string(&result).expect("json"), false),
+            ToolOutput::Error(message) => (format!("Error: {message}"), true),
+        };
         json!({
             "type": "tool_result",
             "tool_use_id": self.tool_use_id,
-            "content": self.content,
-            "is_error": self.is_error,
+            "content": content,
+            "is_error": is_error,
         })
     }
 }
@@ -424,7 +434,7 @@ pub fn agent_loop(
                         &output_join_set,
                         &SessionRecord::ToolResult(ToolResultRecord {
                             id: call.id.clone(),
-                            block: block.clone(),
+                            output: block.output.clone(),
                         }),
                     )?;
                     result_blocks.push(block.into_message_value());
@@ -469,10 +479,7 @@ fn dispatch_bash(call: &ToolCall, bash: &mut Bash) -> ToolResultBlock {
         .and_then(Value::as_str)
         .unwrap_or("");
     let result = exec_shell(bash, script, stdin);
-    tool_ok(
-        &call.id,
-        serde_json::to_string(&shell_result(result)).expect("json"),
-    )
+    tool_ok(&call.id, shell_result(result))
 }
 
 fn apply_session_event(
@@ -509,10 +516,9 @@ fn append_shell_exchange(messages: &mut Vec<Value>, record: &ShellOutputRecord, 
         "role": "assistant",
         "content": [{"type": "tool_use", "id": record.id, "name": "bash", "input": input}],
     }));
-    let result_json = serde_json::to_string(&record.result).expect("json");
     messages.push(json!({
         "role": "user",
-        "content": [tool_ok(&record.id, result_json).into_message_value()],
+        "content": [tool_ok(&record.id, record.result.clone()).into_message_value()],
     }));
 }
 
@@ -711,7 +717,8 @@ fn user_text(text: &str) -> Value {
     json!({"role": "user", "content": [{"type": "text", "text": text}]})
 }
 
-fn tool_ok(id: &str, json_string: String) -> ToolResultBlock {
+fn tool_ok(id: &str, result: ShellResult) -> ToolResultBlock {
+    let json_string = serde_json::to_string(&result).expect("json");
     // The extra `to_string` mirrors JS's `JSON.stringify(s).length`: the
     // encoded-bytes estimate is how large `s` becomes once embedded (quoted,
     // escaped) in the outer `messages-json` payload.
@@ -726,16 +733,14 @@ fn tool_ok(id: &str, json_string: String) -> ToolResultBlock {
     }
     ToolResultBlock {
         tool_use_id: id.to_string(),
-        content: json_string,
-        is_error: false,
+        output: ToolOutput::Ok(result),
     }
 }
 
 fn tool_error(id: &str, message: &str) -> ToolResultBlock {
     ToolResultBlock {
         tool_use_id: id.to_string(),
-        content: format!("Error: {message}"),
-        is_error: true,
+        output: ToolOutput::Error(message.to_string()),
     }
 }
 
@@ -826,11 +831,11 @@ mod tests {
     fn session_record_uses_wit_variant_shape() {
         let record = SessionRecord::ToolResult(ToolResultRecord {
             id: "tool-1".to_string(),
-            block: ToolResultBlock {
-                tool_use_id: "tool-1".to_string(),
-                content: "ok".to_string(),
-                is_error: false,
-            },
+            output: ToolOutput::Ok(ShellResult {
+                stdout: "ok".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+            }),
         });
 
         assert_eq!(
@@ -838,10 +843,12 @@ mod tests {
             json!({
                 "tool_result": {
                     "id": "tool-1",
-                    "block": {
-                        "tool_use_id": "tool-1",
-                        "content": "ok",
-                        "is_error": false,
+                    "output": {
+                        "ok": {
+                            "stdout": "ok",
+                            "stderr": "",
+                            "exit_code": 0,
+                        },
                     },
                 },
             })

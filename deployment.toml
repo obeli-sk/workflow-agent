@@ -529,7 +529,7 @@ params = [
 return_type = """result<
   variant {
     agent-error(record { id: string, text: string, turn-index: u64 }),
-    tool-result(record { id: string, block: record { tool-use-id: string, content: string, is-error: bool } }),
+    tool-result(record { id: string, output: variant { ok(record { stdout: string, stderr: string, exit-code: s32 }), error(string) } }),
     shell-output(record { id: string, script: string, result: record { stdout: string, stderr: string, exit-code: s32 } }) },
   string
 >"""

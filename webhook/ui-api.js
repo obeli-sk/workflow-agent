@@ -651,8 +651,8 @@ async function loadResponses(execId, startCursor = 0) {
                             turn_index: Number.isInteger(error.turn_index) ? error.turn_index : null,
                         });
                     } else if (record.tool_result) {
-                        toolResults.push(normalizeToolResultBlock(
-                            record.tool_result.block,
+                        toolResults.push(normalizeSessionToolResult(
+                            record.tool_result,
                             r.event?.created_at || "",
                         ));
                     } else if (record.shell_output) {
@@ -879,6 +879,15 @@ function normalizeToolResultBlock(block, createdAt) {
         try { out.ok = JSON.parse(content); }
         catch (_) { out.ok = content; }
     }
+    return out;
+}
+
+function normalizeSessionToolResult(result, createdAt) {
+    // backcompat: 0.1.0 record-output used the model-facing string block.
+    if (result.block) return normalizeToolResultBlock(result.block, createdAt);
+    const out = { id: String(result.id || ""), created_at: createdAt };
+    if (result.output && "ok" in result.output) out.ok = result.output.ok;
+    else if (result.output && "error" in result.output) out.err = result.output.error;
     return out;
 }
 
