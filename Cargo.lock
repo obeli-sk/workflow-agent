@@ -389,6 +389,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "just-bash-rs",
+ "regex",
  "serde",
  "serde_json",
  "wit-bindgen",

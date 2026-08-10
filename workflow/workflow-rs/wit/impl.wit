@@ -10,7 +10,24 @@ interface workflow {
   ) -> result<_, string>;
 }
 
+interface notification-types {
+  use obelisk-agent:agent/session.{
+    session-started-event,
+    operator-message-event,
+    shell-started-event,
+    assistant-reply-event,
+    turn-completed-event,
+    agent-error-event,
+    shell-result,
+    tool-output,
+    tool-result-event,
+    shell-output-event,
+    session-event,
+  };
+}
+
 world any {
   export workflow;
+  import notification-types;
   import obelisk:workflow/workflow-support@6.0.0;
 }

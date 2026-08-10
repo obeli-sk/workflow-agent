@@ -42,6 +42,7 @@ export default async function handle(request) {
                 workflowId: query.workflow_id || "",
                 responseCursor: nonNegativeInteger(query.response_cursor),
                 historyVersion: nonNegativeInteger(query.history_version),
+                sessionEventFeed: query.session_event_feed === "true",
             }));
         }
         if (method === "GET" && path.startsWith("/api/logs/")) {
@@ -301,17 +302,19 @@ async function detailRun(id, cursorState) {
     const resetTranscript = cursorState.workflowId !== id;
     const responseCursor = resetTranscript ? 0 : cursorState.responseCursor;
     const historyVersion = resetTranscript ? 0 : cursorState.historyVersion;
-    const [status, created, walk, sent, finalResult, pendingAsks, pendingConfirms, pendingInjection, pendingCompletion] = await Promise.all([
+    const [status, created, walk, finalResult, pendingAsks, pendingConfirms, pendingInjection, pendingCompletion] = await Promise.all([
         loadStatus(id),
         loadCreated(id),
-        loadResponses(id, responseCursor),
-        loadSentResults(id, historyVersion),
+        loadResponses(id, responseCursor, resetTranscript ? false : cursorState.sessionEventFeed),
         loadFinalResult(id),
         loadPendingAsks(id),
         loadPendingConfirms(id),
         loadPendingInjection(id),
         loadPendingCompletion(id),
     ]);
+    const sent = walk.sessionEventFeed
+        ? { results: [], completion_requests: [], version: historyVersion }
+        : await loadSentResults(id, historyVersion);
     return {
         id,
         ...pickRunState(status),
@@ -326,10 +329,12 @@ async function detailRun(id, cursorState) {
             tool_children: walk.toolChildren,
             operator_messages: walk.operatorMessages,
             shell_events: walk.shellEvents,
+            turn_durations: walk.turnDurations,
             sent_results: [...walk.toolResults, ...sent.results],
             completion_requests: sent.completion_requests,
             response_cursor: walk.cursor,
             history_version: sent.version,
+            session_event_feed: walk.sessionEventFeed,
         },
         final_result: finalResult,
         pending_asks: pendingAsks,
@@ -581,18 +586,16 @@ function lineDiff(oldText, newText) {
     return rows;
 }
 
-// Walk the workflow's responses and split them into:
-//   - replies: the typed agent-reply emitted by each completed turn, in order
-//     ({ final } | { tool_calls: [{ name, arguments_json }] })
-// Pack and Bash-internal child executions are not model tool calls. The model's
-// Bash results are recovered by tool-use ID from subsequent completion inputs.
+// New sessions expose one typed `session-events` feed. Older sessions fall back
+// to reconstructing the same projection from operational responses.
 
-async function loadResponses(execId, startCursor = 0) {
+async function loadResponses(execId, startCursor = 0, sessionEventFeed = false) {
     const replies = [];
     const toolChildren = [];
     const toolResults = [];
     const operatorMessages = [];
     const shellEvents = [];
+    const turnDurations = [];
     let cursor = startCursor;
     let including = startCursor === 0;
     while (true) {
@@ -608,7 +611,16 @@ async function loadResponses(execId, startCursor = 0) {
             const joinName = parseJoinName(wrapped.join_set_id);
             const turnIndex = parseTurnIndex(wrapped.join_set_id);
 
-            if (joinName === "completion") {
+            if (joinName === "session-events") {
+                sessionEventFeed = true;
+                appendSessionEvent(
+                    { replies, toolResults, operatorMessages, shellEvents, turnDurations },
+                    ev.result?.ok?.value ?? ev.result?.ok,
+                    r,
+                );
+            } else if (sessionEventFeed) {
+                continue;
+            } else if (joinName === "completion") {
                 appendCompletionReply(replies, ev, r, turnIndex);
             } else if (joinName === "operator") {
                 // The session join set races operator input with llm.completion.
@@ -674,7 +686,79 @@ async function loadResponses(execId, startCursor = 0) {
         including = false;
         if (responses.length < 200) break;
     }
-    return { replies, toolChildren, toolResults, operatorMessages, shellEvents, cursor };
+    return {
+        replies,
+        toolChildren,
+        toolResults,
+        operatorMessages,
+        shellEvents,
+        turnDurations,
+        cursor,
+        sessionEventFeed,
+    };
+}
+
+function appendSessionEvent(target, event, response) {
+    if (!event || typeof event !== "object") return;
+    const createdAt = response.event?.created_at || "";
+    if (event.operator_message) {
+        const message = event.operator_message;
+        target.operatorMessages.push({
+            id: message.id || "",
+            text: message.text || "",
+            created_at: createdAt,
+            turn_index: Number.isInteger(message.turn_index) ? message.turn_index : null,
+        });
+    } else if (event.shell_started) {
+        const shell = event.shell_started;
+        target.shellEvents.push({
+            kind: "shell_command",
+            id: shell.id || "",
+            script: shell.script || "",
+            stdin: shell.stdin || "",
+            created_at: createdAt,
+            turn_index: Number.isInteger(shell.turn_index) ? shell.turn_index : null,
+        });
+    } else if (event.assistant_reply) {
+        const reply = event.assistant_reply;
+        appendCompletionReply(
+            target.replies,
+            { result: { ok: { reply } } },
+            response,
+            Number.isInteger(reply.turn_index) ? reply.turn_index : null,
+            reply.duration_milliseconds,
+        );
+    } else if (event.agent_error) {
+        const error = event.agent_error;
+        target.replies.push({
+            reply: { error: error.text },
+            presentation: "",
+            blocks: [],
+            narration: "",
+            created_at: createdAt,
+            completion_id: "",
+            turn_index: Number.isInteger(error.turn_index) ? error.turn_index : null,
+        });
+    } else if (event.tool_result) {
+        target.toolResults.push(normalizeSessionToolResult(event.tool_result, createdAt));
+    } else if (event.turn_completed) {
+        const turn = event.turn_completed;
+        target.turnDurations.push({
+            turn_index: Number.isInteger(turn.turn_index) ? turn.turn_index : null,
+            duration_milliseconds: turn.duration_milliseconds,
+        });
+    } else if (event.shell_output) {
+        const output = event.shell_output;
+        target.shellEvents.push({
+            kind: "shell_output",
+            id: output.id || "",
+            script: output.script || "",
+            result: output.result || {},
+            created_at: createdAt,
+            turn_index: Number.isInteger(output.turn_index) ? output.turn_index : null,
+            duration_milliseconds: output.duration_milliseconds,
+        });
+    }
 }
 
 function decodeSessionRecord(value) {
@@ -690,7 +774,7 @@ function decodeSessionRecord(value) {
     }
 }
 
-function appendCompletionReply(replies, ev, response, turnIndex = null) {
+function appendCompletionReply(replies, ev, response, turnIndex = null, durationMilliseconds = null) {
     const value = ev.result?.ok?.value ?? ev.result?.ok;
     const rep = value && typeof value === "object" ? value.reply : null;
     if (!rep || typeof rep !== "object" || typeof rep.content_json !== "string") return;
@@ -719,6 +803,8 @@ function appendCompletionReply(replies, ev, response, turnIndex = null) {
         // request event (start time) so the UI can report the LLM latency.
         completion_id: ev.child_execution_id || "",
         turn_index: turnIndex,
+        duration_milliseconds: Number.isFinite(durationMilliseconds)
+            ? durationMilliseconds : null,
     });
 }
 
@@ -893,6 +979,10 @@ function normalizeSessionToolResult(result, createdAt) {
     const out = { id: String(result.id || ""), created_at: createdAt };
     if (result.output && "ok" in result.output) out.ok = result.output.ok;
     else if (result.output && "error" in result.output) out.err = result.output.error;
+    if (Number.isFinite(result.duration_milliseconds)) {
+        out.duration_milliseconds = result.duration_milliseconds;
+    }
+    if (Number.isInteger(result.turn_index)) out.turn_index = result.turn_index;
     return out;
 }
 
@@ -1456,6 +1546,7 @@ function refreshDetail() {
         query.set('workflow_id', state.transcript.workflow_id);
         query.set('response_cursor', String(state.transcript.response_cursor || 0));
         query.set('history_version', String(state.transcript.history_version || 0));
+        query.set('session_event_feed', state.transcript.session_event_feed ? 'true' : 'false');
       }
       const suffix = query.toString() ? '?' + query.toString() : '';
       const r = await fetch('/api/runs/' + encodeURIComponent(selected) + suffix, {
@@ -1508,28 +1599,36 @@ function mergeTranscript(delta) {
       tool_children: [],
       operator_messages: [],
       shell_events: [],
+      turn_durations: [],
       sent_results: [],
       completion_requests: [],
       response_cursor: 0,
       history_version: 0,
+      session_event_feed: false,
     };
   }
   if (!state.transcript.completion_requests) state.transcript.completion_requests = [];
+  if (!state.transcript.turn_durations) state.transcript.turn_durations = [];
   const contentChanged = reset
     || (delta.replies || []).length > 0
     || (delta.tool_children || []).length > 0
     || (delta.operator_messages || []).length > 0
     || (delta.shell_events || []).length > 0
+    || (delta.turn_durations || []).length > 0
     || (delta.sent_results || []).length > 0
     || (delta.completion_requests || []).length > 0;
   state.transcript.replies.push(...(delta.replies || []));
   state.transcript.tool_children.push(...(delta.tool_children || []));
   mergeOperatorMessages(state.transcript.operator_messages, delta.operator_messages || []);
   mergeShellEvents(state.transcript.shell_events, delta.shell_events || []);
+  mergeTurnDurations(state.transcript.turn_durations, delta.turn_durations || []);
   mergeSentResults(state.transcript.sent_results, delta.sent_results || []);
   mergeSentResults(state.transcript.completion_requests, delta.completion_requests || []);
   state.transcript.response_cursor = delta.response_cursor || state.transcript.response_cursor;
   state.transcript.history_version = delta.history_version || state.transcript.history_version;
+  state.transcript.session_event_feed = Boolean(
+    delta.session_event_feed || state.transcript.session_event_feed,
+  );
   return contentChanged;
 }
 
@@ -1575,6 +1674,15 @@ function mergeSentResults(target, incoming) {
   }
 }
 
+function mergeTurnDurations(target, incoming) {
+  for (const duration of incoming) {
+    if (!Number.isInteger(duration?.turn_index)) continue;
+    const existing = target.find((item) => item?.turn_index === duration.turn_index);
+    if (existing) Object.assign(existing, duration);
+    else target.push(duration);
+  }
+}
+
 function buildCachedTurns(initialPromptAt, initialPrompt) {
   const cached = state.transcript;
   if (!cached) return [];
@@ -1584,6 +1692,11 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
   );
   const requestTimeById = new Map(
     (cached.completion_requests || []).filter((r) => r?.id).map((r) => [r.id, r.created_at]),
+  );
+  const turnDurationByIndex = new Map(
+    (cached.turn_durations || [])
+      .filter((duration) => Number.isInteger(duration?.turn_index))
+      .map((duration) => [duration.turn_index, duration.duration_milliseconds]),
   );
   let legacyToolCursor = 0;
   let sequence = 0;
@@ -1600,7 +1713,10 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
     // ends the LLM portion, shown on the thinking bubble. The turn total runs to
     // when the tool results were fed back (the next request), shown in the header.
     const requestAt = item.completion_id ? requestTimeById.get(item.completion_id) : null;
-    const llmLatency = elapsedMs(requestAt, item.created_at);
+    const llmLatency = Number.isFinite(item.duration_milliseconds)
+      ? item.duration_milliseconds : elapsedMs(requestAt, item.created_at);
+    const turnLatency = Number.isFinite(turnDurationByIndex.get(item.turn_index))
+      ? turnDurationByIndex.get(item.turn_index) : null;
     const responseText = typeof reply.response === 'string' ? reply.response : reply.final;
     if (typeof responseText === 'string') {
       turns.push({
@@ -1608,7 +1724,7 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         text: responseText,
         blocks,
         llm_latency_ms: llmLatency,
-        total_latency_ms: llmLatency,
+        total_latency_ms: turnLatency ?? llmLatency,
         created_at: item.created_at,
         turn_index: item.turn_index,
         sequence: sequence++,
@@ -1619,13 +1735,15 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         text: reply.error,
         blocks,
         llm_latency_ms: llmLatency,
-        total_latency_ms: llmLatency,
+        total_latency_ms: turnLatency ?? llmLatency,
         created_at: item.created_at,
         turn_index: item.turn_index,
         sequence: sequence++,
       });
     } else if (Array.isArray(reply.tool_calls)) {
       let latestSent = null;
+      let toolDurationTotal = 0;
+      let hasEventDurations = true;
       const calls = reply.tool_calls.map((call) => {
         const sent = call?.id ? sentResultsById.get(call.id) : null;
         const child = sent || call?.name === 'bash' ? null : cached.tool_children[legacyToolCursor++];
@@ -1636,7 +1754,13 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
           child_id: child?.id ?? null,
         };
         const result = sent || child?.result;
-        rendered.latency_ms = elapsedMs(item.created_at, sent?.created_at);
+        rendered.latency_ms = Number.isFinite(sent?.duration_milliseconds)
+          ? sent.duration_milliseconds : elapsedMs(item.created_at, sent?.created_at);
+        if (Number.isFinite(sent?.duration_milliseconds)) {
+          toolDurationTotal += sent.duration_milliseconds;
+        } else {
+          hasEventDurations = false;
+        }
         if (sent?.created_at && (!latestSent || sent.created_at > latestSent)) latestSent = sent.created_at;
         if (result && 'ok' in result) rendered.ok = result.ok;
         else if (result && 'err' in result) rendered.err = result.err;
@@ -1644,7 +1768,9 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       });
       // Total spans the LLM reply plus the tool run (request to the last result
       // being sent back); falls back to the LLM latency while a tool is pending.
-      const totalLatency = latestSent ? elapsedMs(requestAt, latestSent) : llmLatency;
+      const totalLatency = turnLatency ?? (Number.isFinite(llmLatency) && hasEventDurations
+        ? llmLatency + toolDurationTotal
+        : (latestSent ? elapsedMs(requestAt, latestSent) : llmLatency));
       turns.push({
         kind: 'tool_calls',
         calls,
@@ -1705,7 +1831,10 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       call.ok = event.result || {};
       turn.output_created_at = event.created_at;
     }
-    call.latency_ms = elapsedMs(turn.created_at, turn.output_created_at);
+    call.latency_ms = Number.isFinite(event.duration_milliseconds)
+      ? event.duration_milliseconds : elapsedMs(turn.created_at, turn.output_created_at);
+    const turnDuration = turnDurationByIndex.get(turn.turn_index);
+    turn.total_latency_ms = Number.isFinite(turnDuration) ? turnDuration : call.latency_ms;
   }
   turns.sort((a, b) => {
     if (a.created_at && b.created_at && a.created_at !== b.created_at) {

@@ -14,6 +14,15 @@ switch (command) {
         process.stdout.write(row?.execution_id ?? "");
         break;
     }
+    case "execution-ids": {
+        const ffqn = process.argv[3];
+        const ids = executions(json())
+            .filter((candidate) => candidate.ffqn === ffqn)
+            .map((candidate) => candidate.execution_id)
+            .filter(Boolean);
+        process.stdout.write(ids.join("\n"));
+        break;
+    }
     case "has-execution": {
         const ffqn = process.argv[3];
         process.exit(executions(json()).some((row) => row.ffqn === ffqn) ? 0 : 1);

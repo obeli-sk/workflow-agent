@@ -17,5 +17,6 @@ wit-bindgen.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true
+regex.workspace = true
 wit-bindgen-rust.workspace = true
 wit-parser.workspace = true

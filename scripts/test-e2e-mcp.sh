@@ -166,13 +166,15 @@ while true; do
         -e "$SESSION_ID" --show-derived --limit 100)"
     if node scripts/e2e-json.js has-execution \
         "obelisk-agent:agent/session.record-output" <<<"$SESSION_EXECUTIONS"; then
-        RECORD_ID="$(node scripts/e2e-json.js execution-id \
-            "obelisk-agent:agent/session.record-output" <<<"$SESSION_EXECUTIONS")"
-        RECORD_RESULT="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$RECORD_ID" 2>/dev/null || true)"
-        if [[ -n "$RECORD_RESULT" ]]; then
-            STDOUT="$(node scripts/e2e-json.js shell-stdout <<<"$RECORD_RESULT" || true)"
-            [[ -n "$STDOUT" ]] && break
-        fi
+        while IFS= read -r RECORD_ID; do
+            [[ -n "$RECORD_ID" ]] || continue
+            RECORD_RESULT="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$RECORD_ID" 2>/dev/null || true)"
+            if [[ -n "$RECORD_RESULT" ]]; then
+                STDOUT="$(node scripts/e2e-json.js shell-stdout <<<"$RECORD_RESULT" 2>/dev/null || true)"
+                [[ -n "$STDOUT" ]] && break 2
+            fi
+        done < <(node scripts/e2e-json.js execution-ids \
+            "obelisk-agent:agent/session.record-output" <<<"$SESSION_EXECUTIONS")
     fi
     [[ $SECONDS -ge 30 ]] && { echo "shell turn did not record output: $SESSION_EXECUTIONS" >&2; exit 1; }
     sleep 1

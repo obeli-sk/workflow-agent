@@ -1,0 +1,80 @@
+package obelisk-agent:agent;
+
+interface session {
+  record session-started-event {
+    protocol-version: u32,
+  }
+
+  record operator-message-event {
+    id: string,
+    text: string,
+    turn-index: u64,
+  }
+
+  record shell-started-event {
+    id: string,
+    script: string,
+    stdin: string,
+    turn-index: u64,
+  }
+
+  record assistant-reply-event {
+    content-json: string,
+    turn-index: u64,
+    duration-milliseconds: u64,
+  }
+
+  record turn-completed-event {
+    turn-index: u64,
+    duration-milliseconds: u64,
+  }
+
+  record agent-error-event {
+    id: string,
+    text: string,
+    turn-index: u64,
+  }
+
+  record shell-result {
+    stdout: string,
+    stderr: string,
+    exit-code: s32,
+  }
+
+  variant tool-output {
+    ok(shell-result),
+    error(string),
+  }
+
+  record tool-result-event {
+    id: string,
+    output: tool-output,
+    turn-index: u64,
+    duration-milliseconds: u64,
+  }
+
+  record shell-output-event {
+    id: string,
+    script: string,
+    %result: shell-result,
+    turn-index: u64,
+    duration-milliseconds: u64,
+  }
+
+  variant session-event {
+    session-started(session-started-event),
+    operator-message(operator-message-event),
+    shell-started(shell-started-event),
+    assistant-reply(assistant-reply-event),
+    turn-completed(turn-completed-event),
+    agent-error(agent-error-event),
+    tool-result(tool-result-event),
+    shell-output(shell-output-event),
+  }
+
+  record-output: func(event-id: string) -> result<session-event, string>;
+}
+
+world exports {
+  export session;
+}

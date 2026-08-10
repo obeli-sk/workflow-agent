@@ -1,7 +1,7 @@
 //! PORT: workflow/agent-loop-src.js
 //!
 //! The generic session loop: one persistent `Bash` instance, one named
-//! `record-output` join set for the whole session, and one named
+//! `session-events` notification join set for the whole session, and one named
 //! `operator-{turn}` join set per conversation turn racing the LLM completion
 //! child against an always-outstanding operator-injection offer. Direct shell
 //! interactions are turns too: their synthetic Bash request/result pair is
@@ -16,7 +16,7 @@
 //!   log lines have no Rust equivalent and are dropped.
 //! - No explicit `joinSet.close()` / `finally`: a WIT `join-set` resource
 //!   closes on `Drop`, so scope exit (a fresh `Session` each turn, and the
-//!   session-wide output join set falling out of scope when this function
+//!   session-wide notification join sets falling out of scope when this function
 //!   returns) already does the equivalent cleanup.
 //! - `WORKFLOW_UNAVAILABLE_COMMANDS` (gzip/gunzip/zcat) has no Rust
 //!   equivalent: this port's command catalog (`just_bash_rs::commands`) never
@@ -28,10 +28,10 @@
 //!   host `Math.random()` shim.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult};
@@ -39,6 +39,11 @@ use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
 
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
+use crate::generated::obelisk_agent::agent::session::{
+    AgentErrorEvent, AssistantReplyEvent, OperatorMessageEvent, SessionEvent, SessionStartedEvent,
+    ShellOutputEvent, ShellResult, ShellStartedEvent, ToolOutput, ToolResultEvent,
+    TurnCompletedEvent,
+};
 use crate::host::RealHost;
 use crate::support::{child_error_message, last_response_execution_id, split_ffqn};
 
@@ -74,8 +79,8 @@ fn current_deployment_id() -> Result<String, String> {
 const MAX_TURNS: u32 = 10;
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const INJECTION_FFQN: &str = "obelisk-agent:agent/session.injection";
-const OUTPUT_FFQN: &str = "obelisk-agent:agent/session.record-output";
 const COMPLETION_FFQN: &str = "obelisk-agent:llm/chat.completion";
+const SESSION_EVENTS_JOIN_SET: &str = "session-events";
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
 
@@ -87,61 +92,35 @@ const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash scrip
 struct Session {
     join_set: JoinSet,
     injection_execution_id: workflow_support::ExecutionId,
+    turn_index: u64,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SessionEvent {
+enum SessionInput {
     Shell {
         id: String,
         script: String,
         stdin: String,
     },
     Prompt {
-        #[serde(rename = "id")]
-        _id: String,
+        id: String,
         text: String,
     },
 }
 
 struct LlmReply {
     content: Vec<Value>,
+    content_json: String,
+    duration_milliseconds: u64,
     request_message_count: usize,
     prompt_queued: bool,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum SessionRecord {
-    AgentError(AgentErrorRecord),
-    ToolResult(ToolResultRecord),
-    ShellOutput(ShellOutputRecord),
-}
-
-#[derive(Serialize)]
-struct AgentErrorRecord {
-    id: String,
-    text: String,
-    turn_index: u64,
-}
-
-#[derive(Serialize)]
-struct ToolResultRecord {
-    id: String,
-    output: ToolOutput,
-}
-
-#[derive(Clone, Serialize)]
+#[derive(Clone)]
 struct ToolResultBlock {
     tool_use_id: String,
     output: ToolOutput,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ToolOutput {
-    Ok(ShellResult),
-    Error(String),
 }
 
 impl ToolResultBlock {
@@ -159,18 +138,62 @@ impl ToolResultBlock {
     }
 }
 
-#[derive(Clone, Serialize)]
-struct ShellOutputRecord {
-    id: String,
-    script: String,
-    result: ShellResult,
+#[derive(Default)]
+struct NotificationJoinSets {
+    join_sets: BTreeMap<String, JoinSet>,
 }
 
-#[derive(Clone, Serialize)]
-struct ShellResult {
-    stdout: String,
-    stderr: String,
-    exit_code: i32,
+impl NotificationJoinSets {
+    fn notify(&mut self, join_set_name: &str, event: &SessionEvent) -> Result<(), String> {
+        if !self.join_sets.contains_key(join_set_name) {
+            let join_set = workflow_support::join_set_create_named(join_set_name)
+                .map_err(|e| format!("{join_set_name} join set: {e:?}"))?;
+            self.join_sets.insert(join_set_name.to_string(), join_set);
+        }
+        let join_set = self
+            .join_sets
+            .get(join_set_name)
+            .expect("notification join set must exist");
+        let event_id = match event {
+            SessionEvent::SessionStarted(_) => "session-started".to_string(),
+            SessionEvent::OperatorMessage(event) => event.id.clone(),
+            SessionEvent::ShellStarted(event) => event.id.clone(),
+            SessionEvent::AssistantReply(event) => format!("turn-{}", event.turn_index),
+            SessionEvent::TurnCompleted(event) => format!("turn-{}-completed", event.turn_index),
+            SessionEvent::AgentError(event) => event.id.clone(),
+            SessionEvent::ToolResult(event) => event.id.clone(),
+            SessionEvent::ShellOutput(event) => event.id.clone(),
+        };
+        // Inline activity stubs describe anonymous structural types, so this is
+        // the one dynamic boundary. The application payload on either side is
+        // still the WIT-generated `SessionEvent` type.
+        let function = split_ffqn("obelisk-agent:agent/session.record-output")?;
+        let execution_id =
+            workflow_support::submit_json(join_set, &function, &json!([event_id]).to_string())
+                .map_err(|e| format!("{e:?}"))?;
+        let event_json = serde_json::to_string(event)
+            .map_err(|e| format!("cannot encode session event: {e}"))?;
+        workflow_support::stub_json(&execution_id, &format!(r#"{{"ok":{event_json}}}"#))
+            .map_err(|e| format!("{e:?}"))?;
+
+        let inner = workflow_support::join_next(join_set).map_err(|e| format!("{e:?}"))?;
+        let published: SessionEvent = inner
+            .map_err(child_error_message)?
+            .ok_or_else(|| "session event response was empty".to_string())
+            .and_then(|json| {
+                serde_json::from_str(&json)
+                    .map_err(|e| format!("cannot decode session event response: {e}"))
+            })?;
+        let last_id = last_response_execution_id(join_set);
+        if last_id.as_deref() != Some(execution_id.id.as_str()) || published != *event {
+            return Err(format!("unexpected session event response: {last_id:?}"));
+        }
+        Ok(())
+    }
+}
+
+fn elapsed_milliseconds(start: i64, end: i64) -> u64 {
+    u64::try_from(end.saturating_sub(start)).unwrap_or_default()
 }
 
 pub fn agent_loop(
@@ -224,10 +247,13 @@ pub fn agent_loop(
         Vec::new()
     };
 
-    // Shell outputs are stubbed and drained synchronously, so one named set
-    // serves the whole session; each turn opens its own operator set below.
-    let output_join_set = workflow_support::join_set_create_named("record-output")
-        .map_err(|e| format!("record-output join set: {e:?}"))?;
+    let mut notifications = NotificationJoinSets::default();
+    notifications.notify(
+        SESSION_EVENTS_JOIN_SET,
+        &SessionEvent::SessionStarted(SessionStartedEvent {
+            protocol_version: 1,
+        }),
+    )?;
 
     let mut pack_mounted = false;
     // Program.* shell commands are (re-)registered whenever the active
@@ -252,9 +278,9 @@ pub fn agent_loop(
                 "role": "assistant",
                 "content": [{"type": "text", "text": message}],
             }));
-            publish_session_record(
-                &output_join_set,
-                &SessionRecord::AgentError(AgentErrorRecord {
+            notifications.notify(
+                SESSION_EVENTS_JOIN_SET,
+                &SessionEvent::AgentError(AgentErrorEvent {
                     id: format!("turn-limit-{turn_index}"),
                     text: message,
                     turn_index,
@@ -389,8 +415,13 @@ pub fn agent_loop(
         }
         if !should_call_llm {
             let event = take_operator_event(&mut session)?;
-            should_call_llm =
-                apply_session_event(event, &output_join_set, &mut bash, &mut messages)?;
+            should_call_llm = apply_session_input(
+                event,
+                turn_index,
+                &mut notifications,
+                &mut bash,
+                &mut messages,
+            )?;
         } else {
             let reply = call_llm_with_operator(
                 &mut session,
@@ -399,9 +430,18 @@ pub fn agent_loop(
                 &model,
                 &effort,
                 &mut bash,
-                &output_join_set,
+                &mut notifications,
             )?;
             agent_steps += 1;
+            let mut turn_duration_milliseconds = reply.duration_milliseconds;
+            notifications.notify(
+                SESSION_EVENTS_JOIN_SET,
+                &SessionEvent::AssistantReply(AssistantReplyEvent {
+                    content_json: reply.content_json.clone(),
+                    turn_index,
+                    duration_milliseconds: reply.duration_milliseconds,
+                }),
+            )?;
             messages.insert(
                 reply.request_message_count,
                 json!({"role": "assistant", "content": reply.content}),
@@ -432,12 +472,18 @@ pub fn agent_loop(
             if !calls.is_empty() {
                 let mut result_blocks = Vec::with_capacity(calls.len());
                 for call in &calls {
+                    let started_at = host_now_ms();
                     let block = dispatch_bash(call, &mut bash);
-                    publish_session_record(
-                        &output_join_set,
-                        &SessionRecord::ToolResult(ToolResultRecord {
+                    let duration_milliseconds = elapsed_milliseconds(started_at, host_now_ms());
+                    turn_duration_milliseconds =
+                        turn_duration_milliseconds.saturating_add(duration_milliseconds);
+                    notifications.notify(
+                        SESSION_EVENTS_JOIN_SET,
+                        &SessionEvent::ToolResult(ToolResultEvent {
                             id: call.id.clone(),
                             output: block.output.clone(),
+                            turn_index,
+                            duration_milliseconds,
                         }),
                     )?;
                     result_blocks.push(block.into_message_value());
@@ -451,6 +497,13 @@ pub fn agent_loop(
                 should_call_llm = reply.prompt_queued;
                 agent_steps = 0;
             }
+            notifications.notify(
+                SESSION_EVENTS_JOIN_SET,
+                &SessionEvent::TurnCompleted(TurnCompletedEvent {
+                    turn_index,
+                    duration_milliseconds: turn_duration_milliseconds,
+                }),
+            )?;
         }
         // `session.join_set` drops (closes) here at the end of the turn's
         // scope; see module docs.
@@ -485,32 +538,64 @@ fn dispatch_bash(call: &ToolCall, bash: &mut Bash) -> ToolResultBlock {
     tool_ok(&call.id, shell_result(result))
 }
 
-fn apply_session_event(
-    event: SessionEvent,
-    output_join_set: &JoinSet,
+fn apply_session_input(
+    event: SessionInput,
+    turn_index: u64,
+    notifications: &mut NotificationJoinSets,
     bash: &mut Bash,
     messages: &mut Vec<Value>,
 ) -> Result<bool, String> {
     match event {
-        SessionEvent::Shell { id, script, stdin } => {
+        SessionInput::Shell { id, script, stdin } => {
+            notifications.notify(
+                SESSION_EVENTS_JOIN_SET,
+                &SessionEvent::ShellStarted(ShellStartedEvent {
+                    id: id.clone(),
+                    script: script.clone(),
+                    stdin: stdin.clone(),
+                    turn_index,
+                }),
+            )?;
+            let started_at = host_now_ms();
             let result = exec_shell(bash, &script, &stdin);
-            let record = ShellOutputRecord {
+            let duration_milliseconds = elapsed_milliseconds(started_at, host_now_ms());
+            let record = ShellOutputEvent {
                 id,
                 script,
                 result: shell_result(result),
+                turn_index,
+                duration_milliseconds,
             };
-            publish_session_record(output_join_set, &SessionRecord::ShellOutput(record.clone()))?;
+            notifications.notify(
+                SESSION_EVENTS_JOIN_SET,
+                &SessionEvent::ShellOutput(record.clone()),
+            )?;
+            notifications.notify(
+                SESSION_EVENTS_JOIN_SET,
+                &SessionEvent::TurnCompleted(TurnCompletedEvent {
+                    turn_index,
+                    duration_milliseconds,
+                }),
+            )?;
             append_shell_exchange(messages, &record, &stdin);
             Ok(false)
         }
-        SessionEvent::Prompt { text, .. } => {
+        SessionInput::Prompt { id, text } => {
+            notifications.notify(
+                SESSION_EVENTS_JOIN_SET,
+                &SessionEvent::OperatorMessage(OperatorMessageEvent {
+                    id,
+                    text: text.clone(),
+                    turn_index,
+                }),
+            )?;
             messages.push(user_text(&text));
             Ok(true)
         }
     }
 }
 
-fn append_shell_exchange(messages: &mut Vec<Value>, record: &ShellOutputRecord, stdin: &str) {
+fn append_shell_exchange(messages: &mut Vec<Value>, record: &ShellOutputEvent, stdin: &str) {
     let mut input = json!({"script": record.script});
     if !stdin.is_empty() {
         input["stdin"] = Value::String(stdin.to_string());
@@ -523,33 +608,6 @@ fn append_shell_exchange(messages: &mut Vec<Value>, record: &ShellOutputRecord, 
         "role": "user",
         "content": [tool_ok(&record.id, record.result.clone()).into_message_value()],
     }));
-}
-
-fn publish_session_record(output_join_set: &JoinSet, record: &SessionRecord) -> Result<(), String> {
-    let event_id = match record {
-        SessionRecord::AgentError(record) => &record.id,
-        SessionRecord::ToolResult(record) => &record.id,
-        SessionRecord::ShellOutput(record) => &record.id,
-    };
-    let function = split_ffqn(OUTPUT_FFQN)?;
-    let execution_id =
-        workflow_support::submit_json(output_join_set, &function, &json!([event_id]).to_string())
-            .map_err(|e| format!("{e:?}"))?;
-    let stub_payload = json!({"ok": record}).to_string();
-    workflow_support::stub_json(&execution_id, &stub_payload).map_err(|e| format!("{e:?}"))?;
-
-    let inner = workflow_support::join_next(output_join_set).map_err(|e| format!("{e:?}"))?;
-    let last_id = last_response_execution_id(output_join_set);
-    let published: Value = inner
-        .map_err(child_error_message)?
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or(Value::Null);
-    if last_id.as_deref() != Some(execution_id.id.as_str())
-        || published != serde_json::to_value(record).expect("session record must serialize")
-    {
-        return Err(format!("unexpected session output response: {last_id:?}"));
-    }
-    Ok(())
 }
 
 fn exec_shell(bash: &mut Bash, script: &str, stdin: &str) -> ExecResult {
@@ -580,7 +638,7 @@ fn contains_background_statement(script: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn parse_legacy_session_event(text: &str) -> SessionEvent {
+fn parse_legacy_session_event(text: &str) -> SessionInput {
     if let Ok(value) = serde_json::from_str::<Value>(text) {
         if value.get("kind").and_then(Value::as_str) == Some("shell")
             && let Some(script) = value.get("script").and_then(Value::as_str)
@@ -596,7 +654,7 @@ fn parse_legacy_session_event(text: &str) -> SessionEvent {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            return SessionEvent::Shell {
+            return SessionInput::Shell {
                 id,
                 script: script.to_string(),
                 stdin,
@@ -606,8 +664,8 @@ fn parse_legacy_session_event(text: &str) -> SessionEvent {
             && let Some(t) = value.get("text").and_then(Value::as_str)
             && !t.trim().is_empty()
         {
-            return SessionEvent::Prompt {
-                _id: value
+            return SessionInput::Prompt {
+                id: value
                     .get("id")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
@@ -616,13 +674,13 @@ fn parse_legacy_session_event(text: &str) -> SessionEvent {
             };
         }
     }
-    SessionEvent::Prompt {
-        _id: String::new(),
+    SessionInput::Prompt {
+        id: String::new(),
         text: text.trim().to_string(),
     }
 }
 
-fn decode_session_event(json: &str) -> Result<SessionEvent, String> {
+fn decode_session_event(json: &str) -> Result<SessionInput, String> {
     if let Ok(event) = serde_json::from_str(json) {
         return Ok(event);
     }
@@ -630,8 +688,8 @@ fn decode_session_event(json: &str) -> Result<SessionEvent, String> {
     let decoded: String = serde_json::from_str(json).unwrap_or_else(|_| json.to_string());
     let event = parse_legacy_session_event(&decoded);
     let empty = match &event {
-        SessionEvent::Prompt { text, .. } => text.is_empty(),
-        SessionEvent::Shell { script, .. } => script.is_empty(),
+        SessionInput::Prompt { text, .. } => text.is_empty(),
+        SessionInput::Shell { script, .. } => script.is_empty(),
     };
     if empty {
         Err("injection event must have non-empty text or script".to_string())
@@ -665,7 +723,7 @@ fn call_llm_with_operator(
     model: &str,
     effort: &str,
     bash: &mut Bash,
-    output_join_set: &JoinSet,
+    notifications: &mut NotificationJoinSets,
 ) -> Result<LlmReply, String> {
     let mut prompt_queued = false;
     loop {
@@ -679,6 +737,7 @@ fn call_llm_with_operator(
         ])
         .to_string();
         let function = split_ffqn(COMPLETION_FFQN)?;
+        let started_at = host_now_ms();
         let completion_execution_id =
             workflow_support::submit_json(&session.join_set, &function, &params)
                 .map_err(|e| format!("{e:?}"))?;
@@ -693,7 +752,8 @@ fn call_llm_with_operator(
                     .map_err(child_error_message)?
                     .ok_or_else(|| "injection text must be a non-empty string".to_string())?;
                 let event = decode_session_event(&json)?;
-                prompt_queued |= apply_session_event(event, output_join_set, bash, messages)?;
+                prompt_queued |=
+                    apply_session_input(event, session.turn_index, notifications, bash, messages)?;
                 continue;
             }
             if completed_id.as_deref() != Some(completion_execution_id.id.as_str()) {
@@ -729,6 +789,8 @@ fn call_llm_with_operator(
                 .ok_or_else(|| "llm reply content must be a JSON array of blocks".to_string())?;
             return Ok(LlmReply {
                 content,
+                content_json: content_json.to_string(),
+                duration_milliseconds: elapsed_milliseconds(started_at, host_now_ms()),
                 request_message_count,
                 prompt_queued,
             });
@@ -779,6 +841,7 @@ fn open_turn(turn_index: u64) -> Result<Session, String> {
     Ok(Session {
         join_set,
         injection_execution_id,
+        turn_index,
     })
 }
 
@@ -787,7 +850,7 @@ fn rearm_operator(session: &mut Session) -> Result<(), String> {
     Ok(())
 }
 
-fn take_operator_event(session: &mut Session) -> Result<SessionEvent, String> {
+fn take_operator_event(session: &mut Session) -> Result<SessionInput, String> {
     let inner = workflow_support::join_next(&session.join_set).map_err(|e| format!("{e:?}"))?;
     let completed_id = last_response_execution_id(&session.join_set);
     if completed_id.as_deref() != Some(session.injection_execution_id.id.as_str()) {
@@ -814,7 +877,7 @@ mod tests {
     #[test]
     fn direct_shell_exchange_is_valid_model_tool_history() {
         let mut messages = vec![user_text("inspect the workspace")];
-        let record = ShellOutputRecord {
+        let record = ShellOutputEvent {
             id: "shell-17".to_string(),
             script: "cat note.txt".to_string(),
             result: ShellResult {
@@ -822,6 +885,8 @@ mod tests {
                 stderr: String::new(),
                 exit_code: 0,
             },
+            turn_index: 3,
+            duration_milliseconds: 12,
         };
 
         append_shell_exchange(&mut messages, &record, "input\n");
@@ -850,14 +915,16 @@ mod tests {
     }
 
     #[test]
-    fn session_record_uses_wit_variant_shape() {
-        let record = SessionRecord::ToolResult(ToolResultRecord {
+    fn session_event_uses_wit_variant_shape() {
+        let record = SessionEvent::ToolResult(ToolResultEvent {
             id: "tool-1".to_string(),
             output: ToolOutput::Ok(ShellResult {
                 stdout: "ok".to_string(),
                 stderr: String::new(),
                 exit_code: 0,
             }),
+            turn_index: 4,
+            duration_milliseconds: 25,
         });
 
         assert_eq!(
@@ -872,6 +939,8 @@ mod tests {
                             "exit_code": 0,
                         },
                     },
+                    "turn_index": 4,
+                    "duration_milliseconds": 25,
                 },
             })
         );
@@ -883,7 +952,7 @@ mod tests {
             r#"{"shell":{"id":"s1","script":"pwd","stdin":""}}"#,
             r#""{\"id\":\"s1\",\"kind\":\"shell\",\"script\":\"pwd\",\"stdin\":\"\"}""#,
         ] {
-            let SessionEvent::Shell { id, script, stdin } = decode_session_event(json).unwrap()
+            let SessionInput::Shell { id, script, stdin } = decode_session_event(json).unwrap()
             else {
                 panic!("expected shell event");
             };
