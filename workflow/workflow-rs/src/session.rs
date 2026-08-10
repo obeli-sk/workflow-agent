@@ -31,7 +31,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult};
@@ -89,6 +89,8 @@ struct Session {
     injection_execution_id: workflow_support::ExecutionId,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum SessionEvent {
     Shell {
         id: String,
@@ -96,6 +98,8 @@ enum SessionEvent {
         stdin: String,
     },
     Prompt {
+        #[serde(rename = "id")]
+        _id: String,
         text: String,
     },
 }
@@ -384,8 +388,7 @@ pub fn agent_loop(
             pack_mounted = true;
         }
         if !should_call_llm {
-            let text = take_operator_event(&mut session)?;
-            let event = parse_session_event(&text);
+            let event = take_operator_event(&mut session)?;
             should_call_llm =
                 apply_session_event(event, &output_join_set, &mut bash, &mut messages)?;
         } else {
@@ -500,7 +503,7 @@ fn apply_session_event(
             append_shell_exchange(messages, &record, &stdin);
             Ok(false)
         }
-        SessionEvent::Prompt { text } => {
+        SessionEvent::Prompt { text, .. } => {
             messages.push(user_text(&text));
             Ok(true)
         }
@@ -577,7 +580,7 @@ fn contains_background_statement(script: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn parse_session_event(text: &str) -> SessionEvent {
+fn parse_legacy_session_event(text: &str) -> SessionEvent {
     if let Ok(value) = serde_json::from_str::<Value>(text) {
         if value.get("kind").and_then(Value::as_str) == Some("shell")
             && let Some(script) = value.get("script").and_then(Value::as_str)
@@ -604,12 +607,36 @@ fn parse_session_event(text: &str) -> SessionEvent {
             && !t.trim().is_empty()
         {
             return SessionEvent::Prompt {
+                _id: value
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
                 text: t.trim().to_string(),
             };
         }
     }
     SessionEvent::Prompt {
+        _id: String::new(),
         text: text.trim().to_string(),
+    }
+}
+
+fn decode_session_event(json: &str) -> Result<SessionEvent, String> {
+    if let Ok(event) = serde_json::from_str(json) {
+        return Ok(event);
+    }
+    // backcompat: 0.1.0 session injection encoded the event as a JSON string.
+    let decoded: String = serde_json::from_str(json).unwrap_or_else(|_| json.to_string());
+    let event = parse_legacy_session_event(&decoded);
+    let empty = match &event {
+        SessionEvent::Prompt { text, .. } => text.is_empty(),
+        SessionEvent::Shell { script, .. } => script.is_empty(),
+    };
+    if empty {
+        Err("injection event must have non-empty text or script".to_string())
+    } else {
+        Ok(event)
     }
 }
 
@@ -665,8 +692,7 @@ fn call_llm_with_operator(
                 let json = inner
                     .map_err(child_error_message)?
                     .ok_or_else(|| "injection text must be a non-empty string".to_string())?;
-                let decoded: String = serde_json::from_str(&json).unwrap_or(json);
-                let event = parse_session_event(&decoded);
+                let event = decode_session_event(&json)?;
                 prompt_queued |= apply_session_event(event, output_join_set, bash, messages)?;
                 continue;
             }
@@ -761,7 +787,7 @@ fn rearm_operator(session: &mut Session) -> Result<(), String> {
     Ok(())
 }
 
-fn take_operator_event(session: &mut Session) -> Result<String, String> {
+fn take_operator_event(session: &mut Session) -> Result<SessionEvent, String> {
     let inner = workflow_support::join_next(&session.join_set).map_err(|e| format!("{e:?}"))?;
     let completed_id = last_response_execution_id(&session.join_set);
     if completed_id.as_deref() != Some(session.injection_execution_id.id.as_str()) {
@@ -772,12 +798,8 @@ fn take_operator_event(session: &mut Session) -> Result<String, String> {
     let json = inner
         .map_err(child_error_message)?
         .ok_or_else(|| "injection text must be a non-empty string".to_string())?;
-    let decoded: String = serde_json::from_str(&json).unwrap_or(json);
-    if decoded.trim().is_empty() {
-        return Err("injection text must be a non-empty string".to_string());
-    }
     rearm_operator(session)?;
-    Ok(decoded.trim().to_string())
+    decode_session_event(&json)
 }
 
 fn submit_no_args(join_set: &JoinSet, ffqn: &str) -> Result<workflow_support::ExecutionId, String> {
@@ -853,5 +875,22 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn session_injection_decodes_typed_and_legacy_events() {
+        for json in [
+            r#"{"shell":{"id":"s1","script":"pwd","stdin":""}}"#,
+            r#""{\"id\":\"s1\",\"kind\":\"shell\",\"script\":\"pwd\",\"stdin\":\"\"}""#,
+        ] {
+            let SessionEvent::Shell { id, script, stdin } = decode_session_event(json).unwrap()
+            else {
+                panic!("expected shell event");
+            };
+            assert_eq!(
+                (id.as_str(), script.as_str(), stdin.as_str()),
+                ("s1", "pwd", "")
+            );
+        }
     }
 }

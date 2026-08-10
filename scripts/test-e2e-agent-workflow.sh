@@ -32,8 +32,7 @@ while true; do
     sleep 1
 done
 
-SHELL_EVENT='{"id":"shell-e2e-1","kind":"shell","script":"which curl && curl --version","stdin":""}'
-SHELL_STUB="$(node scripts/e2e-json.js wrap-ok <<<"$SHELL_EVENT")"
+SHELL_STUB='{"ok":{"shell":{"id":"shell-e2e-1","script":"which curl && curl --version","stdin":""}}}'
 "$OBELISK" execution stub -a "$E2E_API_URL" "$INJECTION_ID" "$SHELL_STUB"
 
 SECONDS=0

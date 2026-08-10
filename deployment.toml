@@ -518,7 +518,7 @@ return_type = "result<_, string>"
 name = "session_injection"
 ffqn = "obelisk-agent:agent/session.injection"
 params = []
-return_type = "result<string, string>"
+return_type = "result<variant { prompt(record { id: string, text: string }), shell(record { id: string, script: string, stdin: string }) }, string>"
 
 [[activity_stub]]
 name = "session_record_output"

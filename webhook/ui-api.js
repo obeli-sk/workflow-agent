@@ -612,10 +612,9 @@ async function loadResponses(execId, startCursor = 0) {
                 appendCompletionReply(replies, ev, r, turnIndex);
             } else if (joinName === "operator") {
                 // The session join set races operator input with llm.completion.
-                // Strings are injected events; completion results are objects.
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
-                if (typeof value === "string" && value.trim()) {
-                    const event = parseSessionInput(value);
+                const event = parseSessionInput(value);
+                if (event) {
                     if (event?.kind === "shell") {
                         shellEvents.push({
                             kind: "shell_command",
@@ -724,6 +723,12 @@ function appendCompletionReply(replies, ev, response, turnIndex = null) {
 }
 
 function parseSessionInput(value) {
+    if (value && typeof value === "object") {
+        if (value.shell) return { kind: "shell", ...value.shell };
+        if (value.prompt) return { kind: "prompt", ...value.prompt };
+        return null;
+    }
+    // backcompat: 0.1.0 session injection encoded the event as a JSON string.
     try {
         const event = JSON.parse(value);
         return event && typeof event === "object" ? event : null;
@@ -1022,7 +1027,7 @@ async function sayToAgent(request, runId) {
     if (!injection) return jsonError(409, "agent is not currently accepting an injected message");
     const id = typeof payload.id === "string" && payload.id
         ? payload.id : `prompt-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const event = JSON.stringify({ id, kind: "prompt", text: text.trim() });
+    const event = { prompt: { id, text: text.trim() } };
     try { stubObeliskExecution(injection.id, { ok: event }); }
     catch (e) { return jsonError(502, `injection fulfil failed: ${String(e)}`); }
     return jsonResponse({ child_execution_id: injection.id, event_id: id });
@@ -1041,12 +1046,11 @@ async function shellInSession(request, runId) {
     if (!injection) return jsonError(409, "session is not currently accepting input");
     const id = typeof payload.id === "string" && payload.id
         ? payload.id : `shell-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const event = JSON.stringify({
+    const event = { shell: {
         id,
-        kind: "shell",
         script,
         stdin: typeof payload.stdin === "string" ? payload.stdin : "",
-    });
+    } };
     try { stubObeliskExecution(injection.id, { ok: event }); }
     catch (e) { return jsonError(502, `shell fulfil failed: ${String(e)}`); }
     return jsonResponse({ child_execution_id: injection.id, event_id: id });

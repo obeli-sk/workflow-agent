@@ -27,18 +27,12 @@ switch (command) {
         process.exit(valid ? 0 : 1);
         break;
     }
-    case "wrap-ok":
-        process.stdout.write(JSON.stringify({ ok: input().trimEnd() }));
-        break;
     case "shell-event": {
-        // Build the injection stub payload for one shell turn: a session event
-        // {id, kind:"shell", script, stdin} encoded as a JSON string, wrapped in
-        // the {ok: ...} the injection stub expects. Script is read from a file so
-        // multi-line scripts need no shell-side escaping.
+        // Build the typed injection stub payload for one shell turn. Script is
+        // read from a file so multi-line scripts need no shell-side escaping.
         const id = process.argv[3];
         const script = fs.readFileSync(process.argv[4], "utf8");
-        const event = JSON.stringify({ id, kind: "shell", script, stdin: "" });
-        process.stdout.write(JSON.stringify({ ok: event }));
+        process.stdout.write(JSON.stringify({ ok: { shell: { id, script, stdin: "" } } }));
         break;
     }
     case "shell-stdout": {
