@@ -354,7 +354,7 @@ ffqn = "obelisk-agent:tools/webapi.deployment-checkout"
 params = [
   { name = "deployment-id", type = "option<string>" },
 ]
-return_type = "result<string, string>"
+return_type = "result<record { deployment-id: string, active-deployment-id: string, deployment-toml: string, files: list<record { path: string, digest: string, size: u64 }> }, string>"
 location = "packs/obelisk-control/tools/deployment-checkout.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]

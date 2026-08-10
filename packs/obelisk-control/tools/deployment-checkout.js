@@ -1,5 +1,8 @@
 // obelisk-agent:tools/webapi.deployment-checkout:
-//   func(deployment-id: option<string>) -> result<string, string>
+//   func(deployment-id: option<string>)
+//     -> result<record { deployment-id: string, active-deployment-id: string,
+//          deployment-toml: string,
+//          files: list<record { path: string, digest: string, size: u64 }> }, string>
 //
 // Fetch a deployment to be edited as a virtual working copy. Returns
 //   { deployment_id, active_deployment_id, deployment_toml, files }
@@ -21,12 +24,12 @@ export default async function deployment_checkout(deploymentId) {
     if (typeof record.deployment_toml !== "string") {
         throw `deployment ${wanted} has no deployment_toml`;
     }
-    return JSON.stringify({
+    return {
         deployment_id: wanted,
         active_deployment_id: active,
         deployment_toml: record.deployment_toml,
         files: record.files,
-    });
+    };
 }
 
 async function getJson(url) {

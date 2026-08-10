@@ -706,8 +706,8 @@ fn decode_string(value: &Value) -> String {
     }
 }
 
-/// PORT: `decodeJson`. An object/array passes through; a string is parsed once
-/// (the checkout body is `JSON.stringify(...)`, so it arrives as a JSON string).
+/// PORT: `decodeJson`. An object/array passes through; a string is parsed once.
+/// backcompat: 0.1.0 deployment-checkout returned its record as a JSON string.
 fn decode_json(value: &Value) -> Result<Value, String> {
     match value {
         Value::Object(_) | Value::Array(_) => Ok(value.clone()),
