@@ -952,9 +952,7 @@ mod tests {
 
     #[test]
     fn functions_list_pretty_prints_a_json_string_body() {
-        // Real `list-functions` returns its array via `JSON.stringify`, so the
-        // body arrives as a JSON *string* (the `Value::String` branch), not a
-        // raw array. It must still be reflowed, not printed as one dense line.
+        // backcompat: 0.1.0 list-functions returned its array as a JSON string.
         let mut host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.list-functions",
             "\"[{\\\"ffqn\\\":\\\"a\\\"}]\"",

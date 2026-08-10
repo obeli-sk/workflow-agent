@@ -1,5 +1,10 @@
 // obelisk-agent:tools/webapi.list-functions:
-//   func(ffqn-prefix: string, length: u32) -> result<string, string>
+//   func(ffqn-prefix: string, length: u32)
+//     -> result<list<record { ffqn: string,
+//          parameter-types: list<record { name: string, wit-type: string }>,
+//          return-type: string,
+//          extension: option<enum { submit, await-next, schedule, stub, get }>,
+//          submittable: bool, wit: string }>, string>
 // Returns each matching function's metadata plus its full WIT (interface with the
 // single function and every type it references).
 export default async function list_functions(ffqnPrefix, length) {
@@ -19,10 +24,14 @@ export default async function list_functions(ffqnPrefix, length) {
         .slice(0, limit);
 
     const withWit = await Promise.all(selected.map(async (item) => ({
-        ...item,
+        ffqn: item.ffqn,
+        parameter_types: item.parameter_types,
+        return_type: item.return_type,
+        extension: item.extension ?? null,
+        submittable: item.submittable,
         wit: await fetchWit(base, item.ffqn),
     })));
-    return JSON.stringify(withWit);
+    return withWit;
 }
 
 // Fetch the function's full WIT: the interface printed with only this function

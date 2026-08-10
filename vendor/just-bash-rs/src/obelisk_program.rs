@@ -33,6 +33,7 @@ pub fn discover(host: &mut dyn ObeliskHost) -> Result<Vec<Program>, String> {
     let outer: Value =
         serde_json::from_str(&raw).map_err(|e| format!("invalid program discovery JSON: {e}"))?;
     let functions = match outer {
+        // backcompat: 0.1.0 list-functions returned its array as a JSON string.
         Value::String(inner) => serde_json::from_str::<Value>(&inner)
             .map_err(|e| format!("invalid program list JSON: {e}"))?,
         other => other,
