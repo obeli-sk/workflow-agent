@@ -62,7 +62,7 @@ switch (command) {
     }
     case "deployment-id": {
         const result = json();
-        process.stdout.write(JSON.parse(result.ok).deployment_id ?? "");
+        process.stdout.write(result.ok?.deployment_id ?? "");
         break;
     }
     default:

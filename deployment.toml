@@ -385,12 +385,12 @@ name = "tool_deployment_submit"
 ffqn = "obelisk-agent:tools/webapi.deployment-submit"
 params = [
   { name = "deployment-toml",              type = "string" },
-  { name = "edited-files-json",            type = "string" },
+  { name = "edited-files",                 type = "list<record { path: string, content: string }>" },
   { name = "description",                   type = "string" },
   { name = "allow-missing-runtime-config", type = "bool" },
   { name = "deployment-id",                type = "string" },
 ]
-return_type = "result<string, string>"
+return_type = "result<record { deployment-id: string, deployment-toml: string }, string>"
 # Submit verifies the whole deployment (compile + link every component) before
 # persisting, which far exceeds the 1s default lock.
 exec.lock_expiry.minutes = 5

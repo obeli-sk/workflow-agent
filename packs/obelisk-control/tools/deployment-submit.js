@@ -1,7 +1,7 @@
 // obelisk-agent:tools/webapi.deployment-submit:
-//   func(deployment-toml: string, edited-files-json: string, description: string,
+//   func(deployment-toml: string, edited-files: list<record { path: string, content: string }>, description: string,
 //        allow-missing-runtime-config: bool, deployment-id: string)
-//        -> result<string, string>
+//        -> result<record { deployment-id: string, deployment-toml: string }, string>
 //
 // Submit a deployment manifest as a new **inactive** deployment and return
 //   { deployment_id, deployment_toml }
@@ -9,7 +9,7 @@
 // filled in for every edited file). Activation (enqueue / hot redeploy) is a
 // separate step.
 //
-// `edited-files-json` is a JSON array `[{ path, content }]` of deployment-owned
+// `edited-files` contains the deployment-owned
 // script/exec sources the agent changed (path = the manifest `location` string).
 // The server requires `content_digest` for every owned file and stores only
 // complete packages, so this tool:
@@ -22,19 +22,11 @@
 // An empty deployment-id lets the server allocate one; a non-empty value
 // requests an idempotent submission under that ID.
 export default async function deployment_submit(
-    deploymentToml, editedFilesJson, description, allowMissing, deploymentId,
+    deploymentToml, editedFiles, description, allowMissing, deploymentId,
 ) {
     if (typeof deploymentToml !== "string" || !deploymentToml.trim()) {
         throw "deployment-toml is required";
     }
-    let editedFiles;
-    try {
-        editedFiles = editedFilesJson ? JSON.parse(editedFilesJson) : [];
-    } catch (e) {
-        throw `edited-files-json must be valid JSON: ${e.message}`;
-    }
-    if (!Array.isArray(editedFiles)) throw "edited-files-json must be a JSON array";
-
     // Fill content_digest for every edited file, and index content by digest so
     // the multipart retry can attach exactly the blobs the server is missing.
     let toml = deploymentToml;
@@ -67,7 +59,7 @@ export default async function deployment_submit(
         body: JSON.stringify(body),
     });
     if (preflight.ok) {
-        return JSON.stringify({ deployment_id: parseId(await preflight.text()), deployment_toml: toml });
+        return { deployment_id: parseId(await preflight.text()), deployment_toml: toml };
     }
     if (preflight.status !== 409) {
         throw `HTTP ${preflight.status}: ${await preflight.text()}`;
@@ -107,7 +99,7 @@ export default async function deployment_submit(
         body: multipartBody,
     });
     if (!retry.ok) throw `HTTP ${retry.status}: ${await retry.text()}`;
-    return JSON.stringify({ deployment_id: parseId(await retry.text()), deployment_toml: toml });
+    return { deployment_id: parseId(await retry.text()), deployment_toml: toml };
 }
 
 // The submit endpoint returns the new deployment ID, either as the JSON object

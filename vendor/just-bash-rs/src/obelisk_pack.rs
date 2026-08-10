@@ -386,13 +386,10 @@ fn execute_deployment(
             let dir = resolve_deployment_dir(interp, args.first().map(String::as_str));
             let manifest = read_manifest(&interp.fs, &dir)?;
             let sources = deployment_sources(&interp.fs, &dir, &manifest);
-            let sources_json = serde_json::to_string(
-                &sources
-                    .iter()
-                    .map(|s| json!({"path": s.path, "content": s.content}))
-                    .collect::<Vec<_>>(),
-            )
-            .expect("json");
+            let sources = sources
+                .iter()
+                .map(|s| json!({"path": s.path, "content": s.content}))
+                .collect::<Vec<_>>();
             // The server pins a `content_digest` for every owned source, so put
             // them back (stripped from the mounted copy the agent edits): each
             // unchanged file keeps its CAS digest, each changed one is re-hashed.
@@ -407,7 +404,7 @@ fn execute_deployment(
                 "obelisk-agent:tools/webapi.deployment-submit",
                 json!([
                     manifest,
-                    sources_json,
+                    sources,
                     option(args, "--description", "Submitted from workflow-agent VFS"),
                     flag(args, "--allow-missing-runtime-config"),
                     deployment_id,
@@ -1559,8 +1556,7 @@ content_digest = \"sha256:1\"\n\
             sha256_hex(b"bytes")
         );
         assert_eq!(params[0], expected);
-        let sources: Value = serde_json::from_str(params[1].as_str().unwrap()).unwrap();
-        assert_eq!(sources, json!([{"path": "a.wasm", "content": "bytes"}]));
+        assert_eq!(params[1], json!([{"path": "a.wasm", "content": "bytes"}]));
         assert_eq!(params[2], "Submitted from workflow-agent VFS");
         assert_eq!(params[3], false);
         assert_eq!(params[4], "dep-1");
@@ -1628,8 +1624,7 @@ content_digest = \"sha256:1\"\n\
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
         assert_eq!(params[0], manifest);
-        let sources: Value = serde_json::from_str(params[1].as_str().unwrap()).unwrap();
-        assert_eq!(sources, json!([]));
+        assert_eq!(params[1], json!([]));
     }
 
     #[test]
@@ -1667,8 +1662,7 @@ content_digest = \"sha256:1\"\n\
             &mut host,
         );
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
-        let sources: Value = serde_json::from_str(params[1].as_str().unwrap()).unwrap();
-        assert_eq!(sources, json!([{"path": "a.js", "content": "new-a"}]));
+        assert_eq!(params[1], json!([{"path": "a.js", "content": "new-a"}]));
     }
 
     #[test]
@@ -1708,9 +1702,8 @@ content_digest = \"sha256:1\"\n\
             sha256_hex(b"export default 1")
         );
         assert_eq!(params[0], expected);
-        let sources: Value = serde_json::from_str(params[1].as_str().unwrap()).unwrap();
         assert_eq!(
-            sources,
+            params[1],
             json!([{"path": "activity/http.js", "content": "export default 1"}])
         );
     }
