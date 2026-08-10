@@ -47,6 +47,12 @@ while true; do
     [[ $SECONDS -ge 30 ]] && { echo "shell turn did not complete correctly: $SESSION_EXECUTIONS" >&2; exit 1; }
     sleep 1
 done
+SHELL_OUTPUT_ID="$(node scripts/e2e-json.js execution-id \
+    "obelisk-agent:agent/session.record-output" <<<"$SESSION_EXECUTIONS")"
+SHELL_NOTIFICATION="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$SHELL_OUTPUT_ID")"
+node scripts/e2e-json.js check-shell-notification <<<"$SHELL_NOTIFICATION"
+SHELL_PROJECTION="$(curl --fail --silent "http://127.0.0.1:28091/api/runs/$SESSION_ID")"
+node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"
 echo ">>> shell-only E2E PASS: curl was discovered and invoked without starting the agent"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 

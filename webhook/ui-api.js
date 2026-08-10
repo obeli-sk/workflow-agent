@@ -22,7 +22,6 @@ const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
 const CONFIRM_FFQN = "obelisk-agent:tools/deploy.confirm-apply";
 const INJECTION_FFQN = "obelisk-agent:agent/session.injection";
-const OUTPUT_FFQN = "obelisk-agent:agent/session.record-output";
 const COMPLETION_FFQN = "obelisk-agent:llm/chat.completion";
 
 export default async function handle(request) {
@@ -41,8 +40,6 @@ export default async function handle(request) {
             return jsonResponse(await detailRun(id, {
                 workflowId: query.workflow_id || "",
                 responseCursor: nonNegativeInteger(query.response_cursor),
-                historyVersion: nonNegativeInteger(query.history_version),
-                sessionEventFeed: query.session_event_feed === "true",
             }));
         }
         if (method === "GET" && path.startsWith("/api/logs/")) {
@@ -301,20 +298,16 @@ async function loadPromptPreview(execId) {
 async function detailRun(id, cursorState) {
     const resetTranscript = cursorState.workflowId !== id;
     const responseCursor = resetTranscript ? 0 : cursorState.responseCursor;
-    const historyVersion = resetTranscript ? 0 : cursorState.historyVersion;
     const [status, created, walk, finalResult, pendingAsks, pendingConfirms, pendingInjection, pendingCompletion] = await Promise.all([
         loadStatus(id),
         loadCreated(id),
-        loadResponses(id, responseCursor, resetTranscript ? false : cursorState.sessionEventFeed),
+        loadResponses(id, responseCursor),
         loadFinalResult(id),
         loadPendingAsks(id),
         loadPendingConfirms(id),
         loadPendingInjection(id),
         loadPendingCompletion(id),
     ]);
-    const sent = walk.sessionEventFeed
-        ? { results: [], completion_requests: [], version: historyVersion }
-        : await loadSentResults(id, historyVersion);
     return {
         id,
         ...pickRunState(status),
@@ -326,14 +319,11 @@ async function detailRun(id, cursorState) {
             reset: resetTranscript,
             workflow_id: id,
             replies: walk.replies,
-            tool_children: walk.toolChildren,
             operator_messages: walk.operatorMessages,
             shell_events: walk.shellEvents,
-            sent_results: [...walk.toolResults, ...sent.results],
-            completion_requests: sent.completion_requests,
+            turn_starts: walk.turnStarts,
+            sent_results: walk.toolResults,
             response_cursor: walk.cursor,
-            history_version: sent.version,
-            session_event_feed: walk.sessionEventFeed,
         },
         final_result: finalResult,
         pending_asks: pendingAsks,
@@ -585,15 +575,12 @@ function lineDiff(oldText, newText) {
     return rows;
 }
 
-// New sessions expose one typed `session-events` feed. Older sessions fall back
-// to reconstructing the same projection from operational responses.
-
-async function loadResponses(execId, startCursor = 0, sessionEventFeed = false) {
+async function loadResponses(execId, startCursor = 0) {
     const replies = [];
-    const toolChildren = [];
     const toolResults = [];
     const operatorMessages = [];
     const shellEvents = [];
+    const turnStarts = [];
     let cursor = startCursor;
     let including = startCursor === 0;
     while (true) {
@@ -607,73 +594,22 @@ async function loadResponses(execId, startCursor = 0, sessionEventFeed = false) 
             const ev = wrapped?.event;
             if (!ev || ev.type !== "child_execution_finished") continue;
             const joinName = parseJoinName(wrapped.join_set_id);
-            const turnIndex = parseTurnIndex(wrapped.join_set_id);
 
             if (joinName === "session-events") {
-                sessionEventFeed = true;
                 appendSessionEvent(
                     { replies, toolResults, operatorMessages, shellEvents },
                     ev.result?.ok?.value ?? ev.result?.ok,
                     r,
                 );
-            } else if (sessionEventFeed) {
-                continue;
-            } else if (joinName === "completion") {
-                appendCompletionReply(replies, ev, r, turnIndex);
             } else if (joinName === "operator") {
-                // The session join set races operator input with llm.completion.
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
                 const event = parseSessionInput(value);
                 if (event) {
-                    if (event?.kind === "shell") {
-                        shellEvents.push({
-                            kind: "shell_command",
-                            id: event.id || "",
-                            script: event.script,
-                            stdin: event.stdin || "",
-                            created_at: r.event?.created_at || "",
-                            turn_index: turnIndex,
-                        });
-                    } else {
-                        operatorMessages.push({
-                            id: event?.id || "",
-                            text: event?.text || value,
-                            created_at: r.event?.created_at || "",
-                            turn_index: turnIndex,
-                        });
-                    }
-                } else {
-                    appendCompletionReply(replies, ev, r, turnIndex);
-                }
-            } else if (joinName === "record-output") {
-                const record = decodeSessionRecord(ev.result?.ok?.value ?? ev.result?.ok);
-                if (record && typeof record === "object") {
-                    if (record.agent_error) {
-                        const error = record.agent_error;
-                        replies.push({
-                            reply: { error: error.text },
-                            presentation: "",
-                            blocks: [],
-                            narration: "",
-                            created_at: r.event?.created_at || "",
-                            completion_id: "",
-                            turn_index: Number.isInteger(error.turn_index) ? error.turn_index : null,
-                        });
-                    } else if (record.tool_result) {
-                        toolResults.push(normalizeSessionToolResult(
-                            record.tool_result,
-                            r.event?.created_at || "",
-                        ));
-                    } else if (record.shell_output) {
-                        const output = record.shell_output;
-                        shellEvents.push({
-                            kind: "shell_output",
-                            id: output.id,
-                            script: output.script,
-                            result: output.result,
-                            created_at: r.event?.created_at || "",
-                        });
-                    }
+                    turnStarts.push({
+                        id: event.id || "",
+                        kind: event.kind,
+                        created_at: r.event?.created_at || "",
+                    });
                 }
             }
         }
@@ -686,12 +622,11 @@ async function loadResponses(execId, startCursor = 0, sessionEventFeed = false) 
     }
     return {
         replies,
-        toolChildren,
         toolResults,
         operatorMessages,
         shellEvents,
+        turnStarts,
         cursor,
-        sessionEventFeed,
     };
 }
 
@@ -708,23 +643,14 @@ function appendSessionEvent(target, event, response) {
         });
     } else if (event.assistant_reply) {
         const reply = event.assistant_reply;
-        appendCompletionReply(
-            target.replies,
-            { result: { ok: { reply } } },
-            response,
-            Number.isInteger(reply.turn_index) ? reply.turn_index : null,
-            reply.duration_milliseconds,
-        );
+        appendAssistantReply(target.replies, reply, createdAt);
     } else if (event.agent_error) {
         const error = event.agent_error;
         target.replies.push({
             reply: { error: error.text },
-            presentation: "",
-            blocks: [],
-            narration: "",
             created_at: createdAt,
-            completion_id: "",
             turn_index: Number.isInteger(error.turn_index) ? error.turn_index : null,
+            turn_complete: true,
         });
     } else if (event.tool_result) {
         target.toolResults.push(normalizeSessionToolResult(event.tool_result, createdAt));
@@ -738,27 +664,13 @@ function appendSessionEvent(target, event, response) {
             created_at: createdAt,
             turn_index: Number.isInteger(output.turn_index) ? output.turn_index : null,
             duration_milliseconds: output.duration_milliseconds,
+            turn_complete: output.turn_complete === true,
         });
     }
 }
 
-function decodeSessionRecord(value) {
-    if (typeof value !== "string") return value;
-    // backcompat: 0.1.0 session histories encoded record-output as a JSON string.
-    try {
-        const record = JSON.parse(value);
-        if (record.kind === "agent_error") return { agent_error: record };
-        if (record.kind === "tool_result") return { tool_result: record };
-        return { shell_output: record };
-    } catch (_) {
-        return null;
-    }
-}
-
-function appendCompletionReply(replies, ev, response, turnIndex = null, durationMilliseconds = null) {
-    const value = ev.result?.ok?.value ?? ev.result?.ok;
-    const rep = value && typeof value === "object" ? value.reply : null;
-    if (!rep || typeof rep !== "object" || typeof rep.content_json !== "string") return;
+function appendAssistantReply(replies, rep, createdAt) {
+    if (!rep || typeof rep.content_json !== "string") return;
     let blocks = [];
     try { blocks = JSON.parse(rep.content_json); } catch (_) { blocks = []; }
     if (!Array.isArray(blocks)) blocks = [];
@@ -768,192 +680,27 @@ function appendCompletionReply(replies, ev, response, turnIndex = null, duration
         ? { tool_calls: toolUses.map((b) => ({
             id: typeof b.id === "string" ? b.id : "",
             name: b.name,
-            arguments_json: JSON.stringify(b.input || {}),
+            args: b.input || {},
         })) }
         : { response: text };
     replies.push({
         reply,
-        presentation: "",
-        blocks: [],
-        // A narrated turn carries both text and a tool_use; the reply above keeps
-        // only the tool calls, so surface the accompanying markdown as narration
-        // (a "thinking" bubble). Text-only turns already render it as the response.
         narration: toolUses.length > 0 ? text : "",
-        created_at: response.event?.created_at || "",
-        completion_id: ev.child_execution_id || "",
-        turn_index: turnIndex,
-        duration_milliseconds: durationMilliseconds,
+        created_at: createdAt,
+        turn_index: Number.isInteger(rep.turn_index) ? rep.turn_index : null,
+        duration_milliseconds: rep.duration_milliseconds,
+        turn_complete: rep.turn_complete === true,
     });
 }
 
 function parseSessionInput(value) {
-    if (value && typeof value === "object") {
-        if (value.shell) return { kind: "shell", ...value.shell };
-        if (value.prompt) return { kind: "prompt", ...value.prompt };
-        return null;
-    }
-    // backcompat: 0.1.0 session injection encoded the event as a JSON string.
-    try {
-        const event = JSON.parse(value);
-        return event && typeof event === "object" ? event : null;
-    } catch (_) {
-        return null;
-    }
-}
-
-async function loadRecvPresentation(executionId) {
-    try {
-        const logs = await getExecutionLogs(executionId, false, "", false, 200);
-        let finalMessage = "";
-        for (const entry of logs) {
-            if (entry?.type !== "stream" || entry.stream_type !== "stderr") continue;
-            let text;
-            try {
-                const bytes = Uint8Array.from(atob(entry.payload || ""), (char) => char.charCodeAt(0));
-                text = new TextDecoder().decode(bytes);
-            } catch (_) { continue; }
-            for (const line of text.split("\n")) {
-                if (!line.startsWith("[raw] ")) continue;
-                try {
-                    const event = JSON.parse(line.substring(6));
-                    if (event?.type === "item.completed" && event.item?.type === "agent_message"
-                        && typeof event.item.text === "string") {
-                        finalMessage = event.item.text;
-                    }
-                } catch (_) { }
-            }
-        }
-        return stripActionEnvelopes(finalMessage);
-    } catch (_) {
-        return "";
-    }
-}
-
-function stripActionEnvelopes(text) {
-    let output = "";
-    let cursor = 0;
-    while (cursor < text.length) {
-        if (text[cursor] !== "{") {
-            output += text[cursor];
-            cursor += 1;
-            continue;
-        }
-        const end = findMatchingBrace(text, cursor);
-        if (end === -1) {
-            output += text.slice(cursor);
-            break;
-        }
-        const slice = text.slice(cursor, end + 1);
-        let isEnvelope = false;
-        try {
-            const value = JSON.parse(slice);
-            isEnvelope = value && typeof value === "object"
-                && (Array.isArray(value.tool_calls) || typeof value.response === "string" || typeof value.final === "string"
-                    || typeof value.error === "string");
-        } catch (_) { }
-        if (!isEnvelope) output += slice;
-        cursor = end + 1;
-    }
-    return output.replace(/```(?:json)?\s*```/g, "").trim();
-}
-
-function findMatchingBrace(text, start) {
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < text.length; i += 1) {
-        const char = text[i];
-        if (escaped) { escaped = false; continue; }
-        if (char === "\\") { escaped = true; continue; }
-        if (char === "\"") { inString = !inString; continue; }
-        if (inString) continue;
-        if (char === "{") depth += 1;
-        else if (char === "}") {
-            depth -= 1;
-            if (depth === 0) return i;
-        }
-    }
-    return -1;
-}
-
-// backcompat: 0.41.0 sessions before durable tool-result records exposed results only in the next completion request.
-async function loadSentResults(execId, startVersion = 0) {
-    const sent = [];
-    const completionRequests = [];
-    const seenToolResults = new Set();
-    let version = startVersion;
-    let including = startVersion === 0;
-    while (true) {
-        let payload;
-        try {
-            payload = await getExecutionEvents(execId, "version", version, including, 200);
-        } catch (_) { break; }
-        const events = payload.events || [];
-        for (const e of events) {
-            const he = e.event?.history_event?.event;
-            if (!he || he.type !== "join_set_request") continue;
-            const joinName = parseJoinName(he.join_set_id);
-            const isCompletion = joinName === "completion"
-                || (he.request?.type === "child_execution_request"
-                    && he.request.target_ffqn === COMPLETION_FFQN);
-            if (isCompletion) {
-                // The request event's created_at is when the completion child was
-                // submitted (the model started); paired by child id with the
-                // reply's finish time, it yields the per-turn LLM latency.
-                const childId = String(he.request?.child_execution_id || "");
-                if (childId) completionRequests.push({ id: childId, created_at: e.created_at || "" });
-                const messages = parseMessagesParam(he.request?.params?.[1]);
-                for (const msg of messages) {
-                    for (const block of Array.isArray(msg?.content) ? msg.content : []) {
-                        if (!block || block.type !== "tool_result") continue;
-                        const id = String(block.tool_use_id || "");
-                        if (id && seenToolResults.has(id)) continue;
-                        if (id) seenToolResults.add(id);
-                        // Keep the *first* request that carried this result: every
-                        // later completion re-sends the whole history, so a later
-                        // created_at would inflate the bash latency to span the run.
-                        sent.push(normalizeToolResultBlock(block, e.created_at || ""));
-                    }
-                }
-            }
-        }
-        if (events.length === 0) break;
-        const next = events[events.length - 1]?.version;
-        if (typeof next !== "number" || next <= version) break;
-        version = next;
-        including = false;
-        if (events.length < 200) break;
-    }
-    return { results: sent, completion_requests: completionRequests, version };
-}
-
-function parseMessagesParam(value) {
-    if (Array.isArray(value)) return value;
-    if (typeof value !== "string" || !value) return [];
-    try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-    } catch (_) { return []; }
-}
-
-function normalizeToolResultBlock(block, createdAt) {
-    const out = {
-        id: String(block.tool_use_id || ""),
-        created_at: createdAt,
-    };
-    const content = String(block.content ?? "");
-    if (block.is_error) {
-        out.err = content.replace(/^Error:\s*/, "");
-    } else {
-        try { out.ok = JSON.parse(content); }
-        catch (_) { out.ok = content; }
-    }
-    return out;
+    if (!value || typeof value !== "object") return null;
+    if (value.shell) return { kind: "shell", ...value.shell };
+    if (value.prompt) return { kind: "prompt", ...value.prompt };
+    return null;
 }
 
 function normalizeSessionToolResult(result, createdAt) {
-    // backcompat: 0.1.0 record-output used the model-facing string block.
-    if (result.block) return normalizeToolResultBlock(result.block, createdAt);
     const out = { id: String(result.id || ""), created_at: createdAt };
     if (result.output && "ok" in result.output) out.ok = result.output.ok;
     else if (result.output && "error" in result.output) out.err = result.output.error;
@@ -964,16 +711,11 @@ function normalizeSessionToolResult(result, createdAt) {
 
 function parseJoinName(joinSetId) {
     // One-off join sets use "o:<ordinal>-<name>"; explicitly named join sets
-    // use "n:<name>". Each turn opens its own operator set named "operator-<turn>";
-    // collapse the turn suffix so callers key off the stable name "operator".
+    // use "n:<name>". Each workflow loop opens an "operator-<loop>" set;
+    // collapse the suffix so callers key off the stable name "operator".
     if (typeof joinSetId !== "string") return "";
     const name = rawJoinName(joinSetId);
     return /^operator-\d+$/.test(name) ? "operator" : name;
-}
-
-function parseTurnIndex(joinSetId) {
-    const match = /^operator-(\d+)$/.exec(rawJoinName(joinSetId));
-    return match ? Number(match[1]) : null;
 }
 
 function rawJoinName(joinSetId) {
@@ -1521,8 +1263,6 @@ function refreshDetail() {
       if (state.transcript?.workflow_id) {
         query.set('workflow_id', state.transcript.workflow_id);
         query.set('response_cursor', String(state.transcript.response_cursor || 0));
-        query.set('history_version', String(state.transcript.history_version || 0));
-        query.set('session_event_feed', state.transcript.session_event_feed ? 'true' : 'false');
       }
       const suffix = query.toString() ? '?' + query.toString() : '';
       const r = await fetch('/api/runs/' + encodeURIComponent(selected) + suffix, {
@@ -1572,35 +1312,25 @@ function mergeTranscript(delta) {
     state.transcript = {
       workflow_id: delta.workflow_id || '',
       replies: [],
-      tool_children: [],
       operator_messages: [],
       shell_events: [],
+      turn_starts: [],
       sent_results: [],
-      completion_requests: [],
       response_cursor: 0,
-      history_version: 0,
-      session_event_feed: false,
     };
   }
-  if (!state.transcript.completion_requests) state.transcript.completion_requests = [];
   const contentChanged = reset
     || (delta.replies || []).length > 0
-    || (delta.tool_children || []).length > 0
     || (delta.operator_messages || []).length > 0
     || (delta.shell_events || []).length > 0
-    || (delta.sent_results || []).length > 0
-    || (delta.completion_requests || []).length > 0;
+    || (delta.turn_starts || []).length > 0
+    || (delta.sent_results || []).length > 0;
   state.transcript.replies.push(...(delta.replies || []));
-  state.transcript.tool_children.push(...(delta.tool_children || []));
   mergeOperatorMessages(state.transcript.operator_messages, delta.operator_messages || []);
   mergeShellEvents(state.transcript.shell_events, delta.shell_events || []);
-  mergeSentResults(state.transcript.sent_results, delta.sent_results || []);
-  mergeSentResults(state.transcript.completion_requests, delta.completion_requests || []);
+  mergeTurnStarts(state.transcript.turn_starts, delta.turn_starts || []);
+  mergeToolResults(state.transcript.sent_results, delta.sent_results || []);
   state.transcript.response_cursor = delta.response_cursor || state.transcript.response_cursor;
-  state.transcript.history_version = delta.history_version || state.transcript.history_version;
-  state.transcript.session_event_feed = Boolean(
-    delta.session_event_feed || state.transcript.session_event_feed,
-  );
   return contentChanged;
 }
 
@@ -1631,12 +1361,16 @@ function mergeShellEvents(target, incoming) {
   }
 }
 
-// Keep the first-recorded entry per id. A tool_result (and its created_at)
-// re-appears in every later completion request because the whole history is
-// re-sent each turn; overwriting with the latest would push its created_at to
-// the end of the run, inflating the bash latency. The first occurrence is the
-// request that actually carried the result back to the model.
-function mergeSentResults(target, incoming) {
+function mergeTurnStarts(target, incoming) {
+  const byId = new Set(target.map((item) => item?.id).filter(Boolean));
+  for (const item of incoming) {
+    if (!item || (item.id && byId.has(item.id))) continue;
+    if (item.id) byId.add(item.id);
+    target.push(item);
+  }
+}
+
+function mergeToolResults(target, incoming) {
   const byId = new Set(target.map((item) => item?.id).filter(Boolean));
   for (const item of incoming) {
     if (!item) continue;
@@ -1650,31 +1384,50 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
   const cached = state.transcript;
   if (!cached) return [];
   const turns = [];
+  const startsById = new Map(
+    (cached.turn_starts || []).filter((start) => start?.id).map((start) => [start.id, start]),
+  );
+  const startsByTurn = new Map();
+  const rememberTurnStart = (turnIndex, createdAt) => {
+    if (!Number.isInteger(turnIndex) || !createdAt) return;
+    const current = startsByTurn.get(turnIndex);
+    if (!current || createdAt < current) startsByTurn.set(turnIndex, createdAt);
+  };
+  if (typeof initialPrompt === 'string' && initialPrompt.trim()) {
+    rememberTurnStart(0, initialPromptAt);
+  }
+  for (const message of cached.operator_messages || []) {
+    rememberTurnStart(message?.turn_index, startsById.get(message?.id)?.created_at);
+  }
+  for (const event of cached.shell_events || []) {
+    rememberTurnStart(event?.turn_index, startsById.get(event?.id)?.created_at);
+  }
+  const wholeTurnLatency = (item) => item?.turn_complete === true
+    ? elapsedTimestampMilliseconds(startsByTurn.get(item.turn_index), item.created_at)
+    : null;
   const sentResultsById = new Map(
     (cached.sent_results || []).filter((result) => result?.id).map((result) => [result.id, result]),
   );
-  let legacyToolCursor = 0;
   let sequence = 0;
   for (const item of cached.replies) {
     const reply = item && item.reply;
-    const blocks = normalizeCachedBlocks(
-      item?.blocks,
-      typeof item?.presentation === 'string' ? item.presentation : '',
-      typeof item?.narration === 'string' ? item.narration : '',
-      reply,
-    );
     if (!reply || typeof reply !== 'object') continue;
     const llmLatency = item.duration_milliseconds;
-    const responseText = typeof reply.response === 'string' ? reply.response : reply.final;
+    const responseText = reply.response;
+    const blocks = splitCachedMermaid(
+      typeof responseText === 'string' ? responseText : item.narration,
+      typeof responseText === 'string' ? 'markdown' : 'thinking',
+    );
     if (typeof responseText === 'string') {
       turns.push({
         kind: 'assistant_response',
         text: responseText,
         blocks,
         llm_latency_ms: llmLatency,
-        total_latency_ms: llmLatency,
+        total_latency_ms: wholeTurnLatency(item),
         created_at: item.created_at,
         turn_index: item.turn_index,
+        turn_complete: item.turn_complete === true,
         sequence: sequence++,
       });
     } else if (typeof reply.error === 'string') {
@@ -1683,40 +1436,35 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         text: reply.error,
         blocks,
         llm_latency_ms: llmLatency,
-        total_latency_ms: llmLatency,
+        total_latency_ms: wholeTurnLatency(item),
         created_at: item.created_at,
         turn_index: item.turn_index,
+        turn_complete: item.turn_complete === true,
         sequence: sequence++,
       });
     } else if (Array.isArray(reply.tool_calls)) {
-      let toolDurationTotal = 0;
       const calls = reply.tool_calls.map((call) => {
         const sent = call?.id ? sentResultsById.get(call.id) : null;
-        const child = sent || call?.name === 'bash' ? null : cached.tool_children[legacyToolCursor++];
         const rendered = {
           id: call?.id || '',
           name: call?.name,
-          args: parseCachedArgs(call?.arguments_json),
-          child_id: child?.id ?? null,
+          args: call?.args || {},
         };
-        const result = sent || child?.result;
+        const result = sent;
         rendered.latency_ms = sent?.duration_milliseconds;
-        if (Number.isFinite(sent?.duration_milliseconds)) {
-          toolDurationTotal += sent.duration_milliseconds;
-        }
         if (result && 'ok' in result) rendered.ok = result.ok;
         else if (result && 'err' in result) rendered.err = result.err;
         return rendered;
       });
-      const totalLatency = llmLatency + toolDurationTotal;
       turns.push({
         kind: 'tool_calls',
         calls,
         blocks,
         llm_latency_ms: llmLatency,
-        total_latency_ms: totalLatency,
+        total_latency_ms: wholeTurnLatency(item),
         created_at: item.created_at,
         turn_index: item.turn_index,
+        turn_complete: item.turn_complete === true,
         sequence: sequence++,
       });
     }
@@ -1727,14 +1475,12 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       kind: 'operator_message',
       id: msg.id || '',
       text: msg.text,
-      created_at: msg.created_at,
+      created_at: startsById.get(msg.id)?.created_at || msg.created_at,
       turn_index: msg.turn_index,
       sequence: sequence++,
     });
   }
-  // Feed sessions surface an interactive command as one shell_output event
-  // (carrying script + result); non-feed sessions reconstruct a shell_command
-  // start event from the operator injection, so handle both.
+  // The optimistic shell command and durable shell output merge by input id.
   const shellTurns = new Map();
   for (const event of cached.shell_events || []) {
     if (!event || typeof event.kind !== 'string') continue;
@@ -1754,7 +1500,7 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
           },
         }],
         blocks: [],
-        created_at: event.created_at,
+        created_at: startsById.get(event.id)?.created_at || event.created_at,
         turn_index: event.turn_index,
         sequence: sequence++,
       };
@@ -1765,15 +1511,19 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
     if (event.kind === 'shell_command') {
       call.args.script = event.script || call.args.script;
       if (event.stdin) call.args.stdin = event.stdin;
-      turn.created_at = event.created_at || turn.created_at;
+      turn.created_at = startsById.get(event.id)?.created_at || event.created_at || turn.created_at;
       turn.turn_index = event.turn_index ?? turn.turn_index;
     } else if (event.kind === 'shell_output') {
       call.args.script = event.script || call.args.script;
       call.ok = event.result || {};
       turn.output_created_at = event.created_at;
+      turn.turn_index = event.turn_index ?? turn.turn_index;
+      turn.turn_complete = event.turn_complete === true;
     }
     call.latency_ms = event.duration_milliseconds;
-    turn.total_latency_ms = call.latency_ms;
+    turn.total_latency_ms = turn.turn_complete
+      ? elapsedTimestampMilliseconds(startsById.get(event.id)?.created_at, event.created_at)
+      : null;
   }
   turns.sort((a, b) => {
     if (a.created_at && b.created_at && a.created_at !== b.created_at) {
@@ -1784,27 +1534,11 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
   return turns;
 }
 
-function parseCachedArgs(json) {
-  if (typeof json !== 'string' || !json) return {};
-  try { return JSON.parse(json); } catch (_) { return { raw: json }; }
-}
-
-function normalizeCachedBlocks(blocks, presentation, narration, reply) {
-  const out = [];
-  for (const block of Array.isArray(blocks) ? blocks : []) {
-    const kind = block?.kind === 'mermaid'
-      ? 'mermaid' : (block?.kind === 'thinking' ? 'thinking' : 'markdown');
-    if (typeof block?.content === 'string' && block.content.trim()) {
-      out.push({ kind, content: block.content });
-    }
-  }
-  if (presentation.trim()) out.push(...splitCachedMermaid(presentation, 'markdown'));
-  if (narration.trim()) out.push(...splitCachedMermaid(narration, 'thinking'));
-  const responseText = typeof reply?.response === 'string' ? reply.response : reply?.final;
-  if (out.length === 0 && typeof responseText === 'string') {
-    out.push(...splitCachedMermaid(responseText, 'markdown'));
-  }
-  return out;
+function elapsedTimestampMilliseconds(start, end) {
+  const startMs = Date.parse(start || '');
+  const endMs = Date.parse(end || '');
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
+  return Math.max(0, endMs - startMs);
 }
 
 function splitCachedMermaid(text, proseKind) {
@@ -1989,14 +1723,15 @@ function shellIsWorking(d) {
 function agentIsWorking(d) {
   if (!d || runPhase(d.status) !== 'active' || hasHumanGate(d)) return false;
   if (d.pending_completion) return true;
-  let awaitingResponses = d.prompt ? 1 : 0;
+  const started = new Set(d.prompt ? [0] : []);
+  const completed = new Set();
   for (const turn of d.turns || []) {
-    if (turn.kind === 'operator_message') awaitingResponses += 1;
-    if (turn.kind === 'assistant_response' || turn.kind === 'final' || turn.kind === 'error') {
-      awaitingResponses = Math.max(0, awaitingResponses - 1);
+    if (turn.kind === 'operator_message' && Number.isInteger(turn.turn_index)) {
+      started.add(turn.turn_index);
     }
+    if (turn.turn_complete && Number.isInteger(turn.turn_index)) completed.add(turn.turn_index);
   }
-  return awaitingResponses > 0;
+  return [...started].some((turnIndex) => !completed.has(turnIndex));
 }
 function composerMode() {
   const d = state.detail;
@@ -2271,7 +2006,7 @@ function renderTurn(t, i) {
     return '<div class="turn">' + turnHeader(t, 'operator message')
       + '<div class="bubble user"><div class="label">operator</div><pre>' + esc(t.text) + '</pre></div></div>';
   }
-  if (t.kind === 'assistant_response' || t.kind === 'final') {
+  if (t.kind === 'assistant_response') {
     const headed = Number.isInteger(t.turn_index);
     // The header carries the total when present; otherwise fall back to the bubble.
     const blocks = displayBlocksHtml(t.blocks, headed ? null : t.total_latency_ms);
@@ -2391,7 +2126,7 @@ function shortChildId(id) {
 function renderFinal(d) {
   // Model-emitted responses are rendered with their turn. Fall back to the
   // workflow result only for old executions with no persisted response turn.
-  const responseTurn = [...d.turns].reverse().find((t) => t.kind === 'assistant_response' || t.kind === 'final');
+  const responseTurn = [...d.turns].reverse().find((t) => t.kind === 'assistant_response');
   if (responseTurn) return '';
   if (d.status !== 'finished') return '';
   const r = d.final_result;

@@ -64,6 +64,27 @@ switch (command) {
         if (result.exit_code) process.stderr.write(`\n[exit ${result.exit_code}]\n`);
         break;
     }
+    case "check-shell-notification": {
+        const record = json()?.ok?.shell_output;
+        const valid = record?.id === "shell-e2e-1"
+            && record.turn_index === 0
+            && record.turn_complete === true
+            && Number.isInteger(record.duration_milliseconds)
+            && record.duration_milliseconds >= 0;
+        process.exit(valid ? 0 : 1);
+        break;
+    }
+    case "check-shell-projection": {
+        const transcript = json()?.transcript;
+        const output = transcript?.shell_events?.find((event) => event.id === "shell-e2e-1");
+        const start = transcript?.turn_starts?.find((event) => event.id === "shell-e2e-1");
+        const valid = output?.turn_index === 0
+            && output.turn_complete === true
+            && typeof start?.created_at === "string"
+            && start.created_at.length > 0;
+        process.exit(valid ? 0 : 1);
+        break;
+    }
     case "redeploy-params": {
         const manifest = fs.readFileSync(process.argv[3], "utf8");
         process.stdout.write(JSON.stringify([manifest, "[]", "e2e no-op redeploy", false, ""]));

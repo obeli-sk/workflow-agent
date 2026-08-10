@@ -7,7 +7,12 @@ interface session {
   variant t2 { prompt(t0), shell(t1) }
   record t3 { protocol-version: u32 }
   record t4 { id: string, text: string, turn-index: u64 }
-  record t5 { content-json: string, turn-index: u64, duration-milliseconds: u64 }
+  record t5 {
+    content-json: string,
+    turn-index: u64,
+    duration-milliseconds: u64,
+    turn-complete: bool,
+  }
   record t6 { stdout: string, stderr: string, exit-code: s32 }
   variant t7 { ok(t6), error(string) }
   record t8 { id: string, output: t7, turn-index: u64, duration-milliseconds: u64 }
@@ -17,6 +22,7 @@ interface session {
     %result: t6,
     turn-index: u64,
     duration-milliseconds: u64,
+    turn-complete: bool,
   }
   variant t10 {
     session-started(t3),

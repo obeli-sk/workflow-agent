@@ -2,7 +2,7 @@
 //!
 //! The generic session loop: one persistent `Bash` instance, one named
 //! `session-events` notification join set for the whole session, and one named
-//! `operator-{turn}` join set per conversation turn racing the LLM completion
+//! `operator-{loop}` join set per workflow loop racing the LLM completion
 //! child against an always-outstanding operator-injection offer. Direct shell
 //! interactions are turns too: their synthetic Bash request/result pair is
 //! included in the next turn's completion request.
@@ -15,7 +15,7 @@
 //!   `demo-stargazers`'s workflow-rs), so the turn/step/dispatch/rate-limit
 //!   log lines have no Rust equivalent and are dropped.
 //! - No explicit `joinSet.close()` / `finally`: a WIT `join-set` resource
-//!   closes on `Drop`, so scope exit (a fresh `Session` each turn, and the
+//!   closes on `Drop`, so scope exit (a fresh `Session` each loop, and the
 //!   session-wide notification join sets falling out of scope when this function
 //!   returns) already does the equivalent cleanup.
 //! - `WORKFLOW_UNAVAILABLE_COMMANDS` (gzip/gunzip/zcat) has no Rust
@@ -218,7 +218,7 @@ pub fn agent_loop(
     notifications.notify(
         SESSION_EVENTS_JOIN_SET,
         &SessionEvent::SessionStarted(SessionStartedEvent {
-            protocol_version: 1,
+            protocol_version: 2,
         }),
     )?;
 
@@ -234,6 +234,7 @@ pub fn agent_loop(
     let mut registered_programs: BTreeSet<String> = Default::default();
     let mut registered_mcp_servers: BTreeSet<String> = Default::default();
     let mut turn_index: u64 = 0;
+    let mut loop_index: u64 = 0;
     let mut should_call_llm = !messages.is_empty();
     let mut agent_steps = 0u32;
 
@@ -259,10 +260,8 @@ pub fn agent_loop(
             continue;
         }
 
-        // A turn is one operator interaction or one model completion. The name
-        // embeds the turn index because a named set's name is reserved for the
-        // execution's whole history and cannot be reused across turns.
-        let mut session = open_turn(turn_index)?;
+        let mut session = open_turn(loop_index, turn_index)?;
+        let mut turn_complete = false;
 
         // Re-discover program commands on the first turn and whenever the
         // active deployment changes (a successful redeploy). Both the
@@ -385,10 +384,12 @@ pub fn agent_loop(
             should_call_llm = apply_session_input(
                 event,
                 turn_index,
+                true,
                 &mut notifications,
                 &mut bash,
                 &mut messages,
             )?;
+            turn_complete = !should_call_llm;
         } else {
             let reply = call_llm_with_operator(
                 &mut session,
@@ -400,19 +401,6 @@ pub fn agent_loop(
                 &mut notifications,
             )?;
             agent_steps += 1;
-            notifications.notify(
-                SESSION_EVENTS_JOIN_SET,
-                &SessionEvent::AssistantReply(AssistantReplyEvent {
-                    content_json: reply.content_json.clone(),
-                    turn_index,
-                    duration_milliseconds: reply.duration_milliseconds,
-                }),
-            )?;
-            messages.insert(
-                reply.request_message_count,
-                json!({"role": "assistant", "content": reply.content}),
-            );
-
             let calls: Vec<ToolCall> = reply
                 .content
                 .iter()
@@ -435,6 +423,21 @@ pub fn agent_loop(
                     })
                 })
                 .collect();
+            let assistant_completes_turn = calls.is_empty() && !reply.prompt_queued;
+            notifications.notify(
+                SESSION_EVENTS_JOIN_SET,
+                &SessionEvent::AssistantReply(AssistantReplyEvent {
+                    content_json: reply.content_json.clone(),
+                    turn_index,
+                    duration_milliseconds: reply.duration_milliseconds,
+                    turn_complete: assistant_completes_turn,
+                }),
+            )?;
+            messages.insert(
+                reply.request_message_count,
+                json!({"role": "assistant", "content": reply.content}),
+            );
+
             if !calls.is_empty() {
                 let mut result_blocks = Vec::with_capacity(calls.len());
                 for call in &calls {
@@ -460,11 +463,15 @@ pub fn agent_loop(
             } else {
                 should_call_llm = reply.prompt_queued;
                 agent_steps = 0;
+                turn_complete = assistant_completes_turn;
             }
         }
-        // `session.join_set` drops (closes) here at the end of the turn's
+        // `session.join_set` drops (closes) here at the end of the loop's
         // scope; see module docs.
-        turn_index += 1;
+        loop_index += 1;
+        if turn_complete {
+            turn_index += 1;
+        }
     }
 }
 
@@ -498,6 +505,7 @@ fn dispatch_bash(call: &ToolCall, bash: &mut Bash) -> ToolResultBlock {
 fn apply_session_input(
     event: SessionInput,
     turn_index: u64,
+    shell_completes_turn: bool,
     notifications: &mut NotificationJoinSets,
     bash: &mut Bash,
     messages: &mut Vec<Value>,
@@ -516,6 +524,7 @@ fn apply_session_input(
                 result: shell_result(result),
                 turn_index,
                 duration_milliseconds,
+                turn_complete: shell_completes_turn,
             };
             notifications.notify(
                 SESSION_EVENTS_JOIN_SET,
@@ -638,6 +647,7 @@ fn call_llm_with_operator(
                     prompt_queued |= apply_session_input(
                         event,
                         session.turn_index,
+                        false,
                         notifications,
                         bash,
                         messages,
@@ -706,8 +716,8 @@ fn tool_error(id: &str, message: &str) -> ToolResultBlock {
 
 // ----- durable session channel ------------------------------------------------
 
-fn open_turn(turn_index: u64) -> Result<Session, String> {
-    let join_set = workflow_support::join_set_create_named(&format!("operator-{turn_index}"))
+fn open_turn(loop_index: u64, turn_index: u64) -> Result<Session, String> {
+    let join_set = workflow_support::join_set_create_named(&format!("operator-{loop_index}"))
         .map_err(|e| format!("{e:?}"))?;
     let injection_execution_id = session_ext::injection_submit(&join_set);
     Ok(Session {
@@ -752,6 +762,7 @@ mod tests {
             },
             turn_index: 3,
             duration_milliseconds: 12,
+            turn_complete: true,
         };
 
         append_shell_exchange(&mut messages, &record, "input\n");

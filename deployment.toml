@@ -530,10 +530,10 @@ return_type = """result<
   variant {
     session-started(record { protocol-version: u32 }),
     operator-message(record { id: string, text: string, turn-index: u64 }),
-    assistant-reply(record { content-json: string, turn-index: u64, duration-milliseconds: u64 }),
+    assistant-reply(record { content-json: string, turn-index: u64, duration-milliseconds: u64, turn-complete: bool }),
     agent-error(record { id: string, text: string, turn-index: u64 }),
     tool-result(record { id: string, output: variant { ok(record { stdout: string, stderr: string, exit-code: s32 }), error(string) }, turn-index: u64, duration-milliseconds: u64 }),
-    shell-output(record { id: string, script: string, result: record { stdout: string, stderr: string, exit-code: s32 }, turn-index: u64, duration-milliseconds: u64 }) },
+    shell-output(record { id: string, script: string, result: record { stdout: string, stderr: string, exit-code: s32 }, turn-index: u64, duration-milliseconds: u64, turn-complete: bool }) },
   string
 >"""
 
