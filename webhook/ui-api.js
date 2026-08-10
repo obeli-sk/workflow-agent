@@ -186,19 +186,19 @@ async function readBlob(digest) {
 }
 
 function pauseObeliskExecution(id) {
-    return activityJson(`pause-execution ${id}`, webapi.pauseExecution(id));
+    return webapi.pauseExecution(id);
 }
 
 function unpauseObeliskExecution(id) {
-    return activityJson(`unpause-execution ${id}`, webapi.unpauseExecution(id));
+    return webapi.unpauseExecution(id);
 }
 
 function cancelObeliskExecution(id) {
-    return activityJson(`cancel-execution ${id}`, webapi.cancelExecution(id));
+    return webapi.cancelExecution(id);
 }
 
 function stubObeliskExecution(id, result) {
-    return activityJson(`stub-execution ${id}`, webapi.stubExecution(id, JSON.stringify(result)));
+    return webapi.stubExecution(id, JSON.stringify(result));
 }
 
 function jsonResponse(value, status = 200) {
