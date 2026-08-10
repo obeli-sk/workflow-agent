@@ -43,19 +43,18 @@ switch (command) {
     }
     case "shell-stdout": {
         // Extract stdout from a record-output result. `execution result -j`
-        // yields {ok: "<record-json>"}; the record is {id, script, result:
-        // {stdout, stderr, exit_code}}. Tolerate an err arm, a bare string, or
-        // the record object directly. Stderr and a non-zero exit go to stderr so
-        // a failing turn is visible in the test log.
+        // yields {ok: {shell_output: {id, script, result}}}. Stderr and a
+        // non-zero exit go to stderr so a failing turn is visible in the log.
         const outer = json();
         if (outer && typeof outer === "object" && outer.err !== undefined) {
             console.error(`record-output returned an error: ${JSON.stringify(outer.err)}`);
             process.exit(1);
         }
-        const inner = typeof outer === "string" ? outer
-            : outer && typeof outer.ok === "string" ? outer.ok
-            : outer;
-        const record = typeof inner === "string" ? JSON.parse(inner) : inner;
+        const record = outer?.ok?.shell_output;
+        if (!record) {
+            console.error(`record-output returned an unexpected value: ${JSON.stringify(outer)}`);
+            process.exit(1);
+        }
         const result = record.result ?? {};
         process.stdout.write(result.stdout ?? "");
         if (result.stderr) process.stderr.write(result.stderr);

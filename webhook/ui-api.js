@@ -637,34 +637,35 @@ async function loadResponses(execId, startCursor = 0) {
                     appendCompletionReply(replies, ev, r, turnIndex);
                 }
             } else if (joinName === "record-output") {
-                const value = ev.result?.ok?.value ?? ev.result?.ok;
-                try {
-                    const record = JSON.parse(String(value));
-                    if (record.kind === "agent_error" && typeof record.text === "string") {
+                const record = decodeSessionRecord(ev.result?.ok?.value ?? ev.result?.ok);
+                if (record && typeof record === "object") {
+                    if (record.agent_error) {
+                        const error = record.agent_error;
                         replies.push({
-                            reply: { error: record.text },
+                            reply: { error: error.text },
                             presentation: "",
                             blocks: [],
                             narration: "",
                             created_at: r.event?.created_at || "",
                             completion_id: "",
-                            turn_index: Number.isInteger(record.turn_index) ? record.turn_index : null,
+                            turn_index: Number.isInteger(error.turn_index) ? error.turn_index : null,
                         });
-                    } else if (record.kind === "tool_result" && record.block) {
+                    } else if (record.tool_result) {
                         toolResults.push(normalizeToolResultBlock(
-                            record.block,
+                            record.tool_result.block,
                             r.event?.created_at || "",
                         ));
-                    } else {
+                    } else if (record.shell_output) {
+                        const output = record.shell_output;
                         shellEvents.push({
                             kind: "shell_output",
-                            id: record.id || "",
-                            script: record.script || "",
-                            result: record.result || {},
+                            id: output.id,
+                            script: output.script,
+                            result: output.result,
                             created_at: r.event?.created_at || "",
                         });
                     }
-                } catch (_) { }
+                }
             }
         }
         if (responses.length === 0) break;
@@ -675,6 +676,19 @@ async function loadResponses(execId, startCursor = 0) {
         if (responses.length < 200) break;
     }
     return { replies, toolChildren, toolResults, operatorMessages, shellEvents, cursor };
+}
+
+function decodeSessionRecord(value) {
+    if (typeof value !== "string") return value;
+    // backcompat: 0.1.0 session histories encoded record-output as a JSON string.
+    try {
+        const record = JSON.parse(value);
+        if (record.kind === "agent_error") return { agent_error: record };
+        if (record.kind === "tool_result") return { tool_result: record };
+        return { shell_output: record };
+    } catch (_) {
+        return null;
+    }
 }
 
 function appendCompletionReply(replies, ev, response, turnIndex = null) {

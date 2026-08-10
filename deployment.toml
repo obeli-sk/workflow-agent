@@ -70,7 +70,13 @@ params = [
   { name = "model",         type = "string" },
   { name = "effort",        type = "string" },
 ]
-return_type = "result<variant { reply(record { content-json: string, stop-reason: string }), rate-limited(record { retry-after-seconds: u32, message: string }) }, string>"
+return_type = """result<
+  variant {
+    reply(record { content-json: string, stop-reason: string }),
+    rate-limited(record { retry-after-seconds: u32, message: string }) },
+  string
+>
+"""
 location = "activity/llm-chat.js"
 exec.lock_expiry.minutes = 10
 max_retries = 3
@@ -545,7 +551,13 @@ ffqn = "obelisk-agent:agent/session.record-output"
 params = [
   { name = "event-id", type = "string" },
 ]
-return_type = "result<string, string>"
+return_type = """result<
+  variant {
+    agent-error(record { id: string, text: string, turn-index: u64 }),
+    tool-result(record { id: string, block: record { tool-use-id: string, content: string, is-error: bool } }),
+    shell-output(record { id: string, script: string, result: record { stdout: string, stderr: string, exit-code: s32 } }) },
+  string
+>"""
 
 # --- Workflow -----------------------------------------------------------------
 # Native Rust workflow (workflow/workflow-rs). The public run-cancellable
@@ -712,7 +724,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   "AGENT_MODELS",
 ]
-content_digest = "sha256:0cf303594a760ba6bc65532a19c1f504b3a0a03b1df6e6b41336f51e24e1b510"
+content_digest = "sha256:632cde53bbe7458fc347581a4c516c230e3fda1584d1602ab186930735d8ec4d"
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.

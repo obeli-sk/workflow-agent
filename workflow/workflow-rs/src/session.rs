@@ -31,6 +31,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult};
@@ -103,6 +104,59 @@ struct LlmReply {
     content: Vec<Value>,
     request_message_count: usize,
     prompt_queued: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SessionRecord {
+    AgentError(AgentErrorRecord),
+    ToolResult(ToolResultRecord),
+    ShellOutput(ShellOutputRecord),
+}
+
+#[derive(Serialize)]
+struct AgentErrorRecord {
+    id: String,
+    text: String,
+    turn_index: u64,
+}
+
+#[derive(Serialize)]
+struct ToolResultRecord {
+    id: String,
+    block: ToolResultBlock,
+}
+
+#[derive(Clone, Serialize)]
+struct ToolResultBlock {
+    tool_use_id: String,
+    content: String,
+    is_error: bool,
+}
+
+impl ToolResultBlock {
+    fn into_message_value(self) -> Value {
+        json!({
+            "type": "tool_result",
+            "tool_use_id": self.tool_use_id,
+            "content": self.content,
+            "is_error": self.is_error,
+        })
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct ShellOutputRecord {
+    id: String,
+    script: String,
+    result: ShellResult,
+}
+
+#[derive(Clone, Serialize)]
+struct ShellResult {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
 }
 
 pub fn agent_loop(
@@ -186,11 +240,10 @@ pub fn agent_loop(
             }));
             publish_session_record(
                 &output_join_set,
-                &json!({
-                    "id": format!("turn-limit-{turn_index}"),
-                    "kind": "agent_error",
-                    "text": message,
-                    "turn_index": turn_index,
+                &SessionRecord::AgentError(AgentErrorRecord {
+                    id: format!("turn-limit-{turn_index}"),
+                    text: message,
+                    turn_index,
                 }),
             )?;
             should_call_llm = false;
@@ -369,13 +422,12 @@ pub fn agent_loop(
                     let block = dispatch_bash(call, &mut bash);
                     publish_session_record(
                         &output_join_set,
-                        &json!({
-                            "id": call.id,
-                            "kind": "tool_result",
-                            "block": block,
+                        &SessionRecord::ToolResult(ToolResultRecord {
+                            id: call.id.clone(),
+                            block: block.clone(),
                         }),
                     )?;
-                    result_blocks.push(block);
+                    result_blocks.push(block.into_message_value());
                 }
                 messages.insert(
                     reply.request_message_count + 1,
@@ -399,7 +451,7 @@ struct ToolCall {
     input: Value,
 }
 
-fn dispatch_bash(call: &ToolCall, bash: &mut Bash) -> Value {
+fn dispatch_bash(call: &ToolCall, bash: &mut Bash) -> ToolResultBlock {
     if call.name != "bash" {
         return tool_error(&call.id, &format!("unknown tool: {}", call.name));
     }
@@ -419,7 +471,7 @@ fn dispatch_bash(call: &ToolCall, bash: &mut Bash) -> Value {
     let result = exec_shell(bash, script, stdin);
     tool_ok(
         &call.id,
-        serde_json::to_string(&shell_result(&result)).expect("json"),
+        serde_json::to_string(&shell_result(result)).expect("json"),
     )
 }
 
@@ -432,8 +484,12 @@ fn apply_session_event(
     match event {
         SessionEvent::Shell { id, script, stdin } => {
             let result = exec_shell(bash, &script, &stdin);
-            let record = json!({"id": id, "script": script, "result": shell_result(&result)});
-            publish_session_record(output_join_set, &record)?;
+            let record = ShellOutputRecord {
+                id,
+                script,
+                result: shell_result(result),
+            };
+            publish_session_record(output_join_set, &SessionRecord::ShellOutput(record.clone()))?;
             append_shell_exchange(messages, &record, &stdin);
             Ok(false)
         }
@@ -444,48 +500,44 @@ fn apply_session_event(
     }
 }
 
-fn append_shell_exchange(messages: &mut Vec<Value>, record: &Value, stdin: &str) {
-    let id = record.get("id").and_then(Value::as_str).unwrap_or_default();
-    let script = record
-        .get("script")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let mut input = json!({"script": script});
+fn append_shell_exchange(messages: &mut Vec<Value>, record: &ShellOutputRecord, stdin: &str) {
+    let mut input = json!({"script": record.script});
     if !stdin.is_empty() {
         input["stdin"] = Value::String(stdin.to_string());
     }
     messages.push(json!({
         "role": "assistant",
-        "content": [{"type": "tool_use", "id": id, "name": "bash", "input": input}],
+        "content": [{"type": "tool_use", "id": record.id, "name": "bash", "input": input}],
     }));
-    let result_json = record
-        .get("result")
-        .cloned()
-        .unwrap_or_else(|| json!({}))
-        .to_string();
+    let result_json = serde_json::to_string(&record.result).expect("json");
     messages.push(json!({
         "role": "user",
-        "content": [tool_ok(id, result_json)],
+        "content": [tool_ok(&record.id, result_json).into_message_value()],
     }));
 }
 
-fn publish_session_record(output_join_set: &JoinSet, record: &Value) -> Result<(), String> {
-    let record_json = record.to_string();
-    let event_id = record.get("id").and_then(Value::as_str).unwrap_or_default();
+fn publish_session_record(output_join_set: &JoinSet, record: &SessionRecord) -> Result<(), String> {
+    let event_id = match record {
+        SessionRecord::AgentError(record) => &record.id,
+        SessionRecord::ToolResult(record) => &record.id,
+        SessionRecord::ShellOutput(record) => &record.id,
+    };
     let function = split_ffqn(OUTPUT_FFQN)?;
     let execution_id =
         workflow_support::submit_json(output_join_set, &function, &json!([event_id]).to_string())
             .map_err(|e| format!("{e:?}"))?;
-    let stub_payload = json!({"ok": record_json}).to_string();
+    let stub_payload = json!({"ok": record}).to_string();
     workflow_support::stub_json(&execution_id, &stub_payload).map_err(|e| format!("{e:?}"))?;
 
     let inner = workflow_support::join_next(output_join_set).map_err(|e| format!("{e:?}"))?;
     let last_id = last_response_execution_id(output_join_set);
-    let published: String = inner
+    let published: Value = inner
         .map_err(child_error_message)?
-        .and_then(|json| serde_json::from_str::<String>(&json).ok())
-        .unwrap_or_default();
-    if last_id.as_deref() != Some(execution_id.id.as_str()) || published != record_json {
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or(Value::Null);
+    if last_id.as_deref() != Some(execution_id.id.as_str())
+        || published != serde_json::to_value(record).expect("session record must serialize")
+    {
         return Err(format!("unexpected session output response: {last_id:?}"));
     }
     Ok(())
@@ -561,12 +613,12 @@ fn random_event_id() -> String {
     workflow_support::random_string(16, 17)
 }
 
-fn shell_result(result: &ExecResult) -> Value {
-    json!({
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "exit_code": result.exit_code,
-    })
+fn shell_result(result: ExecResult) -> ShellResult {
+    ShellResult {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exit_code: result.exit_code,
+    }
 }
 
 /// One LLM call raced against the operator input offer. Each injected event is
@@ -659,7 +711,7 @@ fn user_text(text: &str) -> Value {
     json!({"role": "user", "content": [{"type": "text", "text": text}]})
 }
 
-fn tool_ok(id: &str, json_string: String) -> Value {
+fn tool_ok(id: &str, json_string: String) -> ToolResultBlock {
     // The extra `to_string` mirrors JS's `JSON.stringify(s).length`: the
     // encoded-bytes estimate is how large `s` becomes once embedded (quoted,
     // escaped) in the outer `messages-json` payload.
@@ -672,11 +724,19 @@ fn tool_ok(id: &str, json_string: String) -> Value {
             ),
         );
     }
-    json!({"type": "tool_result", "tool_use_id": id, "content": json_string, "is_error": false})
+    ToolResultBlock {
+        tool_use_id: id.to_string(),
+        content: json_string,
+        is_error: false,
+    }
 }
 
-fn tool_error(id: &str, message: &str) -> Value {
-    json!({"type": "tool_result", "tool_use_id": id, "content": format!("Error: {message}"), "is_error": true})
+fn tool_error(id: &str, message: &str) -> ToolResultBlock {
+    ToolResultBlock {
+        tool_use_id: id.to_string(),
+        content: format!("Error: {message}"),
+        is_error: true,
+    }
 }
 
 // ----- durable session channel ------------------------------------------------
@@ -727,11 +787,15 @@ mod tests {
     #[test]
     fn direct_shell_exchange_is_valid_model_tool_history() {
         let mut messages = vec![user_text("inspect the workspace")];
-        let record = json!({
-            "id": "shell-17",
-            "script": "cat note.txt",
-            "result": {"stdout": "hello\n", "stderr": "", "exit_code": 0},
-        });
+        let record = ShellOutputRecord {
+            id: "shell-17".to_string(),
+            script: "cat note.txt".to_string(),
+            result: ShellResult {
+                stdout: "hello\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+            },
+        };
 
         append_shell_exchange(&mut messages, &record, "input\n");
 
@@ -754,7 +818,33 @@ mod tests {
         assert_eq!(result["is_error"], false);
         assert_eq!(
             serde_json::from_str::<Value>(result["content"].as_str().unwrap()).unwrap(),
-            record["result"]
+            serde_json::to_value(&record.result).unwrap()
+        );
+    }
+
+    #[test]
+    fn session_record_uses_wit_variant_shape() {
+        let record = SessionRecord::ToolResult(ToolResultRecord {
+            id: "tool-1".to_string(),
+            block: ToolResultBlock {
+                tool_use_id: "tool-1".to_string(),
+                content: "ok".to_string(),
+                is_error: false,
+            },
+        });
+
+        assert_eq!(
+            serde_json::to_value(record).unwrap(),
+            json!({
+                "tool_result": {
+                    "id": "tool-1",
+                    "block": {
+                        "tool_use_id": "tool-1",
+                        "content": "ok",
+                        "is_error": false,
+                    },
+                },
+            })
         );
     }
 }
