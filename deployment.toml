@@ -60,20 +60,7 @@ location = "packs/obelisk-control/native-call.js"
 [[activity_js]]
 name = "llm_chat"
 ffqn = "obelisk-agent:llm/chat.completion"
-params = [
-  { name = "system",        type = "string" },
-  { name = "messages-json", type = "string" },
-  { name = "tools-json",    type = "string" },
-  { name = "model",         type = "string" },
-  { name = "effort",        type = "string" },
-]
-return_type = """result<
-  variant {
-    reply(record { content-json: string, stop-reason: string }),
-    rate-limited(record { retry-after-seconds: u32, message: string }) },
-  string
->
-"""
+wit = "wit"
 location = "activity/llm-chat.js"
 exec.lock_expiry.minutes = 10
 max_retries = 3
@@ -517,25 +504,12 @@ return_type = "result<_, string>"
 [[activity_stub]]
 name = "session_injection"
 ffqn = "obelisk-agent:agent/session.injection"
-params = []
-return_type = "result<variant { prompt(record { id: string, text: string }), shell(record { id: string, script: string, stdin: string }) }, string>"
+wit = "wit"
 
 [[activity_stub]]
 name = "session_record_output"
 ffqn = "obelisk-agent:agent/session.record-output"
-params = [
-  { name = "event-id", type = "string" },
-]
-return_type = """result<
-  variant {
-    session-started(record { protocol-version: u32 }),
-    operator-message(record { id: string, text: string, turn-index: u64 }),
-    assistant-reply(record { content-json: string, turn-index: u64, duration-milliseconds: u64, turn-complete: bool }),
-    agent-error(record { id: string, text: string, turn-index: u64 }),
-    tool-result(record { id: string, output: variant { ok(record { stdout: string, stderr: string, exit-code: s32 }), error(string) }, turn-index: u64, duration-milliseconds: u64 }),
-    shell-output(record { id: string, script: string, result: record { stdout: string, stderr: string, exit-code: s32 }, turn-index: u64, duration-milliseconds: u64, turn-complete: bool }) },
-  string
->"""
+wit = "wit"
 
 # --- Workflow -----------------------------------------------------------------
 # Native Rust workflow (workflow/workflow-rs). The public run-cancellable

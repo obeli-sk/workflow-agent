@@ -36,13 +36,12 @@ use crate::generated::obelisk::types::execution::AwaitNextExtensionError;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::agent::session::{
-    T0 as PromptInput, T1 as ShellInput, T2 as SessionInput, T3 as SessionStartedEvent,
-    T4 as OperatorMessageEvent, T5 as AssistantReplyEvent, T6 as ShellResult, T7 as ToolOutput,
-    T8 as ToolResultEvent, T9 as ShellOutputEvent, T10 as SessionEvent,
+    AssistantReplyEvent, OperatorMessageEvent, PromptInput, SessionEvent, SessionInput,
+    SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput, ToolResultEvent,
 };
 use crate::generated::obelisk_agent::agent_obelisk_ext::session as session_ext;
 use crate::generated::obelisk_agent::agent_obelisk_stub::session as session_stub;
-use crate::generated::obelisk_agent::llm::chat::T2 as CompletionResult;
+use crate::generated::obelisk_agent::llm::chat::CompletionResult;
 use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
 use crate::generated::obelisk_agent::tools::webapi;
 use crate::host::RealHost;

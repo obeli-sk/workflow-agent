@@ -1,0 +1,26 @@
+package obelisk-agent:llm;
+
+interface chat {
+  record completion-reply {
+    content-json: string,
+    stop-reason: string,
+  }
+
+  record rate-limit {
+    retry-after-seconds: u32,
+    message: string,
+  }
+
+  variant completion-result {
+    reply(completion-reply),
+    rate-limited(rate-limit),
+  }
+
+  completion: func(
+    system: string,
+    messages-json: string,
+    tools-json: string,
+    model: string,
+    effort: string,
+  ) -> result<completion-result, string>;
+}

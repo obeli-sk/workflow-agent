@@ -16,11 +16,13 @@ fn main() -> Result<()> {
     .generate_to_out_dir(None)?;
 
     let contents = std::fs::read_to_string(&path)?;
-    // The JSON-serialized variant enums need snake_case tags. wit-bindgen names
-    // them by their generated `tN` index, so these track the session schema:
-    // T2 = session-input and llm completion-result, T7 = tool-output,
-    // T10 = session-event. Update these if the schema's type ordering changes.
-    let enum_re = regex::Regex::new(r"(pub enum (?:T2|T7|T10))").unwrap();
+    // The JSON-serialized variant enums need snake_case tags. These are the
+    // authored WIT variants (see `wit = "wit"` in deployment.toml) the workflow
+    // reads or writes as JSON.
+    let enum_re = regex::Regex::new(
+        r"(pub enum (?:SessionInput|ToolOutput|SessionEvent|CompletionResult))",
+    )
+    .unwrap();
     let contents = enum_re
         .replace_all(&contents, "#[serde(rename_all = \"snake_case\")]\n$1")
         .into_owned();
