@@ -1,5 +1,7 @@
 // obelisk-agent:tools/webapi.cancel-execution:
-//   func(execution-id: string) -> result<string, string>
+//   func(execution-id: string) -> result<record { ok: bool,
+//     execution-id: string, action: enum { pause, unpause, cancel, stub },
+//     already: bool }, string>
 export default async function cancel_execution(executionId) {
     if (!executionId) throw "execution-id is required";
     const base = process.env["OBELISK_API_URL"];
@@ -8,9 +10,9 @@ export default async function cancel_execution(executionId) {
         `${base}/v1/executions/${encodeURIComponent(executionId)}/cancel`,
         { method: "PUT", headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
     );
-    if (resp.ok) return JSON.stringify({ ok: true, execution_id: executionId, action: "cancel" });
+    if (resp.ok) return { ok: true, execution_id: executionId, action: "cancel", already: false };
     if (await isTerminal(base, executionId)) {
-        return JSON.stringify({ ok: true, execution_id: executionId, action: "cancel", already: true });
+        return { ok: true, execution_id: executionId, action: "cancel", already: true };
     }
     throw `HTTP ${resp.status}: ${await resp.text()}`;
 }

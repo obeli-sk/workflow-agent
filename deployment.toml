@@ -429,7 +429,7 @@ ffqn = "obelisk-agent:tools/webapi.pause-execution"
 params = [
   { name = "execution-id", type = "string" },
 ]
-return_type = "result<string, string>"
+return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, string>"
 location = "packs/obelisk-control/tools/pause-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -445,7 +445,7 @@ ffqn = "obelisk-agent:tools/webapi.unpause-execution"
 params = [
   { name = "execution-id", type = "string" },
 ]
-return_type = "result<string, string>"
+return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, string>"
 location = "packs/obelisk-control/tools/unpause-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -461,7 +461,7 @@ ffqn = "obelisk-agent:tools/webapi.cancel-execution"
 params = [
   { name = "execution-id", type = "string" },
 ]
-return_type = "result<string, string>"
+return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, string>"
 location = "packs/obelisk-control/tools/cancel-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -478,7 +478,7 @@ params = [
   { name = "execution-id", type = "string" },
   { name = "result-json", type = "string" },
 ]
-return_type = "result<string, string>"
+return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, string>"
 location = "packs/obelisk-control/tools/stub-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]

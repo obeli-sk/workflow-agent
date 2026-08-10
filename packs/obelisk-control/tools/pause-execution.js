@@ -1,5 +1,7 @@
 // obelisk-agent:tools/webapi.pause-execution:
-//   func(execution-id: string) -> result<string, string>
+//   func(execution-id: string) -> result<record { ok: bool,
+//     execution-id: string, action: enum { pause, unpause, cancel, stub },
+//     already: bool }, string>
 export default async function pause_execution(executionId) {
     return await putState(executionId, "pause", "paused");
 }
@@ -12,9 +14,9 @@ async function putState(executionId, action, idempotentStatus) {
         `${base}/v1/executions/${encodeURIComponent(executionId)}/${action}`,
         { method: "PUT", headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
     );
-    if (resp.ok) return JSON.stringify({ ok: true, execution_id: executionId, action });
+    if (resp.ok) return { ok: true, execution_id: executionId, action, already: false };
     if (await hasStatus(base, executionId, idempotentStatus)) {
-        return JSON.stringify({ ok: true, execution_id: executionId, action, already: true });
+        return { ok: true, execution_id: executionId, action, already: true };
     }
     throw `HTTP ${resp.status}: ${await resp.text()}`;
 }

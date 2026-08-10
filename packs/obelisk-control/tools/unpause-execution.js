@@ -1,5 +1,7 @@
 // obelisk-agent:tools/webapi.unpause-execution:
-//   func(execution-id: string) -> result<string, string>
+//   func(execution-id: string) -> result<record { ok: bool,
+//     execution-id: string, action: enum { pause, unpause, cancel, stub },
+//     already: bool }, string>
 export default async function unpause_execution(executionId) {
     if (!executionId) throw "execution-id is required";
     const base = process.env["OBELISK_API_URL"];
@@ -8,10 +10,10 @@ export default async function unpause_execution(executionId) {
         `${base}/v1/executions/${encodeURIComponent(executionId)}/unpause`,
         { method: "PUT", headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
     );
-    if (resp.ok) return JSON.stringify({ ok: true, execution_id: executionId, action: "unpause" });
+    if (resp.ok) return { ok: true, execution_id: executionId, action: "unpause", already: false };
     const status = await getStatus(base, executionId);
     if (status && status !== "paused") {
-        return JSON.stringify({ ok: true, execution_id: executionId, action: "unpause", already: true });
+        return { ok: true, execution_id: executionId, action: "unpause", already: true };
     }
     throw `HTTP ${resp.status}: ${await resp.text()}`;
 }

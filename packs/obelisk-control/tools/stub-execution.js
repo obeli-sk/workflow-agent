@@ -1,5 +1,7 @@
 // obelisk-agent:tools/webapi.stub-execution:
-//   func(execution-id: string, result-json: string) -> result<string, string>
+//   func(execution-id: string, result-json: string) -> result<record { ok: bool,
+//     execution-id: string, action: enum { pause, unpause, cancel, stub },
+//     already: bool }, string>
 export default async function stub_execution(executionId, resultJson) {
     if (!executionId) throw "execution-id is required";
     let result;
@@ -19,9 +21,9 @@ export default async function stub_execution(executionId, resultJson) {
             body: JSON.stringify(result),
         },
     );
-    if (resp.ok) return JSON.stringify({ ok: true, execution_id: executionId, action: "stub" });
+    if (resp.ok) return { ok: true, execution_id: executionId, action: "stub", already: false };
     if (await isTerminal(base, executionId)) {
-        return JSON.stringify({ ok: true, execution_id: executionId, action: "stub", already: true });
+        return { ok: true, execution_id: executionId, action: "stub", already: true };
     }
     throw `HTTP ${resp.status}: ${await resp.text()}`;
 }
