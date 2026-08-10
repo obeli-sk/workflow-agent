@@ -106,7 +106,7 @@ params = [
   { name = "ffqn-prefix", type = "string" },
   { name = "length", type = "u32" },
 ]
-return_type = "result<list<record { ffqn: string, parameter-types: list<record { name: string, wit-type: string }>, return-type: string, extension: option<enum { submit, await-next, schedule, stub, get }>, submittable: bool, wit: string }>, string>"
+return_type = "result<list<record { ffqn: string, parameter-types: list<record { name: string, wit-type: string }>, return-type: string, extension: option<enum { submit, await-next, schedule, stub, get }>, submittable: bool, wit: string }>, variant { permanent-error(string), transient-error(string), execution-failed }>"
 location = "packs/obelisk-control/tools/list-functions.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -317,7 +317,7 @@ params = [
   { name = "offset", type = "u32" },
   { name = "length", type = "u32" },
 ]
-return_type = "result<record { section: string, ffqn: option<string>, name: option<string>, location: option<string>, content-digest: string, source-bytes: u64, offset: u64, length: u64, next-offset: option<u64>, raw-body: string }, string>"
+return_type = "result<record { section: string, ffqn: option<string>, name: option<string>, location: option<string>, content-digest: string, source-bytes: u64, offset: u64, length: u64, next-offset: option<u64>, raw-body: string }, variant { permanent-error(string), transient-error(string), execution-failed }>"
 location = "packs/obelisk-control/tools/get-component-source.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -354,7 +354,7 @@ ffqn = "obelisk-agent:tools/webapi.deployment-checkout"
 params = [
   { name = "deployment-id", type = "option<string>" },
 ]
-return_type = "result<record { deployment-id: string, active-deployment-id: string, deployment-toml: string, files: list<record { path: string, digest: string, size: u64 }> }, string>"
+return_type = "result<record { deployment-id: string, active-deployment-id: string, deployment-toml: string, files: list<record { path: string, digest: string, size: u64 }> }, variant { permanent-error(string), transient-error(string), execution-failed }>"
 location = "packs/obelisk-control/tools/deployment-checkout.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -390,7 +390,7 @@ params = [
   { name = "allow-missing-runtime-config", type = "bool" },
   { name = "deployment-id",                type = "string" },
 ]
-return_type = "result<record { deployment-id: string, deployment-toml: string }, string>"
+return_type = "result<record { deployment-id: string, deployment-toml: string }, variant { permanent-error(string), transient-error(string), execution-failed }>"
 # Submit verifies the whole deployment (compile + link every component) before
 # persisting, which far exceeds the 1s default lock.
 exec.lock_expiry.minutes = 5
@@ -429,7 +429,7 @@ ffqn = "obelisk-agent:tools/webapi.pause-execution"
 params = [
   { name = "execution-id", type = "string" },
 ]
-return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, string>"
+return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, variant { permanent-error(string), transient-error(string), execution-failed }>"
 location = "packs/obelisk-control/tools/pause-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -445,7 +445,7 @@ ffqn = "obelisk-agent:tools/webapi.unpause-execution"
 params = [
   { name = "execution-id", type = "string" },
 ]
-return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, string>"
+return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, variant { permanent-error(string), transient-error(string), execution-failed }>"
 location = "packs/obelisk-control/tools/unpause-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -461,7 +461,7 @@ ffqn = "obelisk-agent:tools/webapi.cancel-execution"
 params = [
   { name = "execution-id", type = "string" },
 ]
-return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, string>"
+return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, variant { permanent-error(string), transient-error(string), execution-failed }>"
 location = "packs/obelisk-control/tools/cancel-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -478,7 +478,7 @@ params = [
   { name = "execution-id", type = "string" },
   { name = "result-json", type = "string" },
 ]
-return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, string>"
+return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, variant { permanent-error(string), transient-error(string), execution-failed }>"
 location = "packs/obelisk-control/tools/stub-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]

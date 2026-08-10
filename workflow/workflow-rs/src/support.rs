@@ -55,7 +55,30 @@ pub fn child_error_message(value: Option<String>) -> String {
 pub fn decode_string_or_raw(json: &str) -> String {
     match serde_json::from_str::<Value>(json) {
         Ok(Value::String(s)) => s,
+        Ok(Value::Object(map)) => map
+            .get("permanent_error")
+            .or_else(|| map.get("transient_error"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| Value::Object(map).to_string()),
         Ok(other) => other.to_string(),
         Err(_) => json.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_activity_error_keeps_its_message() {
+        assert_eq!(
+            decode_string_or_raw(r#"{"permanent_error":"bad input"}"#),
+            "bad input"
+        );
+        assert_eq!(
+            decode_string_or_raw(r#"{"transient_error":"try again"}"#),
+            "try again"
+        );
     }
 }

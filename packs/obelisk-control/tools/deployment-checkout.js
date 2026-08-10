@@ -2,7 +2,8 @@
 //   func(deployment-id: option<string>)
 //     -> result<record { deployment-id: string, active-deployment-id: string,
 //          deployment-toml: string,
-//          files: list<record { path: string, digest: string, size: u64 }> }, string>
+//          files: list<record { path: string, digest: string, size: u64 }> },
+//        variant { permanent-error(string), transient-error(string), execution-failed }>
 //
 // Fetch a deployment to be edited as a virtual working copy. Returns
 //   { deployment_id, active_deployment_id, deployment_toml, files }
@@ -13,6 +14,11 @@
 //
 // When deployment-id is omitted the currently active deployment is checked out.
 export default async function deployment_checkout(deploymentId) {
+    try { return await deployment_checkout_impl(deploymentId); }
+    catch (error) { throw classifyActivityError(error); }
+}
+
+async function deployment_checkout_impl(deploymentId) {
     const base = process.env["OBELISK_API_URL"];
     if (!base) throw "OBELISK_API_URL is not configured";
     // /v1/deployment-id returns the active ID as a JSON string under Accept:
@@ -30,6 +36,15 @@ export default async function deployment_checkout(deploymentId) {
         deployment_toml: record.deployment_toml,
         files: record.files,
     };
+}
+
+function classifyActivityError(error) {
+    if (error?.permanent_error || error?.transient_error) return error;
+    const message = error instanceof Error ? error.message : String(error);
+    const status = Number(/\bHTTP (\d+)/.exec(message)?.[1]);
+    const permanent = status >= 400 && status < 500 && status !== 408 && status !== 429;
+    return permanent || (!status && !(error instanceof Error))
+        ? { permanent_error: message } : { transient_error: message };
 }
 
 async function getJson(url) {

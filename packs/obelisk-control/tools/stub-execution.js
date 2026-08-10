@@ -1,8 +1,14 @@
 // obelisk-agent:tools/webapi.stub-execution:
 //   func(execution-id: string, result-json: string) -> result<record { ok: bool,
 //     execution-id: string, action: enum { pause, unpause, cancel, stub },
-//     already: bool }, string>
+//     already: bool },
+//     variant { permanent-error(string), transient-error(string), execution-failed }>
 export default async function stub_execution(executionId, resultJson) {
+    try { return await stub_execution_impl(executionId, resultJson); }
+    catch (error) { throw classifyActivityError(error); }
+}
+
+async function stub_execution_impl(executionId, resultJson) {
     if (!executionId) throw "execution-id is required";
     let result;
     try { result = JSON.parse(resultJson); }
@@ -26,6 +32,15 @@ export default async function stub_execution(executionId, resultJson) {
         return { ok: true, execution_id: executionId, action: "stub", already: true };
     }
     throw `HTTP ${resp.status}: ${await resp.text()}`;
+}
+
+function classifyActivityError(error) {
+    if (error?.permanent_error || error?.transient_error) return error;
+    const message = error instanceof Error ? error.message : String(error);
+    const status = Number(/\bHTTP (\d+)/.exec(message)?.[1]);
+    const permanent = status >= 400 && status < 500 && status !== 408 && status !== 429;
+    return permanent || (!status && !(error instanceof Error))
+        ? { permanent_error: message } : { transient_error: message };
 }
 
 async function isTerminal(base, executionId) {

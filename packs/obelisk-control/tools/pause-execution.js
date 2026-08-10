@@ -1,9 +1,20 @@
 // obelisk-agent:tools/webapi.pause-execution:
 //   func(execution-id: string) -> result<record { ok: bool,
 //     execution-id: string, action: enum { pause, unpause, cancel, stub },
-//     already: bool }, string>
+//     already: bool },
+//     variant { permanent-error(string), transient-error(string), execution-failed }>
 export default async function pause_execution(executionId) {
-    return await putState(executionId, "pause", "paused");
+    try { return await putState(executionId, "pause", "paused"); }
+    catch (error) { throw classifyActivityError(error); }
+}
+
+function classifyActivityError(error) {
+    if (error?.permanent_error || error?.transient_error) return error;
+    const message = error instanceof Error ? error.message : String(error);
+    const status = Number(/\bHTTP (\d+)/.exec(message)?.[1]);
+    const permanent = status >= 400 && status < 500 && status !== 408 && status !== 429;
+    return permanent || (!status && !(error instanceof Error))
+        ? { permanent_error: message } : { transient_error: message };
 }
 
 async function putState(executionId, action, idempotentStatus) {

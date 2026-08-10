@@ -1,7 +1,8 @@
 // obelisk-agent:tools/webapi.deployment-submit:
 //   func(deployment-toml: string, edited-files: list<record { path: string, content: string }>, description: string,
 //        allow-missing-runtime-config: bool, deployment-id: string)
-//        -> result<record { deployment-id: string, deployment-toml: string }, string>
+//        -> result<record { deployment-id: string, deployment-toml: string },
+//             variant { permanent-error(string), transient-error(string), execution-failed }>
 //
 // Submit a deployment manifest as a new **inactive** deployment and return
 //   { deployment_id, deployment_toml }
@@ -22,6 +23,18 @@
 // An empty deployment-id lets the server allocate one; a non-empty value
 // requests an idempotent submission under that ID.
 export default async function deployment_submit(
+    deploymentToml, editedFiles, description, allowMissing, deploymentId,
+) {
+    try {
+        return await deployment_submit_impl(
+            deploymentToml, editedFiles, description, allowMissing, deploymentId,
+        );
+    } catch (error) {
+        throw classifyActivityError(error);
+    }
+}
+
+async function deployment_submit_impl(
     deploymentToml, editedFiles, description, allowMissing, deploymentId,
 ) {
     if (typeof deploymentToml !== "string" || !deploymentToml.trim()) {
@@ -100,6 +113,15 @@ export default async function deployment_submit(
     });
     if (!retry.ok) throw `HTTP ${retry.status}: ${await retry.text()}`;
     return { deployment_id: parseId(await retry.text()), deployment_toml: toml };
+}
+
+function classifyActivityError(error) {
+    if (error?.permanent_error || error?.transient_error) return error;
+    const message = error instanceof Error ? error.message : String(error);
+    const status = Number(/\bHTTP (\d+)/.exec(message)?.[1]);
+    const permanent = status >= 400 && status < 500 && status !== 408 && status !== 429;
+    return permanent || (!status && !(error instanceof Error))
+        ? { permanent_error: message } : { transient_error: message };
 }
 
 // The submit endpoint returns the new deployment ID, either as the JSON object

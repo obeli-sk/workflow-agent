@@ -4,7 +4,8 @@
 //     -> result<record { section: string, ffqn: option<string>,
 //          name: option<string>, location: option<string>, content-digest: string,
 //          source-bytes: u64, offset: u64, length: u64,
-//          next-offset: option<u64>, raw-body: string }, string>
+//          next-offset: option<u64>, raw-body: string },
+//        variant { permanent-error(string), transient-error(string), execution-failed }>
 //
 // One component's owned script/exec source, fetched from the content-addressed
 // store and sliced by character offset (length 0 => default page). Doing the
@@ -16,6 +17,11 @@
 const MAX_PAGE = 32 * 1024;
 
 export default async function get_component_source(deploymentId, component, offset, length) {
+    try { return await get_component_source_impl(deploymentId, component, offset, length); }
+    catch (error) { throw classifyActivityError(error); }
+}
+
+async function get_component_source_impl(deploymentId, component, offset, length) {
     if (!deploymentId) throw "deployment-id is required";
     if (!component) throw "component is required";
 
@@ -62,6 +68,15 @@ export default async function get_component_source(deploymentId, component, offs
         next_offset: nextOffset < total ? nextOffset : null,
         raw_body: slice,
     };
+}
+
+function classifyActivityError(error) {
+    if (error?.permanent_error || error?.transient_error) return error;
+    const message = error instanceof Error ? error.message : String(error);
+    const status = Number(/\bHTTP (\d+)/.exec(message)?.[1]);
+    const permanent = status >= 400 && status < 500 && status !== 408 && status !== 429;
+    return permanent || (!status && !(error instanceof Error))
+        ? { permanent_error: message } : { transient_error: message };
 }
 
 // Scan the manifest's top-level component blocks and return the first whose
