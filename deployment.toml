@@ -106,13 +106,13 @@ params = [
   { name = "ffqn-prefix", type = "string" },
   { name = "length", type = "u32" },
 ]
-return_type = "result<list<record { ffqn: string, parameter-types: list<record { name: string, wit-type: string }>, return-type: string, extension: option<enum { submit, await-next, schedule, stub, get }>, submittable: bool, wit: string }>, variant { permanent-error(string), transient-error(string), execution-failed }>"
+return_type = "result<list<record { ffqn: string, parameter-types: list<record { name: string, wit-type: string }>, return-type: string, extension: option<enum { submit, await-next, schedule, stub, get }>, wit: string }>, variant { permanent-error(string), transient-error(string), execution-failed }>"
 location = "packs/obelisk-control/tools/list-functions.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/functions"
+request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/(components|functions/wit)"
 secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 

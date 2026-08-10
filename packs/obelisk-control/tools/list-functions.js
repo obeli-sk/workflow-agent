@@ -4,7 +4,7 @@
 //          parameter-types: list<record { name: string, wit-type: string }>,
 //          return-type: string,
 //          extension: option<enum { submit, await-next, schedule, stub, get }>,
-//          submittable: bool, wit: string }>,
+//          wit: string }>,
 //        variant { permanent-error(string), transient-error(string), execution-failed }>
 // Returns each matching function's metadata plus its full WIT (interface with the
 // single function and every type it references).
@@ -16,16 +16,17 @@ export default async function list_functions(ffqnPrefix, length) {
 async function list_functions_impl(ffqnPrefix, length) {
     const base = process.env["OBELISK_API_URL"];
     if (!base) throw "OBELISK_API_URL is not configured";
-    const resp = await fetch(`${base}/v1/functions`, {
+    const resp = await fetch(`${base}/v1/components?exports=true&submittable=true&extensions=true`, {
         headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` },
     });
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
 
-    const functions = await resp.json();
-    if (!Array.isArray(functions)) throw "invalid functions response";
+    const components = await resp.json();
+    if (!Array.isArray(components)) throw "invalid components response";
     const prefix = String(ffqnPrefix || "");
     const limit = length > 0 ? length : 100;
-    const selected = functions
+    const selected = components
+        .flatMap((component) => component?.exports ?? [])
         .filter((item) => item && typeof item.ffqn === "string" && item.ffqn.startsWith(prefix))
         .slice(0, limit);
 
@@ -34,7 +35,6 @@ async function list_functions_impl(ffqnPrefix, length) {
         parameter_types: item.parameter_types,
         return_type: item.return_type,
         extension: item.extension ?? null,
-        submittable: item.submittable,
         wit: await fetchWit(base, item.ffqn),
     })));
     return withWit;
