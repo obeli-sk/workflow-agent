@@ -109,9 +109,8 @@ function appendSessionEvent(target, event, response) {
             id: typeof resolved.execution_id === "string" ? resolved.execution_id : "",
             turn_index: Number.isInteger(resolved.turn_index) ? resolved.turn_index : null,
         });
-    } else if (event.user_message || event.operator_message) {
-        // backcompat: 0.1.0 session events called user messages operator_message.
-        const message = event.user_message || event.operator_message;
+    } else if (event.user_message) {
+        const message = event.user_message;
         target.turnStarts.push({
             id: message.id || "",
             kind: "prompt",
@@ -203,8 +202,6 @@ export function parseJoinName(joinSetId) {
     // use "n:<name>".
     if (typeof joinSetId !== "string") return "";
     const name = rawJoinName(joinSetId);
-    // backcompat: 0.1.0 used operator and operator-<loop> for the user join set.
-    if (name === "operator" || /^operator-\d+$/.test(name)) return "user";
     return /^user-\d+$/.test(name) ? "user" : name;
 }
 
