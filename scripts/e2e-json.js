@@ -145,7 +145,7 @@ switch (command) {
     }
     case "redeploy-params": {
         const manifest = fs.readFileSync(process.argv[3], "utf8");
-        process.stdout.write(JSON.stringify([manifest, "[]", "e2e no-op redeploy", false, ""]));
+        process.stdout.write(JSON.stringify([manifest, [], "e2e no-op redeploy", false, ""]));
         break;
     }
     case "deployment-id": {

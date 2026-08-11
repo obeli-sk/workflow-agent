@@ -16,6 +16,10 @@ e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
+run_detail() {
+    curl --fail --silent --show-error "http://127.0.0.1:28091/api/runs/$1" 2>&1
+}
+
 echo ">>> checking ask-user lifecycle through the session projection"
 ASK_SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$ASK_SESSION_ID" "$RUN_FFQN" \
@@ -23,7 +27,11 @@ ASK_SESSION_ID="$("$OBELISK" generate execution-id)"
 
 SECONDS=0
 while true; do
-    ASK_PROJECTION="$(curl --fail --silent "http://127.0.0.1:28091/api/runs/$ASK_SESSION_ID")"
+    if ! ASK_PROJECTION="$(run_detail "$ASK_SESSION_ID")"; then
+        [[ $SECONDS -ge 30 ]] && { echo "ask-user session detail unavailable: $ASK_PROJECTION" >&2; exit 1; }
+        sleep 1
+        continue
+    fi
     ASK_OFFER_ID="$(node scripts/e2e-json.js input-offer-id <<<"$ASK_PROJECTION")"
     [[ -n "$ASK_OFFER_ID" ]] && break
     [[ $SECONDS -ge 30 ]] && { echo "ask-user session did not publish its input offer: $ASK_PROJECTION" >&2; exit 1; }
@@ -38,7 +46,11 @@ curl --fail --silent --show-error \
 
 SECONDS=0
 while true; do
-    ASK_PROJECTION="$(curl --fail --silent "http://127.0.0.1:28091/api/runs/$ASK_SESSION_ID")"
+    if ! ASK_PROJECTION="$(run_detail "$ASK_SESSION_ID")"; then
+        [[ $SECONDS -ge 30 ]] && { echo "ask-user request detail unavailable: $ASK_PROJECTION" >&2; exit 1; }
+        sleep 1
+        continue
+    fi
     if node scripts/e2e-json.js check-human-input-request <<<"$ASK_PROJECTION" 2>/dev/null; then
         break
     fi
@@ -53,7 +65,11 @@ curl --fail --silent --show-error \
 
 SECONDS=0
 while true; do
-    ASK_PROJECTION="$(curl --fail --silent "http://127.0.0.1:28091/api/runs/$ASK_SESSION_ID")"
+    if ! ASK_PROJECTION="$(run_detail "$ASK_SESSION_ID")"; then
+        [[ $SECONDS -ge 30 ]] && { echo "ask-user resolution detail unavailable: $ASK_PROJECTION" >&2; exit 1; }
+        sleep 1
+        continue
+    fi
     if node scripts/e2e-json.js check-human-input-resolved <<<"$ASK_PROJECTION" 2>/dev/null; then
         break
     fi
@@ -70,7 +86,11 @@ SESSION_ID="$("$OBELISK" generate execution-id)"
 
 SECONDS=0
 while true; do
-    SESSION_PROJECTION="$(curl --fail --silent "http://127.0.0.1:28091/api/runs/$SESSION_ID")"
+    if ! SESSION_PROJECTION="$(run_detail "$SESSION_ID")"; then
+        [[ $SECONDS -ge 30 ]] && { echo "empty session detail unavailable: $SESSION_PROJECTION" >&2; exit 1; }
+        sleep 1
+        continue
+    fi
     INJECTION_ID="$(node scripts/e2e-json.js input-offer-id <<<"$SESSION_PROJECTION")"
     [[ -n "$INJECTION_ID" ]] && break
     [[ $SECONDS -ge 30 ]] && { echo "empty session did not publish its input offer: $SESSION_PROJECTION" >&2; exit 1; }
