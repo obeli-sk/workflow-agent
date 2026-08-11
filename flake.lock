@@ -47,16 +47,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1785958992,
-        "narHash": "sha256-o0phQ+0JSFg8YxGTvOsB9/4vfEIWMRf+bEdDwLrtDNo=",
+        "lastModified": 1786455403,
+        "narHash": "sha256-FgU4efKyp1BFZv3FXtKLjGFP9tFIskCdMmCFhF0vEb0=",
         "owner": "obeli-sk",
         "repo": "obelisk",
-        "rev": "9271bfbe8428f56123f93b6ba841824975f6d957",
+        "rev": "ab8319b34277fda09a06db7ceb8ed7f22e4e6ee5",
         "type": "github"
       },
       "original": {
         "owner": "obeli-sk",
-        "ref": "latest",
+        "ref": "latest-pre",
         "repo": "obelisk",
         "type": "github"
       }
