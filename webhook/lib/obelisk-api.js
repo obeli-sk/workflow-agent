@@ -77,6 +77,13 @@ export async function getExecutionResponses(id, cursor, includingCursor, length)
     return apiGetJson(`get-responses ${id}`, `/v1/executions/${encodeURIComponent(id)}/responses?${params.join("&")}`);
 }
 
+export async function getLatestExecutionResponses(id, length) {
+    return apiGetJson(
+        `get-latest-responses ${id}`,
+        `/v1/executions/${encodeURIComponent(id)}/responses?direction=older&length=${encodeURIComponent(String(length || 50))}`,
+    );
+}
+
 export async function getExecutionLogs(id, showDerived, cursor, includingCursor, length) {
     const params = [
         `show_derived=${showDerived ? "true" : "false"}`,

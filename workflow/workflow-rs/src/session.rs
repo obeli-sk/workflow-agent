@@ -1,9 +1,9 @@
 //! PORT: workflow/agent-loop-src.js
 //!
 //! The generic session loop: one persistent `Bash` instance, one named
-//! `session-events` notification join set for the whole session, and one named
-//! `operator-{loop}` join set per workflow loop racing the LLM completion
-//! child against an always-outstanding operator-injection offer. Direct shell
+//! `session-events` notification join set and one named `operator` join set for
+//! the whole session. The latter races each LLM completion child against an
+//! always-outstanding operator-injection offer. Direct shell
 //! interactions are turns too: their synthetic Bash request/result pair is
 //! included in the next turn's completion request.
 //!
@@ -36,9 +36,9 @@ use crate::generated::obelisk::types::execution::AwaitNextExtensionError;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::agent::session::{
-    AssistantReplyEvent, InputOfferedEvent, OperatorMessageEvent, PromptInput, SessionEvent,
-    SessionInput, SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput,
-    ToolResultEvent,
+    AgentStatusEvent, AssistantReplyEvent, InputOfferedEvent, OperatorMessageEvent, PromptInput,
+    SessionEvent, SessionInput, SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult,
+    ToolOutput, ToolResultEvent,
 };
 use crate::generated::obelisk_agent::agent_obelisk_ext::session as session_ext;
 use crate::generated::obelisk_agent::agent_obelisk_stub::session as session_stub;
@@ -82,9 +82,9 @@ const SESSION_EVENTS_JOIN_SET: &str = "session-events";
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
 
-/// One turn's durable event channel: an operator-injection offer raced
-/// against the LLM completion child, both submitted to the same named join
-/// set (`operator-{turn}`). Unlike JS's `session.completionExecutionId`, the
+/// The durable input channel: an operator-injection offer raced against LLM
+/// completion children on the session-wide named `operator` join set. Unlike
+/// JS's `session.completionExecutionId`, the
 /// in-flight completion id lives in a local variable in
 /// `call_llm_with_operator` (its only reader), not a struct field.
 struct Session {
@@ -141,6 +141,7 @@ impl NotificationJoinSets {
         let event_id = match event {
             SessionEvent::SessionStarted(_) => "session-started".to_string(),
             SessionEvent::InputOffered(event) => event.execution_id.clone(),
+            SessionEvent::AgentStatus(event) => format!("agent-status-{}", event.turn_index),
             SessionEvent::OperatorMessage(event) => event.id.clone(),
             SessionEvent::AssistantReply(event) => format!("turn-{}", event.turn_index),
             SessionEvent::AgentError(event) => event.id.clone(),
@@ -235,11 +236,13 @@ pub fn agent_loop(
     let mut registered_programs: BTreeSet<String> = Default::default();
     let mut registered_mcp_servers: BTreeSet<String> = Default::default();
     let mut turn_index: u64 = 0;
-    let mut loop_index: u64 = 0;
     let mut should_call_llm = !messages.is_empty();
     let mut agent_steps = 0u32;
+    let mut session = open_session(turn_index, &mut notifications)?;
+    publish_agent_status(&mut notifications, should_call_llm, turn_index)?;
 
     loop {
+        session.turn_index = turn_index;
         if should_call_llm && agent_steps >= MAX_TURNS {
             let message =
                 format!("exceeded MAX_TURNS={MAX_TURNS} without yielding an assistant response");
@@ -256,12 +259,12 @@ pub fn agent_loop(
                 }),
             )?;
             should_call_llm = false;
+            publish_agent_status(&mut notifications, false, turn_index)?;
             agent_steps = 0;
             turn_index += 1;
             continue;
         }
 
-        let mut session = open_turn(loop_index, turn_index, &mut notifications)?;
         let mut turn_complete = false;
 
         // Re-discover program commands on the first turn and whenever the
@@ -361,7 +364,7 @@ pub fn agent_loop(
         }
 
         if !pack_mounted {
-            // Open the input offer (in open_turn) before mounting packs so
+            // Open the input offer (in open_session) before mounting packs so
             // the UI can identify a live session immediately. Unlike JS,
             // there is no `console.log` to report a mount failure to (see
             // module docs), so a failed mount records the error into the
@@ -390,8 +393,12 @@ pub fn agent_loop(
                 &mut bash,
                 &mut messages,
             )?;
+            if should_call_llm {
+                publish_agent_status(&mut notifications, true, turn_index)?;
+            }
             turn_complete = !should_call_llm;
         } else {
+            publish_agent_status(&mut notifications, true, turn_index)?;
             let reply = call_llm_with_operator(
                 &mut session,
                 &system,
@@ -465,11 +472,11 @@ pub fn agent_loop(
                 should_call_llm = reply.prompt_queued;
                 agent_steps = 0;
                 turn_complete = assistant_completes_turn;
+                if !should_call_llm {
+                    publish_agent_status(&mut notifications, false, turn_index)?;
+                }
             }
         }
-        // `session.join_set` drops (closes) here at the end of the loop's
-        // scope; see module docs.
-        loop_index += 1;
         if turn_complete {
             turn_index += 1;
         }
@@ -717,13 +724,12 @@ fn tool_error(id: &str, message: &str) -> ToolResultBlock {
 
 // ----- durable session channel ------------------------------------------------
 
-fn open_turn(
-    loop_index: u64,
+fn open_session(
     turn_index: u64,
     notifications: &mut NotificationJoinSets,
 ) -> Result<Session, String> {
-    let join_set = workflow_support::join_set_create_named(&format!("operator-{loop_index}"))
-        .map_err(|e| format!("{e:?}"))?;
+    let join_set =
+        workflow_support::join_set_create_named("operator").map_err(|e| format!("{e:?}"))?;
     let injection_execution_id = session_ext::injection_submit(&join_set);
     publish_input_offer(notifications, &injection_execution_id, turn_index)?;
     Ok(Session {
@@ -754,6 +760,20 @@ fn publish_input_offer(
         SESSION_EVENTS_JOIN_SET,
         &SessionEvent::InputOffered(InputOfferedEvent {
             execution_id: execution_id.id.clone(),
+            turn_index,
+        }),
+    )
+}
+
+fn publish_agent_status(
+    notifications: &mut NotificationJoinSets,
+    working: bool,
+    turn_index: u64,
+) -> Result<(), String> {
+    notifications.notify(
+        SESSION_EVENTS_JOIN_SET,
+        &SessionEvent::AgentStatus(AgentStatusEvent {
+            working,
             turn_index,
         }),
     )
@@ -861,6 +881,20 @@ mod tests {
             json!({
                 "input_offered": {
                     "execution_id": "E_session.4",
+                    "turn_index": 5,
+                },
+            })
+        );
+
+        let status = SessionEvent::AgentStatus(AgentStatusEvent {
+            working: true,
+            turn_index: 5,
+        });
+        assert_eq!(
+            serde_json::to_value(status).unwrap(),
+            json!({
+                "agent_status": {
+                    "working": true,
                     "turn_index": 5,
                 },
             })

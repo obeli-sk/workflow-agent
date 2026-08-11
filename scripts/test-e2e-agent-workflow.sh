@@ -23,17 +23,17 @@ SESSION_ID="$("$OBELISK" generate execution-id)"
 
 SECONDS=0
 while true; do
-    SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$E2E_API_URL" \
-        -e "$SESSION_ID" --show-derived --limit 100)"
-    INJECTION_ID="$(node scripts/e2e-json.js execution-id \
-        "obelisk-agent:agent/session.injection" <<<"$SESSION_EXECUTIONS")"
+    SESSION_PROJECTION="$(curl --fail --silent "http://127.0.0.1:28091/api/runs/$SESSION_ID")"
+    INJECTION_ID="$(node scripts/e2e-json.js input-offer-id <<<"$SESSION_PROJECTION")"
     [[ -n "$INJECTION_ID" ]] && break
-    [[ $SECONDS -ge 30 ]] && { echo "empty session did not expose its input offer: $SESSION_EXECUTIONS" >&2; exit 1; }
+    [[ $SECONDS -ge 30 ]] && { echo "empty session did not publish its input offer: $SESSION_PROJECTION" >&2; exit 1; }
     sleep 1
 done
 
-SHELL_STUB='{"ok":{"shell":{"id":"shell-e2e-1","script":"which curl && curl --version","stdin":""}}}'
-"$OBELISK" execution stub -a "$E2E_API_URL" "$INJECTION_ID" "$SHELL_STUB"
+curl --fail --silent --show-error \
+    -H 'content-type: application/json' \
+    -d "{\"offer_id\":\"$INJECTION_ID\",\"input\":{\"shell\":{\"id\":\"shell-e2e-1\",\"script\":\"which curl && curl --version\",\"stdin\":\"\"}}}" \
+    "http://127.0.0.1:28091/api/input/$SESSION_ID" >/dev/null
 
 SECONDS=0
 while true; do

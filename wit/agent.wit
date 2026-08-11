@@ -26,6 +26,11 @@ interface session {
     turn-index: u64,
   }
 
+  record agent-status-event {
+    working: bool,
+    turn-index: u64,
+  }
+
   record operator-message-event {
     id: string,
     text: string,
@@ -69,6 +74,7 @@ interface session {
   variant session-event {
     session-started(session-started-event),
     input-offered(input-offered-event),
+    agent-status(agent-status-event),
     operator-message(operator-message-event),
     assistant-reply(assistant-reply-event),
     agent-error(operator-message-event),

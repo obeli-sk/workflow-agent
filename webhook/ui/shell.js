@@ -358,6 +358,8 @@ function refreshDetail() {
       }
       const detail = await r.json();
       const contentChanged = mergeTranscript(detail.transcript);
+      detail.input_offer = state.transcript?.input_offer || null;
+      detail.agent_working = state.transcript?.agent_working === true;
       detail.turns = buildCachedTurns(detail.created_at, detail.prompt);
       delete detail.transcript;
       if (state.pendingShell && detail.turns.some((turn) =>
@@ -398,6 +400,8 @@ function mergeTranscript(delta) {
       shell_events: [],
       turn_starts: [],
       sent_results: [],
+      input_offer: null,
+      agent_working: false,
       response_cursor: 0,
     };
   }
@@ -406,12 +410,22 @@ function mergeTranscript(delta) {
     || (delta.operator_messages || []).length > 0
     || (delta.shell_events || []).length > 0
     || (delta.turn_starts || []).length > 0
-    || (delta.sent_results || []).length > 0;
+    || (delta.sent_results || []).length > 0
+    || (Object.prototype.hasOwnProperty.call(delta, 'input_offer')
+      && delta.input_offer?.id !== state.transcript.input_offer?.id)
+    || (Object.prototype.hasOwnProperty.call(delta, 'agent_working')
+      && delta.agent_working !== state.transcript.agent_working);
   state.transcript.replies.push(...(delta.replies || []));
   mergeOperatorMessages(state.transcript.operator_messages, delta.operator_messages || []);
   mergeShellEvents(state.transcript.shell_events, delta.shell_events || []);
   mergeTurnStarts(state.transcript.turn_starts, delta.turn_starts || []);
   mergeToolResults(state.transcript.sent_results, delta.sent_results || []);
+  if (Object.prototype.hasOwnProperty.call(delta, 'input_offer')) {
+    state.transcript.input_offer = delta.input_offer || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(delta, 'agent_working')) {
+    state.transcript.agent_working = delta.agent_working === true;
+  }
   state.transcript.response_cursor = delta.response_cursor || state.transcript.response_cursor;
   return contentChanged;
 }
@@ -660,8 +674,8 @@ function renderDetail(forceScroll = false) {
     id: d.id, status: d.status, result_kind: d.result_kind, join_name: d.join_name,
     prompt: d.prompt, backend: d.backend, effort: d.effort, turns: d.turns, final_result: d.final_result,
     pending_asks: d.pending_asks,
-    pending_injection: d.pending_injection,
-    pending_completion: d.pending_completion,
+    input_offer: d.input_offer,
+    agent_working: d.agent_working,
   });
   if (sig === state.lastSig) {
     if (forceScroll) {
@@ -694,7 +708,7 @@ function renderDetail(forceScroll = false) {
     turnsHtml = d.turns.map((t, i) => renderTurn(t, i)).join('');
   } else if (phase === 'terminal') {
     turnsHtml = '<p style="color: var(--muted)">No messages were recorded.</p>';
-  } else if (d.pending_injection) {
+  } else if (d.input_offer) {
     turnsHtml = '<p style="color: var(--muted)">Session ready. Explore with shell or prompt the agent below.</p>';
   } else {
     turnsHtml = '<p style="color: var(--muted)">Preparing the session filesystem...</p>';
@@ -795,7 +809,7 @@ function shellIsWorking(d) {
 }
 function agentIsWorking(d) {
   if (!d || runPhase(d.status) !== 'active' || hasHumanGate(d)) return false;
-  if (d.pending_completion) return true;
+  if (d.agent_working) return true;
   const started = new Set(d.prompt ? [0] : []);
   const completed = new Set();
   for (const turn of d.turns || []) {
@@ -817,7 +831,7 @@ function renderComposer() {
   const gate = hasHumanGate(d);
   const shellWorking = shellIsWorking(d);
   const agentWorking = agentIsWorking(d);
-  const sessionReady = mode !== 'say' || Boolean(d?.pending_injection);
+  const sessionReady = mode !== 'say' || Boolean(d?.input_offer);
   const input = document.getElementById('composer-input');
   const send = document.getElementById('composer-send');
   const selects = document.getElementById('composer-selects');
@@ -1215,7 +1229,7 @@ async function createSessionForShell(script) {
   if (!runId) return;
   for (let attempt = 0; attempt < 120; attempt += 1) {
     await refreshDetail();
-    if (state.selected === runId && state.detail?.pending_injection) {
+    if (state.selected === runId && state.detail?.input_offer) {
       await sendShell(runId, script);
       return;
     }
@@ -1274,6 +1288,9 @@ async function cancelRun(runId) {
 async function sendToAgent(runId, text) {
   const t = (text || '').trim();
   if (!t) return;
+  const offer = state.detail?.input_offer || state.transcript?.input_offer;
+  if (!offer?.id) return;
+  const offerId = offer.id;
   const id = 'prompt-' + Date.now() + '-' + Math.random().toString(16).slice(2);
   const optimisticMessage = {
     id,
@@ -1283,7 +1300,8 @@ async function sendToAgent(runId, text) {
   if (state.transcript) mergeOperatorMessages(state.transcript.operator_messages, [optimisticMessage]);
   if (state.detail) {
     state.detail.turns = buildCachedTurns(state.detail.created_at, state.detail.prompt);
-    state.detail.pending_injection = null;
+    state.detail.input_offer = null;
+    if (state.transcript) state.transcript.input_offer = null;
     state.lastSig = null;
     renderDetail(true);
   }
@@ -1291,10 +1309,10 @@ async function sendToAgent(runId, text) {
   if (box) box.value = '';
   scrollTranscriptToBottom();
   try {
-    const r = await fetch('/api/say/' + encodeURIComponent(runId), {
+    const r = await fetch('/api/input/' + encodeURIComponent(runId), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, text: t }),
+      body: JSON.stringify({ offer_id: offerId, input: { prompt: { id, text: t } } }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
@@ -1303,8 +1321,10 @@ async function sendToAgent(runId, text) {
     if (state.transcript) {
       state.transcript.operator_messages = state.transcript.operator_messages.filter((message) =>
         message.id !== id);
+      state.transcript.input_offer = offer;
     }
     if (state.detail) {
+      state.detail.input_offer = offer;
       state.detail.turns = buildCachedTurns(state.detail.created_at, state.detail.prompt);
       state.lastSig = null;
       renderDetail();
@@ -1316,6 +1336,9 @@ async function sendToAgent(runId, text) {
 async function sendShell(runId, script) {
   const text = (script || '').trim();
   if (!text) return;
+  const offer = state.detail?.input_offer || state.transcript?.input_offer;
+  if (!offer?.id) return;
+  const offerId = offer.id;
   const id = 'shell-' + Date.now() + '-' + Math.random().toString(16).slice(2);
   const optimisticEvent = {
     kind: 'shell_command',
@@ -1327,7 +1350,8 @@ async function sendShell(runId, script) {
   if (state.transcript) mergeShellEvents(state.transcript.shell_events, [optimisticEvent]);
   if (state.detail) {
     state.detail.turns = buildCachedTurns(state.detail.created_at, state.detail.prompt);
-    state.detail.pending_injection = null;
+    state.detail.input_offer = null;
+    if (state.transcript) state.transcript.input_offer = null;
     state.lastSig = null;
     renderDetail(true);
   }
@@ -1338,10 +1362,10 @@ async function sendShell(runId, script) {
   }
   scrollTranscriptToBottom();
   try {
-    const r = await fetch('/api/shell/' + encodeURIComponent(runId), {
+    const r = await fetch('/api/input/' + encodeURIComponent(runId), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, script: text }),
+      body: JSON.stringify({ offer_id: offerId, input: { shell: { id, script: text, stdin: '' } } }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
@@ -1351,8 +1375,10 @@ async function sendShell(runId, script) {
     if (state.transcript) {
       state.transcript.shell_events = state.transcript.shell_events.filter((event) =>
         !(event.kind === 'shell_command' && event.id === id));
+      state.transcript.input_offer = offer;
     }
     if (state.detail) {
+      state.detail.input_offer = offer;
       state.detail.turns = buildCachedTurns(state.detail.created_at, state.detail.prompt);
       state.lastSig = null;
       renderDetail();

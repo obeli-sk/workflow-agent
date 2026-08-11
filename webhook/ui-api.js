@@ -7,6 +7,7 @@
 //   GET  /api/runs/:id              one run, normalised into turns
 //   GET  /api/logs/:id              logs from the run and all derived executions
 //   POST /api/submit                body: {prompt} -> {execution_id}
+//   POST /api/input/:runId          body: {offer_id, input} -> accepted event
 //   POST /api/answer/:childId       body: {answer} -> {ok: true}
 //
 // The SPA polls the run list every 10s and active open runs every 3s, switching
@@ -26,8 +27,7 @@ import {
     cancelRun,
     createSession,
     pauseExecution,
-    sayToAgent,
-    shellInSession,
+    submitSessionInput,
     submit,
 } from "./lib/mutations.js";
 import { htmlShell } from "./ui/shell.js";
@@ -66,11 +66,8 @@ export default async function handle(request) {
         if (method === "POST" && path.startsWith("/api/cancel/")) {
             return await cancelRun(decodeURIComponent(path.substring("/api/cancel/".length)));
         }
-        if (method === "POST" && path.startsWith("/api/say/")) {
-            return await sayToAgent(request, decodeURIComponent(path.substring("/api/say/".length)));
-        }
-        if (method === "POST" && path.startsWith("/api/shell/")) {
-            return await shellInSession(request, decodeURIComponent(path.substring("/api/shell/".length)));
+        if (method === "POST" && path.startsWith("/api/input/")) {
+            return await submitSessionInput(request, decodeURIComponent(path.substring("/api/input/".length)));
         }
         if (method === "POST" && path.startsWith("/api/answer/")) {
             const childId = decodeURIComponent(path.substring("/api/answer/".length));

@@ -12,7 +12,6 @@ import {
     stubObeliskExecution,
     unpauseObeliskExecution,
 } from "./obelisk-api.js";
-import { loadPendingInjection } from "./runs.js";
 
 export async function submit(request) {
     let body;
@@ -109,46 +108,43 @@ export async function cancelRun(id) {
     return jsonResponse({ ok: true, cancelled: targets });
 }
 
-// Fulfil the concrete pending injection stub owned by this workflow. The
-// workflow consumes the response and includes it in its next session.send call.
-export async function sayToAgent(request, runId) {
+// Fulfil the concrete input offer advertised by the session notification feed.
+export async function submitSessionInput(request, runId) {
     if (!runId) return jsonError(400, "missing run id");
     let payload;
     try { payload = JSON.parse(await request.text()); }
     catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
-    const text = payload?.text;
-    if (typeof text !== "string" || !text.trim()) return jsonError(400, "text is required");
-    const injection = await loadPendingInjection(runId);
-    if (!injection) return jsonError(409, "agent is not currently accepting an injected message");
-    const id = typeof payload.id === "string" && payload.id
-        ? payload.id : `prompt-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const event = { prompt: { id, text: text.trim() } };
-    try { stubObeliskExecution(injection.id, { ok: event }); }
-    catch (e) { return jsonError(502, `injection fulfil failed: ${String(e)}`); }
-    return jsonResponse({ child_execution_id: injection.id, event_id: id });
+    const offerId = payload?.offer_id;
+    if (typeof offerId !== "string" || !offerId.startsWith(runId + ".")) {
+        return jsonError(400, "offer_id must identify an input offer for this run");
+    }
+    const event = normalizeSessionInput(payload?.input);
+    if (!event) return jsonError(400, "input must contain a valid prompt or shell command");
+    try { stubObeliskExecution(offerId, { ok: event }); }
+    catch (e) { return jsonError(502, `input fulfil failed: ${String(e)}`); }
+    return jsonResponse({
+        child_execution_id: offerId,
+        event_id: (event.prompt || event.shell).id,
+    });
 }
 
-export async function shellInSession(request, runId) {
-    if (!runId) return jsonError(400, "missing run id");
-    let payload;
-    try { payload = JSON.parse(await request.text()); }
-    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
-    const script = payload?.script;
-    if (typeof script !== "string" || !script.trim()) {
-        return jsonError(400, "script is required");
+function normalizeSessionInput(input) {
+    if (!input || typeof input !== "object") return null;
+    if (input.prompt) {
+        const { id, text } = input.prompt;
+        if (typeof id !== "string" || !id || typeof text !== "string" || !text.trim()) return null;
+        return { prompt: { id, text: text.trim() } };
     }
-    const injection = await loadPendingInjection(runId);
-    if (!injection) return jsonError(409, "session is not currently accepting input");
-    const id = typeof payload.id === "string" && payload.id
-        ? payload.id : `shell-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const event = { shell: {
-        id,
-        script,
-        stdin: typeof payload.stdin === "string" ? payload.stdin : "",
-    } };
-    try { stubObeliskExecution(injection.id, { ok: event }); }
-    catch (e) { return jsonError(502, `shell fulfil failed: ${String(e)}`); }
-    return jsonResponse({ child_execution_id: injection.id, event_id: id });
+    if (input.shell) {
+        const { id, script } = input.shell;
+        if (typeof id !== "string" || !id || typeof script !== "string" || !script.trim()) return null;
+        return { shell: {
+            id,
+            script,
+            stdin: typeof input.shell.stdin === "string" ? input.shell.stdin : "",
+        } };
+    }
+    return null;
 }
 
 export async function answerStub(request, childId) {

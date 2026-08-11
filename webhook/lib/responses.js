@@ -2,7 +2,7 @@
 // assistant replies, tool results, operator messages, shell output, and the
 // operator turn boundaries.
 
-import { getExecutionResponses } from "./obelisk-api.js";
+import { getExecutionResponses, getLatestExecutionResponses } from "./obelisk-api.js";
 
 export async function loadResponses(execId, startCursor = 0) {
     const replies = [];
@@ -10,6 +10,8 @@ export async function loadResponses(execId, startCursor = 0) {
     const operatorMessages = [];
     const shellEvents = [];
     const turnStarts = [];
+    let inputOffer;
+    let agentWorking;
     let cursor = startCursor;
     let including = startCursor === 0;
     while (true) {
@@ -25,11 +27,14 @@ export async function loadResponses(execId, startCursor = 0) {
             const joinName = parseJoinName(wrapped.join_set_id);
 
             if (joinName === "session-events") {
+                const projection = { replies, toolResults, operatorMessages, shellEvents, inputOffer, agentWorking };
                 appendSessionEvent(
-                    { replies, toolResults, operatorMessages, shellEvents },
+                    projection,
                     ev.result?.ok?.value ?? ev.result?.ok,
                     r,
                 );
+                inputOffer = projection.inputOffer;
+                agentWorking = projection.agentWorking;
             } else if (joinName === "operator") {
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
                 const event = parseSessionInput(value);
@@ -55,14 +60,40 @@ export async function loadResponses(execId, startCursor = 0) {
         operatorMessages,
         shellEvents,
         turnStarts,
+        inputOffer,
+        agentWorking,
         cursor,
     };
+}
+
+export async function loadLatestAgentStatus(execId) {
+    let payload;
+    try { payload = await getLatestExecutionResponses(execId, 100); }
+    catch (_) { return false; }
+    const responses = payload.responses || [];
+    for (let i = responses.length - 1; i >= 0; i -= 1) {
+        const wrapped = responses[i]?.event?.event;
+        if (parseJoinName(wrapped?.join_set_id) !== "session-events") continue;
+        const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
+        if (typeof value?.agent_status?.working === "boolean") {
+            return value.agent_status.working;
+        }
+    }
+    return false;
 }
 
 function appendSessionEvent(target, event, response) {
     if (!event || typeof event !== "object") return;
     const createdAt = response.event?.created_at || "";
-    if (event.operator_message) {
+    if (event.input_offered) {
+        const offer = event.input_offered;
+        target.inputOffer = {
+            id: typeof offer.execution_id === "string" ? offer.execution_id : "",
+            turn_index: Number.isInteger(offer.turn_index) ? offer.turn_index : null,
+        };
+    } else if (event.agent_status) {
+        target.agentWorking = event.agent_status.working === true;
+    } else if (event.operator_message) {
         const message = event.operator_message;
         target.operatorMessages.push({
             id: message.id || "",

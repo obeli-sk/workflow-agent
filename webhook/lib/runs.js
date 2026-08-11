@@ -9,12 +9,10 @@ import {
     getExecutionStatus,
     listExecutions,
 } from "./obelisk-api.js";
-import { loadResponses, parseJoinName } from "./responses.js";
+import { loadLatestAgentStatus, loadResponses, parseJoinName } from "./responses.js";
 
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
-const INJECTION_FFQN = "obelisk-agent:agent/session.injection";
-const COMPLETION_FFQN = "obelisk-agent:llm/chat.completion";
 
 function pickRunState(workflowStatus) {
     const ps = workflowStatus?.pending_state || null;
@@ -31,11 +29,10 @@ export async function listRuns() {
         const id = e.execution_id;
         const prompt_preview = await loadPromptPreview(id);
         const runState = pickRunState(e);
-        // A run blocked on the shared operator set is either awaiting the operator
-        // ("your turn") or mid-completion ("thinking"); the join name cannot tell
-        // them apart, so consult the pending completion child (only for such runs).
+        // The shared operator set races input against completion, so its join
+        // name alone cannot distinguish "your turn" from "thinking".
         const working = runState.status === "blocked_by_join_set" && runState.join_name === "operator"
-            ? Boolean(await loadPendingCompletion(id))
+            ? await loadLatestAgentStatus(id)
             : false;
         return {
             id,
@@ -56,14 +53,12 @@ async function loadPromptPreview(execId) {
 export async function detailRun(id, cursorState) {
     const resetTranscript = cursorState.workflowId !== id;
     const responseCursor = resetTranscript ? 0 : cursorState.responseCursor;
-    const [status, created, walk, finalResult, pendingAsks, pendingInjection, pendingCompletion] = await Promise.all([
+    const [status, created, walk, finalResult, pendingAsks] = await Promise.all([
         loadStatus(id),
         loadCreated(id),
         loadResponses(id, responseCursor),
         loadFinalResult(id),
         loadPendingAsks(id),
-        loadPendingInjection(id),
-        loadPendingCompletion(id),
     ]);
     return {
         id,
@@ -80,12 +75,12 @@ export async function detailRun(id, cursorState) {
             shell_events: walk.shellEvents,
             turn_starts: walk.turnStarts,
             sent_results: walk.toolResults,
+            input_offer: walk.inputOffer,
+            agent_working: walk.agentWorking,
             response_cursor: walk.cursor,
         },
         final_result: finalResult,
         pending_asks: pendingAsks,
-        pending_injection: pendingInjection,
-        pending_completion: pendingCompletion,
     };
 }
 
@@ -161,28 +156,4 @@ async function loadPendingAsks(workflowId) {
         } catch (_) { }
         return { id: e.execution_id, question };
     }));
-}
-
-export async function loadPendingInjection(workflowId) {
-    let candidates;
-    try {
-        candidates = await listExecutions(INJECTION_FFQN, workflowId, true, true, 10);
-    } catch (_) { return null; }
-    const mine = candidates.filter((e) => e?.ffqn === INJECTION_FFQN
-        && typeof e.execution_id === "string"
-        && e.execution_id.startsWith(workflowId + "."));
-    if (mine.length === 0) return null;
-    return { id: mine[mine.length - 1].execution_id };
-}
-
-async function loadPendingCompletion(workflowId) {
-    let candidates;
-    try {
-        candidates = await listExecutions(COMPLETION_FFQN, workflowId, true, true, 10);
-    } catch (_) { return null; }
-    const mine = candidates.filter((e) => e?.ffqn === COMPLETION_FFQN
-        && typeof e.execution_id === "string"
-        && e.execution_id.startsWith(workflowId + "."));
-    if (mine.length === 0) return null;
-    return { id: mine[mine.length - 1].execution_id };
 }

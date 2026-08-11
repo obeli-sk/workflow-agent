@@ -650,8 +650,7 @@ routes = [
   { methods = ["POST"], route = "/api/pause/:execution-id" },
   { methods = ["POST"], route = "/api/unpause/:execution-id" },
   { methods = ["POST"], route = "/api/cancel/:execution-id" },
-  { methods = ["POST"], route = "/api/say/:execution-id" },
-  { methods = ["POST"], route = "/api/shell/:execution-id" },
+  { methods = ["POST"], route = "/api/input/:execution-id" },
 ]
 env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },

@@ -28,6 +28,10 @@ switch (command) {
         process.exit(executions(json()).some((row) => row.ffqn === ffqn) ? 0 : 1);
         break;
     }
+    case "input-offer-id": {
+        process.stdout.write(json()?.transcript?.input_offer?.id ?? "");
+        break;
+    }
     case "check-shell-session": {
         const ffqns = executions(json()).map((row) => row.ffqn);
         const valid = !ffqns.includes("obelisk-agent:llm/chat.completion")
@@ -75,13 +79,16 @@ switch (command) {
         break;
     }
     case "check-shell-projection": {
-        const transcript = json()?.transcript;
+        const projection = json();
+        const transcript = projection?.transcript;
         const output = transcript?.shell_events?.find((event) => event.id === "shell-e2e-1");
         const start = transcript?.turn_starts?.find((event) => event.id === "shell-e2e-1");
         const valid = output?.turn_index === 0
             && output.turn_complete === true
             && typeof start?.created_at === "string"
-            && start.created_at.length > 0;
+            && start.created_at.length > 0
+            && typeof projection?.transcript?.input_offer?.id === "string"
+            && projection.transcript.agent_working === false;
         process.exit(valid ? 0 : 1);
         break;
     }
