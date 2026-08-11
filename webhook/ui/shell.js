@@ -234,7 +234,7 @@ function statusLabel(status, result_kind) {
 const JOIN_LABELS = {
   'ask-user': ['awaiting reply', 'awaiting'],
   'completion': ['thinking', 'working'],
-  'operator': ['your turn', 'awaiting'],
+  'user': ['your turn', 'awaiting'],
 };
 function describeStatus(status, result_kind, joinName) {
   if (status === 'blocked_by_join_set') {
@@ -303,7 +303,7 @@ function renderSidebar() {
   }
   box.innerHTML = state.runs.map((r) => {
     let { label, cls } = describeStatus(r.status, r.result_kind, r.join_name);
-    if (r.join_name === 'operator' && r.working) { label = 'thinking'; cls = 'working'; }
+    if (r.join_name === 'user' && r.working) { label = 'thinking'; cls = 'working'; }
     return '<a class="run-item' + (r.id === state.selected ? ' active' : '') + '" href="?run=' + encodeURIComponent(r.id) + '" data-id="' + esc(r.id) + '">'
       + '<div class="run-prompt">' + esc(r.prompt_preview || '(no prompt)') + '</div>'
       + '<div class="run-meta"><span class="status ' + esc(cls) + '">' + esc(label) + '</span><span class="ago">' + esc(ago(r.created_at)) + '</span></div>'
@@ -403,7 +403,7 @@ function mergeTranscript(delta) {
     state.transcript = {
       workflow_id: delta.workflow_id || '',
       replies: [],
-      operator_messages: [],
+      user_messages: [],
       shell_events: [],
       turn_starts: [],
       sent_results: [],
@@ -416,7 +416,7 @@ function mergeTranscript(delta) {
   }
   const contentChanged = reset
     || (delta.replies || []).length > 0
-    || (delta.operator_messages || []).length > 0
+    || (delta.user_messages || []).length > 0
     || (delta.shell_events || []).length > 0
     || (delta.turn_starts || []).length > 0
     || (delta.sent_results || []).length > 0
@@ -428,7 +428,7 @@ function mergeTranscript(delta) {
     || (Object.prototype.hasOwnProperty.call(delta, 'agent_working')
       && delta.agent_working !== state.transcript.agent_working);
   state.transcript.replies.push(...(delta.replies || []));
-  mergeOperatorMessages(state.transcript.operator_messages, delta.operator_messages || []);
+  mergeUserMessages(state.transcript.user_messages, delta.user_messages || []);
   mergeShellEvents(state.transcript.shell_events, delta.shell_events || []);
   mergeTurnStarts(state.transcript.turn_starts, delta.turn_starts || []);
   mergeToolResults(state.transcript.sent_results, delta.sent_results || []);
@@ -458,7 +458,7 @@ function mergeHumanInputEvents(target, incoming) {
   }
 }
 
-function mergeOperatorMessages(target, incoming) {
+function mergeUserMessages(target, incoming) {
   for (const message of incoming) {
     if (!message) continue;
     const existing = message.id
@@ -520,7 +520,7 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
   if (typeof initialPrompt === 'string' && initialPrompt.trim()) {
     rememberTurnStart(0, initialPromptAt);
   }
-  for (const message of cached.operator_messages || []) {
+  for (const message of cached.user_messages || []) {
     rememberTurnStart(message?.turn_index, startsById.get(message?.id)?.created_at);
   }
   for (const event of cached.shell_events || []) {
@@ -593,10 +593,10 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       });
     }
   }
-  for (const msg of cached.operator_messages || []) {
+  for (const msg of cached.user_messages || []) {
     if (!msg || typeof msg.text !== 'string') continue;
     turns.push({
-      kind: 'operator_message',
+      kind: 'user_message',
       id: msg.id || '',
       text: msg.text,
       created_at: startsById.get(msg.id)?.created_at || msg.created_at,
@@ -723,11 +723,11 @@ function renderDetail(forceScroll = false) {
 
   const phase = runPhase(d.status);
   let { label, cls: statusCls } = describeStatus(d.status, d.result_kind, d.join_name);
-  // The completion child shares the per-turn operator join set (so operator input
+  // The completion child shares the per-turn user join set (so user input
   // can race the model), so a run mid-completion still reports blocked on
-  // 'operator' -> "your turn". Keep the chip in step with the "Agent is working…"
+  // 'user' -> "your turn". Keep the chip in step with the "Agent is working…"
   // banner while the model is actually thinking.
-  if (d.join_name === 'operator' && agentIsWorking(d)) {
+  if (d.join_name === 'user' && agentIsWorking(d)) {
     label = 'thinking';
     statusCls = 'working';
   }
@@ -841,7 +841,7 @@ function agentIsWorking(d) {
   const started = new Set(d.prompt ? [0] : []);
   const completed = new Set();
   for (const turn of d.turns || []) {
-    if (turn.kind === 'operator_message' && Number.isInteger(turn.turn_index)) {
+    if (turn.kind === 'user_message' && Number.isInteger(turn.turn_index)) {
       started.add(turn.turn_index);
     }
     if (turn.turn_complete && Number.isInteger(turn.turn_index)) completed.add(turn.turn_index);
@@ -1068,9 +1068,9 @@ function renderMermaidWhenReady(nodes, attempt, keepAtBottom) {
 }
 
 function renderTurn(t, i) {
-  if (t.kind === 'operator_message') {
-    return '<div class="turn">' + turnHeader(t, 'operator message')
-      + '<div class="bubble user"><div class="label">operator</div><pre>' + esc(t.text) + '</pre></div></div>';
+  if (t.kind === 'user_message') {
+    return '<div class="turn">' + turnHeader(t, 'user message')
+      + '<div class="bubble user"><div class="label">user</div><pre>' + esc(t.text) + '</pre></div></div>';
   }
   if (t.kind === 'assistant_response') {
     const headed = Number.isInteger(t.turn_index);
@@ -1325,7 +1325,7 @@ async function sendToAgent(runId, text) {
     text: t,
     created_at: new Date().toISOString(),
   };
-  if (state.transcript) mergeOperatorMessages(state.transcript.operator_messages, [optimisticMessage]);
+  if (state.transcript) mergeUserMessages(state.transcript.user_messages, [optimisticMessage]);
   if (state.detail) {
     state.detail.turns = buildCachedTurns(state.detail.created_at, state.detail.prompt);
     state.detail.input_offer = null;
@@ -1347,7 +1347,7 @@ async function sendToAgent(runId, text) {
     await refreshDetail();
   } catch (e) {
     if (state.transcript) {
-      state.transcript.operator_messages = state.transcript.operator_messages.filter((message) =>
+      state.transcript.user_messages = state.transcript.user_messages.filter((message) =>
         message.id !== id);
       state.transcript.input_offer = offer;
     }

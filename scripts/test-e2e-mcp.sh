@@ -3,7 +3,7 @@
 # End-to-end test for stateless MCP support (docs/mcp.md). Runs the self-contained
 # sample server (examples/stateless-mcp-server.mjs) in a stock node container,
 # deploys one MCP activity block pointed at it, opens a session, and drives the
-# shell command surface and lazily mounted resources through one operator shell
+# shell command surface and lazily mounted resources through one user shell
 # turn, asserting the rendered output.
 #
 # Requires docker or podman. When neither is present the test SKIPs (exit 0) so

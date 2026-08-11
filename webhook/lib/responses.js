@@ -5,7 +5,7 @@ import { getExecutionResponses, getLatestExecutionResponses } from "./obelisk-ap
 export async function loadResponses(execId, startCursor = 0) {
     const replies = [];
     const toolResults = [];
-    const operatorMessages = [];
+    const userMessages = [];
     const shellEvents = [];
     const turnStarts = [];
     const humanInputEvents = [];
@@ -27,7 +27,7 @@ export async function loadResponses(execId, startCursor = 0) {
             const projection = {
                 replies,
                 toolResults,
-                operatorMessages,
+                userMessages,
                 shellEvents,
                 turnStarts,
                 humanInputEvents,
@@ -49,7 +49,7 @@ export async function loadResponses(execId, startCursor = 0) {
     return {
         replies,
         toolResults,
-        operatorMessages,
+        userMessages,
         shellEvents,
         turnStarts,
         humanInputEvents,
@@ -109,14 +109,15 @@ function appendSessionEvent(target, event, response) {
             id: typeof resolved.execution_id === "string" ? resolved.execution_id : "",
             turn_index: Number.isInteger(resolved.turn_index) ? resolved.turn_index : null,
         });
-    } else if (event.operator_message) {
-        const message = event.operator_message;
+    } else if (event.user_message || event.operator_message) {
+        // backcompat: 0.1.0 session events called user messages operator_message.
+        const message = event.user_message || event.operator_message;
         target.turnStarts.push({
             id: message.id || "",
             kind: "prompt",
             created_at: createdAt,
         });
-        target.operatorMessages.push({
+        target.userMessages.push({
             id: message.id || "",
             text: message.text || "",
             created_at: createdAt,
@@ -199,11 +200,12 @@ function normalizeSessionToolResult(result, createdAt) {
 
 export function parseJoinName(joinSetId) {
     // One-off join sets use "o:<ordinal>-<name>"; explicitly named join sets
-    // use "n:<name>". Each workflow loop opens an "operator-<loop>" set;
-    // collapse the suffix so callers key off the stable name "operator".
+    // use "n:<name>".
     if (typeof joinSetId !== "string") return "";
     const name = rawJoinName(joinSetId);
-    return /^operator-\d+$/.test(name) ? "operator" : name;
+    // backcompat: 0.1.0 used operator and operator-<loop> for the user join set.
+    if (name === "operator" || /^operator-\d+$/.test(name)) return "user";
+    return /^user-\d+$/.test(name) ? "user" : name;
 }
 
 function rawJoinName(joinSetId) {

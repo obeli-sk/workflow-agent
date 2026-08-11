@@ -1,9 +1,8 @@
-# --- Pack descriptor: system prompt + tool catalog ----------------------------
-# The obelisk-control use case (control this Obelisk instance). Returns the
-# system prompt and the tool catalog (name, description, ffqn, WIT param specs).
-# The generic session loop calls this once, exposes the tools to
-# the model, and dispatches each call to its ffqn via obelisk.call. Swap this
-# FFQN (workflow.run-cancellable descriptor-ffqn) to host a different use case.
+# --- System-prompt descriptor -------------------------------------------------
+# The obelisk-control use case (control this Obelisk instance). The generic
+# session loop prepends this prompt to its shared bash guidance. Swap this FFQN
+# (workflow.run-cancellable descriptor-ffqn) to host a different use case. The
+# tools-json result field is unused compatibility data and remains empty.
 
 [[activity_js]]
 name = "pack_describe"
@@ -485,7 +484,7 @@ params = [
 ]
 return_type = "result<string, string>"
 
-# One generic operator-message offer owned by the session loop. The UI may
+# One generic user-message offer owned by the session loop. The UI may
 # fulfil it only while this concrete stub execution is pending. The workflow
 # appends it as the next user message and immediately opens another offer.
 [[activity_stub]]

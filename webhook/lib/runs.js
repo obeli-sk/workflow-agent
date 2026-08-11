@@ -27,9 +27,9 @@ export async function listRuns() {
         const id = e.execution_id;
         const prompt_preview = await loadPromptPreview(id);
         const runState = pickRunState(e);
-        // The shared operator set races input against completion, so its join
+        // The shared user set races input against completion, so its join
         // name alone cannot distinguish "your turn" from "thinking".
-        const working = runState.status === "blocked_by_join_set" && runState.join_name === "operator"
+        const working = runState.status === "blocked_by_join_set" && runState.join_name === "user"
             ? await loadLatestAgentStatus(id)
             : false;
         return {
@@ -68,7 +68,7 @@ export async function detailRun(id, cursorState) {
             reset: resetTranscript,
             workflow_id: id,
             replies: walk.replies,
-            operator_messages: walk.operatorMessages,
+            user_messages: walk.userMessages,
             shell_events: walk.shellEvents,
             turn_starts: walk.turnStarts,
             human_input_events: walk.humanInputEvents,

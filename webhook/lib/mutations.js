@@ -1,4 +1,4 @@
-// Mutating routes: schedule/cancel runs, pause/unpause, inject operator input,
+// Mutating routes: schedule/cancel runs, pause/unpause, inject user input,
 // and fulfil pending ask-user stub children.
 // These stay durable native calls (`webapi`, workflow schedule), unlike the
 // read-only polling GETs.

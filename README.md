@@ -11,11 +11,13 @@ The shell is a Rust rewrite of [just-bash](https://justbash.dev), vendored at
 `vendor/just-bash-rs`. On top of it the workflow adds a VFS that mounts the
 active Obelisk deployment and any stateless MCP servers, so their resources show
 up as files. Obelisk functions and MCP tools are surfaced as ordinary bash
-programs. The same shell is driven by the LLM and, directly, by the operator:
+programs. The same shell is driven by the LLM and, directly, by the user:
 type a command with a `$ ` prefix in the UI to run it yourself, e.g. `$ pwd`.
 
 Programs are just Obelisk executions, so the agent can write and deploy its own.
-The one that ships, a GET-only `curl`, is an Obelisk activity.
+Any activity or workflow exported as `obelisk-agent:programs/program.<name>`
+with the shell-program WIT signature is discovered as the command `<name>`. The
+one that ships, a GET-only `curl`, is an Obelisk activity.
 
 ![workflow-agent web UI](docs/workflow-agent.png)
 
@@ -37,7 +39,7 @@ Obelisk and Rust (wasm32) toolchain. The workflow is a native Rust component
 
 Then open http://localhost:9090. Create an empty session to use the shell
 directly, or submit a prompt and inspect the same filesystem afterward. The
-operator input stays live while a completion is pending, so `$ ` commands can
+user input stays live while a completion is pending, so `$ ` commands can
 edit the session VFS mid-turn; a prompt sent during the wait is queued for the
 next model turn.
 
@@ -65,6 +67,18 @@ point `LLM_BASE_URL` at it and add catalog entries.
 The core registers a broad command catalog ported from just-bash (file, path,
 text, search, checksum, encoding, and inspection tools; no `gzip`/`gunzip`/
 `zcat`). Run `help` to list built-ins and discovered programs, or `which NAME`.
+
+`ask-user` is deliberately not a general model tool or discovered program. It
+is a UI-coordinated shell operation for answers needed before the current task
+can continue:
+
+```sh
+obelisk call obelisk-agent:tools/input.ask-user '["Which deployment?"]'
+```
+
+The command blocks until the user answers in the UI, then returns that
+answer to the agent in the same turn. A normal Markdown response ends the turn
+and is still the right way to ask a non-blocking conversational question.
 
 The deployment mount under `/workspace/deployment` is lazy: the tree lists
 immediately from digests and byte sizes, and bounded file bodies are fetched

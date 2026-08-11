@@ -1,7 +1,7 @@
 //! PORT: workflow/agent.js
 //!
-//! Public workflow. Resolves a pack descriptor (system prompt + tool catalog),
-//! then runs the generic session loop in the same execution.
+//! Public workflow. Resolves a system-prompt descriptor, then runs the generic
+//! session loop in the same execution.
 
 use serde_json::Value;
 

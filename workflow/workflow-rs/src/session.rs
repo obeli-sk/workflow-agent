@@ -1,9 +1,9 @@
 //! PORT: workflow/agent-loop-src.js
 //!
 //! The generic session loop: one persistent `Bash` instance, one named
-//! `session-events` notification join set and one named `operator` join set for
+//! `session-events` notification join set and one named `user` join set for
 //! the whole session. The latter races each LLM completion child against an
-//! always-outstanding operator-injection offer. Direct shell
+//! always-outstanding user-injection offer. Direct shell
 //! interactions are turns too: their synthetic Bash request/result pair is
 //! included in the next turn's completion request.
 //!
@@ -36,9 +36,10 @@ use crate::generated::obelisk::types::execution::AwaitNextExtensionError;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::agent::session::{
-    AgentStatusEvent, AssistantReplyEvent, HumanInputRequestedEvent, HumanInputResolvedEvent,
-    InputOfferedEvent, OperatorMessageEvent, PromptInput, SessionEvent, SessionInput,
+    AgentErrorEvent, AgentStatusEvent, AssistantReplyEvent, HumanInputRequestedEvent,
+    HumanInputResolvedEvent, InputOfferedEvent, PromptInput, SessionEvent, SessionInput,
     SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput, ToolResultEvent,
+    UserMessageEvent,
 };
 use crate::generated::obelisk_agent::agent_obelisk_ext::session as session_ext;
 use crate::generated::obelisk_agent::agent_obelisk_stub::session as session_stub;
@@ -47,8 +48,6 @@ use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
 use crate::generated::obelisk_agent::tools::webapi;
 use crate::host::RealHost;
 use crate::support::last_response_execution_id;
-
-type AgentErrorEvent = OperatorMessageEvent;
 
 /// `date`'s clock: the current time from the durable Obelisk `sleep(now)` host
 /// activity, as Unix epoch milliseconds. Read on demand by `date`, so a script
@@ -82,11 +81,11 @@ const SESSION_EVENTS_JOIN_SET: &str = "session-events";
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
 
-/// The durable input channel: an operator-injection offer raced against LLM
-/// completion children on the session-wide named `operator` join set. Unlike
+/// The durable input channel: a user-injection offer raced against LLM
+/// completion children on the session-wide named `user` join set. Unlike
 /// JS's `session.completionExecutionId`, the
 /// in-flight completion id lives in a local variable in
-/// `call_llm_with_operator` (its only reader), not a struct field.
+/// `call_llm_with_user` (its only reader), not a struct field.
 struct Session {
     join_set: JoinSet,
     injection_execution_id: workflow_support::ExecutionId,
@@ -151,7 +150,7 @@ impl Notifications {
             SessionEvent::AgentStatus(event) => format!("agent-status-{}", event.turn_index),
             SessionEvent::HumanInputRequested(event) => event.execution_id.clone(),
             SessionEvent::HumanInputResolved(event) => event.execution_id.clone(),
-            SessionEvent::OperatorMessage(event) => event.id.clone(),
+            SessionEvent::UserMessage(event) => event.id.clone(),
             SessionEvent::AssistantReply(event) => format!("turn-{}", event.turn_index),
             SessionEvent::AgentError(event) => event.id.clone(),
             SessionEvent::ToolResult(event) => event.id.clone(),
@@ -248,7 +247,21 @@ pub fn agent_loop(
     reserved.insert("mcp");
 
     let system = format!(
-        "{system_prompt}\n\n# Shell\n\nThe only model-facing tool is bash. Its filesystem persists for this session. Run `help` to list every built-in and discovered program available in the shell.\n{}",
+        "{system_prompt}\n\n\
+# Shell\n\n\
+The only model-facing tool is bash. Its filesystem persists for this session. \
+Run `help` to list every built-in and discovered program available in the shell. \
+Deployed activities and workflows under `obelisk-agent:programs/program.<name>` \
+whose WIT signature is `(stdin: string, args: list<string>) -> result<record {{ \
+stdout: string, stderr: string, exit-code: u32 }}, string>` are discovered as \
+ordinary shell commands named `<name>`.\n\n\
+# User input\n\n\
+When you need a user answer before you can continue the current task, run \
+`obelisk call obelisk-agent:tools/input.ask-user '[\"Your question\"]'`. This \
+special command publishes the question to the UI, blocks, and returns the \
+user's answer so you can continue in the same turn. Use it only when the \
+answer is required to proceed. To end the turn with a response or a question \
+that does not need an immediate answer, reply in Markdown without a command.\n\n{}",
         obelisk_pack::SYSTEM_PROMPT
     );
 
@@ -261,7 +274,7 @@ pub fn agent_loop(
     notifications.notify(
         SESSION_EVENTS_JOIN_SET,
         &SessionEvent::SessionStarted(SessionStartedEvent {
-            protocol_version: 4,
+            protocol_version: 5,
             prompt: prompt.clone(),
             backend: model.clone(),
             effort: effort.clone(),
@@ -429,7 +442,7 @@ pub fn agent_loop(
             pack_mounted = true;
         }
         if !should_call_llm {
-            let event = take_operator_event(&mut session, &notifications)?;
+            let event = take_user_event(&mut session, &notifications)?;
             should_call_llm = apply_session_input(
                 event,
                 turn_index,
@@ -444,7 +457,7 @@ pub fn agent_loop(
             turn_complete = !should_call_llm;
         } else {
             publish_agent_status(&notifications, true, turn_index)?;
-            let reply = call_llm_with_operator(
+            let reply = call_llm_with_user(
                 &mut session,
                 &system,
                 &mut messages,
@@ -589,7 +602,7 @@ fn apply_session_input(
         SessionInput::Prompt(PromptInput { id, text }) => {
             notifications.notify(
                 SESSION_EVENTS_JOIN_SET,
-                &SessionEvent::OperatorMessage(OperatorMessageEvent {
+                &SessionEvent::UserMessage(UserMessageEvent {
                     id,
                     text: text.clone(),
                     turn_index,
@@ -652,11 +665,11 @@ fn shell_result(result: ExecResult) -> ShellResult {
     }
 }
 
-/// One LLM call raced against the operator input offer. Each injected event is
+/// One LLM call raced against the user input offer. Each injected event is
 /// appended after the request snapshot and therefore reaches the model on the
 /// following turn.
 #[allow(clippy::too_many_arguments)]
-fn call_llm_with_operator(
+fn call_llm_with_user(
     session: &mut Session,
     system: &str,
     messages: &mut Vec<Value>,
@@ -696,7 +709,7 @@ fn call_llm_with_operator(
                     if completed_id.as_deref() != Some(session.injection_execution_id.id.as_str()) {
                         return Err(format!("unexpected session response: {completed_id:?}"));
                     }
-                    rearm_operator(session, notifications)?;
+                    rearm_user_input(session, notifications)?;
                     prompt_queued |= apply_session_input(
                         event,
                         session.turn_index,
@@ -770,8 +783,7 @@ fn tool_error(id: &str, message: &str) -> ToolResultBlock {
 // ----- durable session channel ------------------------------------------------
 
 fn open_session(turn_index: u64, notifications: &Notifications) -> Result<Session, String> {
-    let join_set =
-        workflow_support::join_set_create_named("operator").map_err(|e| format!("{e:?}"))?;
+    let join_set = workflow_support::join_set_create_named("user").map_err(|e| format!("{e:?}"))?;
     let injection_execution_id = session_ext::injection_submit(&join_set);
     publish_input_offer(notifications, &injection_execution_id, turn_index)?;
     Ok(Session {
@@ -781,7 +793,7 @@ fn open_session(turn_index: u64, notifications: &Notifications) -> Result<Sessio
     })
 }
 
-fn rearm_operator(session: &mut Session, notifications: &Notifications) -> Result<(), String> {
+fn rearm_user_input(session: &mut Session, notifications: &Notifications) -> Result<(), String> {
     session.injection_execution_id = session_ext::injection_submit(&session.join_set);
     publish_input_offer(
         notifications,
@@ -818,7 +830,7 @@ fn publish_agent_status(
     )
 }
 
-fn take_operator_event(
+fn take_user_event(
     session: &mut Session,
     notifications: &Notifications,
 ) -> Result<SessionInput, String> {
@@ -831,7 +843,7 @@ fn take_operator_event(
             "unexpected session response while idle: {completed_id:?}"
         ));
     }
-    rearm_operator(session, notifications)?;
+    rearm_user_input(session, notifications)?;
     Ok(event)
 }
 
