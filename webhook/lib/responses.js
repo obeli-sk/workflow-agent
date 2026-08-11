@@ -1,6 +1,4 @@
-// Walk an execution's response stream into the transcript pieces the UI renders:
-// assistant replies, tool results, operator messages, shell output, and the
-// operator turn boundaries.
+// Walk the session notification stream into the transcript and live UI state.
 
 import { getExecutionResponses, getLatestExecutionResponses } from "./obelisk-api.js";
 
@@ -17,42 +15,31 @@ export async function loadResponses(execId, startCursor = 0) {
     while (true) {
         let payload;
         try {
-            payload = await getExecutionResponses(execId, cursor, including, 200);
+            payload = await getExecutionResponses(execId, "session-events", cursor, including, 200);
         } catch (_) { break; }
         const responses = payload.responses || [];
         for (const r of responses) {
             const wrapped = r.event?.event;
             const ev = wrapped?.event;
             if (!ev || ev.type !== "child_execution_finished") continue;
-            const joinName = parseJoinName(wrapped.join_set_id);
-
-            if (joinName === "session-events") {
-                const projection = { replies, toolResults, operatorMessages, shellEvents, inputOffer, agentWorking };
-                appendSessionEvent(
-                    projection,
-                    ev.result?.ok?.value ?? ev.result?.ok,
-                    r,
-                );
-                inputOffer = projection.inputOffer;
-                agentWorking = projection.agentWorking;
-            } else if (joinName === "operator") {
-                const value = ev.result?.ok?.value ?? ev.result?.ok;
-                const event = parseSessionInput(value);
-                if (event) {
-                    turnStarts.push({
-                        id: event.id || "",
-                        kind: event.kind,
-                        created_at: r.event?.created_at || "",
-                    });
-                }
-            }
+            const projection = {
+                replies,
+                toolResults,
+                operatorMessages,
+                shellEvents,
+                turnStarts,
+                inputOffer,
+                agentWorking,
+            };
+            appendSessionEvent(projection, ev.result?.ok?.value ?? ev.result?.ok, r);
+            inputOffer = projection.inputOffer;
+            agentWorking = projection.agentWorking;
         }
-        if (responses.length === 0) break;
-        const next = responses[responses.length - 1]?.cursor;
+        const next = payload.scan_cursor;
         if (typeof next !== "number" || next <= cursor) break;
         cursor = next;
         including = false;
-        if (responses.length < 200) break;
+        if (typeof payload.max_cursor === "number" && cursor >= payload.max_cursor) break;
     }
     return {
         replies,
@@ -68,12 +55,11 @@ export async function loadResponses(execId, startCursor = 0) {
 
 export async function loadLatestAgentStatus(execId) {
     let payload;
-    try { payload = await getLatestExecutionResponses(execId, 100); }
+    try { payload = await getLatestExecutionResponses(execId, "session-events", 100); }
     catch (_) { return false; }
     const responses = payload.responses || [];
     for (let i = responses.length - 1; i >= 0; i -= 1) {
         const wrapped = responses[i]?.event?.event;
-        if (parseJoinName(wrapped?.join_set_id) !== "session-events") continue;
         const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
         if (typeof value?.agent_status?.working === "boolean") {
             return value.agent_status.working;
@@ -95,6 +81,11 @@ function appendSessionEvent(target, event, response) {
         target.agentWorking = event.agent_status.working === true;
     } else if (event.operator_message) {
         const message = event.operator_message;
+        target.turnStarts.push({
+            id: message.id || "",
+            kind: "prompt",
+            created_at: createdAt,
+        });
         target.operatorMessages.push({
             id: message.id || "",
             text: message.text || "",
@@ -116,6 +107,11 @@ function appendSessionEvent(target, event, response) {
         target.toolResults.push(normalizeSessionToolResult(event.tool_result, createdAt));
     } else if (event.shell_output) {
         const output = event.shell_output;
+        target.turnStarts.push({
+            id: output.id || "",
+            kind: "shell",
+            created_at: subtractMilliseconds(createdAt, output.duration_milliseconds),
+        });
         target.shellEvents.push({
             kind: "shell_output",
             id: output.id || "",
@@ -127,6 +123,15 @@ function appendSessionEvent(target, event, response) {
             turn_complete: output.turn_complete === true,
         });
     }
+}
+
+function subtractMilliseconds(timestamp, duration) {
+    let end = Date.parse(timestamp);
+    if (!Number.isFinite(end) && typeof timestamp === "string") {
+        end = Date.parse(timestamp.replace(/(\.\d{3})\d+(?=Z$|[+-]\d{2}:\d{2}$)/, "$1"));
+    }
+    if (!Number.isFinite(end) || !Number.isFinite(duration)) return timestamp;
+    return new Date(end - Math.max(0, duration)).toISOString();
 }
 
 function appendAssistantReply(replies, rep, createdAt) {
@@ -151,13 +156,6 @@ function appendAssistantReply(replies, rep, createdAt) {
         duration_milliseconds: rep.duration_milliseconds,
         turn_complete: rep.turn_complete === true,
     });
-}
-
-function parseSessionInput(value) {
-    if (!value || typeof value !== "object") return null;
-    if (value.shell) return { kind: "shell", ...value.shell };
-    if (value.prompt) return { kind: "prompt", ...value.prompt };
-    return null;
 }
 
 function normalizeSessionToolResult(result, createdAt) {

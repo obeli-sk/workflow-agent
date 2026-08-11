@@ -67,9 +67,10 @@ export async function getExecutionEvents(id, cursorKind, cursor, includingCursor
     return apiGetJson(`get-events ${id}`, `/v1/executions/${encodeURIComponent(id)}/events?${params.join("&")}`);
 }
 
-export async function getExecutionResponses(id, cursor, includingCursor, length) {
+export async function getExecutionResponses(id, joinSet, cursor, includingCursor, length) {
     const current = Number.isFinite(cursor) && cursor > 0 ? Math.trunc(cursor) : 0;
     const params = [
+        `join_set=${encodeURIComponent(joinSet)}`,
         `cursor=${encodeURIComponent(String(current))}`,
         `including_cursor=${includingCursor ? "true" : "false"}`,
         `length=${encodeURIComponent(String(length || 200))}`,
@@ -77,10 +78,10 @@ export async function getExecutionResponses(id, cursor, includingCursor, length)
     return apiGetJson(`get-responses ${id}`, `/v1/executions/${encodeURIComponent(id)}/responses?${params.join("&")}`);
 }
 
-export async function getLatestExecutionResponses(id, length) {
+export async function getLatestExecutionResponses(id, joinSet, length) {
     return apiGetJson(
         `get-latest-responses ${id}`,
-        `/v1/executions/${encodeURIComponent(id)}/responses?direction=older&length=${encodeURIComponent(String(length || 50))}`,
+        `/v1/executions/${encodeURIComponent(id)}/responses?join_set=${encodeURIComponent(joinSet)}&direction=older&length=${encodeURIComponent(String(length || 50))}`,
     );
 }
 

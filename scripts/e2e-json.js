@@ -32,6 +32,10 @@ switch (command) {
         process.stdout.write(json()?.transcript?.input_offer?.id ?? "");
         break;
     }
+    case "response-cursor": {
+        process.stdout.write(String(json()?.transcript?.response_cursor ?? 0));
+        break;
+    }
     case "check-shell-session": {
         const ffqns = executions(json()).map((row) => row.ffqn);
         const valid = !ffqns.includes("obelisk-agent:llm/chat.completion")
@@ -87,8 +91,10 @@ switch (command) {
             && output.turn_complete === true
             && typeof start?.created_at === "string"
             && start.created_at.length > 0
+            && start.created_at !== output.created_at
             && typeof projection?.transcript?.input_offer?.id === "string"
-            && projection.transcript.agent_working === false;
+            && projection.transcript.agent_working !== true;
+        if (!valid) console.error(`unexpected shell projection: ${JSON.stringify(projection)}`);
         process.exit(valid ? 0 : 1);
         break;
     }

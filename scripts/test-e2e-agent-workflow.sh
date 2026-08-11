@@ -29,6 +29,7 @@ while true; do
     [[ $SECONDS -ge 30 ]] && { echo "empty session did not publish its input offer: $SESSION_PROJECTION" >&2; exit 1; }
     sleep 1
 done
+RESPONSE_CURSOR="$(node scripts/e2e-json.js response-cursor <<<"$SESSION_PROJECTION")"
 
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
@@ -51,7 +52,8 @@ SHELL_OUTPUT_ID="$(node scripts/e2e-json.js execution-id \
     "obelisk-agent:agent/session.record-output" <<<"$SESSION_EXECUTIONS")"
 SHELL_NOTIFICATION="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$SHELL_OUTPUT_ID")"
 node scripts/e2e-json.js check-shell-notification <<<"$SHELL_NOTIFICATION"
-SHELL_PROJECTION="$(curl --fail --silent "http://127.0.0.1:28091/api/runs/$SESSION_ID")"
+SHELL_PROJECTION="$(curl --fail --silent \
+    "http://127.0.0.1:28091/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")"
 node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"
 echo ">>> shell-only E2E PASS: curl was discovered and invoked without starting the agent"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
