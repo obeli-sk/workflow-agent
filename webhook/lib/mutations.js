@@ -1,0 +1,189 @@
+// Mutating routes: schedule/cancel runs, pause/unpause, inject operator input,
+// and fulfil the pending stub children (ask-user answers, hot-reload confirms).
+// These stay durable native calls (`webapi`, workflow schedule), unlike the
+// read-only polling GETs.
+
+import { runCancellableSchedule } from "obelisk-agent:workflow-obelisk-schedule/workflow";
+import { jsonError, jsonResponse } from "./http.js";
+import {
+    cancelObeliskExecution,
+    listExecutions,
+    pauseObeliskExecution,
+    stubObeliskExecution,
+    unpauseObeliskExecution,
+} from "./obelisk-api.js";
+import { loadPendingInjection } from "./runs.js";
+
+export async function submit(request) {
+    let body;
+    try { body = await request.text(); }
+    catch (e) { return jsonError(400, `cannot read body: ${String(e)}`); }
+    let payload;
+    try { payload = JSON.parse(body); }
+    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
+    const prompt = payload?.prompt;
+    if (typeof prompt !== "string" || !prompt.trim()) {
+        return jsonError(400, "prompt is required");
+    }
+    // backend is the workflow's option<string>: null => claude.
+    const backend = (typeof payload?.backend === "string" && payload.backend) ? payload.backend : null;
+    // effort is the reasoning level (option<string>): null => provider default.
+    const effort = (typeof payload?.effort === "string" && payload.effort) ? payload.effort : null;
+    let execId;
+    try { execId = runCancellableSchedule(null, prompt, backend, null, effort); }
+    catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
+    return jsonResponse({ execution_id: execId });
+}
+
+export async function createSession(request) {
+    let payload = {};
+    try {
+        const text = await request.text();
+        if (text) payload = JSON.parse(text);
+    } catch (e) {
+        return jsonError(400, `body must be JSON: ${e.message}`);
+    }
+    const backend = typeof payload.backend === "string" && payload.backend ? payload.backend : null;
+    const effort = typeof payload.effort === "string" && payload.effort ? payload.effort : null;
+    let execId;
+    try { execId = runCancellableSchedule(null, "", backend, null, effort); }
+    catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
+    return jsonResponse({ execution_id: execId });
+}
+
+// Pause or unpause a run via the native execution endpoints. A paused execution
+// reports pending_state.status == "paused". Obelisk pauses a single execution,
+// Pause/unpause every non-terminal workflow in the run as well, since programs
+// invoked by the agent may themselves be workflows.
+export async function pauseExecution(id, unpause) {
+    if (!id) return jsonError(400, "missing run id");
+    const verb = unpause ? "unpause" : "pause";
+    const targets = [id, ...await childWorkflowIds(id)];
+    const failures = [];
+    for (const target of targets) {
+        try {
+            if (unpause) unpauseObeliskExecution(target);
+            else pauseObeliskExecution(target);
+        } catch (e) {
+            failures.push(`${target}: ${String(e)}`);
+        }
+    }
+    if (failures.length) {
+        return jsonError(502, `${verb} failed: ${failures.join("; ")}`);
+    }
+    return jsonResponse({ ok: true, paused: targets });
+}
+
+// Non-terminal nested workflow executions of a run. Excludes the run itself;
+// activities and stubs are not paused.
+async function childWorkflowIds(runId) {
+    let executions;
+    try {
+        executions = await listExecutions("", runId, true, true, 200);
+    } catch (_) { return []; }
+    return executions
+        .filter((e) => e?.execution_id !== runId && e?.component_type === "workflow")
+        .map((e) => e.execution_id);
+}
+
+// Cancel a run and any nested cancellable workflows.
+export async function cancelRun(id) {
+    if (!id) return jsonError(400, "missing run id");
+    let executions;
+    try {
+        executions = await listExecutions("", id, true, true, 200);
+    } catch (e) { return jsonError(502, `cancel failed: ${String(e)}`); }
+    const targets = executions
+        .filter((e) => e?.component_type === "workflow"
+            && typeof e?.ffqn === "string" && e.ffqn.endsWith("-cancellable"))
+        .map((e) => e.execution_id);
+    if (targets.length === 0) {
+        return jsonError(409, "no cancellable execution for this run (needs a redeploy on the -cancellable agent loop)");
+    }
+    const failures = [];
+    for (const target of targets) {
+        try { cancelObeliskExecution(target); }
+        catch (e) { failures.push(`${target}: ${String(e)}`); }
+    }
+    if (failures.length) return jsonError(502, `cancel failed: ${failures.join("; ")}`);
+    return jsonResponse({ ok: true, cancelled: targets });
+}
+
+// Fulfil the concrete pending injection stub owned by this workflow. The
+// workflow consumes the response and includes it in its next session.send call.
+export async function sayToAgent(request, runId) {
+    if (!runId) return jsonError(400, "missing run id");
+    let payload;
+    try { payload = JSON.parse(await request.text()); }
+    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
+    const text = payload?.text;
+    if (typeof text !== "string" || !text.trim()) return jsonError(400, "text is required");
+    const injection = await loadPendingInjection(runId);
+    if (!injection) return jsonError(409, "agent is not currently accepting an injected message");
+    const id = typeof payload.id === "string" && payload.id
+        ? payload.id : `prompt-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const event = { prompt: { id, text: text.trim() } };
+    try { stubObeliskExecution(injection.id, { ok: event }); }
+    catch (e) { return jsonError(502, `injection fulfil failed: ${String(e)}`); }
+    return jsonResponse({ child_execution_id: injection.id, event_id: id });
+}
+
+export async function shellInSession(request, runId) {
+    if (!runId) return jsonError(400, "missing run id");
+    let payload;
+    try { payload = JSON.parse(await request.text()); }
+    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
+    const script = payload?.script;
+    if (typeof script !== "string" || !script.trim()) {
+        return jsonError(400, "script is required");
+    }
+    const injection = await loadPendingInjection(runId);
+    if (!injection) return jsonError(409, "session is not currently accepting input");
+    const id = typeof payload.id === "string" && payload.id
+        ? payload.id : `shell-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const event = { shell: {
+        id,
+        script,
+        stdin: typeof payload.stdin === "string" ? payload.stdin : "",
+    } };
+    try { stubObeliskExecution(injection.id, { ok: event }); }
+    catch (e) { return jsonError(502, `shell fulfil failed: ${String(e)}`); }
+    return jsonResponse({ child_execution_id: injection.id, event_id: id });
+}
+
+export async function answerStub(request, childId) {
+    if (!childId) return jsonError(400, "missing child id");
+    let body;
+    try { body = await request.text(); }
+    catch (e) { return jsonError(400, `cannot read body: ${String(e)}`); }
+    let payload;
+    try { payload = JSON.parse(body); }
+    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
+    const answer = payload?.answer;
+    if (typeof answer !== "string" || !answer) {
+        return jsonError(400, "answer is required");
+    }
+    try { stubObeliskExecution(childId, { ok: answer }); }
+    catch (e) { return jsonError(502, `stub fulfil failed: ${String(e)}`); }
+    return jsonResponse({ ok: true });
+}
+
+// Approve or reject a pending hot-reload confirmation. Fulfils the confirm-apply
+// stub with its `ok` arm (approve => the workflow proceeds to switch) or its
+// `err` arm (reject => the workflow returns an err tool_result to the agent).
+export async function confirmDeploy(request, childId) {
+    if (!childId) return jsonError(400, "missing child id");
+    let body;
+    try { body = await request.text(); }
+    catch (e) { return jsonError(400, `cannot read body: ${String(e)}`); }
+    let payload;
+    try { payload = JSON.parse(body); }
+    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
+    const approve = Boolean(payload?.approve);
+    const stubResult = approve
+        ? { ok: null }
+        : { err: "operator cancelled" };
+    try { stubObeliskExecution(childId, stubResult); }
+    catch (e) { return jsonError(502, `stub fulfil failed: ${String(e)}`); }
+    return jsonResponse({ ok: true });
+}
