@@ -121,13 +121,6 @@
     "wire_model": "accounts/fireworks/models/glm-5p2"
   },
   {
-    "id": "glm-5.1-fireworks",
-    "label": "glm-5.1-fireworks",
-    "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
-    "wire_model": "accounts/fireworks/models/glm-5p1"
-  },
-  {
     "id": "kimi-k2.6-fireworks",
     "label": "kimi-k2.6-fireworks",
     "api_type": "openai-chat-completions",
