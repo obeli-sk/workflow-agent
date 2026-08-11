@@ -36,8 +36,9 @@ use crate::generated::obelisk::types::execution::AwaitNextExtensionError;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::agent::session::{
-    AssistantReplyEvent, OperatorMessageEvent, PromptInput, SessionEvent, SessionInput,
-    SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput, ToolResultEvent,
+    AssistantReplyEvent, InputOfferedEvent, OperatorMessageEvent, PromptInput, SessionEvent,
+    SessionInput, SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput,
+    ToolResultEvent,
 };
 use crate::generated::obelisk_agent::agent_obelisk_ext::session as session_ext;
 use crate::generated::obelisk_agent::agent_obelisk_stub::session as session_stub;
@@ -139,6 +140,7 @@ impl NotificationJoinSets {
             .expect("notification join set must exist");
         let event_id = match event {
             SessionEvent::SessionStarted(_) => "session-started".to_string(),
+            SessionEvent::InputOffered(event) => event.execution_id.clone(),
             SessionEvent::OperatorMessage(event) => event.id.clone(),
             SessionEvent::AssistantReply(event) => format!("turn-{}", event.turn_index),
             SessionEvent::AgentError(event) => event.id.clone(),
@@ -217,7 +219,7 @@ pub fn agent_loop(
     notifications.notify(
         SESSION_EVENTS_JOIN_SET,
         &SessionEvent::SessionStarted(SessionStartedEvent {
-            protocol_version: 2,
+            protocol_version: 3,
         }),
     )?;
 
@@ -259,7 +261,7 @@ pub fn agent_loop(
             continue;
         }
 
-        let mut session = open_turn(loop_index, turn_index)?;
+        let mut session = open_turn(loop_index, turn_index, &mut notifications)?;
         let mut turn_complete = false;
 
         // Re-discover program commands on the first turn and whenever the
@@ -379,7 +381,7 @@ pub fn agent_loop(
             pack_mounted = true;
         }
         if !should_call_llm {
-            let event = take_operator_event(&mut session)?;
+            let event = take_operator_event(&mut session, &mut notifications)?;
             should_call_llm = apply_session_input(
                 event,
                 turn_index,
@@ -642,7 +644,7 @@ fn call_llm_with_operator(
                     if completed_id.as_deref() != Some(session.injection_execution_id.id.as_str()) {
                         return Err(format!("unexpected session response: {completed_id:?}"));
                     }
-                    rearm_operator(session);
+                    rearm_operator(session, notifications)?;
                     prompt_queued |= apply_session_input(
                         event,
                         session.turn_index,
@@ -715,10 +717,15 @@ fn tool_error(id: &str, message: &str) -> ToolResultBlock {
 
 // ----- durable session channel ------------------------------------------------
 
-fn open_turn(loop_index: u64, turn_index: u64) -> Result<Session, String> {
+fn open_turn(
+    loop_index: u64,
+    turn_index: u64,
+    notifications: &mut NotificationJoinSets,
+) -> Result<Session, String> {
     let join_set = workflow_support::join_set_create_named(&format!("operator-{loop_index}"))
         .map_err(|e| format!("{e:?}"))?;
     let injection_execution_id = session_ext::injection_submit(&join_set);
+    publish_input_offer(notifications, &injection_execution_id, turn_index)?;
     Ok(Session {
         join_set,
         injection_execution_id,
@@ -726,11 +733,36 @@ fn open_turn(loop_index: u64, turn_index: u64) -> Result<Session, String> {
     })
 }
 
-fn rearm_operator(session: &mut Session) {
+fn rearm_operator(
+    session: &mut Session,
+    notifications: &mut NotificationJoinSets,
+) -> Result<(), String> {
     session.injection_execution_id = session_ext::injection_submit(&session.join_set);
+    publish_input_offer(
+        notifications,
+        &session.injection_execution_id,
+        session.turn_index,
+    )
 }
 
-fn take_operator_event(session: &mut Session) -> Result<SessionInput, String> {
+fn publish_input_offer(
+    notifications: &mut NotificationJoinSets,
+    execution_id: &workflow_support::ExecutionId,
+    turn_index: u64,
+) -> Result<(), String> {
+    notifications.notify(
+        SESSION_EVENTS_JOIN_SET,
+        &SessionEvent::InputOffered(InputOfferedEvent {
+            execution_id: execution_id.id.clone(),
+            turn_index,
+        }),
+    )
+}
+
+fn take_operator_event(
+    session: &mut Session,
+    notifications: &mut NotificationJoinSets,
+) -> Result<SessionInput, String> {
     let event = session_ext::injection_await_next(&session.join_set)
         .map_err(|e| format!("{e:?}"))?
         .map_err(|e| format!("session injection failed: {e}"))?;
@@ -740,7 +772,7 @@ fn take_operator_event(session: &mut Session) -> Result<SessionInput, String> {
             "unexpected session response while idle: {completed_id:?}"
         ));
     }
-    rearm_operator(session);
+    rearm_operator(session, notifications)?;
     Ok(event)
 }
 
@@ -816,6 +848,20 @@ mod tests {
                     },
                     "turn_index": 4,
                     "duration_milliseconds": 25,
+                },
+            })
+        );
+
+        let offer = SessionEvent::InputOffered(InputOfferedEvent {
+            execution_id: "E_session.4".to_string(),
+            turn_index: 5,
+        });
+        assert_eq!(
+            serde_json::to_value(offer).unwrap(),
+            json!({
+                "input_offered": {
+                    "execution_id": "E_session.4",
+                    "turn_index": 5,
                 },
             })
         );

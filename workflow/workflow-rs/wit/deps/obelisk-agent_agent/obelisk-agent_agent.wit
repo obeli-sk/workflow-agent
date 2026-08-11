@@ -22,6 +22,11 @@ interface session {
         protocol-version: u32,
     }
 
+    record input-offered-event {
+        execution-id: string,
+        turn-index: u64,
+    }
+
     record operator-message-event {
         id: string,
         text: string,
@@ -64,6 +69,7 @@ interface session {
 
     variant session-event {
         session-started(session-started-event),
+        input-offered(input-offered-event),
         operator-message(operator-message-event),
         assistant-reply(assistant-reply-event),
         agent-error(operator-message-event),
