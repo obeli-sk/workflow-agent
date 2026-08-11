@@ -24,7 +24,6 @@ import { detailRun, listRuns, loadExecutionTreeLogs } from "./lib/runs.js";
 import {
     answerStub,
     cancelRun,
-    confirmDeploy,
     createSession,
     pauseExecution,
     sayToAgent,
@@ -76,10 +75,6 @@ export default async function handle(request) {
         if (method === "POST" && path.startsWith("/api/answer/")) {
             const childId = decodeURIComponent(path.substring("/api/answer/".length));
             return await answerStub(request, childId);
-        }
-        if (method === "POST" && path.startsWith("/api/confirm/")) {
-            const childId = decodeURIComponent(path.substring("/api/confirm/".length));
-            return await confirmDeploy(request, childId);
         }
     } catch (e) {
         return jsonError(500, String(e));

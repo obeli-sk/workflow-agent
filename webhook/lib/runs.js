@@ -3,7 +3,6 @@
 // the UI renders.
 
 import {
-    getDeployment,
     getExecutionEvents,
     getExecutionLogs,
     getExecutionRecord,
@@ -11,11 +10,9 @@ import {
     listExecutions,
 } from "./obelisk-api.js";
 import { loadResponses, parseJoinName } from "./responses.js";
-import { collectSources, diffSources, loadCurrentSources } from "./sources.js";
 
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
-const CONFIRM_FFQN = "obelisk-agent:tools/deploy.confirm-apply";
 const INJECTION_FFQN = "obelisk-agent:agent/session.injection";
 const COMPLETION_FFQN = "obelisk-agent:llm/chat.completion";
 
@@ -59,13 +56,12 @@ async function loadPromptPreview(execId) {
 export async function detailRun(id, cursorState) {
     const resetTranscript = cursorState.workflowId !== id;
     const responseCursor = resetTranscript ? 0 : cursorState.responseCursor;
-    const [status, created, walk, finalResult, pendingAsks, pendingConfirms, pendingInjection, pendingCompletion] = await Promise.all([
+    const [status, created, walk, finalResult, pendingAsks, pendingInjection, pendingCompletion] = await Promise.all([
         loadStatus(id),
         loadCreated(id),
         loadResponses(id, responseCursor),
         loadFinalResult(id),
         loadPendingAsks(id),
-        loadPendingConfirms(id),
         loadPendingInjection(id),
         loadPendingCompletion(id),
     ]);
@@ -88,7 +84,6 @@ export async function detailRun(id, cursorState) {
         },
         final_result: finalResult,
         pending_asks: pendingAsks,
-        pending_confirms: pendingConfirms,
         pending_injection: pendingInjection,
         pending_completion: pendingCompletion,
     };
@@ -190,44 +185,4 @@ async function loadPendingCompletion(workflowId) {
         && e.execution_id.startsWith(workflowId + "."));
     if (mine.length === 0) return null;
     return { id: mine[mine.length - 1].execution_id };
-}
-
-// Pending hot-reload confirmations: confirm-apply stub children of this
-// workflow that are still unanswered. For each, read its created params
-// ([deployment_id, summary]) and build a source diff of the proposed
-// deployment against the currently active one so the operator can see exactly
-// what the fix changes before approving.
-async function loadPendingConfirms(workflowId) {
-    let candidates;
-    try {
-        candidates = await listExecutions(CONFIRM_FFQN, "", true, true, 50);
-    } catch (_) { return []; }
-    const mine = candidates.filter((e) => typeof e.execution_id === "string"
-        && e.execution_id.startsWith(workflowId + "."));
-    if (mine.length === 0) return [];
-
-    // The active deployment is shared across all pending confirms; fetch once.
-    const currentSources = await loadCurrentSources();
-
-    return await Promise.all(mine.map(async (e) => {
-        let deploymentId = null;
-        let summary = "";
-        try {
-            const evs = await getExecutionEvents(e.execution_id, "version_from", 0, true, 1);
-            const p = evs.events?.[0]?.event?.created?.params;
-            if (Array.isArray(p)) {
-                if (typeof p[0] === "string") deploymentId = p[0];
-                if (typeof p[1] === "string") summary = p[1];
-            }
-        } catch (_) { }
-
-        let diff = null;
-        if (deploymentId) {
-            try {
-                const dep = await getDeployment(deploymentId);
-                diff = diffSources(currentSources, await collectSources(dep.deployment_toml));
-            } catch (err) { diff = { error: String(err) }; }
-        }
-        return { id: e.execution_id, deployment_id: deploymentId, summary, diff };
-    }));
 }

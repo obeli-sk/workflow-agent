@@ -1,5 +1,5 @@
 // Mutating routes: schedule/cancel runs, pause/unpause, inject operator input,
-// and fulfil the pending stub children (ask-user answers, hot-reload confirms).
+// and fulfil pending ask-user stub children.
 // These stay durable native calls (`webapi`, workflow schedule), unlike the
 // read-only polling GETs.
 
@@ -164,26 +164,6 @@ export async function answerStub(request, childId) {
         return jsonError(400, "answer is required");
     }
     try { stubObeliskExecution(childId, { ok: answer }); }
-    catch (e) { return jsonError(502, `stub fulfil failed: ${String(e)}`); }
-    return jsonResponse({ ok: true });
-}
-
-// Approve or reject a pending hot-reload confirmation. Fulfils the confirm-apply
-// stub with its `ok` arm (approve => the workflow proceeds to switch) or its
-// `err` arm (reject => the workflow returns an err tool_result to the agent).
-export async function confirmDeploy(request, childId) {
-    if (!childId) return jsonError(400, "missing child id");
-    let body;
-    try { body = await request.text(); }
-    catch (e) { return jsonError(400, `cannot read body: ${String(e)}`); }
-    let payload;
-    try { payload = JSON.parse(body); }
-    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
-    const approve = Boolean(payload?.approve);
-    const stubResult = approve
-        ? { ok: null }
-        : { err: "operator cancelled" };
-    try { stubObeliskExecution(childId, stubResult); }
     catch (e) { return jsonError(502, `stub fulfil failed: ${String(e)}`); }
     return jsonResponse({ ok: true });
 }

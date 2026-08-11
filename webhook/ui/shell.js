@@ -113,22 +113,6 @@ const SHELL_HTML = `<!doctype html>
   form.ask .ask-question { margin-bottom: 0.6em; font-weight: 600; }
   form.ask textarea { width: 100%; min-height: 4em; padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
   form.ask button { margin-top: 0.4em; }
-  .confirm { background: #fff7ed; border: 1px solid #f0c98a; border-radius: 6px; padding: 0.8em 1em; margin: 1em 0; }
-  .confirm .label { color: var(--warn); }
-  .confirm h3 { margin: 0.1em 0 0.4em; font-size: 0.95rem; }
-  .confirm .dep-id { font: 12px/1 ui-monospace, monospace; color: var(--muted); }
-  .confirm .summary { margin: 0.4em 0 0.6em; white-space: pre-wrap; }
-  .confirm .diff { border: 1px solid var(--line); border-radius: 4px; background: white; margin: 0.5em 0; }
-  .confirm .diff > summary { padding: 0.4em 0.7em; cursor: pointer; font-weight: 600; }
-  .confirm .diff pre { margin: 0; padding: 0.4em 0; background: #fbfbfb; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; max-height: 22em; overflow-y: auto; }
-  .confirm .diff .dl { display: block; padding: 0 0.7em; }
-  .confirm .diff .dl.add { background: var(--ok-bg); color: var(--ok); }
-  .confirm .diff .dl.del { background: var(--err-bg); color: var(--err); }
-  .confirm .diff .fname { display: block; padding: 0.3em 0.7em; font-weight: 600; background: #f2f2f2; border-top: 1px solid var(--line); }
-  .confirm .changes { color: var(--muted); font-size: 0.85em; margin: 0.3em 0; }
-  .confirm .buttons { display: flex; gap: 0.5em; margin-top: 0.6em; }
-  .confirm button.approve { border: 1px solid var(--ok); background: var(--ok); color: white; border-radius: 4px; padding: 0.4em 0.9em; cursor: pointer; font: inherit; }
-  .confirm button.reject { border: 1px solid var(--err); background: white; color: var(--err); border-radius: 4px; padding: 0.4em 0.9em; cursor: pointer; font: inherit; }
   .logs { max-width: 960px; border: 1px solid var(--line); border-radius: 6px; background: #111; color: #ddd; margin: 0.8em 0 1.2em; }
   .logs .logs-head { padding: 0.5em 0.8em; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }
   .logs .logs-head button { color: #9cc2ff; border: 0; background: none; cursor: pointer; }
@@ -249,7 +233,6 @@ function statusLabel(status, result_kind) {
 // css class so the sidebar/detail say what the run is actually doing.
 const JOIN_LABELS = {
   'ask-user': ['awaiting reply', 'awaiting'],
-  'confirm-apply': ['awaiting approval', 'awaiting'],
   'completion': ['thinking', 'working'],
   'operator': ['your turn', 'awaiting'],
 };
@@ -676,7 +659,7 @@ function renderDetail(forceScroll = false) {
   const sig = JSON.stringify({
     id: d.id, status: d.status, result_kind: d.result_kind, join_name: d.join_name,
     prompt: d.prompt, backend: d.backend, effort: d.effort, turns: d.turns, final_result: d.final_result,
-    pending_asks: d.pending_asks, pending_confirms: d.pending_confirms,
+    pending_asks: d.pending_asks,
     pending_injection: d.pending_injection,
     pending_completion: d.pending_completion,
   });
@@ -725,9 +708,6 @@ function renderDetail(forceScroll = false) {
     + '</form>'
   ).join('') : '';
 
-  const confirmsHtml = (d.pending_confirms && d.pending_confirms.length)
-    ? d.pending_confirms.map(renderConfirm).join('') : '';
-
   const finalHtml = renderFinal(d);
   const pauseBtn = phase === 'active'
     ? ' &middot; <button type="button" id="pause-btn">pause</button>'
@@ -750,7 +730,6 @@ function renderDetail(forceScroll = false) {
     + '</div>'
     + '<div id="logs-slot">' + renderLogs() + '</div>'
     + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div><pre>' + esc(d.prompt) + '</pre></div>' : '')
-    + confirmsHtml
     + turnsHtml
     + finalHtml
     + asksHtml;
@@ -768,11 +747,6 @@ function renderDetail(forceScroll = false) {
     });
   }
 
-  for (const card of main.querySelectorAll('.confirm')) {
-    const child = card.dataset.child;
-    card.querySelector('button.approve')?.addEventListener('click', () => sendConfirm(child, true));
-    card.querySelector('button.reject')?.addEventListener('click', () => sendConfirm(child, false));
-  }
   main.querySelector('#logs-toggle')?.addEventListener('click', toggleLogs);
   main.querySelector('#pause-btn')?.addEventListener('click', () => setPaused(state.selected, false));
   main.querySelector('#unpause-btn')?.addEventListener('click', () => setPaused(state.selected, true));
@@ -802,9 +776,9 @@ function runPhase(status) {
 // The persistent composer at the bottom of the right pane is context-sensitive:
 //   - no run / terminal run  -> "new conversation": create a run (model+effort).
 //   - active or paused run   -> "say": steer/reply to the running agent.
-// A pending ask/confirm gate owns its own inline input, so the composer defers.
+// A pending ask gate owns its own inline input, so the composer defers.
 function hasHumanGate(d) {
-  return Boolean(d && ((d.pending_asks && d.pending_asks.length) || (d.pending_confirms && d.pending_confirms.length)));
+  return Boolean(d && d.pending_asks && d.pending_asks.length);
 }
 function shellIsWorking(d) {
   if (!d || runPhase(d.status) !== 'active') return false;
@@ -889,48 +863,6 @@ function focusComposer() {
   catch (_) { input.focus(); }
 }
 
-// One pending hot-reload confirmation: agent summary, target deployment, the
-// source diff vs the active deployment, and OK/Cancel controls.
-function renderConfirm(c) {
-  const diff = c.diff;
-  let diffHtml;
-  if (!diff) {
-    diffHtml = '<p class="changes">(no diff available)</p>';
-  } else if (diff.error) {
-    diffHtml = '<p class="changes">Could not build diff: ' + esc(diff.error) + '</p>';
-  } else {
-    const counts = [];
-    if (diff.added.length) counts.push(diff.added.length + ' added');
-    if (diff.removed.length) counts.push(diff.removed.length + ' removed');
-    if (diff.changed.length) counts.push(diff.changed.length + ' changed');
-    const summary = counts.length ? counts.join(', ') : 'no source changes';
-    let body = '';
-    for (const f of diff.added) {
-      body += '<span class="fname">+ ' + esc(f.file) + ' (new file)</span><pre>' + renderDiffLines(f.lines) + '</pre>';
-    }
-    for (const f of diff.removed) {
-      body += '<span class="fname">- ' + esc(f.file) + ' (removed)</span><pre>' + renderDiffLines(f.lines) + '</pre>';
-    }
-    for (const ch of diff.changed) {
-      body += '<span class="fname">~ ' + esc(ch.file) + '</span><pre>' + renderDiffLines(ch.lines) + '</pre>';
-    }
-    diffHtml = '<details class="diff"' + (diff.changed.length || diff.added.length ? ' open' : '') + '>'
-      + '<summary>Source diff vs active deployment (' + esc(summary) + ')</summary>'
-      + body + '</details>';
-  }
-  return '<div class="confirm" data-child="' + esc(c.id) + '">'
-    + '<div class="label">hot reload pending approval</div>'
-    + '<h3>Apply deployment?</h3>'
-    + (c.deployment_id ? '<div class="dep-id">' + esc(c.deployment_id) + '</div>' : '')
-    + (c.summary ? '<div class="summary">' + esc(c.summary) + '</div>' : '')
-    + diffHtml
-    + '<div class="buttons">'
-    +   '<button type="button" class="approve">OK</button>'
-    +   '<button type="button" class="reject">Cancel</button>'
-    + '</div>'
-    + '</div>';
-}
-
 function renderLogs() {
   if (!state.logsOpen) return '';
   if (!state.logs) {
@@ -1000,13 +932,6 @@ async function refreshLogs() {
     }
   })();
   return logsRequest;
-}
-
-function renderDiffLines(lines) {
-  return (lines || []).map((l) => {
-    const cls = l.tag === '+' ? 'dl add' : (l.tag === '-' ? 'dl del' : 'dl');
-    return '<span class="' + cls + '">' + esc(l.tag + ' ' + l.text) + '</span>';
-  }).join('');
 }
 
 function displayBlocksHtml(blocks, latencyMs) {
@@ -1313,24 +1238,6 @@ async function submitAnswer(childId, answer) {
     await refreshDetail();
   } catch (e) {
     alert('Answer failed: ' + String(e));
-  }
-}
-
-async function sendConfirm(childId, approve) {
-  try {
-    const r = await fetch('/api/confirm/' + encodeURIComponent(childId), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ approve }),
-    });
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      throw new Error(e.error || ('HTTP ' + r.status));
-    }
-    state.lastSig = null;
-    await refreshDetail();
-  } catch (e) {
-    alert((approve ? 'Approve' : 'Reject') + ' failed: ' + String(e));
   }
 }
 
