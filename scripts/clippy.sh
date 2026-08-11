@@ -5,4 +5,6 @@ cd "$(dirname "$0")/.."
 
 cargo fmt
 cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged -- -D warnings
+cargo fmt
+
 git status -s
