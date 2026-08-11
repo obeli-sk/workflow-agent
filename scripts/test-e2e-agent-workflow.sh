@@ -16,6 +16,53 @@ e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
+echo ">>> checking ask-user lifecycle through the session projection"
+ASK_SESSION_ID="$("$OBELISK" generate execution-id)"
+"$OBELISK" execution submit -a "$E2E_API_URL" -e "$ASK_SESSION_ID" "$RUN_FFQN" \
+    '["", null, null, null]'
+
+SECONDS=0
+while true; do
+    ASK_PROJECTION="$(curl --fail --silent "http://127.0.0.1:28091/api/runs/$ASK_SESSION_ID")"
+    ASK_OFFER_ID="$(node scripts/e2e-json.js input-offer-id <<<"$ASK_PROJECTION")"
+    [[ -n "$ASK_OFFER_ID" ]] && break
+    [[ $SECONDS -ge 30 ]] && { echo "ask-user session did not publish its input offer: $ASK_PROJECTION" >&2; exit 1; }
+    sleep 1
+done
+ASK_SCRIPT="obelisk call obelisk-agent:tools/input.ask-user '[\"Continue?\"]'"
+ASK_BODY="$(node scripts/e2e-json.js shell-input "$ASK_OFFER_ID" shell-e2e-ask "$ASK_SCRIPT")"
+curl --fail --silent --show-error \
+    -H 'content-type: application/json' \
+    -d "$ASK_BODY" \
+    "http://127.0.0.1:28091/api/input/$ASK_SESSION_ID" >/dev/null
+
+SECONDS=0
+while true; do
+    ASK_PROJECTION="$(curl --fail --silent "http://127.0.0.1:28091/api/runs/$ASK_SESSION_ID")"
+    if node scripts/e2e-json.js check-human-input-request <<<"$ASK_PROJECTION" 2>/dev/null; then
+        break
+    fi
+    [[ $SECONDS -ge 30 ]] && { echo "ask-user request was not projected: $ASK_PROJECTION" >&2; exit 1; }
+    sleep 1
+done
+ASK_ID="$(node scripts/e2e-json.js pending-ask-id <<<"$ASK_PROJECTION")"
+curl --fail --silent --show-error \
+    -H 'content-type: application/json' \
+    -d '{"answer":"yes"}' \
+    "http://127.0.0.1:28091/api/answer/$ASK_ID" >/dev/null
+
+SECONDS=0
+while true; do
+    ASK_PROJECTION="$(curl --fail --silent "http://127.0.0.1:28091/api/runs/$ASK_SESSION_ID")"
+    if node scripts/e2e-json.js check-human-input-resolved <<<"$ASK_PROJECTION" 2>/dev/null; then
+        break
+    fi
+    [[ $SECONDS -ge 30 ]] && { echo "ask-user resolution was not projected: $ASK_PROJECTION" >&2; exit 1; }
+    sleep 1
+done
+echo ">>> ask-user projection E2E PASS"
+"$OBELISK" execution cancel -a "$E2E_API_URL" "$ASK_SESSION_ID" >/dev/null || true
+
 echo ">>> creating an empty session and running one direct shell turn"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \

@@ -12,8 +12,6 @@ import {
 import { loadLatestAgentStatus, loadResponses, parseJoinName } from "./responses.js";
 
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
-const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
-
 function pickRunState(workflowStatus) {
     const ps = workflowStatus?.pending_state || null;
     return {
@@ -53,20 +51,19 @@ async function loadPromptPreview(execId) {
 export async function detailRun(id, cursorState) {
     const resetTranscript = cursorState.workflowId !== id;
     const responseCursor = resetTranscript ? 0 : cursorState.responseCursor;
-    const [status, created, walk, finalResult, pendingAsks] = await Promise.all([
+    const [status, walk, finalResult] = await Promise.all([
         loadStatus(id),
-        loadCreated(id),
         loadResponses(id, responseCursor),
         loadFinalResult(id),
-        loadPendingAsks(id),
     ]);
+    const started = walk.sessionStarted;
     return {
         id,
         ...pickRunState(status),
         created_at: status?.created_at || "",
-        prompt: created?.prompt ?? null,
-        backend: created?.backend ?? null,
-        effort: created?.effort ?? null,
+        prompt: started?.prompt || null,
+        backend: started?.backend || null,
+        effort: started?.effort || null,
         transcript: {
             reset: resetTranscript,
             workflow_id: id,
@@ -74,13 +71,14 @@ export async function detailRun(id, cursorState) {
             operator_messages: walk.operatorMessages,
             shell_events: walk.shellEvents,
             turn_starts: walk.turnStarts,
+            human_input_events: walk.humanInputEvents,
+            session_started: walk.sessionStarted,
             sent_results: walk.toolResults,
             input_offer: walk.inputOffer,
             agent_working: walk.agentWorking,
             response_cursor: walk.cursor,
         },
         final_result: finalResult,
-        pending_asks: pendingAsks,
     };
 }
 
@@ -138,22 +136,4 @@ export async function loadExecutionTreeLogs(workflowId, startCursor) {
         if (page.length < 200) break;
     }
     return { logs, cursor: startCursor && logs.length === 0 ? startCursor : cursor };
-}
-
-async function loadPendingAsks(workflowId) {
-    let candidates;
-    try {
-        candidates = await listExecutions(ASK_USER_FFQN, "", true, true, 50);
-    } catch (_) { return []; }
-    const mine = candidates.filter((e) => typeof e.execution_id === "string"
-        && e.execution_id.startsWith(workflowId + "."));
-    return await Promise.all(mine.map(async (e) => {
-        let question = null;
-        try {
-            const evs = await getExecutionEvents(e.execution_id, "version_from", 0, true, 1);
-            const p = evs.events?.[0]?.event?.created?.params;
-            if (Array.isArray(p) && typeof p[0] === "string") question = p[0];
-        } catch (_) { }
-        return { id: e.execution_id, question };
-    }));
 }

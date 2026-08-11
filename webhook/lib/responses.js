@@ -8,6 +8,8 @@ export async function loadResponses(execId, startCursor = 0) {
     const operatorMessages = [];
     const shellEvents = [];
     const turnStarts = [];
+    const humanInputEvents = [];
+    let sessionStarted;
     let inputOffer;
     let agentWorking;
     let cursor = startCursor;
@@ -28,12 +30,15 @@ export async function loadResponses(execId, startCursor = 0) {
                 operatorMessages,
                 shellEvents,
                 turnStarts,
+                humanInputEvents,
+                sessionStarted,
                 inputOffer,
                 agentWorking,
             };
             appendSessionEvent(projection, ev.result?.ok?.value ?? ev.result?.ok, r);
             inputOffer = projection.inputOffer;
             agentWorking = projection.agentWorking;
+            sessionStarted = projection.sessionStarted;
         }
         const next = payload.scan_cursor;
         if (typeof next !== "number" || next <= cursor) break;
@@ -47,6 +52,8 @@ export async function loadResponses(execId, startCursor = 0) {
         operatorMessages,
         shellEvents,
         turnStarts,
+        humanInputEvents,
+        sessionStarted,
         inputOffer,
         agentWorking,
         cursor,
@@ -71,7 +78,15 @@ export async function loadLatestAgentStatus(execId) {
 function appendSessionEvent(target, event, response) {
     if (!event || typeof event !== "object") return;
     const createdAt = response.event?.created_at || "";
-    if (event.input_offered) {
+    if (event.session_started) {
+        const started = event.session_started;
+        target.sessionStarted = {
+            protocol_version: started.protocol_version,
+            prompt: typeof started.prompt === "string" ? started.prompt : "",
+            backend: typeof started.backend === "string" ? started.backend : "",
+            effort: typeof started.effort === "string" ? started.effort : "",
+        };
+    } else if (event.input_offered) {
         const offer = event.input_offered;
         target.inputOffer = {
             id: typeof offer.execution_id === "string" ? offer.execution_id : "",
@@ -79,6 +94,21 @@ function appendSessionEvent(target, event, response) {
         };
     } else if (event.agent_status) {
         target.agentWorking = event.agent_status.working === true;
+    } else if (event.human_input_requested) {
+        const requested = event.human_input_requested;
+        target.humanInputEvents.push({
+            kind: "requested",
+            id: typeof requested.execution_id === "string" ? requested.execution_id : "",
+            question: typeof requested.question === "string" ? requested.question : "",
+            turn_index: Number.isInteger(requested.turn_index) ? requested.turn_index : null,
+        });
+    } else if (event.human_input_resolved) {
+        const resolved = event.human_input_resolved;
+        target.humanInputEvents.push({
+            kind: "resolved",
+            id: typeof resolved.execution_id === "string" ? resolved.execution_id : "",
+            turn_index: Number.isInteger(resolved.turn_index) ? resolved.turn_index : null,
+        });
     } else if (event.operator_message) {
         const message = event.operator_message;
         target.turnStarts.push({

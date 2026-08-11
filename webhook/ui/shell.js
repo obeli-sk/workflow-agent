@@ -358,6 +358,13 @@ function refreshDetail() {
       }
       const detail = await r.json();
       const contentChanged = mergeTranscript(detail.transcript);
+      const started = state.transcript?.session_started;
+      if (started) {
+        detail.prompt = started.prompt || null;
+        detail.backend = started.backend || null;
+        detail.effort = started.effort || null;
+      }
+      detail.pending_asks = state.transcript?.pending_asks || [];
       detail.input_offer = state.transcript?.input_offer || null;
       detail.agent_working = state.transcript?.agent_working === true;
       detail.turns = buildCachedTurns(detail.created_at, detail.prompt);
@@ -400,6 +407,8 @@ function mergeTranscript(delta) {
       shell_events: [],
       turn_starts: [],
       sent_results: [],
+      pending_asks: [],
+      session_started: null,
       input_offer: null,
       agent_working: false,
       response_cursor: 0,
@@ -411,6 +420,9 @@ function mergeTranscript(delta) {
     || (delta.shell_events || []).length > 0
     || (delta.turn_starts || []).length > 0
     || (delta.sent_results || []).length > 0
+    || (delta.human_input_events || []).length > 0
+    || (Object.prototype.hasOwnProperty.call(delta, 'session_started')
+      && delta.session_started !== null)
     || (Object.prototype.hasOwnProperty.call(delta, 'input_offer')
       && delta.input_offer?.id !== state.transcript.input_offer?.id)
     || (Object.prototype.hasOwnProperty.call(delta, 'agent_working')
@@ -420,6 +432,8 @@ function mergeTranscript(delta) {
   mergeShellEvents(state.transcript.shell_events, delta.shell_events || []);
   mergeTurnStarts(state.transcript.turn_starts, delta.turn_starts || []);
   mergeToolResults(state.transcript.sent_results, delta.sent_results || []);
+  mergeHumanInputEvents(state.transcript.pending_asks, delta.human_input_events || []);
+  if (delta.session_started) state.transcript.session_started = delta.session_started;
   if (Object.prototype.hasOwnProperty.call(delta, 'input_offer')) {
     state.transcript.input_offer = delta.input_offer || null;
   }
@@ -428,6 +442,20 @@ function mergeTranscript(delta) {
   }
   state.transcript.response_cursor = delta.response_cursor || state.transcript.response_cursor;
   return contentChanged;
+}
+
+function mergeHumanInputEvents(target, incoming) {
+  for (const event of incoming) {
+    if (!event?.id) continue;
+    const index = target.findIndex((ask) => ask?.id === event.id);
+    if (event.kind === 'resolved') {
+      if (index !== -1) target.splice(index, 1);
+    } else if (event.kind === 'requested') {
+      const ask = { id: event.id, question: event.question || '', turn_index: event.turn_index };
+      if (index === -1) target.push(ask);
+      else target[index] = ask;
+    }
+  }
 }
 
 function mergeOperatorMessages(target, incoming) {

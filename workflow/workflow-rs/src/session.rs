@@ -36,9 +36,9 @@ use crate::generated::obelisk::types::execution::AwaitNextExtensionError;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::agent::session::{
-    AgentStatusEvent, AssistantReplyEvent, InputOfferedEvent, OperatorMessageEvent, PromptInput,
-    SessionEvent, SessionInput, SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult,
-    ToolOutput, ToolResultEvent,
+    AgentStatusEvent, AssistantReplyEvent, HumanInputRequestedEvent, HumanInputResolvedEvent,
+    InputOfferedEvent, OperatorMessageEvent, PromptInput, SessionEvent, SessionInput,
+    SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput, ToolResultEvent,
 };
 use crate::generated::obelisk_agent::agent_obelisk_ext::session as session_ext;
 use crate::generated::obelisk_agent::agent_obelisk_stub::session as session_stub;
@@ -123,18 +123,25 @@ impl ToolResultBlock {
 }
 
 #[derive(Default)]
-struct NotificationJoinSets {
+struct NotificationJoinSetsState {
     join_sets: BTreeMap<String, JoinSet>,
 }
 
-impl NotificationJoinSets {
-    fn notify(&mut self, join_set_name: &str, event: &SessionEvent) -> Result<(), String> {
-        if !self.join_sets.contains_key(join_set_name) {
+#[derive(Clone, Default)]
+pub(crate) struct Notifications {
+    state: Rc<RefCell<NotificationJoinSetsState>>,
+    turn_index: Rc<RefCell<u64>>,
+}
+
+impl Notifications {
+    fn notify(&self, join_set_name: &str, event: &SessionEvent) -> Result<(), String> {
+        let mut state = self.state.borrow_mut();
+        if !state.join_sets.contains_key(join_set_name) {
             let join_set = workflow_support::join_set_create_named(join_set_name)
                 .map_err(|e| format!("{join_set_name} join set: {e:?}"))?;
-            self.join_sets.insert(join_set_name.to_string(), join_set);
+            state.join_sets.insert(join_set_name.to_string(), join_set);
         }
-        let join_set = self
+        let join_set = state
             .join_sets
             .get(join_set_name)
             .expect("notification join set must exist");
@@ -142,6 +149,8 @@ impl NotificationJoinSets {
             SessionEvent::SessionStarted(_) => "session-started".to_string(),
             SessionEvent::InputOffered(event) => event.execution_id.clone(),
             SessionEvent::AgentStatus(event) => format!("agent-status-{}", event.turn_index),
+            SessionEvent::HumanInputRequested(event) => event.execution_id.clone(),
+            SessionEvent::HumanInputResolved(event) => event.execution_id.clone(),
             SessionEvent::OperatorMessage(event) => event.id.clone(),
             SessionEvent::AssistantReply(event) => format!("turn-{}", event.turn_index),
             SessionEvent::AgentError(event) => event.id.clone(),
@@ -159,6 +168,37 @@ impl NotificationJoinSets {
         }
         Ok(())
     }
+
+    pub(crate) fn set_turn_index(&self, turn_index: u64) {
+        *self.turn_index.borrow_mut() = turn_index;
+    }
+
+    pub(crate) fn human_input_requested(
+        &self,
+        execution_id: String,
+        question: String,
+    ) -> Result<(), String> {
+        let turn_index = *self.turn_index.borrow();
+        self.notify(
+            SESSION_EVENTS_JOIN_SET,
+            &SessionEvent::HumanInputRequested(HumanInputRequestedEvent {
+                execution_id,
+                question,
+                turn_index,
+            }),
+        )
+    }
+
+    pub(crate) fn human_input_resolved(&self, execution_id: String) -> Result<(), String> {
+        let turn_index = *self.turn_index.borrow();
+        self.notify(
+            SESSION_EVENTS_JOIN_SET,
+            &SessionEvent::HumanInputResolved(HumanInputResolvedEvent {
+                execution_id,
+                turn_index,
+            }),
+        )
+    }
 }
 
 fn elapsed_milliseconds(start: i64, end: i64) -> u64 {
@@ -175,6 +215,8 @@ pub fn agent_loop(
         return Err("system prompt is required".to_string());
     }
 
+    let notifications = Notifications::default();
+    let host = || RealHost::new(notifications.clone());
     let mut bash = Bash::new(BashOptions {
         cwd: "/workspace".to_string(),
         // `date` and `sleep` reach the durable Obelisk clock/timer through
@@ -187,7 +229,7 @@ pub fn agent_loop(
         sleep_ms: host_sleep_ms,
         ..Default::default()
     });
-    bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(RealHost)));
+    bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(host())));
 
     // Configured MCP servers surface as one shell command each; the global `mcp`
     // command is the registry over them. The registry is shared with the servers
@@ -196,7 +238,7 @@ pub fn agent_loop(
     let mcp_registry: obelisk_mcp::ServerRegistry = Rc::new(RefCell::new(Vec::new()));
     bash.register_command(
         "mcp",
-        obelisk_mcp::registry_command_handler(mcp_registry.clone(), Box::new(RealHost)),
+        obelisk_mcp::registry_command_handler(mcp_registry.clone(), Box::new(host())),
     );
     // A server whose name would shadow a builtin, the `obelisk`/`mcp` command, or
     // a discovered program is skipped (the reason recorded to `.mcp-error`),
@@ -216,11 +258,13 @@ pub fn agent_loop(
         Vec::new()
     };
 
-    let mut notifications = NotificationJoinSets::default();
     notifications.notify(
         SESSION_EVENTS_JOIN_SET,
         &SessionEvent::SessionStarted(SessionStartedEvent {
-            protocol_version: 3,
+            protocol_version: 4,
+            prompt: prompt.clone(),
+            backend: model.clone(),
+            effort: effort.clone(),
         }),
     )?;
 
@@ -238,11 +282,12 @@ pub fn agent_loop(
     let mut turn_index: u64 = 0;
     let mut should_call_llm = !messages.is_empty();
     let mut agent_steps = 0u32;
-    let mut session = open_session(turn_index, &mut notifications)?;
-    publish_agent_status(&mut notifications, should_call_llm, turn_index)?;
+    let mut session = open_session(turn_index, &notifications)?;
+    publish_agent_status(&notifications, should_call_llm, turn_index)?;
 
     loop {
         session.turn_index = turn_index;
+        notifications.set_turn_index(turn_index);
         if should_call_llm && agent_steps >= MAX_TURNS {
             let message =
                 format!("exceeded MAX_TURNS={MAX_TURNS} without yielding an assistant response");
@@ -259,7 +304,7 @@ pub fn agent_loop(
                 }),
             )?;
             should_call_llm = false;
-            publish_agent_status(&mut notifications, false, turn_index)?;
+            publish_agent_status(&notifications, false, turn_index)?;
             agent_steps = 0;
             turn_index += 1;
             continue;
@@ -281,7 +326,7 @@ pub fn agent_loop(
             Err(_) => false,
         };
         if !programs_registered || deployment_changed {
-            match obelisk_program::discover(&mut RealHost) {
+            match obelisk_program::discover(&mut host()) {
                 Ok(programs) => {
                     for program in programs {
                         if registered_programs.insert(program.name.clone()) {
@@ -290,7 +335,7 @@ pub fn agent_loop(
                                 obelisk_program::command_handler(
                                     &program.name,
                                     program.ffqn,
-                                    Box::new(RealHost),
+                                    Box::new(host()),
                                 ),
                             );
                         }
@@ -306,7 +351,7 @@ pub fn agent_loop(
             // list-functions call), on the first turn and on every redeploy.
             // Registration is idempotent; a server whose name collides is
             // skipped and the reason recorded.
-            match obelisk_mcp::discover(&mut RealHost) {
+            match obelisk_mcp::discover(&mut host()) {
                 Ok(servers) => {
                     let mut skipped: Vec<String> = Vec::new();
                     for server in servers {
@@ -329,14 +374,14 @@ pub fn agent_loop(
                             obelisk_mcp::server_command_handler(
                                 &server.name,
                                 &server.ffqn,
-                                Box::new(RealHost),
+                                Box::new(host()),
                             ),
                         );
                         let mount_dir = format!("/workspace/mcp/{}", server.name);
                         match obelisk_mcp::mount_resources(
                             bash.fs_mut(),
-                            &mut RealHost,
-                            Box::new(RealHost),
+                            &mut host(),
+                            Box::new(host()),
                             &server.ffqn,
                             &mount_dir,
                         ) {
@@ -375,8 +420,8 @@ pub fn agent_loop(
             // registers the deployment's file *structure*, so each source is
             // fetched from the CAS by this loader the first time it is read.
             bash.fs_mut()
-                .set_blob_loader(obelisk_pack::blob_loader(Box::new(RealHost)));
-            if let Err(err) = obelisk_pack::mount(bash.fs_mut(), &mut RealHost) {
+                .set_blob_loader(obelisk_pack::blob_loader(Box::new(host())));
+            if let Err(err) = obelisk_pack::mount(bash.fs_mut(), &mut host()) {
                 let _ = bash
                     .fs_mut()
                     .write_file("/workspace/.mount-error", err.as_bytes());
@@ -384,21 +429,21 @@ pub fn agent_loop(
             pack_mounted = true;
         }
         if !should_call_llm {
-            let event = take_operator_event(&mut session, &mut notifications)?;
+            let event = take_operator_event(&mut session, &notifications)?;
             should_call_llm = apply_session_input(
                 event,
                 turn_index,
                 true,
-                &mut notifications,
+                &notifications,
                 &mut bash,
                 &mut messages,
             )?;
             if should_call_llm {
-                publish_agent_status(&mut notifications, true, turn_index)?;
+                publish_agent_status(&notifications, true, turn_index)?;
             }
             turn_complete = !should_call_llm;
         } else {
-            publish_agent_status(&mut notifications, true, turn_index)?;
+            publish_agent_status(&notifications, true, turn_index)?;
             let reply = call_llm_with_operator(
                 &mut session,
                 &system,
@@ -406,7 +451,7 @@ pub fn agent_loop(
                 &model,
                 &effort,
                 &mut bash,
-                &mut notifications,
+                &notifications,
             )?;
             agent_steps += 1;
             let calls: Vec<ToolCall> = reply
@@ -473,7 +518,7 @@ pub fn agent_loop(
                 agent_steps = 0;
                 turn_complete = assistant_completes_turn;
                 if !should_call_llm {
-                    publish_agent_status(&mut notifications, false, turn_index)?;
+                    publish_agent_status(&notifications, false, turn_index)?;
                 }
             }
         }
@@ -514,7 +559,7 @@ fn apply_session_input(
     event: SessionInput,
     turn_index: u64,
     shell_completes_turn: bool,
-    notifications: &mut NotificationJoinSets,
+    notifications: &Notifications,
     bash: &mut Bash,
     messages: &mut Vec<Value>,
 ) -> Result<bool, String> {
@@ -618,7 +663,7 @@ fn call_llm_with_operator(
     model: &str,
     effort: &str,
     bash: &mut Bash,
-    notifications: &mut NotificationJoinSets,
+    notifications: &Notifications,
 ) -> Result<LlmReply, String> {
     let mut prompt_queued = false;
     loop {
@@ -724,10 +769,7 @@ fn tool_error(id: &str, message: &str) -> ToolResultBlock {
 
 // ----- durable session channel ------------------------------------------------
 
-fn open_session(
-    turn_index: u64,
-    notifications: &mut NotificationJoinSets,
-) -> Result<Session, String> {
+fn open_session(turn_index: u64, notifications: &Notifications) -> Result<Session, String> {
     let join_set =
         workflow_support::join_set_create_named("operator").map_err(|e| format!("{e:?}"))?;
     let injection_execution_id = session_ext::injection_submit(&join_set);
@@ -739,10 +781,7 @@ fn open_session(
     })
 }
 
-fn rearm_operator(
-    session: &mut Session,
-    notifications: &mut NotificationJoinSets,
-) -> Result<(), String> {
+fn rearm_operator(session: &mut Session, notifications: &Notifications) -> Result<(), String> {
     session.injection_execution_id = session_ext::injection_submit(&session.join_set);
     publish_input_offer(
         notifications,
@@ -752,7 +791,7 @@ fn rearm_operator(
 }
 
 fn publish_input_offer(
-    notifications: &mut NotificationJoinSets,
+    notifications: &Notifications,
     execution_id: &workflow_support::ExecutionId,
     turn_index: u64,
 ) -> Result<(), String> {
@@ -766,7 +805,7 @@ fn publish_input_offer(
 }
 
 fn publish_agent_status(
-    notifications: &mut NotificationJoinSets,
+    notifications: &Notifications,
     working: bool,
     turn_index: u64,
 ) -> Result<(), String> {
@@ -781,7 +820,7 @@ fn publish_agent_status(
 
 fn take_operator_event(
     session: &mut Session,
-    notifications: &mut NotificationJoinSets,
+    notifications: &Notifications,
 ) -> Result<SessionInput, String> {
     let event = session_ext::injection_await_next(&session.join_set)
         .map_err(|e| format!("{e:?}"))?
@@ -895,6 +934,36 @@ mod tests {
             json!({
                 "agent_status": {
                     "working": true,
+                    "turn_index": 5,
+                },
+            })
+        );
+
+        let requested = SessionEvent::HumanInputRequested(HumanInputRequestedEvent {
+            execution_id: "E_session.ask".to_string(),
+            question: "Continue?".to_string(),
+            turn_index: 5,
+        });
+        assert_eq!(
+            serde_json::to_value(requested).unwrap(),
+            json!({
+                "human_input_requested": {
+                    "execution_id": "E_session.ask",
+                    "question": "Continue?",
+                    "turn_index": 5,
+                },
+            })
+        );
+
+        let resolved = SessionEvent::HumanInputResolved(HumanInputResolvedEvent {
+            execution_id: "E_session.ask".to_string(),
+            turn_index: 5,
+        });
+        assert_eq!(
+            serde_json::to_value(resolved).unwrap(),
+            json!({
+                "human_input_resolved": {
+                    "execution_id": "E_session.ask",
                     "turn_index": 5,
                 },
             })

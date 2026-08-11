@@ -20,6 +20,9 @@ interface session {
 
     record session-started-event {
         protocol-version: u32,
+        prompt: string,
+        backend: string,
+        effort: string,
     }
 
     record input-offered-event {
@@ -29,6 +32,17 @@ interface session {
 
     record agent-status-event {
         working: bool,
+        turn-index: u64,
+    }
+
+    record human-input-requested-event {
+        execution-id: string,
+        question: string,
+        turn-index: u64,
+    }
+
+    record human-input-resolved-event {
+        execution-id: string,
         turn-index: u64,
     }
 
@@ -76,6 +90,8 @@ interface session {
         session-started(session-started-event),
         input-offered(input-offered-event),
         agent-status(agent-status-event),
+        human-input-requested(human-input-requested-event),
+        human-input-resolved(human-input-resolved-event),
         operator-message(operator-message-event),
         assistant-reply(assistant-reply-event),
         agent-error(operator-message-event),

@@ -36,6 +36,21 @@ switch (command) {
         process.stdout.write(String(json()?.transcript?.response_cursor ?? 0));
         break;
     }
+    case "pending-ask-id": {
+        process.stdout.write(json()?.transcript?.human_input_events
+            ?.findLast((event) => event.kind === "requested")?.id ?? "");
+        break;
+    }
+    case "shell-input": {
+        const offerId = process.argv[3];
+        const id = process.argv[4];
+        const script = process.argv[5];
+        process.stdout.write(JSON.stringify({
+            offer_id: offerId,
+            input: { shell: { id, script, stdin: "" } },
+        }));
+        break;
+    }
     case "check-shell-session": {
         const ffqns = executions(json()).map((row) => row.ffqn);
         const valid = !ffqns.includes("obelisk-agent:llm/chat.completion")
@@ -95,6 +110,36 @@ switch (command) {
             && typeof projection?.transcript?.input_offer?.id === "string"
             && projection.transcript.agent_working !== true;
         if (!valid) console.error(`unexpected shell projection: ${JSON.stringify(projection)}`);
+        process.exit(valid ? 0 : 1);
+        break;
+    }
+    case "check-human-input-request": {
+        const projection = json();
+        const event = projection?.transcript?.human_input_events
+            ?.find((candidate) => candidate.kind === "requested");
+        const valid = typeof event?.id === "string"
+            && event.id.length > 0
+            && event.question === "Continue?"
+            && event.turn_index === 0;
+        if (!valid) console.error(`unexpected human input request: ${JSON.stringify(projection)}`);
+        process.exit(valid ? 0 : 1);
+        break;
+    }
+    case "check-human-input-resolved": {
+        const projection = json();
+        const events = projection?.transcript?.human_input_events || [];
+        const requested = events.find((event) => event.kind === "requested");
+        const resolved = events.find((event) => event.kind === "resolved" && event.id === requested?.id);
+        const shell = projection?.transcript?.shell_events
+            ?.find((event) => event.id === "shell-e2e-ask");
+        let shellResult;
+        try { shellResult = JSON.parse(shell?.result?.stdout || "null"); }
+        catch (_) { shellResult = null; }
+        const valid = Boolean(requested && resolved)
+            && shellResult?.ffqn === "obelisk-agent:tools/input.ask-user"
+            && shellResult?.result === "yes"
+            && shell.turn_complete === true;
+        if (!valid) console.error(`unexpected resolved human input: ${JSON.stringify(projection)}`);
         process.exit(valid ? 0 : 1);
         break;
     }
