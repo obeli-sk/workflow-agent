@@ -7,7 +7,8 @@
 
 use just_bash_rs::obelisk_pack::ObeliskHost;
 
-use crate::generated::obelisk::workflow::workflow_support;
+use crate::generated::obelisk::types::time::Duration;
+use crate::generated::obelisk::workflow::workflow_support::{self, JoinNextTryError, ScheduleAt};
 use serde_json::Value;
 
 use crate::session::Notifications;
@@ -97,6 +98,32 @@ impl ObeliskHost for RealHost {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(value)) => Err(child_error_message(value)),
             Err(err) => Err(format!("{err:?}")),
+        }
+    }
+
+    fn call_json_polling(
+        &mut self,
+        ffqn: &str,
+        params_json: &str,
+    ) -> Result<Option<String>, String> {
+        let function = split_ffqn(ffqn)?;
+        let join_set = workflow_support::join_set_create();
+        workflow_support::submit_json(&join_set, &function, params_json)
+            .map_err(|e| format!("{ffqn} submit failed: {e:?}"))?;
+        loop {
+            match workflow_support::join_next_try(&join_set) {
+                Ok(Ok(value)) => return Ok(value),
+                Ok(Err(value)) => return Err(child_error_message(value)),
+                // The sleep yields control so the closing executor can append its
+                // unlock while `apply` hot-redeploys this workflow; on resume the
+                // response is already in the log and the next poll returns it.
+                Err(JoinNextTryError::Pending) => {
+                    let _ = workflow_support::sleep(ScheduleAt::In(Duration::Seconds(1)), None);
+                }
+                Err(JoinNextTryError::AllProcessed) => {
+                    return Err(format!("{ffqn} produced no response"));
+                }
+            }
         }
     }
 }

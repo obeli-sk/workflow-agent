@@ -61,6 +61,20 @@ nothing more.";
 /// `decodeString`/`decodeJson` helpers.
 pub trait ObeliskHost {
     fn call_json(&mut self, ffqn: &str, params_json: &str) -> Result<Option<String>, String>;
+
+    /// Like `call_json`, but submits the child and polls for its result with a
+    /// short sleep between polls instead of a warm blocking join. Used only for
+    /// a call that hot-redeploys this very workflow (`deployment apply`): a warm
+    /// join keeps the closing executor from appending its unlock during the
+    /// redeploy, stalling resume until the lock lease expires. Defaults to
+    /// `call_json` for hosts (and the test fake) that never redeploy themselves.
+    fn call_json_polling(
+        &mut self,
+        ffqn: &str,
+        params_json: &str,
+    ) -> Result<Option<String>, String> {
+        self.call_json(ffqn, params_json)
+    }
 }
 
 /// Result of mounting (or refreshing) the active deployment into the VFS.
@@ -419,11 +433,19 @@ fn execute_deployment(
                 flag(args, "--allow-missing-runtime-config"),
             ]),
         ),
-        "apply" => json_call(
-            host,
-            "obelisk-agent:tools/webapi.apply-deployment",
-            json!([required(args.first().map(String::as_str), "deployment id")?]),
-        ),
+        "apply" => {
+            let params = json!([required(args.first().map(String::as_str), "deployment id")?]);
+            // `apply` hot-redeploys this workflow, so poll for the child result
+            // instead of a warm join (see `ObeliskHost::call_json_polling`).
+            let value = match host.call_json_polling(
+                "obelisk-agent:tools/webapi.apply-deployment",
+                &params.to_string(),
+            )? {
+                Some(text) => serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)),
+                None => Value::Null,
+            };
+            Ok(ok(ensure_trailing_newline(render_output(value))))
+        }
         _ => Ok(fail(format!(
             "obelisk deployment: unknown action '{action}'\n"
         ))),
