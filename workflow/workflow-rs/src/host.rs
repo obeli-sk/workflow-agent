@@ -7,8 +7,7 @@
 
 use just_bash_rs::obelisk_pack::ObeliskHost;
 
-use crate::generated::obelisk::types::time::Duration;
-use crate::generated::obelisk::workflow::workflow_support::{self, JoinNextTryError, ScheduleAt};
+use crate::generated::obelisk::workflow::workflow_support;
 use serde_json::Value;
 
 use crate::session::Notifications;
@@ -98,36 +97,6 @@ impl ObeliskHost for RealHost {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(value)) => Err(child_error_message(value)),
             Err(err) => Err(format!("{err:?}")),
-        }
-    }
-
-    fn call_json_polling(
-        &mut self,
-        ffqn: &str,
-        params_json: &str,
-    ) -> Result<Option<String>, String> {
-        let function = split_ffqn(ffqn)?;
-        let join_set = workflow_support::join_set_create();
-        workflow_support::submit_json(&join_set, &function, params_json)
-            .map_err(|e| format!("{ffqn} submit failed: {e:?}"))?;
-        loop {
-            match workflow_support::join_next_try(&join_set) {
-                Ok(Ok(value)) => return Ok(value),
-                Ok(Err(value)) => return Err(child_error_message(value)),
-                Err(JoinNextTryError::Pending) => {
-                    // Avoid busy loop. join-next-try is a non-blocking op, it does not reach to database.
-                    if let Err(_) =
-                        workflow_support::sleep(ScheduleAt::In(Duration::Seconds(1)), None)
-                    {
-                        return Err(format!("waiting for {ffqn} cancelled"));
-                    }
-                }
-                Err(JoinNextTryError::AllProcessed) => {
-                    unreachable!(
-                        "join set contains one child execution and loop exits on first response"
-                    )
-                }
-            }
         }
     }
 }
