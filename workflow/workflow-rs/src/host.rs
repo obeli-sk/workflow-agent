@@ -114,14 +114,18 @@ impl ObeliskHost for RealHost {
             match workflow_support::join_next_try(&join_set) {
                 Ok(Ok(value)) => return Ok(value),
                 Ok(Err(value)) => return Err(child_error_message(value)),
-                // The sleep yields control so the closing executor can append its
-                // unlock while `apply` hot-redeploys this workflow; on resume the
-                // response is already in the log and the next poll returns it.
                 Err(JoinNextTryError::Pending) => {
-                    let _ = workflow_support::sleep(ScheduleAt::In(Duration::Seconds(1)), None);
+                    // Avoid busy loop. join-next-try is a non-blocking op, it does not reach to database.
+                    if let Err(_) =
+                        workflow_support::sleep(ScheduleAt::In(Duration::Seconds(1)), None)
+                    {
+                        return Err(format!("waiting for {ffqn} cancelled"));
+                    }
                 }
                 Err(JoinNextTryError::AllProcessed) => {
-                    return Err(format!("{ffqn} produced no response"));
+                    unreachable!(
+                        "join set contains one child execution and loop exits on first response"
+                    )
                 }
             }
         }

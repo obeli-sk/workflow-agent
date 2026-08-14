@@ -437,7 +437,7 @@ fn execute_deployment(
             let params = json!([required(args.first().map(String::as_str), "deployment id")?]);
             // `apply` hot-redeploys this workflow, so poll for the child result
             // instead of a warm join (see `ObeliskHost::call_json_polling`).
-            let value = match host.call_json_polling(
+            let value = match host.call_json(
                 "obelisk-agent:tools/webapi.apply-deployment",
                 &params.to_string(),
             )? {
