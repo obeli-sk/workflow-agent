@@ -4,7 +4,6 @@ models.json
 models-private*
 node_modules
 target
-target-sandbox
 target-e2e
 .e2e-deployment.toml
 .e2e-agent-deployment.toml
