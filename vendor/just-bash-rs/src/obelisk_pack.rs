@@ -329,13 +329,13 @@ fn try_execute_obelisk(
                         .unwrap_or_else(|_| Value::String(argument.clone()))
                 })
                 .collect::<Vec<_>>();
-            return target_call(
-                host,
-                json!([ffqn, Value::Array(params).to_string()]),
-            );
+            return target_call(host, json!([ffqn, Value::Array(params).to_string()]));
         }
         if rest.len() > 1 {
-            return Err("call: expected one params JSON array, or `--` followed by positional parameters".to_string());
+            return Err(
+                "call: expected one params JSON array, or `--` followed by positional parameters"
+                    .to_string(),
+            );
         }
         // A params-json positional that is present but empty is almost always a
         // shell expansion that produced nothing (e.g. `"$(cat missing.json)"`).
@@ -1209,18 +1209,14 @@ mod tests {
 
     #[test]
     fn call_prints_only_the_target_result() {
-        let mut host = FakeHost::new().with(
-            "obelisk-control:tools/native.call",
-            r#""{\"answer\":42}""#,
-        );
+        let mut host =
+            FakeHost::new().with("obelisk-control:tools/native.call", r#""{\"answer\":42}""#);
         let mut i = interp("/workspace");
         let out = execute_obelisk(&mut i, &words(&["call", "some:ffqn", "[]"]), "", &mut host);
         assert_eq!(out.stdout, "{\n  \"answer\": 42\n}\n");
 
-        let mut host = FakeHost::new().with(
-            "obelisk-control:tools/native.call",
-            r#""\"plain result\"""#,
-        );
+        let mut host =
+            FakeHost::new().with("obelisk-control:tools/native.call", r#""\"plain result\"""#);
         let out = execute_obelisk(&mut i, &words(&["call", "some:ffqn", "[]"]), "", &mut host);
         assert_eq!(out.stdout, "plain result\n");
     }

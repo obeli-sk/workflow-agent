@@ -828,7 +828,11 @@ mod tests {
             .write_file("/test/tail.txt", b"MATCHED\n")
             .unwrap();
         assert_eq!(
-            run(&mut bash2, "sed '/line 3/r /test/tail.txt' /test/numbers.txt").stdout,
+            run(
+                &mut bash2,
+                "sed '/line 3/r /test/tail.txt' /test/numbers.txt"
+            )
+            .stdout,
             "line 1\nline 2\nline 3\nMATCHED\nline 4\nline 5\n"
         );
     }

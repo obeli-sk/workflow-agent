@@ -35,16 +35,16 @@ use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
 use crate::generated::obelisk::types::execution::AwaitNextExtensionError;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
+use crate::generated::obelisk_agent::llm::chat::CompletionResult;
+use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
 use crate::generated::obelisk_agent::stub::stub::{
     AgentErrorEvent, AgentStatusEvent, AssistantReplyEvent, HumanInputRequestedEvent,
-    HumanInputResolvedEvent, InputOfferedEvent, PromptInput, SessionEvent, SessionInput,
-    OutputChunk, SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput,
+    HumanInputResolvedEvent, InputOfferedEvent, OutputChunk, PromptInput, SessionEvent,
+    SessionInput, SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput,
     ToolResultEvent, UserMessageEvent,
 };
 use crate::generated::obelisk_agent::stub_obelisk_ext::stub as session_ext;
 use crate::generated::obelisk_agent::stub_obelisk_stub::stub as session_stub;
-use crate::generated::obelisk_agent::llm::chat::CompletionResult;
-use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
 use crate::generated::obelisk_agent::tools::webapi;
 use crate::host::RealHost;
 use crate::support::last_response_execution_id;

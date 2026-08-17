@@ -178,10 +178,7 @@ mod tests {
         // The `$(...)` stdout is consumed into `x`, so only its stderr and the
         // final `echo` reach the transcript, in order.
         let out = run(&mut bash, "x=$(echo e >&2; echo v); echo $x");
-        assert_eq!(
-            chunks(&out),
-            vec![(Fd::Stderr, "e\n"), (Fd::Stdout, "v\n")]
-        );
+        assert_eq!(chunks(&out), vec![(Fd::Stderr, "e\n"), (Fd::Stdout, "v\n")]);
     }
 
     #[test]
