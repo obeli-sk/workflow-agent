@@ -5,15 +5,19 @@
 //! general token stream for a much bigger command set). Supports:
 //! addressing by line number, `$` (last line), `/regex/`, `addr1,addr2`
 //! ranges, and a leading `!`/trailing negation; commands `s///[flags]`
-//! (`g`/`i`/`p` and an `N`th-occurrence digit), `d`, `p`, `q`; `-n`
-//! (suppress automatic printing), repeated `-e`, and `-i` (in-place, no
-//! backup-suffix support). Regex flavor reuses `grep::translate_bre` for the
-//! BRE default and passes patterns straight through in `-E`/`-r` (ERE) mode.
+//! (`g`/`i`/`p` and an `N`th-occurrence digit), `d`, `p`, `q`, and `r file`
+//! (queue a file's contents after the current line, `-n`-immune like GNU
+//! sed, missing file silently produces nothing); `-n` (suppress automatic
+//! printing), repeated `-e`, and `-i` (in-place, no backup-suffix support).
+//! Regex flavor reuses `grep::translate_bre` for the BRE default and passes
+//! patterns straight through in `-E`/`-r` (ERE) mode.
 //! Not ported (the design doc's stretch goal): hold space (`h H g G x`),
 //! `a`/`i`/`c` text insertion, branching/labels (`b`/`t`/`:label`),
 //! multiline `N`/`D`/`P`, `y` transliteration, step addresses
 //! (`first~step`), relative-offset range ends (`addr1,+N`), and grouped
 //! `{ ... }` blocks.
+
+use std::collections::HashMap;
 
 use regex::{Captures, Regex, RegexBuilder};
 
@@ -46,6 +50,7 @@ enum SedCommand {
     Delete,
     Print,
     Quit,
+    ReadFile(String),
 }
 
 struct SedStmt {
@@ -212,6 +217,17 @@ fn parse_one_statement(
         'd' => (SedCommand::Delete, i + 1),
         'p' => (SedCommand::Print, i + 1),
         'q' => (SedCommand::Quit, i + 1),
+        'r' => {
+            // GNU `r`: the filename is the rest of the line (leading blanks
+            // skipped, `;` is not a separator here), so read to the newline.
+            let mut j = skip_space(chars, i + 1);
+            let start = j;
+            while j < chars.len() && chars[j] != '\n' {
+                j += 1;
+            }
+            let filename: String = chars[start..j].iter().collect();
+            (SedCommand::ReadFile(filename), j)
+        }
         other => return Err(format!("sed: unknown command: `{other}'\n")),
     };
     Ok((
@@ -350,14 +366,19 @@ fn apply_substitution(sub: &Substitution, input: &str) -> (String, bool) {
     (out, changed)
 }
 
-fn run_sed(stmts: &[SedStmt], content: &str, suppress_auto: bool) -> String {
+fn run_sed(
+    stmts: &[SedStmt],
+    content: &str,
+    suppress_auto: bool,
+    file_cache: &HashMap<String, String>,
+) -> String {
     let mut lines: Vec<&str> = content.split('\n').collect();
     if lines.last() == Some(&"") {
         lines.pop();
     }
     let total = lines.len();
     let mut range_active = vec![false; stmts.len()];
-    let mut out_lines: Vec<String> = Vec::new();
+    let mut out = String::new();
 
     for (idx, line) in lines.iter().enumerate() {
         let line_no = idx + 1;
@@ -365,6 +386,9 @@ fn run_sed(stmts: &[SedStmt], content: &str, suppress_auto: bool) -> String {
         let mut pattern_space = line.to_string();
         let mut deleted = false;
         let mut quit_after = false;
+        // `r` output is queued and flushed after the current line's
+        // auto-print, verbatim and regardless of `-n` (GNU behavior).
+        let mut appends: Vec<&str> = Vec::new();
         for (si, stmt) in stmts.iter().enumerate() {
             if !address_applies(
                 &stmt.addr,
@@ -380,30 +404,39 @@ fn run_sed(stmts: &[SedStmt], content: &str, suppress_auto: bool) -> String {
                     let (new_space, changed) = apply_substitution(sub, &pattern_space);
                     pattern_space = new_space;
                     if changed && sub.print {
-                        out_lines.push(pattern_space.clone());
+                        out.push_str(&pattern_space);
+                        out.push('\n');
                     }
                 }
                 SedCommand::Delete => deleted = true,
-                SedCommand::Print => out_lines.push(pattern_space.clone()),
+                SedCommand::Print => {
+                    out.push_str(&pattern_space);
+                    out.push('\n');
+                }
                 SedCommand::Quit => quit_after = true,
+                SedCommand::ReadFile(name) => {
+                    if let Some(text) = file_cache.get(name) {
+                        appends.push(text);
+                    }
+                }
             }
             if deleted || quit_after {
                 break;
             }
         }
         if !deleted && !suppress_auto {
-            out_lines.push(pattern_space);
+            out.push_str(&pattern_space);
+            out.push('\n');
+        }
+        for text in appends {
+            out.push_str(text);
         }
         if quit_after {
             break;
         }
     }
 
-    if out_lines.is_empty() {
-        String::new()
-    } else {
-        format!("{}\n", out_lines.join("\n"))
-    }
+    out
 }
 
 pub fn sed(interp: &mut Interpreter, args: &[String], stdin: String) -> CommandOutput {
@@ -447,8 +480,22 @@ pub fn sed(interp: &mut Interpreter, args: &[String], stdin: String) -> CommandO
         Err(e) => return fail(e, 1),
     };
 
+    // Resolve `r file` targets up front (missing files silently read as
+    // nothing, like GNU sed) so `run_sed` needs no filesystem access.
+    let mut file_cache: HashMap<String, String> = HashMap::new();
+    for stmt in &stmts {
+        if let SedCommand::ReadFile(name) = &stmt.cmd
+            && !file_cache.contains_key(name)
+        {
+            let path = normalize_path(&interp.cwd, name);
+            if let Some(bytes) = interp.fs.read_file(&path) {
+                file_cache.insert(name.clone(), String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+    }
+
     if files.is_empty() {
-        return ok(run_sed(&stmts, &stdin, suppress_auto));
+        return ok(run_sed(&stmts, &stdin, suppress_auto, &file_cache));
     }
 
     let mut stdout = String::new();
@@ -459,7 +506,7 @@ pub fn sed(interp: &mut Interpreter, args: &[String], stdin: String) -> CommandO
         match interp.fs.read_file(&path).as_deref() {
             Some(bytes) => {
                 let content = String::from_utf8_lossy(bytes).into_owned();
-                let out = run_sed(&stmts, &content, suppress_auto);
+                let out = run_sed(&stmts, &content, suppress_auto, &file_cache);
                 if in_place {
                     let _ = interp.fs.write_file(&path, out.as_bytes());
                 } else {
@@ -731,6 +778,78 @@ mod tests {
             .unwrap();
         let r = run(&mut bash2, "sed '/^a/s/a/A/g' /t.txt");
         assert_eq!(r.stdout, "Apple\nbanana\nApricot\n");
+    }
+
+    #[test]
+    fn read_file_appends_after_line() {
+        let mut bash = env_with_fixtures();
+        bash.fs_mut()
+            .write_file("/test/block.txt", b"INSERTED A\nINSERTED B\n")
+            .unwrap();
+        let r = run(&mut bash, "sed '2r /test/block.txt' /test/numbers.txt");
+        assert_eq!(
+            r.stdout,
+            "line 1\nline 2\nINSERTED A\nINSERTED B\nline 3\nline 4\nline 5\n"
+        );
+        assert_eq!(r.exit_code, 0);
+    }
+
+    #[test]
+    fn read_file_in_place() {
+        let mut bash = fresh();
+        bash.fs_mut()
+            .write_file("/deployment.toml", b"a\nb\nc\n")
+            .unwrap();
+        bash.fs_mut()
+            .write_file("/block.txt", b"[cowsay]\nsay = true\n")
+            .unwrap();
+        let r = run(&mut bash, "sed -i '2r /block.txt' /deployment.toml");
+        assert_eq!(r.stdout, "");
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(
+            run(&mut bash, "cat /deployment.toml").stdout,
+            "a\nb\n[cowsay]\nsay = true\nc\n"
+        );
+    }
+
+    #[test]
+    fn read_file_last_line_and_regex_address() {
+        let mut bash = env_with_fixtures();
+        bash.fs_mut()
+            .write_file("/test/tail.txt", b"THE END\n")
+            .unwrap();
+        assert_eq!(
+            run(&mut bash, "sed '$r /test/tail.txt' /test/numbers.txt").stdout,
+            "line 1\nline 2\nline 3\nline 4\nline 5\nTHE END\n"
+        );
+        let mut bash2 = env_with_fixtures();
+        bash2
+            .fs_mut()
+            .write_file("/test/tail.txt", b"MATCHED\n")
+            .unwrap();
+        assert_eq!(
+            run(&mut bash2, "sed '/line 3/r /test/tail.txt' /test/numbers.txt").stdout,
+            "line 1\nline 2\nline 3\nMATCHED\nline 4\nline 5\n"
+        );
+    }
+
+    #[test]
+    fn read_missing_file_is_silent() {
+        let mut bash = env_with_fixtures();
+        let r = run(&mut bash, "sed '2r /test/nope.txt' /test/numbers.txt");
+        assert_eq!(r.stdout, "line 1\nline 2\nline 3\nline 4\nline 5\n");
+        assert_eq!(r.stderr, "");
+        assert_eq!(r.exit_code, 0);
+    }
+
+    #[test]
+    fn read_file_not_suppressed_by_n() {
+        let mut bash = env_with_fixtures();
+        bash.fs_mut()
+            .write_file("/test/note.txt", b"NOTE\n")
+            .unwrap();
+        let r = run(&mut bash, "sed -n '2r /test/note.txt' /test/numbers.txt");
+        assert_eq!(r.stdout, "NOTE\n");
     }
 
     #[test]
