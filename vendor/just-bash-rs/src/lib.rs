@@ -11,6 +11,7 @@
 pub mod arithmetic;
 pub mod ast;
 pub mod bash;
+pub mod brace;
 pub mod commands;
 pub mod custom_command;
 pub mod expansion;

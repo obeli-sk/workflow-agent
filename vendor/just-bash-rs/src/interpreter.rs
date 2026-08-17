@@ -16,6 +16,7 @@ use crate::ast::{
     Command, CompoundCommand, LogicalOp, Pipeline, RedirectKind, RedirectTarget, Script,
     SimpleCommand, Statement, Word, WordPart,
 };
+use crate::brace;
 use crate::commands::{self, normalize_path};
 use crate::custom_command::CustomCommands;
 use crate::expansion::{self, Segment};
@@ -408,20 +409,22 @@ impl Interpreter {
             CompoundCommand::For { name, items, body } => {
                 self.last_exit = 0;
                 'outer: for item in items {
-                    let values = match self.expand_word_to_fields(item) {
-                        Ok(values) => values,
-                        Err(msg) => {
-                            self.out.push_err(&format!("bash: {msg}\n"));
-                            self.last_exit = 1;
-                            return;
+                    for word in brace::expand(item) {
+                        let values = match self.expand_word_to_fields(&word) {
+                            Ok(values) => values,
+                            Err(msg) => {
+                                self.out.push_err(&format!("bash: {msg}\n"));
+                                self.last_exit = 1;
+                                return;
+                            }
+                        };
+                        for value in values {
+                            if self.exiting {
+                                break 'outer;
+                            }
+                            self.env.insert(name.clone(), value);
+                            self.run_block(body, true);
                         }
-                    };
-                    for value in values {
-                        if self.exiting {
-                            break 'outer;
-                        }
-                        self.env.insert(name.clone(), value);
-                        self.run_block(body, true);
                     }
                 }
             }
@@ -595,7 +598,9 @@ impl Interpreter {
 
         let mut args: Vec<String> = Vec::new();
         for word in &cmd.words {
-            args.extend(self.expand_word_to_fields(word)?);
+            for braced in brace::expand(word) {
+                args.extend(self.expand_word_to_fields(&braced)?);
+            }
         }
         if args.is_empty() {
             // Every word expanded away (e.g. a bare unset `$var`): bash runs

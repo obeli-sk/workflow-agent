@@ -222,6 +222,20 @@ mod tests {
     }
 
     #[test]
+    fn for_loop_over_numeric_brace_range() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "for i in {0..4}; do echo $i; done");
+        assert_eq!(out.stdout, "0\n1\n2\n3\n4\n");
+    }
+
+    #[test]
+    fn echo_expands_comma_brace_list() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "echo pre{a,b,c}post");
+        assert_eq!(out.stdout, "preapost prebpost precpost\n");
+    }
+
+    #[test]
     fn variables_persist_across_exec() {
         let mut bash = fresh();
         run(&mut bash, "X=42");
