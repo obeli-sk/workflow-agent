@@ -136,12 +136,9 @@ switch (command) {
         const resolved = events.find((event) => event.kind === "resolved" && event.id === requested?.id);
         const shell = projection?.transcript?.shell_events
             ?.find((event) => event.id === "shell-e2e-ask");
-        let shellResult;
-        try { shellResult = JSON.parse(shellStream(shell?.result, "stdout") || "null"); }
-        catch (_) { shellResult = null; }
         const valid = Boolean(requested && resolved)
-            && shellResult?.ffqn === "obelisk-agent:stub/stub.ask-user"
-            && shellResult?.result === "yes"
+            && shellStream(shell?.result, "stdout") === "yes\n"
+            && shell?.result?.exit_code === 0
             && shell.turn_complete === true;
         if (!valid) console.error(`unexpected resolved human input: ${JSON.stringify(projection)}`);
         process.exit(valid ? 0 : 1);
