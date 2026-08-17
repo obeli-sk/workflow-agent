@@ -49,17 +49,25 @@ One endpoint serves the whole catalog, configured by three env vars: the
 catalog JSON `AGENT_MODELS` (required), the origin `LLM_BASE_URL` (default
 `http://127.0.0.1:9190`), and the bearer `LLM_API_KEY` (unset for keyless).
 Each catalog entry points a model at an OpenAI- or Anthropic-shaped route under
-that origin. Three catalogs ship:
+that origin. Four catalogs ship:
 
 - `models.local.json` (keyless) : the sibling
   [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server),
   a Claude/Codex subscription in docker on `:9190`.
-- `models.exe-gateway.json` (`LLM_API_KEY`) : the exe.dev LLM gateway. Forward
-  it first: `ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz`.
-  Regenerate the catalog from exe.dev's published model list with
-  `just update-exe-gateway-models`.
+- `models.exe-integration.json` (keyless) : the exe.dev LLM integration for a
+  deployment inside an attached exe.dev VM. Set
+  `LLM_BASE_URL=https://llm.int.exe.xyz`; exe.dev authenticates the VM at the
+  network edge.
+- `models.exe-gateway.json` (keyless) : the legacy exe.dev gateway for a
+  deployment outside exe.dev. Forward it with
+  `ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz` and set
+  `LLM_BASE_URL=http://localhost:7070`.
 - `models.openrouter.json` (`LLM_API_KEY`) : [OpenRouter](https://openrouter.ai).
   The key is injected into the outbound header at the edge, never seen by the JS.
+
+Regenerate both exe.dev catalogs from its published model list with
+`just update-exe-models`. Leave `LLM_API_KEY` unset for either exe.dev
+catalog.
 
 Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama) works:
 point `LLM_BASE_URL` at it and add catalog entries.

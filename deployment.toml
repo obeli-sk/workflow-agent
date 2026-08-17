@@ -74,7 +74,8 @@ env_vars = [
 # authenticates the endpoint (unset for the keyless local backend). Switch
 # endpoints by setting AGENT_MODELS + LLM_BASE_URL (+ LLM_API_KEY) together:
 #   local     http://127.0.0.1:9190          (keyless, models.local.json)
-#   exe.dev   http://localhost:7070          (gateway, models.exe-gateway.json)
+#   exe.dev   https://llm.int.exe.xyz         (keyless, models.exe-integration.json)
+#   exe tunnel http://localhost:7070          (keyless, models.exe-gateway.json)
 #   openrouter https://openrouter.ai/api     (models.openrouter.json)
 [[activity_js.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"

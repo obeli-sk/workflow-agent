@@ -4,7 +4,16 @@ import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const CATALOG_URL = "https://exe.dev/llm-gateway-models.json";
-const OUTPUT_PATH = fileURLToPath(new URL("../models.exe-gateway.json", import.meta.url));
+const OUTPUTS = [
+    {
+        path: fileURLToPath(new URL("../models.exe-integration.json", import.meta.url)),
+        pathPrefix: "",
+    },
+    {
+        path: fileURLToPath(new URL("../models.exe-gateway.json", import.meta.url)),
+        pathPrefix: "/gateway/llm",
+    },
+];
 const API_TYPES = new Map([
     ["anthropic", "anthropic-messages"],
     ["openai", "openai-responses"],
@@ -21,11 +30,11 @@ function friendlyId(provider, wireModel) {
     return wireModel;
 }
 
-function providerPath(path) {
-    return `/${path.replace(/\/v1$/, "")}`;
+function providerPath(path, pathPrefix) {
+    return `${pathPrefix}/${path.replace(/\/v1$/, "")}`;
 }
 
-function generate(catalog) {
+function generate(catalog, pathPrefix) {
     if (catalog?.schemaVersion !== 1 || !Array.isArray(catalog.providers)) {
         throw new Error("unsupported exe.dev model catalog schema");
     }
@@ -53,7 +62,7 @@ function generate(catalog) {
                 id,
                 label: id,
                 api_type: apiType,
-                path: providerPath(provider.path),
+                path: providerPath(provider.path, pathPrefix),
                 wire_model: model.id,
             };
             if (provider.id === "anthropic") entry.max_tokens = 8192;
@@ -65,15 +74,18 @@ function generate(catalog) {
 
 const response = await fetch(CATALOG_URL);
 if (!response.ok) throw new Error(`cannot fetch ${CATALOG_URL}: HTTP ${response.status}`);
-const generated = generate(await response.json());
+const catalog = await response.json();
 
-if (process.argv.includes("--check")) {
-    const current = await readFile(OUTPUT_PATH, "utf8").catch(() => "");
-    if (current !== generated) {
-        console.error("models.exe-gateway.json is out of date");
-        process.exitCode = 1;
+for (const output of OUTPUTS) {
+    const generated = generate(catalog, output.pathPrefix);
+    if (process.argv.includes("--check")) {
+        const current = await readFile(output.path, "utf8").catch(() => "");
+        if (current !== generated) {
+            console.error(`${output.path} is out of date`);
+            process.exitCode = 1;
+        }
+    } else {
+        await writeFile(output.path, generated);
+        console.log(`updated ${output.path}`);
     }
-} else {
-    await writeFile(OUTPUT_PATH, generated);
-    console.log(`updated ${OUTPUT_PATH}`);
 }
