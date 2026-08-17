@@ -6,6 +6,10 @@ const command = process.argv[2];
 const input = () => fs.readFileSync(0, "utf8");
 const json = () => JSON.parse(input());
 const executions = (value) => Array.isArray(value) ? value : value.executions ?? [];
+const shellStream = (result, stream) => (result?.output ?? [])
+    .map((chunk) => chunk?.[stream])
+    .filter((text) => typeof text === "string")
+    .join("");
 
 switch (command) {
     case "execution-id": {
@@ -82,8 +86,8 @@ switch (command) {
             process.exit(1);
         }
         const result = record.result ?? {};
-        process.stdout.write(result.stdout ?? "");
-        if (result.stderr) process.stderr.write(result.stderr);
+        process.stdout.write(shellStream(result, "stdout"));
+        process.stderr.write(shellStream(result, "stderr"));
         if (result.exit_code) process.stderr.write(`\n[exit ${result.exit_code}]\n`);
         break;
     }
@@ -133,7 +137,7 @@ switch (command) {
         const shell = projection?.transcript?.shell_events
             ?.find((event) => event.id === "shell-e2e-ask");
         let shellResult;
-        try { shellResult = JSON.parse(shell?.result?.stdout || "null"); }
+        try { shellResult = JSON.parse(shellStream(shell?.result, "stdout") || "null"); }
         catch (_) { shellResult = null; }
         const valid = Boolean(requested && resolved)
             && shellResult?.ffqn === "obelisk-agent:stub/stub.ask-user"
