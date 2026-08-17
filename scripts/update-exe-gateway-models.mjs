@@ -22,7 +22,7 @@ function friendlyId(provider, wireModel) {
 }
 
 function providerPath(path) {
-    return `/gateway/llm/${path.replace(/\/v1$/, "")}`;
+    return `/${path.replace(/\/v1$/, "")}`;
 }
 
 function generate(catalog) {
