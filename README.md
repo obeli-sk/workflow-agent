@@ -56,6 +56,8 @@ that origin. Three catalogs ship:
   a Claude/Codex subscription in docker on `:9190`.
 - `models.exe-gateway.json` (`LLM_API_KEY`) : the exe.dev LLM gateway. Forward
   it first: `ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz`.
+  Regenerate the catalog from exe.dev's published model list with
+  `just update-exe-gateway-models`.
 - `models.openrouter.json` (`LLM_API_KEY`) : [OpenRouter](https://openrouter.ai).
   The key is injected into the outbound header at the edge, never seen by the JS.
 

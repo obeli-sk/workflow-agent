@@ -1,6 +1,9 @@
 serve:
   obelisk server run -d deployment.toml --server-config server.toml 
 
+update-exe-gateway-models:
+  node scripts/update-exe-gateway-models.mjs
+
 # Run the keyless stateless MCP example used by the interactive guide and E2E.
 sample-mcp-server:
   node examples/stateless-mcp-server.mjs
