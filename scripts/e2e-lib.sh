@@ -18,7 +18,6 @@ e2e_init() {
     export OBELISK__WEBUI__ENABLED=false
     export OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/obelisk-sqlite"
     export LLM_API_KEY="${LLM_API_KEY:-e2e-unused-llm-key}"
-    export WORKFLOW_AGENT_GITHUB_TOKEN="${WORKFLOW_AGENT_GITHUB_TOKEN:-e2e-unused-github-token}"
 
     trap e2e_cleanup EXIT
 }

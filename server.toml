@@ -5,7 +5,6 @@ methods = ["GET"]
 [secrets]
 LLM_API_KEY = { env = "LLM_API_KEY" }
 OBELISK__API__TOKEN = { env = "OBELISK__API__TOKEN" }
-WORKFLOW_AGENT_GITHUB_TOKEN = { env = "WORKFLOW_AGENT_GITHUB_TOKEN" }
 
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -18,12 +17,6 @@ pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
 request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
 secrets = ["LLM_API_KEY"]
-replace_in = ["headers"]
-
-[[outbound_http.allowed_host]]
-pattern = "https://api.github.com"
-methods = ["GET", "POST"]
-secrets = ["WORKFLOW_AGENT_GITHUB_TOKEN"]
 replace_in = ["headers"]
 
 # --- MCP servers (stateless) --------------------------------------------------
