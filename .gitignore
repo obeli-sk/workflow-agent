@@ -5,8 +5,6 @@ models-private*
 node_modules
 target
 target-e2e
-# Generated at build time by `just wit-deps` (obelisk generate wit-deps).
-workflow/workflow-rs/wit/deps/
 .e2e-deployment.toml
 .e2e-agent-deployment.toml
 .e2e-redeploy-deployment.toml

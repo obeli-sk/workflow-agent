@@ -11,18 +11,7 @@ sample-mcp-server:
   node examples/stateless-mcp-server.mjs
 # Assemble the workflow's generated WIT dependency folder from wit/deps.
 wit-deps:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  d=workflow/workflow-rs/wit/deps
-  rm -rf "$d"
-  mkdir -p "$d"
-  cp -r wit/deps/obelisk-agent_stub "$d/"
-  cp -r wit/deps/obelisk-agent_llm "$d/"
-  cp -r wit/deps/obelisk-agent_tools "$d/"
-  obelisk generate wit-extensions activity_stub wit/deps/obelisk-agent_stub "$d"
-  obelisk generate wit-extensions activity wit/deps/obelisk-agent_llm "$d"
-  cp -r wit/deps/obelisk-agent_workflow "$d/"
-  obelisk generate wit-support workflow --force "$d"
+  scripts/generate-wit-deps.sh
 
 # deployment.toml's [[workflow_wasm]] entry points at it; the crate's
 # .cargo/config.toml pins the wasm32-unknown-unknown target.
