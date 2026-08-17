@@ -21,6 +21,7 @@ use crate::custom_command::CustomCommands;
 use crate::expansion::{self, Segment};
 use crate::fs::{FsError, Vfs};
 use crate::glob;
+use crate::types::{Fd, OutputChunk};
 
 /// Where an output descriptor points after applying a command's redirections.
 /// Only the terminal streams and file targets are modelled (no external
@@ -62,8 +63,7 @@ pub struct Interpreter {
     pub env: BTreeMap<String, String>,
     pub cwd: String,
     pub last_exit: i32,
-    pub stdout: String,
-    pub stderr: String,
+    pub out: OutputLog,
     /// `set` options; seeded from `Bash` and read back after the run.
     pub options: ShellOptions,
     /// Set when `errexit`/`nounset` triggers a script-ending failure, so the
@@ -93,6 +93,84 @@ pub struct CommandOutput {
     pub exit_code: i32,
 }
 
+/// The shell's live output, recorded as an ordered list of stdout/stderr runs
+/// so interleaving survives (the two flat strings alone cannot say which
+/// stderr line landed between which stdout lines). Writes are already coarse:
+/// each command contributes at most one stdout run and one stderr run, so no
+/// extra coalescing is needed. Capture contexts (`$(...)`, pipes, compound
+/// commands) `mark()` the log, run, then pull their stdout back out with
+/// `take_stdout_since`, which leaves stderr in place so it still reaches the
+/// terminal in order.
+#[derive(Default)]
+pub struct OutputLog {
+    chunks: Vec<OutputChunk>,
+}
+
+impl OutputLog {
+    pub fn push_out(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.chunks.push(OutputChunk {
+                fd: Fd::Stdout,
+                text: text.to_string(),
+            });
+        }
+    }
+
+    pub fn push_err(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.chunks.push(OutputChunk {
+                fd: Fd::Stderr,
+                text: text.to_string(),
+            });
+        }
+    }
+
+    pub fn stdout_string(&self) -> String {
+        self.stream_string(Fd::Stdout)
+    }
+
+    pub fn stderr_string(&self) -> String {
+        self.stream_string(Fd::Stderr)
+    }
+
+    fn stream_string(&self, fd: Fd) -> String {
+        self.chunks
+            .iter()
+            .filter(|c| c.fd == fd)
+            .map(|c| c.text.as_str())
+            .collect()
+    }
+
+    pub fn mark(&self) -> usize {
+        self.chunks.len()
+    }
+
+    /// Remove and concatenate the stdout produced since `mark`, leaving the
+    /// stderr chunks in place (in order) so they still reach the terminal.
+    pub fn take_stdout_since(&mut self, mark: usize) -> String {
+        let tail = self.chunks.split_off(mark);
+        let mut out = String::new();
+        for chunk in tail {
+            match chunk.fd {
+                Fd::Stdout => out.push_str(&chunk.text),
+                Fd::Stderr => self.chunks.push(chunk),
+            }
+        }
+        out
+    }
+
+    /// Detach everything recorded since `mark` (both streams).
+    pub fn split_off(&mut self, mark: usize) -> OutputLog {
+        OutputLog {
+            chunks: self.chunks.split_off(mark),
+        }
+    }
+
+    pub fn into_chunks(self) -> Vec<OutputChunk> {
+        self.chunks
+    }
+}
+
 /// Default `sleep_ms`: no scheduler, so a bare interpreter never blocks (the
 /// workflow installs a durable sleep, see `BashOptions::sleep_ms`).
 fn no_sleep(_ms: u64) {}
@@ -109,8 +187,7 @@ impl Interpreter {
             env,
             cwd,
             last_exit: 0,
-            stdout: String::new(),
-            stderr: String::new(),
+            out: OutputLog::default(),
             options: ShellOptions::default(),
             exiting: false,
             positional: Vec::new(),
@@ -164,14 +241,12 @@ impl Interpreter {
                 };
             }
         };
-        let saved_out = std::mem::take(&mut self.stdout);
-        let saved_err = std::mem::take(&mut self.stderr);
+        let mark = self.out.mark();
         self.run(&script);
-        let stdout = std::mem::replace(&mut self.stdout, saved_out);
-        let stderr = std::mem::replace(&mut self.stderr, saved_err);
+        let produced = self.out.split_off(mark);
         CommandOutput {
-            stdout,
-            stderr,
+            stdout: produced.stdout_string(),
+            stderr: produced.stderr_string(),
             exit_code: self.last_exit,
         }
     }
@@ -240,12 +315,12 @@ impl Interpreter {
         let last = pipeline.commands.len() - 1;
         for (i, command) in pipeline.commands.iter().enumerate() {
             let out = self.run_command(command, stdin);
-            self.stderr.push_str(&out.stderr);
+            self.out.push_err(&out.stderr);
             if out.exit_code != 0 {
                 pipefail_code = out.exit_code;
             }
             if i == last {
-                self.stdout.push_str(&out.stdout);
+                self.out.push_out(&out.stdout);
                 exit_code = out.exit_code;
                 stdin = String::new();
             } else {
@@ -294,9 +369,9 @@ impl Interpreter {
     /// like any other command. Its stderr still flows straight to the shell's
     /// stderr. Stdin into a compound command is not threaded yet (no `read`).
     fn run_compound(&mut self, cmd: &CompoundCommand) -> CommandOutput {
-        let saved = std::mem::take(&mut self.stdout);
+        let mark = self.out.mark();
         self.exec_compound(cmd);
-        let stdout = std::mem::replace(&mut self.stdout, saved);
+        let stdout = self.out.take_stdout_since(mark);
         CommandOutput {
             stdout,
             stderr: String::new(),
@@ -336,7 +411,7 @@ impl Interpreter {
                     let values = match self.expand_word_to_fields(item) {
                         Ok(values) => values,
                         Err(msg) => {
-                            self.stderr.push_str(&format!("bash: {msg}\n"));
+                            self.out.push_err(&format!("bash: {msg}\n"));
                             self.last_exit = 1;
                             return;
                         }
@@ -361,7 +436,7 @@ impl Interpreter {
                 if let Some(init) = init
                     && let Err(msg) = arithmetic::eval(init, &mut self.env)
                 {
-                    self.stderr.push_str(&format!("bash: {msg}\n"));
+                    self.out.push_err(&format!("bash: {msg}\n"));
                     self.last_exit = 1;
                     return;
                 }
@@ -375,7 +450,7 @@ impl Interpreter {
                             Ok(0) => break,
                             Ok(_) => {}
                             Err(msg) => {
-                                self.stderr.push_str(&format!("bash: {msg}\n"));
+                                self.out.push_err(&format!("bash: {msg}\n"));
                                 self.last_exit = 1;
                                 return;
                             }
@@ -388,7 +463,7 @@ impl Interpreter {
                     if let Some(update) = update
                         && let Err(msg) = arithmetic::eval(update, &mut self.env)
                     {
-                        self.stderr.push_str(&format!("bash: {msg}\n"));
+                        self.out.push_err(&format!("bash: {msg}\n"));
                         self.last_exit = 1;
                         return;
                     }
@@ -549,7 +624,7 @@ impl Interpreter {
         // `set -x`: trace the command to the shell's stderr (unaffected by the
         // command's own redirections, matching bash) before running it.
         if self.options.xtrace {
-            self.stderr.push_str(&format!("+ {}\n", args.join(" ")));
+            self.out.push_err(&format!("+ {}\n", args.join(" ")));
         }
 
         let mut result = commands::dispatch(self, &args, stdin, scoped);
@@ -707,11 +782,11 @@ impl Interpreter {
     /// Run a nested statement list and return its captured stdout, leaving the
     /// shell's own stdout untouched. Used by command substitution.
     fn run_captured(&mut self, statements: &[Statement]) -> String {
-        let saved = std::mem::take(&mut self.stdout);
+        let mark = self.out.mark();
         for statement in statements {
             self.run_statement(statement);
         }
-        std::mem::replace(&mut self.stdout, saved)
+        self.out.take_stdout_since(mark)
     }
 
     fn lookup(&self, name: &str) -> String {

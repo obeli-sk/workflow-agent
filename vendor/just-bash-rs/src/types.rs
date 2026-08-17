@@ -74,11 +74,29 @@ pub struct ExecOptions {
     pub cwd: Option<String>,
 }
 
+/// Which stream a chunk of output was written to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fd {
+    Stdout,
+    Stderr,
+}
+
+/// One contiguous run of output on a single stream. A script's `output` is the
+/// ordered sequence of these, so a reader can see stderr in position relative
+/// to the surrounding stdout (which the flat `stdout`/`stderr` strings lose).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputChunk {
+    pub fd: Fd,
+    pub text: String,
+}
+
 /// Result of running a script.
 #[derive(Debug, Clone, Default)]
 pub struct ExecResult {
     pub stdout: String,
     pub stderr: String,
+    /// stdout and stderr interleaved in write order (see `OutputChunk`).
+    pub output: Vec<OutputChunk>,
     pub exit_code: i32,
     /// Environment after the run; the session loop reads `PWD` to persist cwd.
     pub env: BTreeMap<String, String>,

@@ -12,7 +12,7 @@ use crate::custom_command::{CustomCommandHandler, CustomCommands};
 use crate::fs::Vfs;
 use crate::interpreter::{Interpreter, ShellOptions};
 use crate::parser::parse;
-use crate::types::{BashOptions, ExecOptions, ExecResult};
+use crate::types::{BashOptions, ExecOptions, ExecResult, Fd, OutputChunk};
 
 /// A virtual bash environment with persistent session state.
 pub struct Bash {
@@ -86,9 +86,14 @@ impl Bash {
         let ast = match parse(script) {
             Ok(ast) => ast,
             Err(error) => {
+                let stderr = format!("{error}\n");
                 return ExecResult {
+                    output: vec![OutputChunk {
+                        fd: Fd::Stderr,
+                        text: stderr.clone(),
+                    }],
                     stdout: String::new(),
-                    stderr: format!("{error}\n"),
+                    stderr,
                     exit_code: 2,
                     env: self.env.clone(),
                 };
@@ -117,11 +122,16 @@ impl Bash {
         self.positional = std::mem::take(&mut interp.positional);
         self.custom_commands = interp.custom_commands;
 
+        let exit_code = interp.last_exit;
+        let env = interp.env;
+        let stdout = interp.out.stdout_string();
+        let stderr = interp.out.stderr_string();
         ExecResult {
-            stdout: interp.stdout,
-            stderr: interp.stderr,
-            exit_code: interp.last_exit,
-            env: interp.env,
+            stdout,
+            stderr,
+            output: interp.out.into_chunks(),
+            exit_code,
+            env,
         }
     }
 }
@@ -139,6 +149,46 @@ mod tests {
             cwd: "/workspace".into(),
             ..Default::default()
         })
+    }
+
+    fn chunks(out: &ExecResult) -> Vec<(Fd, &str)> {
+        out.output.iter().map(|c| (c.fd, c.text.as_str())).collect()
+    }
+
+    #[test]
+    fn output_preserves_stdout_stderr_interleaving() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "echo out1; echo err1 >&2; echo out2");
+        assert_eq!(
+            chunks(&out),
+            vec![
+                (Fd::Stdout, "out1\n"),
+                (Fd::Stderr, "err1\n"),
+                (Fd::Stdout, "out2\n"),
+            ]
+        );
+        // The flat views still work and are just the per-stream projection.
+        assert_eq!(out.stdout, "out1\nout2\n");
+        assert_eq!(out.stderr, "err1\n");
+    }
+
+    #[test]
+    fn output_excludes_captured_stdout_but_keeps_its_stderr() {
+        let mut bash = fresh();
+        // The `$(...)` stdout is consumed into `x`, so only its stderr and the
+        // final `echo` reach the transcript, in order.
+        let out = run(&mut bash, "x=$(echo e >&2; echo v); echo $x");
+        assert_eq!(
+            chunks(&out),
+            vec![(Fd::Stderr, "e\n"), (Fd::Stdout, "v\n")]
+        );
+    }
+
+    #[test]
+    fn output_pipe_only_records_final_stdout() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "echo hello | cat");
+        assert_eq!(chunks(&out), vec![(Fd::Stdout, "hello\n")]);
     }
 
     #[test]

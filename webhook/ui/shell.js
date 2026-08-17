@@ -1131,11 +1131,21 @@ function renderCall(call, turnIndex, callIndex) {
   if ('ok' in call) {
     pill = '<span class="status-pill ok">ok</span>';
     if (name === 'bash' && isShellResult(call.ok)) {
-      const stdout = String(call.ok.stdout || '');
-      const stderr = String(call.ok.stderr || '');
-      let streams = stdout ? '<pre>' + esc(stdout) + '</pre>' : '';
-      if (stderr) {
-        streams += '<div class="key">stderr</div><pre class="stderr">' + esc(stderr) + '</pre>';
+      // Render stdout/stderr runs in write order (coalescing consecutive runs
+      // of the same stream) so an error shows where it happened in the script.
+      const outputChunks = call.ok.output || [];
+      let streams = '';
+      let ci = 0;
+      while (ci < outputChunks.length) {
+        const isErr = 'stderr' in outputChunks[ci];
+        let text = '';
+        while (ci < outputChunks.length && ('stderr' in outputChunks[ci]) === isErr) {
+          text += isErr ? outputChunks[ci].stderr : outputChunks[ci].stdout;
+          ci++;
+        }
+        streams += isErr
+          ? '<pre class="stderr">' + esc(text) + '</pre>'
+          : '<pre>' + esc(text) + '</pre>';
       }
       if (!streams) streams = '<pre>(no output)</pre>';
       resultBlock = '<div class="result"><div class="response-head"><div class="key">exit '
@@ -1164,8 +1174,7 @@ function renderCall(call, turnIndex, callIndex) {
 
 function isShellResult(value) {
   return value && typeof value === 'object'
-    && typeof value.stdout === 'string'
-    && typeof value.stderr === 'string'
+    && Array.isArray(value.output)
     && Number.isInteger(value.exit_code);
 }
 

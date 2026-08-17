@@ -64,9 +64,15 @@ interface session {
     turn-complete: bool,
   }
 
+  variant output-chunk {
+    stdout(string),
+    stderr(string),
+  }
+
   record shell-result {
-    stdout: string,
-    stderr: string,
+    // stdout and stderr interleaved in write order, so a reader can see which
+    // stderr line landed between which stdout lines (two flat strings cannot).
+    output: list<output-chunk>,
     exit-code: s32,
   }
 

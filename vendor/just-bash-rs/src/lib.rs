@@ -29,4 +29,4 @@ pub use custom_command::{CustomCommandHandler, CustomCommands};
 pub use fs::{BlobLoader, FsError, Vfs};
 pub use obelisk_pack::{MountResult, ObeliskHost, SYSTEM_PROMPT, blob_loader};
 pub use parser::parse;
-pub use types::{BashOptions, ExecOptions, ExecResult, ExecutionLimits};
+pub use types::{BashOptions, ExecOptions, ExecResult, ExecutionLimits, Fd, OutputChunk};

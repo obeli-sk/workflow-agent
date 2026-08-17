@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use serde_json::{Value, json};
 
-use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult};
+use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult, Fd};
 use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
 
 use crate::generated::obelisk::types::execution::AwaitNextExtensionError;
@@ -38,8 +38,8 @@ use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, Sched
 use crate::generated::obelisk_agent::agent::session::{
     AgentErrorEvent, AgentStatusEvent, AssistantReplyEvent, HumanInputRequestedEvent,
     HumanInputResolvedEvent, InputOfferedEvent, PromptInput, SessionEvent, SessionInput,
-    SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput, ToolResultEvent,
-    UserMessageEvent,
+    OutputChunk, SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput,
+    ToolResultEvent, UserMessageEvent,
 };
 use crate::generated::obelisk_agent::agent_obelisk_ext::session as session_ext;
 use crate::generated::obelisk_agent::agent_obelisk_stub::session as session_stub;
@@ -631,10 +631,14 @@ fn append_shell_exchange(messages: &mut Vec<Value>, record: &ShellOutputEvent, s
 
 fn exec_shell(bash: &mut Bash, script: &str, stdin: &str) -> ExecResult {
     if contains_background_statement(script) {
+        let message = "bash: background jobs with `&` are not supported in durable sessions\n";
         return ExecResult {
+            output: vec![just_bash_rs::OutputChunk {
+                fd: Fd::Stderr,
+                text: message.to_string(),
+            }],
+            stderr: message.to_string(),
             stdout: String::new(),
-            stderr: "bash: background jobs with `&` are not supported in durable sessions\n"
-                .to_string(),
             exit_code: 2,
             env: Default::default(),
         };
@@ -659,8 +663,14 @@ fn contains_background_statement(script: &str) -> bool {
 
 fn shell_result(result: ExecResult) -> ShellResult {
     ShellResult {
-        stdout: result.stdout,
-        stderr: result.stderr,
+        output: result
+            .output
+            .into_iter()
+            .map(|chunk| match chunk.fd {
+                Fd::Stdout => OutputChunk::Stdout(chunk.text),
+                Fd::Stderr => OutputChunk::Stderr(chunk.text),
+            })
+            .collect(),
         exit_code: result.exit_code,
     }
 }
@@ -858,8 +868,7 @@ mod tests {
             id: "shell-17".to_string(),
             script: "cat note.txt".to_string(),
             result: ShellResult {
-                stdout: "hello\n".to_string(),
-                stderr: String::new(),
+                output: vec![OutputChunk::Stdout("hello\n".to_string())],
                 exit_code: 0,
             },
             turn_index: 3,
@@ -897,8 +906,7 @@ mod tests {
         let record = SessionEvent::ToolResult(ToolResultEvent {
             id: "tool-1".to_string(),
             output: ToolOutput::Ok(ShellResult {
-                stdout: "ok".to_string(),
-                stderr: String::new(),
+                output: vec![OutputChunk::Stdout("ok".to_string())],
                 exit_code: 0,
             }),
             turn_index: 4,
@@ -912,8 +920,7 @@ mod tests {
                     "id": "tool-1",
                     "output": {
                         "ok": {
-                            "stdout": "ok",
-                            "stderr": "",
+                            "output": [{"stdout": "ok"}],
                             "exit_code": 0,
                         },
                     },
