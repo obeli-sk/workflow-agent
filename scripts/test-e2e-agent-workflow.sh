@@ -103,21 +103,31 @@ curl --fail --silent --show-error \
     -d "{\"offer_id\":\"$INJECTION_ID\",\"input\":{\"shell\":{\"id\":\"shell-e2e-1\",\"script\":\"which curl && curl --version\",\"stdin\":\"\"}}}" \
     "http://127.0.0.1:28091/api/input/$SESSION_ID" >/dev/null
 
+# The session emits one `record-output` stub per event of any kind
+# (session_started, input_offered, shell_output, ...), so we cannot pick the
+# shell turn's notification by list order: the next turn's input_offered record
+# often lands first. Poll until the specific `shell_output` record for
+# shell-e2e-1 is present, matching each record-output result in turn.
 SECONDS=0
+SHELL_NOTIFICATION=""
 while true; do
     SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$E2E_API_URL" \
         -e "$SESSION_ID" --show-derived --limit 100)"
-    if node scripts/e2e-json.js has-execution \
-        "obelisk-agent:agent/session.record-output" <<<"$SESSION_EXECUTIONS" \
-        && node scripts/e2e-json.js check-shell-session <<<"$SESSION_EXECUTIONS"; then
-        break
+    if node scripts/e2e-json.js check-shell-session <<<"$SESSION_EXECUTIONS"; then
+        while IFS= read -r RECORD_ID; do
+            [[ -n "$RECORD_ID" ]] || continue
+            CANDIDATE="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$RECORD_ID" 2>/dev/null)" || continue
+            if node scripts/e2e-json.js check-shell-notification <<<"$CANDIDATE" 2>/dev/null; then
+                SHELL_NOTIFICATION="$CANDIDATE"
+                break
+            fi
+        done < <(node scripts/e2e-json.js execution-ids \
+            "obelisk-agent:agent/session.record-output" <<<"$SESSION_EXECUTIONS")
+        [[ -n "$SHELL_NOTIFICATION" ]] && break
     fi
     [[ $SECONDS -ge 30 ]] && { echo "shell turn did not complete correctly: $SESSION_EXECUTIONS" >&2; exit 1; }
     sleep 1
 done
-SHELL_OUTPUT_ID="$(node scripts/e2e-json.js execution-id \
-    "obelisk-agent:agent/session.record-output" <<<"$SESSION_EXECUTIONS")"
-SHELL_NOTIFICATION="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$SHELL_OUTPUT_ID")"
 node scripts/e2e-json.js check-shell-notification <<<"$SHELL_NOTIFICATION"
 SHELL_PROJECTION="$(curl --fail --silent \
     "http://127.0.0.1:28091/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")"
