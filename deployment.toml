@@ -88,11 +88,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_list_functions"
 ffqn = "obelisk-agent:tools/webapi.list-functions"
-params = [
-  { name = "ffqn-prefix", type = "string" },
-  { name = "length", type = "u32" },
-]
-return_type = "result<list<record { ffqn: string, parameter-types: list<record { name: string, wit-type: string }>, return-type: string, extension: option<enum { submit, await-next, schedule, stub, get }>, wit: string }>, variant { permanent-error(string), transient-error(string), execution-failed }>"
+wit = "wit"
 location = "packs/obelisk-control/tools/list-functions.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -105,10 +101,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_get_function_wit"
 ffqn = "obelisk-agent:tools/webapi.get-function-wit"
-params = [
-  { name = "ffqn", type = "string" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/get-function-wit.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -121,19 +114,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_list_executions"
 ffqn = "obelisk-agent:tools/webapi.list-executions"
-params = [
-  { name = "ffqn-prefix", type = "string" },
-  { name = "execution-id-prefix", type = "string" },
-  { name = "show-derived", type = "bool" },
-  { name = "hide-finished", type = "bool" },
-  { name = "component-digest", type = "string" },
-  { name = "deployment-id", type = "string" },
-  { name = "cursor", type = "string" },
-  { name = "direction", type = "string" },
-  { name = "including-cursor", type = "bool" },
-  { name = "length", type = "u32" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/list-executions.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -146,10 +127,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_get_execution"
 ffqn = "obelisk-agent:tools/webapi.get-execution"
-params = [
-  { name = "execution-id", type = "string" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/get-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -162,10 +140,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_get_execution_record"
 ffqn = "obelisk-agent:tools/webapi.get-execution-record"
-params = [
-  { name = "execution-id", type = "string" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/get-execution-record.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -178,14 +153,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_get_events"
 ffqn = "obelisk-agent:tools/webapi.get-events"
-params = [
-  { name = "execution-id", type = "string" },
-  { name = "cursor-kind", type = "string" },
-  { name = "cursor", type = "u32" },
-  { name = "including-cursor", type = "bool" },
-  { name = "length", type = "u32" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/get-events.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -198,13 +166,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_get_responses"
 ffqn = "obelisk-agent:tools/webapi.get-responses"
-params = [
-  { name = "execution-id", type = "string" },
-  { name = "cursor", type = "u32" },
-  { name = "including-cursor", type = "bool" },
-  { name = "length", type = "u32" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/get-responses.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -217,19 +179,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_get_logs"
 ffqn = "obelisk-agent:tools/webapi.get-logs"
-params = [
-  { name = "execution-id", type = "string" },
-  { name = "show-derived", type = "bool" },
-  { name = "show-logs", type = "bool" },
-  { name = "show-streams", type = "bool" },
-  { name = "levels", type = "list<string>" },
-  { name = "stream-types", type = "list<string>" },
-  { name = "cursor", type = "string" },
-  { name = "direction", type = "string" },
-  { name = "including-cursor", type = "bool" },
-  { name = "length", type = "u32" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/get-logs.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -242,10 +192,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_get_result"
 ffqn = "obelisk-agent:tools/webapi.get-result-json"
-params = [
-  { name = "execution-id", type = "string" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/get-result.js"
 exec.lock_expiry.minutes = 10
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
@@ -259,12 +206,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_list_deployments"
 ffqn = "obelisk-agent:tools/webapi.list-deployments"
-params = [
-  { name = "cursor-from", type = "string" },
-  { name = "including-cursor", type = "bool" },
-  { name = "length", type = "u32" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/list-deployments.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -277,14 +219,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_get_deployment"
 ffqn = "obelisk-agent:tools/webapi.get-deployment"
-params = [
-  { name = "deployment-id", type = "string" },
-  { name = "component-type", type = "option<string>" },
-  { name = "offset", type = "option<u32>" },
-  { name = "length", type = "option<u32>" },
-  { name = "max-bytes", type = "option<u32>" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/get-deployment.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -297,13 +232,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_get_component_source"
 ffqn = "obelisk-agent:tools/webapi.get-component-source"
-params = [
-  { name = "deployment-id", type = "string" },
-  { name = "component", type = "string" },
-  { name = "offset", type = "u32" },
-  { name = "length", type = "u32" },
-]
-return_type = "result<record { section: string, ffqn: option<string>, name: option<string>, location: option<string>, content-digest: string, source-bytes: u64, offset: u64, length: u64, next-offset: option<u64>, raw-body: string }, variant { permanent-error(string), transient-error(string), execution-failed }>"
+wit = "wit"
 location = "packs/obelisk-control/tools/get-component-source.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -316,7 +245,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_current_deployment"
 ffqn = "obelisk-agent:tools/webapi.current-deployment-id"
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/current-deployment.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -337,10 +266,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_deployment_checkout"
 ffqn = "obelisk-agent:tools/webapi.deployment-checkout"
-params = [
-  { name = "deployment-id", type = "option<string>" },
-]
-return_type = "result<record { deployment-id: string, active-deployment-id: string, deployment-toml: string, files: list<record { path: string, digest: string, size: u64 }> }, variant { permanent-error(string), transient-error(string), execution-failed }>"
+wit = "wit"
 location = "packs/obelisk-control/tools/deployment-checkout.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -353,10 +279,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_deployment_read_blob"
 ffqn = "obelisk-agent:tools/webapi.deployment-read-blob"
-params = [
-  { name = "digest", type = "string" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/tools/deployment-read-blob.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -369,14 +292,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_deployment_submit"
 ffqn = "obelisk-agent:tools/webapi.deployment-submit"
-params = [
-  { name = "deployment-toml",              type = "string" },
-  { name = "edited-files",                 type = "list<record { path: string, content: string }>" },
-  { name = "description",                   type = "string" },
-  { name = "allow-missing-runtime-config", type = "bool" },
-  { name = "deployment-id",                type = "string" },
-]
-return_type = "result<record { deployment-id: string, deployment-toml: string }, variant { permanent-error(string), transient-error(string), execution-failed }>"
+wit = "wit"
 # Submit verifies the whole deployment (compile + link every component) before
 # persisting, which far exceeds the 1s default lock.
 exec.lock_expiry.minutes = 5
@@ -393,11 +309,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_deployment_switch"
 ffqn = "obelisk-agent:tools/webapi.deployment-switch"
-params = [
-  { name = "deployment-id",                type = "string" },
-  { name = "allow-missing-runtime-config", type = "bool" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 # A cold switch re-verifies (compile + link) before enqueuing.
 exec.lock_expiry.minutes = 5
 location = "packs/obelisk-control/tools/deployment-switch.js"
@@ -412,10 +324,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_pause_execution"
 ffqn = "obelisk-agent:tools/webapi.pause-execution"
-params = [
-  { name = "execution-id", type = "string" },
-]
-return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, variant { permanent-error(string), transient-error(string), execution-failed }>"
+wit = "wit"
 location = "packs/obelisk-control/tools/pause-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -428,10 +337,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_unpause_execution"
 ffqn = "obelisk-agent:tools/webapi.unpause-execution"
-params = [
-  { name = "execution-id", type = "string" },
-]
-return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, variant { permanent-error(string), transient-error(string), execution-failed }>"
+wit = "wit"
 location = "packs/obelisk-control/tools/unpause-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -444,10 +350,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_cancel_execution"
 ffqn = "obelisk-agent:tools/webapi.cancel-execution"
-params = [
-  { name = "execution-id", type = "string" },
-]
-return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, variant { permanent-error(string), transient-error(string), execution-failed }>"
+wit = "wit"
 location = "packs/obelisk-control/tools/cancel-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -460,11 +363,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_stub_execution"
 ffqn = "obelisk-agent:tools/webapi.stub-execution"
-params = [
-  { name = "execution-id", type = "string" },
-  { name = "result-json", type = "string" },
-]
-return_type = "result<record { ok: bool, execution-id: string, action: enum { pause, unpause, cancel, stub }, already: bool }, variant { permanent-error(string), transient-error(string), execution-failed }>"
+wit = "wit"
 location = "packs/obelisk-control/tools/stub-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
@@ -478,23 +377,20 @@ replace_in = ["headers"]
 
 [[activity_stub]]
 name = "tool_ask_user"
-ffqn = "obelisk-agent:tools/input.ask-user"
-params = [
-  { name = "question", type = "string" },
-]
-return_type = "result<string, string>"
+ffqn = "obelisk-agent:stub/stub.ask-user"
+wit = "wit"
 
 # One generic user-message offer owned by the session loop. The UI may
 # fulfil it only while this concrete stub execution is pending. The workflow
 # appends it as the next user message and immediately opens another offer.
 [[activity_stub]]
 name = "session_injection"
-ffqn = "obelisk-agent:agent/session.injection"
+ffqn = "obelisk-agent:stub/stub.injection"
 wit = "wit"
 
 [[activity_stub]]
 name = "session_record_output"
-ffqn = "obelisk-agent:agent/session.record-output"
+ffqn = "obelisk-agent:stub/stub.record-output"
 wit = "wit"
 
 # --- Workflow -----------------------------------------------------------------
@@ -586,10 +482,7 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_apply_deployment"
 ffqn = "obelisk-agent:tools/webapi.apply-deployment"
-params = [
-  { name = "deployment-id", type = "string" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 # A hot redeploy re-verifies (compile + link) before swapping executors.
 exec.lock_expiry.minutes = 5
 location = "packs/obelisk-control/tools/apply-deployment.js"

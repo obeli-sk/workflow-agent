@@ -37,7 +37,7 @@ while true; do
     [[ $SECONDS -ge 30 ]] && { echo "ask-user session did not publish its input offer: $ASK_PROJECTION" >&2; exit 1; }
     sleep 1
 done
-ASK_SCRIPT="obelisk call obelisk-agent:tools/input.ask-user '[\"Continue?\"]'"
+ASK_SCRIPT="obelisk call obelisk-agent:stub/stub.ask-user '[\"Continue?\"]'"
 ASK_BODY="$(node scripts/e2e-json.js shell-input "$ASK_OFFER_ID" shell-e2e-ask "$ASK_SCRIPT")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
@@ -122,7 +122,7 @@ while true; do
                 break
             fi
         done < <(node scripts/e2e-json.js execution-ids \
-            "obelisk-agent:agent/session.record-output" <<<"$SESSION_EXECUTIONS")
+            "obelisk-agent:stub/stub.record-output" <<<"$SESSION_EXECUTIONS")
         [[ -n "$SHELL_NOTIFICATION" ]] && break
     fi
     [[ $SECONDS -ge 30 ]] && { echo "shell turn did not complete correctly: $SESSION_EXECUTIONS" >&2; exit 1; }

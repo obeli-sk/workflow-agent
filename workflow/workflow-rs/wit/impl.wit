@@ -1,19 +1,9 @@
-package obelisk-agent:workflow;
-
-interface workflow {
-  // Resolves a pack descriptor, then runs the session loop in this execution.
-  run-cancellable: func(
-    prompt: string,
-    model: option<string>,
-    descriptor-ffqn: option<string>,
-    effort: option<string>,
-  ) -> result<_, string>;
-}
+package any:any;
 
 world any {
-  export workflow;
-  import obelisk-agent:agent-obelisk-ext/session;
-  import obelisk-agent:agent-obelisk-stub/session;
+  export obelisk-agent:workflow/workflow;
+  import obelisk-agent:stub-obelisk-ext/stub;
+  import obelisk-agent:stub-obelisk-stub/stub;
   import obelisk-agent:llm-obelisk-ext/chat;
   import obelisk-agent:tools/webapi;
   import obelisk:workflow/workflow-support@6.0.0;

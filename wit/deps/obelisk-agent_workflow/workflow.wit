@@ -1,0 +1,10 @@
+package obelisk-agent:workflow;
+
+interface workflow {
+  run-cancellable: func(
+    prompt: string,
+    model: option<string>,
+    descriptor-ffqn: option<string>,
+    effort: option<string>,
+  ) -> result<_, string>;
+}

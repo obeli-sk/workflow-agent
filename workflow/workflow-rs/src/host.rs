@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::session::Notifications;
 use crate::support::{child_error_message, last_response_execution_id, split_ffqn};
 
-const ASK_USER_FFQN: &str = "obelisk-agent:tools/input.ask-user";
+const ASK_USER_FFQN: &str = "obelisk-agent:stub/stub.ask-user";
 const NATIVE_CALL_FFQN: &str = "obelisk-control:tools/native.call";
 
 pub struct RealHost {

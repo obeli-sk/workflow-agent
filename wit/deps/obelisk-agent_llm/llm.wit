@@ -24,3 +24,7 @@ interface chat {
     effort: string,
   ) -> result<completion-result, string>;
 }
+
+world exports {
+  export chat;
+}

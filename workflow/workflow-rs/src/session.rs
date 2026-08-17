@@ -35,14 +35,14 @@ use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
 use crate::generated::obelisk::types::execution::AwaitNextExtensionError;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
-use crate::generated::obelisk_agent::agent::session::{
+use crate::generated::obelisk_agent::stub::stub::{
     AgentErrorEvent, AgentStatusEvent, AssistantReplyEvent, HumanInputRequestedEvent,
     HumanInputResolvedEvent, InputOfferedEvent, PromptInput, SessionEvent, SessionInput,
     OutputChunk, SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput,
     ToolResultEvent, UserMessageEvent,
 };
-use crate::generated::obelisk_agent::agent_obelisk_ext::session as session_ext;
-use crate::generated::obelisk_agent::agent_obelisk_stub::session as session_stub;
+use crate::generated::obelisk_agent::stub_obelisk_ext::stub as session_ext;
+use crate::generated::obelisk_agent::stub_obelisk_stub::stub as session_stub;
 use crate::generated::obelisk_agent::llm::chat::CompletionResult;
 use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
 use crate::generated::obelisk_agent::tools::webapi;
@@ -257,7 +257,7 @@ stdout: string, stderr: string, exit-code: u32 }}, string>` are discovered as \
 ordinary shell commands named `<name>`.\n\n\
 # User input\n\n\
 When you need a user answer before you can continue the current task, run \
-`obelisk call obelisk-agent:tools/input.ask-user '[\"Your question\"]'`. This \
+`obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. This \
 special command publishes the question to the UI, blocks, and returns the \
 user's answer so you can continue in the same turn. Use it only when the \
 answer is required to proceed. To end the turn with a response or a question \

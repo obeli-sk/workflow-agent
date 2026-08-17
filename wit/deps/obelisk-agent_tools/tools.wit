@@ -1,0 +1,154 @@
+package obelisk-agent:tools;
+
+// Shared WIT for control-plane activities and workflow imports.
+interface webapi {
+  variant tool-error {
+    permanent-error(string),
+    transient-error(string),
+    execution-failed,
+  }
+
+  record parameter-type {
+    name: string,
+    wit-type: string,
+  }
+
+  enum extension-kind {
+    submit,
+    await-next,
+    schedule,
+    stub,
+    get,
+  }
+
+  record function-info {
+    ffqn: string,
+    parameter-types: list<parameter-type>,
+    return-type: string,
+    extension: option<extension-kind>,
+    wit: string,
+  }
+
+  record component-source {
+    section: string,
+    ffqn: option<string>,
+    name: option<string>,
+    location: option<string>,
+    content-digest: string,
+    source-bytes: u64,
+    offset: u64,
+    length: u64,
+    next-offset: option<u64>,
+    raw-body: string,
+  }
+
+  record checkout-file {
+    path: string,
+    digest: string,
+    size: u64,
+  }
+
+  record checkout-result {
+    deployment-id: string,
+    active-deployment-id: string,
+    deployment-toml: string,
+    files: list<checkout-file>,
+  }
+
+  record edited-file {
+    path: string,
+    content: string,
+  }
+
+  record submit-result {
+    deployment-id: string,
+    deployment-toml: string,
+  }
+
+  enum action-kind {
+    pause,
+    unpause,
+    cancel,
+    stub,
+  }
+
+  record action-result {
+    ok: bool,
+    execution-id: string,
+    action: action-kind,
+    already: bool,
+  }
+
+  list-functions: func(ffqn-prefix: string, length: u32) -> result<list<function-info>, tool-error>;
+  get-function-wit: func(ffqn: string) -> result<string, string>;
+  list-executions: func(
+    ffqn-prefix: string,
+    execution-id-prefix: string,
+    show-derived: bool,
+    hide-finished: bool,
+    component-digest: string,
+    deployment-id: string,
+    cursor: string,
+    direction: string,
+    including-cursor: bool,
+    length: u32,
+  ) -> result<string, string>;
+  get-execution: func(execution-id: string) -> result<string, string>;
+  get-execution-record: func(execution-id: string) -> result<string, string>;
+  get-events: func(
+    execution-id: string,
+    cursor-kind: string,
+    cursor: u32,
+    including-cursor: bool,
+    length: u32,
+  ) -> result<string, string>;
+  get-responses: func(
+    execution-id: string,
+    cursor: u32,
+    including-cursor: bool,
+    length: u32,
+  ) -> result<string, string>;
+  get-logs: func(
+    execution-id: string,
+    show-derived: bool,
+    show-logs: bool,
+    show-streams: bool,
+    levels: list<string>,
+    stream-types: list<string>,
+    cursor: string,
+    direction: string,
+    including-cursor: bool,
+    length: u32,
+  ) -> result<string, string>;
+  get-result-json: func(execution-id: string) -> result<string, string>;
+  list-deployments: func(cursor-from: string, including-cursor: bool, length: u32) -> result<string, string>;
+  get-deployment: func(
+    deployment-id: string,
+    component-type: option<string>,
+    offset: option<u32>,
+    length: option<u32>,
+    max-bytes: option<u32>,
+  ) -> result<string, string>;
+  get-component-source: func(
+    deployment-id: string,
+    component: string,
+    offset: u32,
+    length: u32,
+  ) -> result<component-source, tool-error>;
+  current-deployment-id: func() -> result<string, string>;
+  deployment-checkout: func(deployment-id: option<string>) -> result<checkout-result, tool-error>;
+  deployment-read-blob: func(digest: string) -> result<string, string>;
+  deployment-submit: func(
+    deployment-toml: string,
+    edited-files: list<edited-file>,
+    description: string,
+    allow-missing-runtime-config: bool,
+    deployment-id: string,
+  ) -> result<submit-result, tool-error>;
+  deployment-switch: func(deployment-id: string, allow-missing-runtime-config: bool) -> result<string, string>;
+  pause-execution: func(execution-id: string) -> result<action-result, tool-error>;
+  unpause-execution: func(execution-id: string) -> result<action-result, tool-error>;
+  cancel-execution: func(execution-id: string) -> result<action-result, tool-error>;
+  stub-execution: func(execution-id: string, result-json: string) -> result<action-result, tool-error>;
+  apply-deployment: func(deployment-id: string) -> result<string, string>;
+}

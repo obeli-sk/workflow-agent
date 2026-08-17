@@ -73,7 +73,7 @@ is a UI-coordinated shell operation for answers needed before the current task
 can continue:
 
 ```sh
-obelisk call obelisk-agent:tools/input.ask-user '["Which deployment?"]'
+obelisk call obelisk-agent:stub/stub.ask-user '["Which deployment?"]'
 ```
 
 The command blocks until the user answers in the UI, then returns that

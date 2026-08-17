@@ -1,6 +1,6 @@
-package obelisk-agent:agent;
+package obelisk-agent:stub;
 
-interface session {
+interface stub {
   record prompt-input {
     id: string,
     text: string,
@@ -112,9 +112,9 @@ interface session {
 
   injection: func() -> result<session-input, string>;
   record-output: func(event-id: string) -> result<session-event, string>;
+  ask-user: func(question: string) -> result<string, string>;
 }
 
 world exports {
-  export session;
-  export obelisk-agent:llm/chat;
+  export stub;
 }

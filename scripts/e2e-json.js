@@ -55,7 +55,7 @@ switch (command) {
         const ffqns = executions(json()).map((row) => row.ffqn);
         const valid = !ffqns.includes("obelisk-agent:llm/chat.completion")
             && ffqns.includes("obelisk-agent:programs/program.curl")
-            && ffqns.filter((ffqn) => ffqn === "obelisk-agent:agent/session.injection").length >= 2;
+            && ffqns.filter((ffqn) => ffqn === "obelisk-agent:stub/stub.injection").length >= 2;
         process.exit(valid ? 0 : 1);
         break;
     }
@@ -136,7 +136,7 @@ switch (command) {
         try { shellResult = JSON.parse(shell?.result?.stdout || "null"); }
         catch (_) { shellResult = null; }
         const valid = Boolean(requested && resolved)
-            && shellResult?.ffqn === "obelisk-agent:tools/input.ask-user"
+            && shellResult?.ffqn === "obelisk-agent:stub/stub.ask-user"
             && shellResult?.result === "yes"
             && shell.turn_complete === true;
         if (!valid) console.error(`unexpected resolved human input: ${JSON.stringify(projection)}`);

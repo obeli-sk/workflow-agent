@@ -120,7 +120,7 @@ while true; do
     SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$E2E_API_URL" \
         -e "$SESSION_ID" --show-derived --limit 100)"
     INJECTION_ID="$(node scripts/e2e-json.js execution-id \
-        "obelisk-agent:agent/session.injection" <<<"$SESSION_EXECUTIONS")"
+        "obelisk-agent:stub/stub.injection" <<<"$SESSION_EXECUTIONS")"
     [[ -n "$INJECTION_ID" ]] && break
     [[ $SECONDS -ge 30 ]] && { echo "session did not expose its input offer: $SESSION_EXECUTIONS" >&2; exit 1; }
     sleep 1
@@ -165,7 +165,7 @@ while true; do
     SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$E2E_API_URL" \
         -e "$SESSION_ID" --show-derived --limit 100)"
     if node scripts/e2e-json.js has-execution \
-        "obelisk-agent:agent/session.record-output" <<<"$SESSION_EXECUTIONS"; then
+        "obelisk-agent:stub/stub.record-output" <<<"$SESSION_EXECUTIONS"; then
         while IFS= read -r RECORD_ID; do
             [[ -n "$RECORD_ID" ]] || continue
             RECORD_RESULT="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$RECORD_ID" 2>/dev/null || true)"
@@ -174,7 +174,7 @@ while true; do
                 [[ -n "$STDOUT" ]] && break 2
             fi
         done < <(node scripts/e2e-json.js execution-ids \
-            "obelisk-agent:agent/session.record-output" <<<"$SESSION_EXECUTIONS")
+            "obelisk-agent:stub/stub.record-output" <<<"$SESSION_EXECUTIONS")
     fi
     [[ $SECONDS -ge 30 ]] && { echo "shell turn did not record output: $SESSION_EXECUTIONS" >&2; exit 1; }
     sleep 1
