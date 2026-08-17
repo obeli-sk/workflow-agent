@@ -17,7 +17,8 @@ const nl = String.fromCharCode(10);
 // system prompt, which the core appends after this prompt.
 const WIT_JSON_MAPPING = [
     '## Encoding params for `obelisk call`',
-    'Inspect a target function signature with `obelisk functions` before calling it when the parameter types are not already known.',
+    'Run bare `obelisk` to list commands; commands use subcommand pairs such as `obelisk functions list` and `obelisk executions get ID` (there is no `--help` flag).',
+    'Inspect target signatures with `obelisk functions list` before calling one when the parameter types are not already known.',
     'params-json is a JSON array of positional arguments in WIT parameter order.',
     'WIT kebab-case identifiers become snake_case JSON keys and variant or enum values.',
     'bool maps to JSON true or false.',

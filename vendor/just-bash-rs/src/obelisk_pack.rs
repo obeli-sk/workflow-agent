@@ -248,19 +248,19 @@ fn try_execute_obelisk(
     let action = args.get(1).map(String::as_str).unwrap_or("");
     let rest: &[String] = if args.len() > 2 { &args[2..] } else { &[] };
 
-    if group.is_empty() || group == "--help" || group == "help" {
+    if group.is_empty() {
         return Ok(ok(help()));
     }
 
     if group == "functions" && action == "list" {
-        return json_call(
-            host,
-            "obelisk-agent:tools/webapi.list-functions",
-            json!([
-                option(rest, "--prefix", ""),
-                integer_option(rest, "--length", 100)
-            ]),
-        );
+        let params = json!([
+            option(rest, "--prefix", ""),
+            integer_option(rest, "--length", 100)
+        ]);
+        if flag(rest, "--json") {
+            return json_call(host, "obelisk-agent:tools/webapi.list-functions", params);
+        }
+        return list_functions(host, params);
     }
     if group == "functions" && action == "wit" {
         return json_call(
@@ -637,6 +637,59 @@ fn json_call(
     Ok(ok(ensure_trailing_newline(render_output(value))))
 }
 
+fn list_functions(host: &mut dyn ObeliskHost, params: Value) -> Result<CommandOutput, String> {
+    let value = call_value(
+        host,
+        "obelisk-agent:tools/webapi.list-functions",
+        &params.to_string(),
+    )?;
+    let functions = decode_json(&value)?;
+    let functions = functions
+        .as_array()
+        .ok_or_else(|| "functions list returned a non-array response".to_string())?;
+    let mut lines = Vec::new();
+    for function in functions {
+        if !function.get("extension").is_none_or(Value::is_null) {
+            continue;
+        }
+        let ffqn = function
+            .get("ffqn")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "function metadata has no ffqn".to_string())?;
+        let parameter_types = function
+            .get("parameter_types")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("function metadata for {ffqn} has no parameter_types"))?;
+        let parameters = parameter_types
+            .iter()
+            .map(|parameter| {
+                let name = parameter
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("function parameter for {ffqn} has no name"))?;
+                let wit_type = parameter
+                    .get("wit_type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        format!("function parameter {name} for {ffqn} has no wit_type")
+                    })?;
+                Ok(format!("{name}: {wit_type}"))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+            .join(", ");
+        let return_type = function
+            .get("return_type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("function metadata for {ffqn} has no return_type"))?;
+        lines.push(format!("{ffqn} : func({parameters}) -> {return_type}"));
+    }
+    Ok(ok(if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    }))
+}
+
 /// Render an FFQN result for the shell. The endpoints return JSON *text*, so a
 /// structural result (array/object) is pretty-printed - one element/field per
 /// line - to stay readable and greppable rather than a single dense line. A
@@ -797,7 +850,7 @@ fn help() -> String {
     "Usage: obelisk <command>\n\
 \n\
 Commands:\n\
-  functions list [--prefix PREFIX] [--length N]\n\
+  functions list [--prefix PREFIX] [--length N] [--json]\n\
   functions wit FFQN\n\
   executions list [--ffqn-prefix PREFIX] [--length N]\n\
   executions get ID\n\
@@ -899,14 +952,35 @@ mod tests {
     // shell so test args don't have to survive quoting/splitting) --
 
     #[test]
-    fn help_with_no_args_help_flag_or_help_word() {
+    fn bare_obelisk_prints_command_list() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        for case in [vec![], words(&["--help"]), words(&["help"])] {
+        let out = execute_obelisk(&mut i, &[], "", &mut host);
+        assert_eq!(out.exit_code, 0);
+        assert!(out.stdout.starts_with("Usage: obelisk <command>"));
+    }
+
+    #[test]
+    fn help_aliases_are_not_commands() {
+        let mut host = FakeHost::new();
+        let mut i = interp("/workspace");
+        for case in [words(&["--help"]), words(&["help"])] {
             let out = execute_obelisk(&mut i, &case, "", &mut host);
-            assert_eq!(out.exit_code, 0);
-            assert!(out.stdout.starts_with("Usage: obelisk <command>"));
+            assert_eq!(out.exit_code, 2);
+            assert!(out.stderr.contains("unknown command"));
         }
+    }
+
+    #[test]
+    fn command_groups_require_an_action() {
+        let mut host = FakeHost::new();
+        let mut i = interp("/workspace");
+        for group in ["functions", "executions", "deployment"] {
+            let out = execute_obelisk(&mut i, &words(&[group]), "", &mut host);
+            assert_eq!(out.exit_code, 2);
+            assert!(!out.stderr.is_empty());
+        }
+        assert!(host.calls.is_empty());
     }
 
     #[test]
@@ -921,8 +995,28 @@ mod tests {
 
     #[test]
     fn functions_list_forwards_prefix_and_length() {
-        let mut host =
-            FakeHost::new().with("obelisk-agent:tools/webapi.list-functions", "[\"a\",\"b\"]");
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.list-functions",
+            r#"[
+                {
+                    "ffqn":"foo:bar/api.run",
+                    "parameter_types":[
+                        {"name":"input","wit_type":"string"},
+                        {"name":"retries","wit_type":"u32"}
+                    ],
+                    "return_type":"result<string, error>",
+                    "extension":null,
+                    "wit":"unused"
+                },
+                {
+                    "ffqn":"foo:bar/api.run-submit",
+                    "parameter_types":[],
+                    "return_type":"execution-id",
+                    "extension":"submit",
+                    "wit":"unused"
+                }
+            ]"#,
+        );
         let mut i = interp("/workspace");
         let out = execute_obelisk(
             &mut i,
@@ -931,14 +1025,36 @@ mod tests {
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
-        // Structural JSON is pretty-printed for readability/grepping.
-        assert_eq!(out.stdout, "[\n  \"a\",\n  \"b\"\n]\n");
+        assert_eq!(
+            out.stdout,
+            "foo:bar/api.run : func(input: string, retries: u32) -> result<string, error>\n"
+        );
         assert_eq!(
             host.calls,
             vec![(
                 "obelisk-agent:tools/webapi.list-functions".to_string(),
                 "[\"foo\",5]".to_string()
             )]
+        );
+    }
+
+    #[test]
+    fn functions_list_json_preserves_structured_output() {
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.list-functions",
+            r#"[{"ffqn":"a","extension":null}]"#,
+        );
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["functions", "list", "--json"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(
+            out.stdout,
+            "[\n  {\n    \"ffqn\": \"a\",\n    \"extension\": null\n  }\n]\n"
         );
     }
 
@@ -951,16 +1067,16 @@ mod tests {
     }
 
     #[test]
-    fn functions_list_pretty_prints_a_json_string_body() {
+    fn functions_list_formats_a_json_string_body() {
         // backcompat: 0.1.0 list-functions returned its array as a JSON string.
         let mut host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.list-functions",
-            "\"[{\\\"ffqn\\\":\\\"a\\\"}]\"",
+            "\"[{\\\"ffqn\\\":\\\"a\\\",\\\"parameter_types\\\":[],\\\"return_type\\\":\\\"string\\\",\\\"extension\\\":null}]\"",
         );
         let mut i = interp("/workspace");
         let out = execute_obelisk(&mut i, &words(&["functions", "list"]), "", &mut host);
         assert_eq!(out.exit_code, 0);
-        assert_eq!(out.stdout, "[\n  {\n    \"ffqn\": \"a\"\n  }\n]\n");
+        assert_eq!(out.stdout, "a : func() -> string\n");
     }
 
     #[test]
@@ -1720,7 +1836,7 @@ content_digest = \"sha256:1\"\n\
         bash.register_command("obelisk", command_handler(Box::new(host)));
         let out = bash.exec("obelisk functions list | cat", Default::default());
         assert_eq!(out.exit_code, 0);
-        assert_eq!(out.stdout, "[]\n");
+        assert_eq!(out.stdout, "");
     }
 
     #[test]
