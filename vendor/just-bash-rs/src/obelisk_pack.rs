@@ -321,6 +321,22 @@ fn try_execute_obelisk(
     }
     if group == "call" {
         let ffqn = required(Some(action), "ffqn")?;
+        if rest.first().map(String::as_str) == Some("--") {
+            let params = rest[1..]
+                .iter()
+                .map(|argument| {
+                    serde_json::from_str(argument)
+                        .unwrap_or_else(|_| Value::String(argument.clone()))
+                })
+                .collect::<Vec<_>>();
+            return target_call(
+                host,
+                json!([ffqn, Value::Array(params).to_string()]),
+            );
+        }
+        if rest.len() > 1 {
+            return Err("call: expected one params JSON array, or `--` followed by positional parameters".to_string());
+        }
         // A params-json positional that is present but empty is almost always a
         // shell expansion that produced nothing (e.g. `"$(cat missing.json)"`).
         // Silently defaulting it to `[]` dispatches zero arguments and surfaces
@@ -336,11 +352,7 @@ fn try_execute_obelisk(
             .filter(|s| !s.is_empty())
             .or_else(|| Some(stdin).filter(|s| !s.is_empty()))
             .unwrap_or("[]");
-        return json_call(
-            host,
-            "obelisk-control:tools/native.call",
-            json!([ffqn, params_json]),
-        );
+        return target_call(host, json!([ffqn, params_json]));
     }
     if group == "deployment" {
         return execute_deployment(interp, action, rest, host);
@@ -637,6 +649,17 @@ fn json_call(
     Ok(ok(ensure_trailing_newline(render_output(value))))
 }
 
+fn target_call(host: &mut dyn ObeliskHost, params: Value) -> Result<CommandOutput, String> {
+    let value = call_value(
+        host,
+        "obelisk-control:tools/native.call",
+        &params.to_string(),
+    )?;
+    Ok(ok(ensure_trailing_newline(render_output(decode_json(
+        &value,
+    )?))))
+}
+
 fn list_functions(host: &mut dyn ObeliskHost, params: Value) -> Result<CommandOutput, String> {
     let value = call_value(
         host,
@@ -856,7 +879,7 @@ Commands:\n\
   executions get ID\n\
   executions logs ID [--length N]\n\
   executions result ID\n\
-  call FFQN [PARAMS_JSON]\n\
+  call FFQN [PARAMS_JSON | -- PARAM...]\n\
   deployment current\n\
   deployment refresh\n\
   deployment check [DIRECTORY]\n\
@@ -1185,6 +1208,34 @@ mod tests {
     }
 
     #[test]
+    fn call_prints_only_the_target_result() {
+        let mut host = FakeHost::new().with(
+            "obelisk-control:tools/native.call",
+            r#""{\"answer\":42}""#,
+        );
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["call", "some:ffqn", "[]"]), "", &mut host);
+        assert_eq!(out.stdout, "{\n  \"answer\": 42\n}\n");
+
+        let mut host = FakeHost::new().with(
+            "obelisk-control:tools/native.call",
+            r#""\"plain result\"""#,
+        );
+        let out = execute_obelisk(&mut i, &words(&["call", "some:ffqn", "[]"]), "", &mut host);
+        assert_eq!(out.stdout, "plain result\n");
+    }
+
+    #[test]
+    fn call_failure_is_a_command_error_not_a_result() {
+        let mut host = FakeHost::new();
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["call", "some:ffqn", "[]"]), "", &mut host);
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stdout.is_empty());
+        assert!(out.stderr.starts_with("obelisk: no fixture for"));
+    }
+
+    #[test]
     fn call_falls_back_to_stdin_then_to_empty_array() {
         let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
         let mut i = interp("/workspace");
@@ -1194,6 +1245,47 @@ mod tests {
         let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
         execute_obelisk(&mut i, &words(&["call", "some:ffqn"]), "", &mut host);
         assert_eq!(host.calls[0].1, "[\"some:ffqn\",\"[]\"]");
+    }
+
+    #[test]
+    fn call_accepts_positional_params_after_separator() {
+        let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
+        let mut i = interp("/workspace");
+        execute_obelisk(
+            &mut i,
+            &words(&[
+                "call",
+                "some:ffqn",
+                "--",
+                "1",
+                "true",
+                "null",
+                r#"{"field":2}"#,
+                "plain text",
+                r#""42""#,
+            ]),
+            "ignored stdin",
+            &mut host,
+        );
+        assert_eq!(
+            host.calls[0].1,
+            r#"["some:ffqn","[1,true,null,{\"field\":2},\"plain text\",\"42\"]"]"#
+        );
+    }
+
+    #[test]
+    fn call_rejects_multiple_arguments_without_separator() {
+        let mut host = FakeHost::new();
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["call", "some:ffqn", "1", "2"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stderr.contains("expected one params JSON array"));
+        assert!(host.calls.is_empty());
     }
 
     #[test]

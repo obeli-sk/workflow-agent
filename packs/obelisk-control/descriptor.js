@@ -19,6 +19,8 @@ const WIT_JSON_MAPPING = [
     '## Encoding params for `obelisk call`',
     'Run bare `obelisk` to list commands; commands use subcommand pairs such as `obelisk functions list` and `obelisk executions get ID` (there is no `--help` flag).',
     'Inspect target signatures with `obelisk functions list` before calling one when the parameter types are not already known.',
+    'Call with a JSON array (`obelisk call FFQN \'[1,"text"]\'`) or positional values (`obelisk call FFQN -- 1 text`); positional values parse as JSON when valid and otherwise as strings.',
+    'A successful call prints only the target return value; a target `result` err or execution failure exits nonzero and prints the error to stderr.',
     'params-json is a JSON array of positional arguments in WIT parameter order.',
     'WIT kebab-case identifiers become snake_case JSON keys and variant or enum values.',
     'bool maps to JSON true or false.',

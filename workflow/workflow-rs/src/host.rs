@@ -72,7 +72,7 @@ impl RealHost {
             let result = raw
                 .map(|value| serde_json::from_str(&value).unwrap_or(Value::String(value)))
                 .unwrap_or(Value::Null);
-            let body = serde_json::json!({ "ffqn": ASK_USER_FFQN, "result": result }).to_string();
+            let body = result.to_string();
             serde_json::to_string(&body)
                 .map(Some)
                 .map_err(|error| format!("cannot encode native call result: {error}"))

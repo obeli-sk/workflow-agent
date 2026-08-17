@@ -17,7 +17,7 @@ export default function call(ffqn, paramsJson) {
     if (!Array.isArray(params)) throw witHint(ffqn, 'params_json must be a JSON array of positional parameters');
     try {
         const result = obelisk.call(ffqn, params);
-        return JSON.stringify({ ffqn, result: result === undefined ? null : result });
+        return JSON.stringify(result === undefined ? null : result);
     } catch (e) { throw witHint(ffqn, callErrorMessage(e)); }
 }
 
