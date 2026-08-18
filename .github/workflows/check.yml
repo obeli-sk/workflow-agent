@@ -51,6 +51,35 @@ jobs:
               exit 1
           fi
 
+  check-wit-deps:
+    name: Check generated wit/deps
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          ref: ${{ github.event.inputs.ref }} # Use the ref if provided, otherwise defaults to the current branch/commit
+
+      - uses: nixbuild/nix-quick-install-action@v34
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          nix_conf: |
+            extra-substituters = https://obeli-sk.cachix.org
+            extra-trusted-public-keys = obeli-sk.cachix.org-1:31iM9GWSEhAXvvuTWQ7CvAcwvgRzsuJ9yJghywSd3Jw=
+
+      - name: Populate the nix store
+        run: nix develop --command echo
+
+      - name: Regenerate wit/deps
+        run: nix develop --command ./scripts/generate-wit-deps.sh
+
+      - name: Check wit/deps
+        run: |
+          if ! git diff --quiet -- workflow/workflow-rs/wit/deps; then
+              echo "workflow/workflow-rs/wit/deps is stale, run ./scripts/generate-wit-deps.sh:"
+              git diff -- workflow/workflow-rs/wit/deps
+              exit 1
+          fi
+
   rust:
     name: Rust workflow
     runs-on: ubuntu-24.04
