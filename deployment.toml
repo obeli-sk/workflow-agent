@@ -273,7 +273,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/deployment-id|/v1/deployments/)"
+request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/"
 secrets = ["OBELISK__API__TOKEN"]
 replace_in = ["headers"]
 

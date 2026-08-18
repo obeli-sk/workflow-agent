@@ -49,8 +49,6 @@ interface webapi {
   }
 
   record checkout-result {
-    deployment-id: string,
-    active-deployment-id: string,
     deployment-toml: string,
     files: list<checkout-file>,
   }
@@ -136,7 +134,7 @@ interface webapi {
     length: u32,
   ) -> result<component-source, tool-error>;
   current-deployment-id: func() -> result<string, string>;
-  deployment-checkout: func(deployment-id: option<string>) -> result<checkout-result, tool-error>;
+  deployment-checkout: func(deployment-id: string) -> result<checkout-result, tool-error>;
   deployment-read-blob: func(digest: string) -> result<string, string>;
   deployment-submit: func(
     deployment-toml: string,

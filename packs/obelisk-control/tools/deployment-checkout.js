@@ -1,18 +1,20 @@
 // obelisk-agent:tools/webapi.deployment-checkout:
-//   func(deployment-id: option<string>)
-//     -> result<record { deployment-id: string, active-deployment-id: string,
-//          deployment-toml: string,
+//   func(deployment-id: string)
+//     -> result<record { deployment-toml: string,
 //          files: list<record { path: string, digest: string, size: u64 }> },
 //        variant { permanent-error(string), transient-error(string), execution-failed }>
 //
 // Fetch a deployment to be edited as a virtual working copy. Returns
-//   { deployment_id, active_deployment_id, deployment_toml, files }
-// where deployment_toml is the verbatim stored manifest. Deployment-owned
+//   { deployment_toml, files }
+// where deployment_toml is the stored manifest with server-generated metadata
+// stripped (include_generated_metadata=false): no content_digest, component_files,
+// or backtrace digests, so the agent edits a clean source view. Deployment-owned
 // files carry their deployment-relative path, content digest, and byte size;
 // their bytes live in the CAS and are fetched on demand with
 // webapi.deployment-read-blob.
 //
-// When deployment-id is omitted the currently active deployment is checked out.
+// The caller passes the deployment-id to check out; the workflow already reads
+// the active deployment id each turn, so this activity does not re-resolve it.
 export default async function deployment_checkout(deploymentId) {
     try { return await deployment_checkout_impl(deploymentId); }
     catch (error) { throw classifyActivityError(error); }
@@ -21,18 +23,13 @@ export default async function deployment_checkout(deploymentId) {
 async function deployment_checkout_impl(deploymentId) {
     const base = process.env["OBELISK_API_URL"];
     if (!base) throw "OBELISK_API_URL is not configured";
-    // /v1/deployment-id returns the active ID as a JSON string under Accept:
-    // application/json, so parse it rather than reading the quoted text.
-    const active = String(await getJson(`${base}/v1/deployment-id`)).trim();
-    const wanted = (typeof deploymentId === "string" && deploymentId.trim()) ? deploymentId.trim() : active;
-    if (!wanted) throw "there is no active deployment to check out; pass a deployment-id";
+    const wanted = (typeof deploymentId === "string" && deploymentId.trim()) ? deploymentId.trim() : "";
+    if (!wanted) throw "deployment-checkout requires a deployment-id";
     const record = await getJson(`${base}/v1/deployments/${encodeURIComponent(wanted)}`);
     if (typeof record.deployment_toml !== "string") {
         throw `deployment ${wanted} has no deployment_toml`;
     }
     return {
-        deployment_id: wanted,
-        active_deployment_id: active,
         deployment_toml: record.deployment_toml,
         files: record.files,
     };
