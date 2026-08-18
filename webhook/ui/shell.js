@@ -210,6 +210,17 @@ function esc(s) {
     .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
+// The HTML parser silently drops a single newline immediately after a <pre>
+// start tag, so command output or a script that begins with a blank line loses
+// its first line. Emit one guard newline (built without a literal newline, which
+// the SHELL_HTML template literal would turn into a raw line break) for the
+// parser to eat, leaving the content's own leading newline intact.
+const PRE_LF = String.fromCharCode(10);
+function preBlock(text, cls) {
+  const open = cls ? '<pre class="' + cls + '">' : '<pre>';
+  return open + PRE_LF + esc(text) + '</pre>';
+}
+
 function ago(iso) {
   if (!iso) return '';
   const t = Date.parse(iso);
@@ -774,7 +785,7 @@ function renderDetail(forceScroll = false) {
     +   cancelBtn
     + '</div>'
     + '<div id="logs-slot">' + renderLogs() + '</div>'
-    + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div><pre>' + esc(d.prompt) + '</pre></div>' : '')
+    + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div>' + preBlock(d.prompt) + '</div>' : '')
     + turnsHtml
     + finalHtml
     + asksHtml;
@@ -1034,7 +1045,7 @@ function hydrateDisplayBlocks(root, attempt = 0, keepAtBottom = false) {
       el.removeAttribute('data-source');
       hydrated = true;
     } else {
-      el.innerHTML = '<pre>' + esc(source) + '</pre>';
+      el.innerHTML = preBlock(source);
       retryMarkdown = true;
     }
   }
@@ -1114,7 +1125,7 @@ function renderTurnGroup(group, ordinal) {
   let body = '';
   for (const item of group.items) {
     if (item.kind === 'user_message') {
-      body += '<div class="bubble user"><div class="label">user</div><pre>' + esc(item.text) + '</pre></div>';
+      body += '<div class="bubble user"><div class="label">user</div>' + preBlock(item.text) + '</div>';
     } else if (isAgentStep(item)) {
       stepNumber += 1;
       body += renderStep(item, number, stepNumber);
@@ -1165,8 +1176,8 @@ function renderShellStep(item, turnNumber) {
 
 function renderTurnError(item) {
   return displayBlocksHtml(item.blocks)
-    + '<div class="bubble error"><div class="bubble-head"><div class="label">error</div></div><pre>'
-    + esc(item.text) + '</pre></div>';
+    + '<div class="bubble error"><div class="bubble-head"><div class="label">error</div></div>'
+    + preBlock(item.text) + '</div>';
 }
 
 function renderCall(call, keyBase) {
@@ -1199,8 +1210,8 @@ function renderCall(call, keyBase) {
           ci++;
         }
         streams += isErr
-          ? '<pre class="stderr">' + esc(text) + '</pre>'
-          : '<pre>' + esc(text) + '</pre>';
+          ? preBlock(text, 'stderr')
+          : preBlock(text);
       }
       if (!streams) streams = '<pre>(no output)</pre>';
       resultBlock = '<div class="result"><div class="response-head"><div class="key">exit '
@@ -1208,12 +1219,12 @@ function renderCall(call, keyBase) {
     } else {
       const out = typeof call.ok === 'string' ? call.ok : JSON.stringify(call.ok, null, 2);
       resultBlock = '<div class="result"><div class="response-head"><div class="key">ok</div>'
-        + '</div><pre>' + esc(out) + '</pre></div>';
+        + '</div>' + preBlock(out) + '</div>';
     }
   } else if ('err' in call) {
     pill = '<span class="status-pill err">err</span>';
     resultBlock = '<div class="result"><div class="response-head"><div class="key">err</div>'
-      + '</div><pre>' + esc(String(call.err)) + '</pre></div>';
+      + '</div>' + preBlock(String(call.err)) + '</div>';
   } else {
     pill = '<span class="status-pill pending">pending</span>';
     resultBlock = '';
@@ -1237,14 +1248,14 @@ function isShellResult(value) {
 // verbatim (rendered newlines) instead of a JSON string with escaped newlines.
 function renderCallArgs(name, args) {
   if (name === 'bash' && args && typeof args.script === 'string') {
-    let html = '<div class="args"><div class="key">script</div><pre>' + esc(args.script) + '</pre>';
+    let html = '<div class="args"><div class="key">script</div>' + preBlock(args.script);
     if (typeof args.stdin === 'string' && args.stdin !== '') {
-      html += '<div class="key">stdin</div><pre>' + esc(args.stdin) + '</pre>';
+      html += '<div class="key">stdin</div>' + preBlock(args.stdin);
     }
     return html + '</div>';
   }
   const argsJson = args !== undefined ? JSON.stringify(args, null, 2) : '{}';
-  return '<div class="args"><div class="key">args</div><pre>' + esc(argsJson) + '</pre></div>';
+  return '<div class="args"><div class="key">args</div>' + preBlock(argsJson) + '</div>';
 }
 
 function shortChildId(id) {
@@ -1262,7 +1273,7 @@ function renderFinal(d) {
   const r = d.final_result;
   if (!r) return '';
   if (r.error) return '<div class="err-box">' + esc(r.error) + '</div>';
-  if (typeof r.ok === 'string') return '<div class="bubble final"><div class="label">final</div><pre>' + esc(r.ok) + '</pre></div>';
+  if (typeof r.ok === 'string') return '<div class="bubble final"><div class="label">final</div>' + preBlock(r.ok) + '</div>';
   if (r.err === 'agent session cancelled') return '<p style="color: var(--muted)">Session cancelled.</p>';
   if (r.err !== undefined) return '<div class="err-box">Workflow err: ' + esc(String(r.err)) + '</div>';
   if (r.execution_failed !== undefined) return '<div class="err-box">Execution error: ' + esc(JSON.stringify(r.execution_failed)) + '</div>';

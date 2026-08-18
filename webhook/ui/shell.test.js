@@ -224,3 +224,25 @@ test("renders multiple tool calls emitted by a single step", async () => {
     assert.match(turn0, /in 5ms/);
     assert.match(turn0, /in 9ms/);
 });
+
+test("preserves a leading newline in command output (pre-tag guard)", async () => {
+    const renderer = await loadRenderer();
+    const fixture = {
+        transcript: {
+            replies: [toolStep(0, "2026-08-18T10:00:01.000Z", 100, [bashCall("bash_0")], "note", true)],
+            user_messages: [],
+            shell_events: [],
+            turn_starts: [],
+            sent_results: [{
+                id: "bash_0", turn_index: 0, duration_milliseconds: 5,
+                ok: { output: [{ stdout: "\n[[webhook_endpoint_js]]\n" }], exit_code: 0 },
+            }],
+        },
+        created: "2026-08-18T10:00:00.000Z",
+        prompt: "cat deployment.toml",
+    };
+    const [turn0] = render(renderer, fixture);
+    // A bare `<pre>\n[[...` would have its first newline swallowed by the HTML
+    // parser; the guard newline the renderer inserts keeps the blank first line.
+    assert.match(turn0, /<pre>\n\n\[\[webhook_endpoint_js\]\]/);
+});

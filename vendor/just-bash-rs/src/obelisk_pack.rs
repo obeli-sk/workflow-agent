@@ -256,8 +256,23 @@ fn try_execute_obelisk(
     let action = args.get(1).map(String::as_str).unwrap_or("");
     let rest: &[String] = if args.len() > 2 { &args[2..] } else { &[] };
 
-    if group.is_empty() {
+    if group.is_empty() || is_help_flag(group) {
         return Ok(ok(help()));
+    }
+    // `-h`/`--help` at any level prints the matching usage and exits 0: as the
+    // action (`obelisk deployment -h`) it is the group help, further right
+    // (`obelisk deployment submit -h`) the subcommand help. For `call`, only a
+    // help flag before `--` is help; after it, it is a positional parameter.
+    if is_help_flag(action) {
+        return Ok(ok(group_help(group)));
+    }
+    let help_scan = if group == "call" {
+        &rest[..rest.iter().position(|a| a == "--").unwrap_or(rest.len())]
+    } else {
+        rest
+    };
+    if help_requested(help_scan) {
+        return Ok(ok(action_help(group, action)));
     }
 
     if group == "functions" && action == "list" {
@@ -389,7 +404,7 @@ fn execute_deployment(
             Ok(ok(format!("{}\n", mount_result_json(&refreshed))))
         }
         "check" => {
-            let dir = resolve_deployment_dir(interp, args.first().map(String::as_str));
+            let dir = resolve_deployment_dir(interp, first_positional(args, &[]));
             let manifest = read_manifest(&interp.fs, &dir)?;
             let sources = deployment_sources(&interp.fs, &dir, &manifest);
             let payload = json!({
@@ -403,7 +418,10 @@ fn execute_deployment(
             )))
         }
         "submit" => {
-            let dir = resolve_deployment_dir(interp, args.first().map(String::as_str));
+            // The PATH is positional, so skip flags (and `--description`'s value)
+            // when finding it; otherwise `submit --description X` reads `X`, or
+            // even `--description` itself, as the deployment directory.
+            let dir = resolve_deployment_dir(interp, first_positional(args, &["--description"]));
             let manifest = read_manifest(&interp.fs, &dir)?;
             // Expand the digest-free view back to what the server stores: every
             // `content_digest`, `component_files` value, and `backtrace.sources`
@@ -417,7 +435,7 @@ fn execute_deployment(
             };
             let description =
                 option(args, "--description", "Submitted from workflow-agent VFS").to_string();
-            let allow_missing = flag(args, "--allow-missing-runtime-config");
+            let allow_missing = flag_runtime_config(args);
             submit_deployment(
                 &interp.fs,
                 host,
@@ -433,7 +451,7 @@ fn execute_deployment(
             "obelisk-agent:tools/webapi.deployment-switch",
             json!([
                 required(args.first().map(String::as_str), "deployment id")?,
-                flag(args, "--allow-missing-runtime-config"),
+                flag_runtime_config(args),
             ]),
         ),
         "apply" => json_call(
@@ -726,9 +744,50 @@ fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<String> {
     files
 }
 
+/// Resolve the directory holding `deployment.toml` from a positional argument.
+/// Accepts a path to the `deployment.toml` file itself (obelisk's `submit PATH`;
+/// its parent is the directory), a directory, or nothing (defaults to the cwd).
 fn resolve_deployment_dir(interp: &Interpreter, value: Option<&str>) -> String {
     let value = value.filter(|s| !s.is_empty()).unwrap_or(".");
-    normalize_path(&interp.cwd, value)
+    let resolved = normalize_path(&interp.cwd, value);
+    if basename(&resolved) == "deployment.toml" {
+        parent_dir(&resolved)
+    } else {
+        resolved
+    }
+}
+
+fn parent_dir(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some(("", _)) | None => "/".to_string(),
+        Some((parent, _)) => parent.to_string(),
+    }
+}
+
+/// The first positional argument, skipping flags. A flag named in `value_flags`
+/// also consumes the following token as its value; `--` ends flag parsing so the
+/// next token is positional. Keeps `submit --description X` from reading a flag
+/// (or its value) as the PATH.
+fn first_positional<'a>(args: &'a [String], value_flags: &[&str]) -> Option<&'a str> {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if arg == "--" {
+            return args.get(i + 1).map(String::as_str);
+        }
+        if arg.starts_with('-') && arg.len() > 1 {
+            i += if value_flags.contains(&arg) { 2 } else { 1 };
+            continue;
+        }
+        return Some(arg);
+    }
+    None
+}
+
+/// The runtime-config override, accepting both the pack's original flag name and
+/// obelisk's `--allow-unavailable-runtime-config` spelling.
+fn flag_runtime_config(args: &[String]) -> bool {
+    flag(args, "--allow-missing-runtime-config") || flag(args, "--allow-unavailable-runtime-config")
 }
 
 fn read_manifest(fs: &Vfs, dir: &str) -> Result<String, String> {
@@ -967,23 +1026,149 @@ fn fs_error_message(error: FsError) -> String {
     }
 }
 
+fn is_help_flag(arg: &str) -> bool {
+    arg == "-h" || arg == "--help"
+}
+
+fn help_requested(args: &[String]) -> bool {
+    args.iter().any(|a| is_help_flag(a))
+}
+
+/// Usage for a command group (`obelisk <group> --help`), or the top-level help
+/// for an unrecognized group.
+fn group_help(group: &str) -> String {
+    match group {
+        "functions" => functions_help(),
+        "executions" => executions_help(),
+        "call" => call_help(),
+        "deployment" => deployment_help(),
+        _ => help(),
+    }
+}
+
+/// Usage for a specific subcommand (`obelisk <group> <action> --help`). Only the
+/// deployment subcommands (and `call`) carry their own option list; everything
+/// else falls back to the group help, which already lists each subcommand.
+fn action_help(group: &str, action: &str) -> String {
+    match (group, action) {
+        ("call", _) => call_help(),
+        ("deployment", "submit") => deployment_submit_help(),
+        ("deployment", "check") => deployment_check_help(),
+        ("deployment", "switch") => deployment_switch_help(),
+        ("deployment", "apply") => deployment_apply_help(),
+        _ => group_help(group),
+    }
+}
+
 fn help() -> String {
-    "Usage: obelisk <command>\n\
+    "Usage: obelisk <command> [args]\n\
+\n\
+Query and control the running Obelisk server, and edit the deployment checked\n\
+out under /workspace/deployment/current.\n\
 \n\
 Commands:\n\
-  functions list [--prefix PREFIX] [--length N] [--json]\n\
-  functions wit FFQN\n\
-  executions list [--ffqn-prefix PREFIX] [--length N]\n\
-  executions get ID\n\
-  executions logs ID [--length N]\n\
-  executions result ID\n\
-  call FFQN [PARAMS_JSON | -- PARAM...]\n\
-  deployment current\n\
-  deployment refresh\n\
-  deployment check [DIRECTORY]\n\
-  deployment submit [DIRECTORY] [--description TEXT]\n\
-  deployment switch ID\n\
-  deployment apply ID\n"
+  functions    List deployed functions, or print a function's WIT.\n\
+  executions   List executions, or show one execution's record, logs, or result.\n\
+  call         Call a deployed function and print its result.\n\
+  deployment   Inspect, edit, submit, and activate deployments.\n\
+\n\
+Run `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n"
+        .to_string()
+}
+
+fn functions_help() -> String {
+    "Usage: obelisk functions <subcommand>\n\
+\n\
+List deployed functions, or print a single function's WIT interface.\n\
+\n\
+Subcommands:\n\
+  list [--prefix PREFIX] [--length N] [--json]   List functions and their signatures.\n\
+  wit FFQN                                        Print the WIT interface for one function.\n"
+        .to_string()
+}
+
+fn executions_help() -> String {
+    "Usage: obelisk executions <subcommand>\n\
+\n\
+List executions, or show one execution's record, logs, or result.\n\
+\n\
+Subcommands:\n\
+  list [--ffqn-prefix PREFIX] [--id-prefix PREFIX] [--show-derived] [--hide-finished] [--length N]\n\
+                                                  List executions (most recent first).\n\
+  get ID                                          Show an execution's record.\n\
+  logs ID [--length N]                            Show an execution's logs.\n\
+  result ID                                       Show an execution's result value.\n"
+        .to_string()
+}
+
+fn call_help() -> String {
+    "Usage: obelisk call FFQN [PARAMS_JSON]\n\
+       obelisk call FFQN -- PARAM...\n\
+\n\
+Call a deployed function and print its result. Pass parameters as one JSON array\n\
+in WIT parameter order, or after `--` as positional values (each parsed as JSON\n\
+when valid, otherwise as a string). With neither, parameters are read from stdin,\n\
+defaulting to `[]`.\n"
+        .to_string()
+}
+
+fn deployment_help() -> String {
+    "Usage: obelisk deployment <subcommand>\n\
+\n\
+Inspect, edit, submit, and activate deployments. Edits under\n\
+/workspace/deployment/current are local until `submit` or `apply`.\n\
+\n\
+Subcommands:\n\
+  current                   Print the active deployment ID.\n\
+  refresh                   Re-fetch the active deployment, discarding local edits.\n\
+  check [PATH]              Report a deployment's manifest and locally-edited sources.\n\
+  submit [PATH] [OPTIONS]   Store the edited deployment as a new inactive deployment.\n\
+  switch ID [OPTIONS]       Activate a stored deployment (verified on next server restart).\n\
+  apply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\
+\n\
+Run `obelisk deployment <subcommand> --help` for a subcommand's options.\n"
+        .to_string()
+}
+
+fn deployment_submit_help() -> String {
+    "Usage: obelisk deployment submit [OPTIONS] [PATH-TO-DEPLOYMENT.TOML]\n\
+\n\
+Store the edited deployment as a new inactive deployment and print its ID. PATH\n\
+is the deployment.toml to submit, or the directory containing it; it defaults to\n\
+./deployment.toml. Digests are recomputed from the files, so leave them out.\n\
+\n\
+Options:\n\
+      --description TEXT               Human-readable description for the new deployment.\n\
+      --allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n\
+                                       (alias: --allow-unavailable-runtime-config)\n"
+        .to_string()
+}
+
+fn deployment_check_help() -> String {
+    "Usage: obelisk deployment check [PATH-TO-DEPLOYMENT.TOML]\n\
+\n\
+Report a deployment's manifest size and the owned sources edited locally (the\n\
+files a submit would upload). PATH is the deployment.toml, or its directory; it\n\
+defaults to ./deployment.toml.\n"
+        .to_string()
+}
+
+fn deployment_switch_help() -> String {
+    "Usage: obelisk deployment switch [OPTIONS] ID\n\
+\n\
+Mark a stored deployment active; it is verified and applied on the next server\n\
+restart.\n\
+\n\
+Options:\n\
+      --allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n\
+                                       (alias: --allow-unavailable-runtime-config)\n"
+        .to_string()
+}
+
+fn deployment_apply_help() -> String {
+    "Usage: obelisk deployment apply ID\n\
+\n\
+Hot-redeploy a stored deployment now (fails if it cannot be applied live).\n"
         .to_string()
 }
 
@@ -1105,14 +1290,35 @@ mod tests {
     }
 
     #[test]
-    fn help_aliases_are_not_commands() {
+    fn help_flags_print_usage_at_every_level() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        for case in [words(&["--help"]), words(&["help"])] {
+        // Top level.
+        for case in [words(&["--help"]), words(&["-h"])] {
             let out = execute_obelisk(&mut i, &case, "", &mut host);
-            assert_eq!(out.exit_code, 2);
-            assert!(out.stderr.contains("unknown command"));
+            assert_eq!(out.exit_code, 0);
+            assert!(out.stdout.starts_with("Usage: obelisk <command>"));
         }
+        // Group help (`obelisk deployment -h`).
+        let out = execute_obelisk(&mut i, &words(&["deployment", "-h"]), "", &mut host);
+        assert_eq!(out.exit_code, 0);
+        assert!(out.stdout.starts_with("Usage: obelisk deployment"));
+        // Subcommand help (`obelisk deployment submit --help`).
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "--help"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0);
+        assert!(out.stdout.contains("PATH-TO-DEPLOYMENT.TOML"));
+        // `call -h` reaches the call help even though the ffqn sits in the
+        // action slot, but a help flag after `--` is a positional parameter.
+        let out = execute_obelisk(&mut i, &words(&["call", "-h"]), "", &mut host);
+        assert_eq!(out.exit_code, 0);
+        assert!(out.stdout.starts_with("Usage: obelisk call"));
+        // No help path ever hits the host.
+        assert!(host.calls.is_empty());
     }
 
     #[test]
@@ -1915,6 +2121,58 @@ content_digest = \"sha256:1\"\n\
         );
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
         assert_eq!(params[4], "");
+    }
+
+    #[test]
+    fn deployment_submit_options_do_not_shadow_the_path() {
+        // Regression: `submit --description wh` used to read `--description` as
+        // the deployment directory (`.../current/--description/deployment.toml`).
+        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
+        let mut i = interp("/workspace/deployment/current");
+        i.fs.write_file(
+            "/workspace/deployment/current/deployment.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "--description", "wh"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        // Description forwarded; PATH defaulted to the cwd (`current`), so the
+        // deployment id is empty.
+        assert_eq!(params[2], "wh");
+        assert_eq!(params[4], "");
+    }
+
+    #[test]
+    fn deployment_submit_accepts_a_path_to_the_toml_file() {
+        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
+        let mut i = interp("/workspace");
+        i.fs.write_file(
+            "/workspace/deployment/dep-1/deployment.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/deployment/dep-1/deployment.toml",
+            ]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+        // The file's parent directory supplies the deployment id.
+        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        assert_eq!(params[4], "dep-1");
     }
 
     #[test]
