@@ -93,6 +93,14 @@ fn step_limit_error(turn_index: u64) -> AgentErrorEvent {
     }
 }
 
+fn llm_error_event(turn_index: u64, message: &str) -> AgentErrorEvent {
+    AgentErrorEvent {
+        id: format!("llm-error-{turn_index}"),
+        text: message.to_string(),
+        turn_index,
+    }
+}
+
 /// The durable input channel: a user-injection offer raced against LLM
 /// completion children on the session-wide named `user` join set. Unlike
 /// JS's `session.completionExecutionId`, the
@@ -110,6 +118,13 @@ struct LlmReply {
     duration_milliseconds: u64,
     request_message_count: usize,
     prompt_queued: bool,
+}
+
+/// `Failed` is a recoverable LLM provider error (e.g. HTTP 529); a fatal
+/// protocol violation is still an `Err` from `call_llm_with_user`.
+enum LlmOutcome {
+    Reply(LlmReply),
+    Failed(String),
 }
 
 #[derive(Clone)]
@@ -461,7 +476,7 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
             turn_complete = !should_call_llm;
         } else {
             publish_agent_status(&notifications, true, turn_index)?;
-            let reply = call_llm_with_user(
+            let reply = match call_llm_with_user(
                 &mut session,
                 &system,
                 &mut messages,
@@ -469,7 +484,21 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
                 &effort,
                 &mut bash,
                 &notifications,
-            )?;
+            )? {
+                LlmOutcome::Reply(reply) => reply,
+                LlmOutcome::Failed(message) => {
+                    // Surface the error and drop back to the idle input offer so the shell stays usable.
+                    notifications.notify(
+                        SESSION_EVENTS_JOIN_SET,
+                        &SessionEvent::AgentError(llm_error_event(turn_index, &message)),
+                    )?;
+                    should_call_llm = false;
+                    agent_steps = 0;
+                    publish_agent_status(&notifications, false, turn_index)?;
+                    turn_index += 1;
+                    continue;
+                }
+            };
             agent_steps += 1;
             let calls: Vec<ToolCall> = reply
                 .content
@@ -691,7 +720,7 @@ fn call_llm_with_user(
     effort: &str,
     bash: &mut Bash,
     notifications: &Notifications,
-) -> Result<LlmReply, String> {
+) -> Result<LlmOutcome, String> {
     let mut prompt_queued = false;
     loop {
         let request_message_count = messages.len();
@@ -713,7 +742,12 @@ fn call_llm_with_user(
                     if completed_id.as_deref() != Some(completion_execution_id.id.as_str()) {
                         return Err(format!("unexpected session response: {completed_id:?}"));
                     }
-                    break result.map_err(|e| format!("llm.completion failed: {e}"))?;
+                    match result {
+                        Ok(completion) => break completion,
+                        Err(e) => {
+                            return Ok(LlmOutcome::Failed(format!("llm.completion failed: {e}")));
+                        }
+                    }
                 }
                 Err(AwaitNextExtensionError::FunctionMismatch(_)) => {
                     let event = session_ext::injection_await_next(&session.join_set)
@@ -749,13 +783,13 @@ fn call_llm_with_user(
                 let content = content.as_array().cloned().ok_or_else(|| {
                     "llm reply content must be a JSON array of blocks".to_string()
                 })?;
-                return Ok(LlmReply {
+                return Ok(LlmOutcome::Reply(LlmReply {
                     content,
                     content_json: reply.content_json,
                     duration_milliseconds: elapsed_milliseconds(started_at, host_now_ms()),
                     request_message_count,
                     prompt_queued,
-                });
+                }));
             }
         }
     }
