@@ -13,10 +13,9 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::OnceLock;
 
-use regex::Regex;
 use serde_json::{Value, json};
+use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike};
 
 use crate::commands::{normalize_path, sha256_hex};
 use crate::custom_command::CustomCommandHandler;
@@ -534,266 +533,161 @@ fn parse_missing_files(message: &str) -> Option<Vec<Value>> {
     Some(entries.clone())
 }
 
-/// Every deployment-owned source location the submit pipeline tracks: `location`
-/// keys in the top-level component tables (`top_level_source_locations`),
-/// `component_files` map keys (`component_files_locations`), and `path` keys in
-/// each `backtrace.sources` entry (`backtrace_source_locations`) - the last two
-/// live where the top-level component scanner does not look. Digests are
-/// deliberately not read here: the mounted manifest has them stripped, and
-/// `deployment submit` recomputes each from the file's current bytes. `oci://`
-/// refs are skipped; deduplicated on location, first wins.
+/// Every deployment-owned source location a submit tracks: each component's
+/// `location`, `component_files` keys, and `backtrace.sources` paths. `oci://` refs skipped, deduped first-wins.
 fn owned_source_locations(toml: &str) -> Vec<String> {
+    let Ok(doc) = toml.parse::<DocumentMut>() else {
+        return Vec::new();
+    };
     let mut seen = std::collections::BTreeSet::new();
-    top_level_source_locations(toml)
-        .into_iter()
-        .chain(component_files_locations(toml))
-        .chain(backtrace_source_locations(toml))
-        .filter(|loc| seen.insert(loc.clone()))
-        .collect()
-}
-
-/// The path keys of every `component_files = { "<path>" = "<digest>" }` inline
-/// map (a single line in the generated manifest). `oci://` refs are skipped.
-fn component_files_locations(toml: &str) -> Vec<String> {
-    static PAIR: OnceLock<Regex> = OnceLock::new();
-    let pair = PAIR.get_or_init(|| Regex::new(r#""([^"]+)"\s*=\s*"[^"]*""#).unwrap());
     let mut locations = Vec::new();
-    for line in toml.split('\n') {
-        if !line.trim_start().starts_with("component_files") {
-            continue;
+    for table in component_tables(&doc) {
+        let mut candidates: Vec<&str> = Vec::new();
+        if let Some(location) = table.get("location").and_then(Item::as_str) {
+            candidates.push(location);
         }
-        for caps in pair.captures_iter(line) {
-            let location = caps[1].to_string();
-            if !location.starts_with("oci://") {
-                locations.push(location);
+        if let Some(files) = table.get("component_files").and_then(Item::as_table_like) {
+            candidates.extend(files.iter().map(|(key, _)| key));
+        }
+        if let Some(sources) = backtrace_sources(table) {
+            for (_, entry) in sources.iter() {
+                if let Some(path) = entry
+                    .as_table_like()
+                    .and_then(|inner| inner.get("path"))
+                    .and_then(Item::as_str)
+                {
+                    candidates.push(path);
+                }
+            }
+        }
+        for location in candidates {
+            if !location.starts_with("oci://") && seen.insert(location.to_string()) {
+                locations.push(location.to_string());
             }
         }
     }
     locations
 }
 
-/// The `path` entries the top-level scanner misses, under a
-/// `[<section>.backtrace.sources]` header or an inline `backtrace.sources =
-/// { ... }`. Obelisk stores each as an inline table `{ path = "<loc>",
-/// content_digest = "sha256:..." }` (see `obelisk/src/config/manifest.rs`); we
-/// read the `path` from every `{ ... }` chunk in a backtrace region.
-fn backtrace_source_locations(toml: &str) -> Vec<String> {
-    static ENTRY: OnceLock<Regex> = OnceLock::new();
-    static PATH: OnceLock<Regex> = OnceLock::new();
-    let entry = ENTRY.get_or_init(|| Regex::new(r"\{[^{}]*\}").unwrap());
-    let path = PATH.get_or_init(|| Regex::new(r#"\bpath\s*=\s*"([^"]+)""#).unwrap());
-
-    let mut locations = Vec::new();
-    let mut in_table = false;
-    for line in toml.split('\n') {
-        let text = line.trim();
-        if text.starts_with('[') {
-            // A `[section.backtrace.sources]` header opens a region; any other
-            // table header (including `[[...]]`) closes it.
-            in_table = text.ends_with(".backtrace.sources]");
-            continue;
-        }
-        if !in_table && !text.contains("backtrace.sources") {
-            continue;
-        }
-        for chunk in entry.find_iter(line) {
-            let Some(loc) = path.captures(chunk.as_str()) else {
-                continue;
-            };
-            let location = loc[1].to_string();
-            if location.starts_with("oci://") {
-                continue;
-            }
-            locations.push(location);
-        }
-    }
-    locations
+/// The top-level component tables: every top-level array-of-tables.
+fn component_tables(doc: &DocumentMut) -> impl Iterator<Item = &Table> {
+    doc.as_table()
+        .iter()
+        .filter_map(|(_, item)| item.as_array_of_tables())
+        .flat_map(|array| array.iter())
 }
 
-/// A tiny hand-rolled TOML scanner, line-based and deliberately minimal (not a
-/// real TOML parser - see the design doc): the `location` keys inside the
-/// manifest's top-level `[[...]]` array-of-tables (`[[activity_wasm]]`-style),
-/// skipping any `oci://`-located entry (not a locally-owned source file).
-fn top_level_source_locations(toml: &str) -> Vec<String> {
-    let mut locations = Vec::new();
-    let mut in_main = false;
-    for line in toml.split('\n') {
-        let text = line.trim();
-        if text.starts_with("[[") && !text.contains('.') {
-            in_main = true;
-            continue;
-        }
-        if text.starts_with('[') {
-            in_main = false;
-            continue;
-        }
-        if !in_main {
-            continue;
-        }
-        if let Some(location) = toml_value(text, "location")
-            && !location.starts_with("oci://")
-        {
-            locations.push(location);
-        }
-    }
-    locations
+fn component_tables_mut(doc: &mut DocumentMut) -> impl Iterator<Item = &mut Table> {
+    doc.as_table_mut()
+        .iter_mut()
+        .filter_map(|(_, item)| item.as_array_of_tables_mut())
+        .flat_map(|array| array.iter_mut())
+}
+
+/// A component's `backtrace.sources`, whether a nested table or inline; `TableLike` unifies both.
+fn backtrace_sources(table: &Table) -> Option<&dyn TableLike> {
+    let backtrace = table.get("backtrace")?.as_table_like()?;
+    backtrace.get("sources")?.as_table_like()
+}
+
+fn backtrace_sources_mut(table: &mut Table) -> Option<&mut dyn TableLike> {
+    let backtrace = table.get_mut("backtrace")?.as_table_like_mut()?;
+    backtrace.get_mut("sources")?.as_table_like_mut()
 }
 
 /// Collapse a stored manifest into the digest-free view the agent edits: drop
-/// standalone `content_digest` lines, blank every `component_files` value to the
-/// `AUTO_DIGEST` sentinel, and reduce each `backtrace.sources` inline table to
-/// its bare path string. `manifest_with_digests` is the exact inverse, run at
-/// submit time to recompute each digest from the file's current bytes.
+/// `content_digest`, blank `component_files` values to `AUTO_DIGEST`, reduce each `backtrace.sources` table to its path. Inverse of `manifest_with_digests`.
 // TODO: Obelisk 0.41.2 is the last version which can return content_digest of backtraces, remove handling afterwards.
 fn simplify_manifest(manifest: &str) -> String {
-    let mut out = String::with_capacity(manifest.len());
-    let mut in_backtrace = false;
-    for line in manifest.split_inclusive('\n') {
-        let text = line.trim();
-        if text.starts_with('[') {
-            in_backtrace = text.ends_with(".backtrace.sources]");
-        }
-        if toml_value(text, "content_digest").is_some() {
-            continue;
-        }
-        if text.starts_with("component_files") {
-            out.push_str(&rewrite_component_files(line, |_path, _value| {
-                AUTO_DIGEST.to_string()
-            }));
-            continue;
-        }
-        if in_backtrace && let Some(collapsed) = collapse_backtrace_line(line) {
-            out.push_str(&collapsed);
-            continue;
-        }
-        out.push_str(line);
-    }
-    out
-}
-
-/// Split a raw line into (leading indent, trimmed content, trailing newline) so
-/// a rewrite can rebuild it in canonical spacing while preserving indentation.
-fn split_line(line: &str) -> (&str, &str, &str) {
-    let (content, newline) = match line.strip_suffix('\n') {
-        Some(rest) => (rest, "\n"),
-        None => (line, ""),
+    let Ok(mut doc) = manifest.parse::<DocumentMut>() else {
+        return manifest.to_string();
     };
-    let trimmed = content.trim_start();
-    let indent = &content[..content.len() - trimmed.len()];
-    (indent, trimmed.trim_end(), newline)
-}
-
-/// Rewrite a `component_files = { "<path>" = "<value>", ... }` line, replacing
-/// each entry's value via `value_for(path, current)`. Non-`component_files` lines
-/// and any with no `"k" = "v"` entries are returned unchanged.
-fn rewrite_component_files(line: &str, mut value_for: impl FnMut(&str, &str) -> String) -> String {
-    static PAIR: OnceLock<Regex> = OnceLock::new();
-    let pair = PAIR.get_or_init(|| Regex::new(r#""([^"]+)"\s*=\s*"([^"]*)""#).unwrap());
-    let (indent, body, newline) = split_line(line);
-    let entries: Vec<String> = pair
-        .captures_iter(body)
-        .map(|caps| format!("\"{}\" = \"{}\"", &caps[1], value_for(&caps[1], &caps[2])))
-        .collect();
-    if entries.is_empty() {
-        return line.to_string();
-    }
-    format!(
-        "{indent}component_files = {{ {} }}{newline}",
-        entries.join(", ")
-    )
-}
-
-/// Collapse one `backtrace.sources` entry `"<key>" = { path = "P", content_digest
-/// = "..." }` to `"<key>" = "P"`. Comments, the header, and anything else return
-/// `None` and pass through unchanged.
-fn collapse_backtrace_line(line: &str) -> Option<String> {
-    static ENTRY: OnceLock<Regex> = OnceLock::new();
-    let entry = ENTRY.get_or_init(|| {
-        Regex::new(r#"^"([^"]+)"\s*=\s*\{[^{}]*\bpath\s*=\s*"([^"]+)"[^{}]*\}$"#).unwrap()
-    });
-    let (indent, body, newline) = split_line(line);
-    let caps = entry.captures(body)?;
-    Some(format!(
-        "{indent}\"{}\" = \"{}\"{newline}",
-        &caps[1], &caps[2]
-    ))
-}
-
-/// Expand one collapsed `backtrace.sources` entry `"<key>" = "P"` back to
-/// `"<key>" = { path = "P", content_digest = "..." }`, hashing the file at `P`.
-/// Anything that is not a bare `"k" = "v"` string entry (or whose file is
-/// missing) returns `None` and passes through unchanged.
-fn expand_backtrace_line(fs: &Vfs, dir: &str, line: &str) -> Option<String> {
-    static ENTRY: OnceLock<Regex> = OnceLock::new();
-    let entry = ENTRY.get_or_init(|| Regex::new(r#"^"([^"]+)"\s*=\s*"([^"]+)"$"#).unwrap());
-    let (indent, body, newline) = split_line(line);
-    let caps = entry.captures(body)?;
-    let key = &caps[1];
-    let path = &caps[2];
-    let digest = owned_source_digest(fs, &format!("{dir}/{path}"))?;
-    Some(format!(
-        "{indent}\"{key}\" = {{ path = \"{path}\", content_digest = \"{digest}\" }}{newline}"
-    ))
-}
-
-/// Drop the pinned `content_digest = "..."` lines from a manifest. These are the
-/// standalone digest lines in top-level component tables; the inline digests in
-/// `backtrace.sources` tables sit on `{ ... }` lines and are left intact.
-fn strip_owned_digests(manifest: &str) -> String {
-    let mut out = String::with_capacity(manifest.len());
-    for line in manifest.split_inclusive('\n') {
-        if toml_value(line.trim(), "content_digest").is_some() {
-            continue;
+    for table in component_tables_mut(&mut doc) {
+        table.remove("content_digest");
+        if let Some(files) = table
+            .get_mut("component_files")
+            .and_then(Item::as_table_like_mut)
+        {
+            for key in table_like_keys(files) {
+                if !key.starts_with("oci://") {
+                    files.insert(&key, toml_edit::value(AUTO_DIGEST));
+                }
+            }
         }
-        out.push_str(line);
+        if let Some(sources) = backtrace_sources_mut(table) {
+            for key in table_like_keys(sources) {
+                let path = sources
+                    .get(&key)
+                    .and_then(Item::as_table_like)
+                    .and_then(|inner| inner.get("path"))
+                    .and_then(Item::as_str)
+                    .map(str::to_string);
+                if let Some(path) = path
+                    && !path.starts_with("oci://")
+                {
+                    sources.insert(&key, toml_edit::value(path));
+                }
+            }
+        }
     }
-    out
+    doc.to_string()
 }
 
-/// Rebuild the manifest the server expects from the digest-free copy the agent
-/// edits (the inverse of `simplify_manifest`): re-emit a `content_digest` line
-/// after each top-level `location`, fill every `component_files` value, and
-/// re-wrap each collapsed `backtrace.sources` path into its inline table. An
-/// unchanged (still-lazy) file keeps its CAS digest; a changed one is re-hashed
-/// from the exact bytes `submit_deployment` uploads.
+/// Inverse of `simplify_manifest`: re-pin each `content_digest`, `component_files`
+/// value, and `backtrace.sources` table from the file's current bytes (a missing file is left as-is).
 fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str) -> String {
-    let stripped = strip_owned_digests(manifest);
-    let mut out = String::with_capacity(stripped.len() + 128);
-    let mut in_main = false;
-    let mut in_backtrace = false;
-    for line in stripped.split_inclusive('\n') {
-        let text = line.trim();
-        if text.starts_with("[[") && !text.contains('.') {
-            in_main = true;
-            in_backtrace = false;
-        } else if text.starts_with('[') {
-            in_main = false;
-            in_backtrace = text.ends_with(".backtrace.sources]");
-        }
-        if text.starts_with("component_files") {
-            out.push_str(&rewrite_component_files(line, |path, current| {
-                owned_source_digest(fs, &format!("{dir}/{path}"))
-                    .unwrap_or_else(|| current.to_string())
-            }));
-            continue;
-        }
-        if in_backtrace && let Some(expanded) = expand_backtrace_line(fs, dir, line) {
-            out.push_str(&expanded);
-            continue;
-        }
-        out.push_str(line);
-        if in_main
-            && let Some(location) = toml_value(text, "location")
+    let Ok(mut doc) = manifest.parse::<DocumentMut>() else {
+        return manifest.to_string();
+    };
+    for table in component_tables_mut(&mut doc) {
+        let location = table
+            .get("location")
+            .and_then(Item::as_str)
+            .map(str::to_string);
+        if let Some(location) = location
             && !location.starts_with("oci://")
             && let Some(digest) = owned_source_digest(fs, &format!("{dir}/{location}"))
         {
-            if !line.ends_with('\n') {
-                out.push('\n');
+            table.insert("content_digest", toml_edit::value(digest));
+        }
+        if let Some(files) = table
+            .get_mut("component_files")
+            .and_then(Item::as_table_like_mut)
+        {
+            for key in table_like_keys(files) {
+                if key.starts_with("oci://") {
+                    continue;
+                }
+                if let Some(digest) = owned_source_digest(fs, &format!("{dir}/{key}")) {
+                    files.insert(&key, toml_edit::value(digest));
+                }
             }
-            out.push_str(&format!("content_digest = \"{digest}\"\n"));
+        }
+        if let Some(sources) = backtrace_sources_mut(table) {
+            for key in table_like_keys(sources) {
+                let Some(path) = sources.get(&key).and_then(Item::as_str).map(str::to_string)
+                else {
+                    continue;
+                };
+                if path.starts_with("oci://") {
+                    continue;
+                }
+                let Some(digest) = owned_source_digest(fs, &format!("{dir}/{path}")) else {
+                    continue;
+                };
+                let mut inline = InlineTable::new();
+                inline.insert("path", toml_edit::Value::from(path));
+                inline.insert("content_digest", toml_edit::Value::from(digest));
+                sources.insert(&key, Item::Value(toml_edit::Value::InlineTable(inline)));
+            }
         }
     }
-    out
+    doc.to_string()
+}
+
+/// A `TableLike`'s keys, materialized so a caller can mutate entries by key while iterating.
+fn table_like_keys(table: &dyn TableLike) -> Vec<String> {
+    table.iter().map(|(key, _)| key.to_string()).collect()
 }
 
 /// The `content_digest` for a deployment-owned source at submit time: an
@@ -807,19 +701,6 @@ fn owned_source_digest(fs: &Vfs, path: &str) -> Option<String> {
     let bytes = fs.read_file(path)?;
     let content = String::from_utf8_lossy(&bytes);
     Some(format!("sha256:{}", sha256_hex(content.as_bytes())))
-}
-
-fn toml_value(line: &str, key: &str) -> Option<String> {
-    if !line.starts_with(key) {
-        return None;
-    }
-    let separator = line.find('=')?;
-    let value = line[separator + 1..].trim();
-    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
-        Some(value[1..value.len() - 1].to_string())
-    } else {
-        None
-    }
 }
 
 /// The deployment-owned source paths a submit would carry: only those the
@@ -1611,10 +1492,10 @@ mod tests {
         assert!(out.stderr.starts_with("obelisk: no fixture for"));
     }
 
-    // -- the TOML scanner --
+    // -- owned_source_locations, over a parsed document --
 
     #[test]
-    fn top_level_source_locations_scans_tables_and_skips_oci_and_nested() {
+    fn owned_source_locations_scans_tables_and_skips_oci_and_nested() {
         let toml = "[[activity_wasm]]\n\
 location = \"a.wasm\"\n\
 content_digest = \"sha256:1\"\n\
@@ -1626,12 +1507,15 @@ content_digest = \"sha256:2\"\n\
 [[webhook_endpoint.other]]\n\
 location = \"nested.wasm\"\n\
 content_digest = \"sha256:3\"\n";
-        assert_eq!(top_level_source_locations(toml), vec!["a.wasm".to_string()]);
+        // Only the top-level, non-oci location is owned; the oci entry and the
+        // nested `[[webhook_endpoint.other]]` array-of-tables are skipped.
+        assert_eq!(owned_source_locations(toml), vec!["a.wasm".to_string()]);
     }
 
     #[test]
-    fn backtrace_source_locations_read_nested_table_and_inline_forms() {
-        // Nested-table form (obelisk's stored shape) with two entries.
+    fn owned_source_locations_read_nested_table_and_inline_backtrace() {
+        // Nested-table form (obelisk's stored shape): the wasm location plus both
+        // backtrace sources, deduped.
         let table = "[[workflow_wasm]]\n\
 name = \"wf\"\n\
 location = \"w.wasm\"\n\
@@ -1641,11 +1525,13 @@ content_digest = \"sha256:9\"\n\
 \".../src/lib.rs\" = { path = \"src/lib.rs\", content_digest = \"sha256:1\" }\n\
 \".../src/util.rs\" = { path = \"src/util.rs\", content_digest = \"sha256:2\" }\n";
         assert_eq!(
-            backtrace_source_locations(table),
-            vec!["src/lib.rs".to_string(), "src/util.rs".to_string()]
+            owned_source_locations(table),
+            vec![
+                "w.wasm".to_string(),
+                "src/lib.rs".to_string(),
+                "src/util.rs".to_string(),
+            ]
         );
-        // The wasm location plus both backtrace sources, deduped.
-        assert_eq!(owned_source_locations(table).len(), 3);
 
         // Inline form within the `[[workflow_wasm]]` table (nested inline table).
         let inline = "[[workflow_wasm]]\n\
@@ -1654,37 +1540,31 @@ location = \"w.wasm\"\n\
 content_digest = \"sha256:9\"\n\
 backtrace.sources = { \".../src/lib.rs\" = { path = \"src/lib.rs\", content_digest = \"sha256:1\" } }\n";
         assert_eq!(
-            backtrace_source_locations(inline),
-            vec!["src/lib.rs".to_string()]
+            owned_source_locations(inline),
+            vec!["w.wasm".to_string(), "src/lib.rs".to_string()]
         );
     }
 
     #[test]
-    fn strip_owned_digests_drops_standalone_lines_keeps_backtrace_inline() {
-        let toml = "[[activity_wasm]]\n\
-location = \"a.wasm\"\n\
-content_digest = \"sha256:1\"\n\
-\n\
-[workflow_wasm.backtrace.sources]\n\
-\".../src/lib.rs\" = { path = \"src/lib.rs\", content_digest = \"sha256:2\" }\n";
-        let stripped = strip_owned_digests(toml);
-        assert!(!stripped.contains("content_digest = \"sha256:1\""));
-        // Inline backtrace digest is on a `{ ... }` line and survives.
-        assert!(stripped.contains("path = \"src/lib.rs\", content_digest = \"sha256:2\""));
-        assert!(stripped.contains("location = \"a.wasm\""));
-    }
-
-    #[test]
-    fn toml_value_matches_a_quoted_string_value() {
-        assert_eq!(
-            toml_value("location = \"a.wasm\"", "location"),
-            Some("a.wasm".to_string())
+    fn simplify_manifest_tolerates_reformatted_component_files() {
+        // The old line-based scanner assumed `component_files` sat on a single
+        // line; toml_edit parses the document, so a multi-line inline table (valid
+        // TOML the agent might hand-write) is handled the same. Regression guard
+        // for the parser swap.
+        let stored = concat!(
+            "[[webhook_endpoint]]\n",
+            "location = \"webhook/ui-api.js\"\n",
+            "content_digest = \"sha256:aa\"\n",
+            "component_files = {\n",
+            "  \"webhook/ui-api.js\" = \"sha256:aa\",\n",
+            "  \"webhook/ui/shell.js\" = \"sha256:bb\",\n",
+            "}\n",
         );
-        assert_eq!(toml_value("other = \"a.wasm\"", "location"), None);
-        // Not a real TOML parser (matches upstream's own minimal scanner): a
-        // non-string value or a missing `=` simply isn't recognized.
-        assert_eq!(toml_value("location = 5", "location"), None);
-        assert_eq!(toml_value("location", "location"), None);
+        let simplified = simplify_manifest(stored);
+        assert!(!simplified.contains("sha256:aa"), "{simplified}");
+        assert!(!simplified.contains("sha256:bb"), "{simplified}");
+        assert!(!simplified.contains("content_digest"), "{simplified}");
+        assert_eq!(simplified.matches("\"auto\"").count(), 2, "{simplified}");
     }
 
     // -- the deployment-mount VFS layout --
@@ -1722,12 +1602,11 @@ content_digest = \"sha256:1\"\n\
                 .any(|(ffqn, _)| ffqn == "obelisk-agent:tools/webapi.deployment-read-blob")
         );
         assert!(fs.is_dir("/workspace/deployment/current"));
-        // The mounted manifest has the pinned `content_digest` stripped so the
-        // agent never has to maintain it.
+        // The mounted manifest is the digest-free view the agent edits.
         assert_eq!(
             fs.read_file("/workspace/deployment/current/deployment.toml")
                 .as_deref(),
-            Some(strip_owned_digests(manifest).as_bytes())
+            Some(simplify_manifest(manifest).as_bytes())
         );
         // The owned source lists immediately but holds no bytes until a loader
         // is installed and the file is read.
@@ -2230,12 +2109,14 @@ content_digest = \"sha256:1\"\n\
         let api = format!("sha256:{}", sha256_hex(b"api"));
         let shell = format!("sha256:{}", sha256_hex(b"shell"));
         let rs = format!("sha256:{}", sha256_hex(b"rs"));
+        // toml_edit appends the re-pinned `content_digest` at the end of the
+        // component table (after `component_files`); order is cosmetic.
         let expected = format!(
             concat!(
                 "[[webhook_endpoint]]\n",
                 "location = \"webhook/ui-api.js\"\n",
-                "content_digest = \"{api}\"\n",
                 "component_files = {{ \"webhook/ui-api.js\" = \"{api}\", \"webhook/ui/shell.js\" = \"{shell}\" }}\n",
+                "content_digest = \"{api}\"\n",
                 "[webhook_endpoint.backtrace.sources]\n",
                 "\"/abs/src/lib.rs\" = {{ path = \"src/lib.rs\", content_digest = \"{rs}\" }}\n",
             ),
