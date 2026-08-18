@@ -24,8 +24,13 @@ use crate::fs::{BlobLoader, FsError, Vfs};
 use crate::interpreter::{CommandOutput, Interpreter};
 
 const READ_BLOB_FFQN: &str = "obelisk-agent:tools/webapi.deployment-read-blob";
+const SUBMIT_FFQN: &str = "obelisk-agent:tools/webapi.deployment-submit";
 
 const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
+
+/// The placeholder value the agent sees in `component_files` maps in place of a
+/// pinned digest; `deployment submit` replaces each with the file's real digest.
+const AUTO_DIGEST: &str = "auto";
 
 /// PORT: `packs/obelisk-control/workflow-pack.js`'s `descriptor.systemPrompt`.
 /// Appended to the session system prompt by the workflow (`session.rs`).
@@ -38,11 +43,14 @@ against the running server (functions, executions, call, and deployment
 current/refresh/check/submit/switch/apply). Edits under the deployment folder
 are local until you run `obelisk deployment submit` (store a new inactive
 deployment) or `obelisk deployment apply` (hot-redeploy); `obelisk deployment
-refresh` discards local edits and re-fetches the current deployment. Do not set
-or maintain `content_digest` in deployment.toml: submit computes each digest
-from the file bytes for you. Add a component by writing its source and its
-[[activity_js]]/[[workflow_js]] table (name, location, params, return_type),
-nothing more.";
+refresh` discards local edits and re-fetches the current deployment. Never set
+or maintain a digest in deployment.toml: submit recomputes each from the file
+bytes for you. `content_digest` lines are omitted, `component_files` entries use
+the value \"auto\", and `backtrace.sources` entries are plain path strings; leave
+them that way. Add a component by writing its source and its
+[[activity_js]]/[[workflow_js]] table (name, location, params, return_type), and
+add a bundled file by writing it and listing its path in `component_files` with
+the value \"auto\", nothing more.";
 
 /// The one primitive the whole pack needs: dynamically invoke a deployed FFQN
 /// and get back its JSON result. Mirrors Obelisk's real
@@ -125,12 +133,13 @@ pub fn refresh_deployment_mount(
 
     let dir = format!("{DEPLOYMENT_ROOT}/{deployment_id}");
     fs.mkdir(&dir, true).map_err(fs_error_message)?;
-    // The agent edits and re-submits this manifest by hand, so hide the pinned
-    // `content_digest` lines it never needs to maintain: `deployment submit`
-    // recomputes each digest from the file's current bytes.
+    // The agent edits and re-submits this manifest by hand, so hide every pinned
+    // digest it never needs to maintain (standalone `content_digest`,
+    // `component_files` values, `backtrace.sources` tables): `deployment submit`
+    // recomputes each from the file's current bytes.
     let manifest_path = format!("{dir}/deployment.toml");
     if replace || !fs.exists(&manifest_path) {
-        fs.write_file(&manifest_path, strip_owned_digests(&manifest).as_bytes())
+        fs.write_file(&manifest_path, simplify_manifest(&manifest).as_bytes())
             .map_err(fs_error_message)?;
     }
 
@@ -387,7 +396,7 @@ fn execute_deployment(
             let payload = json!({
                 "directory": dir,
                 "manifest_bytes": manifest.len(),
-                "owned_sources": sources.iter().map(|s| s.path.clone()).collect::<Vec<_>>(),
+                "owned_sources": sources,
             });
             Ok(ok(format!(
                 "{}\n",
@@ -397,30 +406,27 @@ fn execute_deployment(
         "submit" => {
             let dir = resolve_deployment_dir(interp, args.first().map(String::as_str));
             let manifest = read_manifest(&interp.fs, &dir)?;
-            let sources = deployment_sources(&interp.fs, &dir, &manifest);
-            let sources = sources
-                .iter()
-                .map(|s| json!({"path": s.path, "content": s.content}))
-                .collect::<Vec<_>>();
-            // The server pins a `content_digest` for every owned source, so put
-            // them back (stripped from the mounted copy the agent edits): each
-            // unchanged file keeps its CAS digest, each changed one is re-hashed.
+            // Expand the digest-free view back to what the server stores: every
+            // `content_digest`, `component_files` value, and `backtrace.sources`
+            // table, each digest recomputed from the file's current bytes (an
+            // unchanged file keeps its CAS digest, a changed one is re-hashed).
             let manifest = manifest_with_digests(&interp.fs, &dir, &manifest);
             let deployment_id = if basename(&dir) == "current" {
                 String::new()
             } else {
                 basename(&dir)
             };
-            json_call(
+            let description =
+                option(args, "--description", "Submitted from workflow-agent VFS").to_string();
+            let allow_missing = flag(args, "--allow-missing-runtime-config");
+            submit_deployment(
+                &interp.fs,
                 host,
-                "obelisk-agent:tools/webapi.deployment-submit",
-                json!([
-                    manifest,
-                    sources,
-                    option(args, "--description", "Submitted from workflow-agent VFS"),
-                    flag(args, "--allow-missing-runtime-config"),
-                    deployment_id,
-                ]),
+                &dir,
+                &manifest,
+                &description,
+                allow_missing,
+                &deployment_id,
             )
         }
         "switch" => json_call(
@@ -442,20 +448,128 @@ fn execute_deployment(
     }
 }
 
+/// The workflow half of the submit contract: drive the dumb `deployment-submit`
+/// activity's preflight/attach loop. The first call carries no blobs (a JSON
+/// preflight); each 409 names the blobs the CAS lacks, which we read straight
+/// from the VFS and resubmit as a multipart package, until the server accepts it.
+/// A run that keeps reporting the same files after they were attached is a
+/// digest mismatch we cannot fix by resending, so it errors instead of looping.
+fn submit_deployment(
+    fs: &Vfs,
+    host: &mut dyn ObeliskHost,
+    dir: &str,
+    manifest: &str,
+    description: &str,
+    allow_missing: bool,
+    deployment_id: &str,
+) -> Result<CommandOutput, String> {
+    let mut attachments: Vec<Value> = Vec::new();
+    let mut previous: Option<Vec<String>> = None;
+    loop {
+        let params = json!([
+            manifest,
+            attachments,
+            description,
+            allow_missing,
+            deployment_id
+        ]);
+        let missing = match call_value(host, SUBMIT_FFQN, &params.to_string()) {
+            // Ok side is the new deployment id.
+            Ok(value) => {
+                return Ok(ok(format!(
+                    "{}\n",
+                    pretty_json(&json!({ "deployment_id": decode_string(&value) }))
+                )));
+            }
+            // The `permanent-missing-files` error arm is recoverable; any other
+            // error is terminal (permanent/transient tool-error) and propagates.
+            Err(message) => match parse_missing_files(&message) {
+                Some(missing) => missing,
+                None => return Err(message),
+            },
+        };
+        let paths: Vec<String> = missing
+            .iter()
+            .filter_map(|m| m.get("path").and_then(Value::as_str).map(String::from))
+            .collect();
+        if previous.as_ref() == Some(&paths) {
+            return Err(format!(
+                "server still missing {} file(s) after they were attached (digest mismatch?): {}",
+                paths.len(),
+                paths.join(", ")
+            ));
+        }
+        let mut next = Vec::with_capacity(missing.len());
+        for issue in &missing {
+            let path = issue
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "server reported a missing file with no path".to_string())?;
+            let digest = issue.get("digest").and_then(Value::as_str).unwrap_or("");
+            let bytes = fs.read_file(&format!("{dir}/{path}")).ok_or_else(|| {
+                format!("server needs {path} but it is not in the deployment tree; write the file before submitting")
+            })?;
+            next.push(json!({
+                "path": path,
+                "digest": digest,
+                "content": String::from_utf8_lossy(&bytes),
+            }));
+        }
+        attachments = next;
+        previous = Some(paths);
+    }
+}
+
+/// Recover the `permanent-missing-files` error arm from the stringified submit
+/// error. The host seam collapses an activity's `Err` to text: this arm arrives
+/// as verbatim JSON (`{"permanent_missing_files":[{path,digest},...]}`), while a
+/// terminal permanent/transient error arrives as its plain message. Returns the
+/// entries only for the former (accepting either key spelling), else `None`.
+fn parse_missing_files(message: &str) -> Option<Vec<Value>> {
+    let value: Value = serde_json::from_str(message).ok()?;
+    let entries = value
+        .get("permanent_missing_files")
+        .or_else(|| value.get("permanent-missing-files"))?
+        .as_array()?;
+    Some(entries.clone())
+}
+
 /// Every deployment-owned source location the submit pipeline tracks: `location`
-/// keys in the top-level component tables (`top_level_source_locations`) plus
-/// `path` keys in each `backtrace.sources` entry (`backtrace_source_locations`),
-/// which the component scanner does not see because they live in a nested table.
-/// Digests are deliberately not read here: the mounted manifest has them
-/// stripped, and `deployment submit` recomputes each from the file's current
-/// bytes. `oci://` refs are skipped; deduplicated on location, first wins.
+/// keys in the top-level component tables (`top_level_source_locations`),
+/// `component_files` map keys (`component_files_locations`), and `path` keys in
+/// each `backtrace.sources` entry (`backtrace_source_locations`) - the last two
+/// live where the top-level component scanner does not look. Digests are
+/// deliberately not read here: the mounted manifest has them stripped, and
+/// `deployment submit` recomputes each from the file's current bytes. `oci://`
+/// refs are skipped; deduplicated on location, first wins.
 fn owned_source_locations(toml: &str) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     top_level_source_locations(toml)
         .into_iter()
+        .chain(component_files_locations(toml))
         .chain(backtrace_source_locations(toml))
         .filter(|loc| seen.insert(loc.clone()))
         .collect()
+}
+
+/// The path keys of every `component_files = { "<path>" = "<digest>" }` inline
+/// map (a single line in the generated manifest). `oci://` refs are skipped.
+fn component_files_locations(toml: &str) -> Vec<String> {
+    static PAIR: OnceLock<Regex> = OnceLock::new();
+    let pair = PAIR.get_or_init(|| Regex::new(r#""([^"]+)"\s*=\s*"[^"]*""#).unwrap());
+    let mut locations = Vec::new();
+    for line in toml.split('\n') {
+        if !line.trim_start().starts_with("component_files") {
+            continue;
+        }
+        for caps in pair.captures_iter(line) {
+            let location = caps[1].to_string();
+            if !location.starts_with("oci://") {
+                locations.push(location);
+            }
+        }
+    }
+    locations
 }
 
 /// The `path` entries the top-level scanner misses, under a
@@ -525,6 +639,103 @@ fn top_level_source_locations(toml: &str) -> Vec<String> {
     locations
 }
 
+/// Collapse a stored manifest into the digest-free view the agent edits: drop
+/// standalone `content_digest` lines, blank every `component_files` value to the
+/// `AUTO_DIGEST` sentinel, and reduce each `backtrace.sources` inline table to
+/// its bare path string. `manifest_with_digests` is the exact inverse, run at
+/// submit time to recompute each digest from the file's current bytes.
+// TODO: Obelisk 0.41.2 is the last version which can return content_digest of backtraces, remove handling afterwards.
+fn simplify_manifest(manifest: &str) -> String {
+    let mut out = String::with_capacity(manifest.len());
+    let mut in_backtrace = false;
+    for line in manifest.split_inclusive('\n') {
+        let text = line.trim();
+        if text.starts_with('[') {
+            in_backtrace = text.ends_with(".backtrace.sources]");
+        }
+        if toml_value(text, "content_digest").is_some() {
+            continue;
+        }
+        if text.starts_with("component_files") {
+            out.push_str(&rewrite_component_files(line, |_path, _value| {
+                AUTO_DIGEST.to_string()
+            }));
+            continue;
+        }
+        if in_backtrace && let Some(collapsed) = collapse_backtrace_line(line) {
+            out.push_str(&collapsed);
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+/// Split a raw line into (leading indent, trimmed content, trailing newline) so
+/// a rewrite can rebuild it in canonical spacing while preserving indentation.
+fn split_line(line: &str) -> (&str, &str, &str) {
+    let (content, newline) = match line.strip_suffix('\n') {
+        Some(rest) => (rest, "\n"),
+        None => (line, ""),
+    };
+    let trimmed = content.trim_start();
+    let indent = &content[..content.len() - trimmed.len()];
+    (indent, trimmed.trim_end(), newline)
+}
+
+/// Rewrite a `component_files = { "<path>" = "<value>", ... }` line, replacing
+/// each entry's value via `value_for(path, current)`. Non-`component_files` lines
+/// and any with no `"k" = "v"` entries are returned unchanged.
+fn rewrite_component_files(line: &str, mut value_for: impl FnMut(&str, &str) -> String) -> String {
+    static PAIR: OnceLock<Regex> = OnceLock::new();
+    let pair = PAIR.get_or_init(|| Regex::new(r#""([^"]+)"\s*=\s*"([^"]*)""#).unwrap());
+    let (indent, body, newline) = split_line(line);
+    let entries: Vec<String> = pair
+        .captures_iter(body)
+        .map(|caps| format!("\"{}\" = \"{}\"", &caps[1], value_for(&caps[1], &caps[2])))
+        .collect();
+    if entries.is_empty() {
+        return line.to_string();
+    }
+    format!(
+        "{indent}component_files = {{ {} }}{newline}",
+        entries.join(", ")
+    )
+}
+
+/// Collapse one `backtrace.sources` entry `"<key>" = { path = "P", content_digest
+/// = "..." }` to `"<key>" = "P"`. Comments, the header, and anything else return
+/// `None` and pass through unchanged.
+fn collapse_backtrace_line(line: &str) -> Option<String> {
+    static ENTRY: OnceLock<Regex> = OnceLock::new();
+    let entry = ENTRY.get_or_init(|| {
+        Regex::new(r#"^"([^"]+)"\s*=\s*\{[^{}]*\bpath\s*=\s*"([^"]+)"[^{}]*\}$"#).unwrap()
+    });
+    let (indent, body, newline) = split_line(line);
+    let caps = entry.captures(body)?;
+    Some(format!(
+        "{indent}\"{}\" = \"{}\"{newline}",
+        &caps[1], &caps[2]
+    ))
+}
+
+/// Expand one collapsed `backtrace.sources` entry `"<key>" = "P"` back to
+/// `"<key>" = { path = "P", content_digest = "..." }`, hashing the file at `P`.
+/// Anything that is not a bare `"k" = "v"` string entry (or whose file is
+/// missing) returns `None` and passes through unchanged.
+fn expand_backtrace_line(fs: &Vfs, dir: &str, line: &str) -> Option<String> {
+    static ENTRY: OnceLock<Regex> = OnceLock::new();
+    let entry = ENTRY.get_or_init(|| Regex::new(r#"^"([^"]+)"\s*=\s*"([^"]+)"$"#).unwrap());
+    let (indent, body, newline) = split_line(line);
+    let caps = entry.captures(body)?;
+    let key = &caps[1];
+    let path = &caps[2];
+    let digest = owned_source_digest(fs, &format!("{dir}/{path}"))?;
+    Some(format!(
+        "{indent}\"{key}\" = {{ path = \"{path}\", content_digest = \"{digest}\" }}{newline}"
+    ))
+}
+
 /// Drop the pinned `content_digest = "..."` lines from a manifest. These are the
 /// standalone digest lines in top-level component tables; the inline digests in
 /// `backtrace.sources` tables sit on `{ ... }` lines and are left intact.
@@ -539,20 +750,36 @@ fn strip_owned_digests(manifest: &str) -> String {
     out
 }
 
-/// Rebuild the manifest the server expects from the digest-stripped copy the
-/// agent edits: re-emit a `content_digest` line after each top-level `location`.
-/// An unchanged (still-lazy) file keeps its CAS digest; a changed one is
-/// re-hashed from the exact bytes `deployment_sources` uploads.
+/// Rebuild the manifest the server expects from the digest-free copy the agent
+/// edits (the inverse of `simplify_manifest`): re-emit a `content_digest` line
+/// after each top-level `location`, fill every `component_files` value, and
+/// re-wrap each collapsed `backtrace.sources` path into its inline table. An
+/// unchanged (still-lazy) file keeps its CAS digest; a changed one is re-hashed
+/// from the exact bytes `submit_deployment` uploads.
 fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str) -> String {
     let stripped = strip_owned_digests(manifest);
     let mut out = String::with_capacity(stripped.len() + 128);
     let mut in_main = false;
+    let mut in_backtrace = false;
     for line in stripped.split_inclusive('\n') {
         let text = line.trim();
         if text.starts_with("[[") && !text.contains('.') {
             in_main = true;
+            in_backtrace = false;
         } else if text.starts_with('[') {
             in_main = false;
+            in_backtrace = text.ends_with(".backtrace.sources]");
+        }
+        if text.starts_with("component_files") {
+            out.push_str(&rewrite_component_files(line, |path, current| {
+                owned_source_digest(fs, &format!("{dir}/{path}"))
+                    .unwrap_or_else(|| current.to_string())
+            }));
+            continue;
+        }
+        if in_backtrace && let Some(expanded) = expand_backtrace_line(fs, dir, line) {
+            out.push_str(&expanded);
+            continue;
         }
         out.push_str(line);
         if in_main
@@ -595,21 +822,14 @@ fn toml_value(line: &str, key: &str) -> Option<String> {
     }
 }
 
-struct SourceEntry {
-    path: String,
-    content: String,
-}
-
-/// The deployment-owned source files a submit must carry: only those the
-/// session modified locally. An unmodified file stays a lazy `pending` VFS entry
-/// whose blob is already in the CAS, so `manifest_with_digests` re-pins its
-/// existing digest without the agent reading or re-uploading it (the same
-/// "upload only what the server is missing" contract the real `obelisk
-/// deployment submit` follows). Skipping unmodified files keeps a redeploy from
-/// fetching every component back out of the CAS just to hand it straight back -
-/// notably the multi-MB workflow and activity WASM (which lossy-decoded to a
-/// string and re-hashed would carry a wrong digest).
-fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<SourceEntry> {
+/// The deployment-owned source paths a submit would carry: only those the
+/// session modified locally (`deployment check` reports them). An unmodified file
+/// stays a lazy `pending` VFS entry whose blob is already in the CAS, so
+/// `manifest_with_digests` re-pins its existing digest and `submit_deployment`
+/// never uploads it (the "upload only what the server is missing" contract).
+/// Skipping unmodified files keeps a redeploy from touching every component,
+/// notably the multi-MB workflow and activity WASM.
+fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<String> {
     let mut files = Vec::new();
     for location in owned_source_locations(manifest) {
         let path = format!("{dir}/{location}");
@@ -618,11 +838,8 @@ fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<SourceEntry> {
         if fs.is_pending(&path) {
             continue;
         }
-        if let Some(bytes) = fs.read_file(&path) {
-            files.push(SourceEntry {
-                path: location,
-                content: String::from_utf8_lossy(&bytes).into_owned(),
-            });
+        if fs.exists(&path) {
+            files.push(location);
         }
     }
     files
@@ -897,12 +1114,15 @@ mod tests {
     use crate::types::BashOptions;
     use std::collections::BTreeMap;
 
-    /// A fake host backed by an in-memory ffqn -> canned-JSON-response map,
+    /// A fake host backed by an in-memory ffqn -> canned-JSON-response queue,
     /// for tests only. A call to an ffqn with no fixture errors, mirroring a
-    /// call to something nothing implements. Records every call so tests can
-    /// assert on the exact params sent.
+    /// call to something nothing implements. Multiple `.with` calls for one ffqn
+    /// enqueue successive responses (so a test can model a preflight that reports
+    /// missing files then a retry that succeeds); the last response repeats once
+    /// the queue is down to one. Records every call so tests can assert on the
+    /// exact params sent.
     struct FakeHost {
-        responses: BTreeMap<String, String>,
+        responses: BTreeMap<String, std::collections::VecDeque<Result<String, String>>>,
         calls: Vec<(String, String)>,
     }
 
@@ -916,7 +1136,19 @@ mod tests {
 
         fn with(mut self, ffqn: &str, response_json: &str) -> Self {
             self.responses
-                .insert(ffqn.to_string(), response_json.to_string());
+                .entry(ffqn.to_string())
+                .or_default()
+                .push_back(Ok(response_json.to_string()));
+            self
+        }
+
+        /// Enqueue an activity `Err` (a stringified tool/submit error), mirroring
+        /// how the real host seam surfaces a returned error result.
+        fn with_err(mut self, ffqn: &str, message: &str) -> Self {
+            self.responses
+                .entry(ffqn.to_string())
+                .or_default()
+                .push_back(Err(message.to_string()));
             self
         }
     }
@@ -924,11 +1156,19 @@ mod tests {
     impl ObeliskHost for FakeHost {
         fn call_json(&mut self, ffqn: &str, params_json: &str) -> Result<Option<String>, String> {
             self.calls.push((ffqn.to_string(), params_json.to_string()));
-            self.responses
-                .get(ffqn)
-                .cloned()
-                .map(Some)
-                .ok_or_else(|| format!("no fixture for {ffqn}"))
+            let queue = self
+                .responses
+                .get_mut(ffqn)
+                .ok_or_else(|| format!("no fixture for {ffqn}"))?;
+            let response = if queue.len() > 1 {
+                queue.pop_front().unwrap()
+            } else {
+                queue
+                    .front()
+                    .cloned()
+                    .ok_or_else(|| format!("no fixture for {ffqn}"))?
+            };
+            response.map(Some)
         }
     }
 
@@ -1731,7 +1971,7 @@ content_digest = \"sha256:1\"\n\
     }
 
     #[test]
-    fn deployment_submit_sends_manifest_sources_and_id_from_dirname() {
+    fn deployment_submit_preflights_then_attaches_the_missing_blob() {
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
         i.fs.write_file(
@@ -1739,10 +1979,18 @@ content_digest = \"sha256:1\"\n\
             manifest.as_bytes(),
         )
         .unwrap();
+        // A locally-written (non-lazy) file whose new digest is not yet in the CAS.
         i.fs.write_file("/workspace/deployment/dep-1/a.wasm", b"bytes")
             .unwrap();
-        let mut host =
-            FakeHost::new().with("obelisk-agent:tools/webapi.deployment-submit", "\"ok\"");
+        let digest = format!("sha256:{}", sha256_hex(b"bytes"));
+        let mut host = FakeHost::new()
+            .with_err(
+                SUBMIT_FFQN,
+                &format!(
+                    r#"{{"permanent_missing_files":[{{"path":"a.wasm","digest":"{digest}"}}]}}"#
+                ),
+            )
+            .with(SUBMIT_FFQN, "\"Dep_new\"");
         let out = execute_obelisk(
             &mut i,
             &words(&["deployment", "submit", "/workspace/deployment/dep-1"]),
@@ -1750,18 +1998,24 @@ content_digest = \"sha256:1\"\n\
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
-        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
-        // a.wasm is a plain (non-lazy) local file, so submit re-pins its digest
-        // from the bytes it uploads rather than trusting the stale manifest.
-        let expected = format!(
-            "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:{}\"\n",
-            sha256_hex(b"bytes")
+        assert!(out.stdout.contains("Dep_new"), "stdout: {}", out.stdout);
+        // Preflight: manifest re-pins a.wasm from the bytes, carries no
+        // attachments, and takes the deployment id from the directory name.
+        let preflight: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let expected =
+            format!("[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"{digest}\"\n");
+        assert_eq!(preflight[0], expected);
+        assert_eq!(preflight[1], json!([]));
+        assert_eq!(preflight[2], "Submitted from workflow-agent VFS");
+        assert_eq!(preflight[3], false);
+        assert_eq!(preflight[4], "dep-1");
+        // Retry: exactly the missing file, read from the VFS, tagged with the
+        // digest the server asked for.
+        let retry: Value = serde_json::from_str(&host.calls[1].1).unwrap();
+        assert_eq!(
+            retry[1],
+            json!([{"path": "a.wasm", "digest": digest, "content": "bytes"}])
         );
-        assert_eq!(params[0], expected);
-        assert_eq!(params[1], json!([{"path": "a.wasm", "content": "bytes"}]));
-        assert_eq!(params[2], "Submitted from workflow-agent VFS");
-        assert_eq!(params[3], false);
-        assert_eq!(params[4], "dep-1");
     }
 
     #[test]
@@ -1773,8 +2027,7 @@ content_digest = \"sha256:1\"\n\
             manifest.as_bytes(),
         )
         .unwrap();
-        let mut host =
-            FakeHost::new().with("obelisk-agent:tools/webapi.deployment-submit", "\"ok\"");
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
         execute_obelisk(
             &mut i,
             &words(&["deployment", "submit", "/workspace/deployment/current"]),
@@ -1815,8 +2068,7 @@ content_digest = \"sha256:1\"\n\
         i.fs.register_lazy("/workspace/deployment/current/w.wasm", "sha256:1", 10);
         i.fs.register_lazy("/workspace/deployment/current/src/lib.rs", "sha256:2", 11);
 
-        let mut host =
-            FakeHost::new().with("obelisk-agent:tools/webapi.deployment-submit", "\"ok\"");
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
         let out = execute_obelisk(
             &mut i,
             &words(&["deployment", "submit", "/workspace/deployment/current"]),
@@ -1824,6 +2076,9 @@ content_digest = \"sha256:1\"\n\
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+        // Preflight only: unchanged lazy sources keep their CAS digest, so the
+        // manifest round-trips unchanged and nothing is attached.
+        assert_eq!(host.calls.len(), 1);
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
         assert_eq!(params[0], manifest);
         assert_eq!(params[1], json!([]));
@@ -1855,16 +2110,31 @@ content_digest = \"sha256:1\"\n\
         i.fs.write_file("/workspace/deployment/current/a.js", b"new-a")
             .unwrap();
 
-        let mut host =
-            FakeHost::new().with("obelisk-agent:tools/webapi.deployment-submit", "\"ok\"");
+        let a_digest = format!("sha256:{}", sha256_hex(b"new-a"));
+        let mut host = FakeHost::new()
+            .with_err(
+                SUBMIT_FFQN,
+                &format!(
+                    r#"{{"permanent_missing_files":[{{"path":"a.js","digest":"{a_digest}"}}]}}"#
+                ),
+            )
+            .with(SUBMIT_FFQN, "\"Dep_x\"");
         execute_obelisk(
             &mut i,
             &words(&["deployment", "submit", "/workspace/deployment/current"]),
             "",
             &mut host,
         );
-        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
-        assert_eq!(params[1], json!([{"path": "a.js", "content": "new-a"}]));
+        // Preflight sends no blobs; the retry attaches only the edited a.js, never
+        // the unchanged lazy b.js.
+        assert_eq!(host.calls.len(), 2);
+        let preflight: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        assert_eq!(preflight[1], json!([]));
+        let retry: Value = serde_json::from_str(&host.calls[1].1).unwrap();
+        assert_eq!(
+            retry[1],
+            json!([{"path": "a.js", "digest": a_digest, "content": "new-a"}])
+        );
     }
 
     #[test]
@@ -1889,8 +2159,13 @@ content_digest = \"sha256:1\"\n\
         )
         .unwrap();
 
-        let mut host =
-            FakeHost::new().with("obelisk-agent:tools/webapi.deployment-submit", "\"ok\"");
+        let digest = format!("sha256:{}", sha256_hex(b"export default 1"));
+        let mut host = FakeHost::new()
+            .with_err(
+                SUBMIT_FFQN,
+                &format!(r#"{{"permanent_missing_files":[{{"path":"activity/http.js","digest":"{digest}"}}]}}"#),
+            )
+            .with(SUBMIT_FFQN, "\"Dep_x\"");
         let out = execute_obelisk(
             &mut i,
             &words(&["deployment", "submit", "/workspace/deployment/current"]),
@@ -1898,16 +2173,181 @@ content_digest = \"sha256:1\"\n\
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
-        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let preflight: Value = serde_json::from_str(&host.calls[0].1).unwrap();
         let expected = format!(
-            "[[activity_js]]\nname = \"program_http\"\nlocation = \"activity/http.js\"\ncontent_digest = \"sha256:{}\"\n",
-            sha256_hex(b"export default 1")
+            "[[activity_js]]\nname = \"program_http\"\nlocation = \"activity/http.js\"\ncontent_digest = \"{digest}\"\n"
         );
-        assert_eq!(params[0], expected);
+        assert_eq!(preflight[0], expected);
+        assert_eq!(preflight[1], json!([]));
+        let retry: Value = serde_json::from_str(&host.calls[1].1).unwrap();
         assert_eq!(
-            params[1],
-            json!([{"path": "activity/http.js", "content": "export default 1"}])
+            retry[1],
+            json!([{"path": "activity/http.js", "digest": digest, "content": "export default 1"}])
         );
+    }
+
+    #[test]
+    fn simplify_manifest_collapses_all_digest_shapes() {
+        let stored = concat!(
+            "[[webhook_endpoint]]\n",
+            "location = \"webhook/ui-api.js\"\n",
+            "content_digest = \"sha256:aa\"\n",
+            "component_files = { \"webhook/ui-api.js\" = \"sha256:aa\", \"webhook/ui/shell.js\" = \"sha256:bb\" }\n",
+            "[webhook_endpoint.backtrace.sources]\n",
+            "\"/abs/src/lib.rs\" = { path = \"src/lib.rs\", content_digest = \"sha256:cc\" }\n",
+        );
+        let expected = concat!(
+            "[[webhook_endpoint]]\n",
+            "location = \"webhook/ui-api.js\"\n",
+            "component_files = { \"webhook/ui-api.js\" = \"auto\", \"webhook/ui/shell.js\" = \"auto\" }\n",
+            "[webhook_endpoint.backtrace.sources]\n",
+            "\"/abs/src/lib.rs\" = \"src/lib.rs\"\n",
+        );
+        assert_eq!(simplify_manifest(stored), expected);
+    }
+
+    #[test]
+    fn manifest_with_digests_expands_component_files_and_backtrace() {
+        // The inverse of `simplify_manifest`: the agent's digest-free view plus the
+        // file bytes rebuilds every content_digest, component_files value, and
+        // backtrace inline table. Regression for the `component_files` blind spot
+        // that failed E_01M09ZWQ915HF6H60D3XFMTQWB.
+        let collapsed = concat!(
+            "[[webhook_endpoint]]\n",
+            "location = \"webhook/ui-api.js\"\n",
+            "component_files = { \"webhook/ui-api.js\" = \"auto\", \"webhook/ui/shell.js\" = \"auto\" }\n",
+            "[webhook_endpoint.backtrace.sources]\n",
+            "\"/abs/src/lib.rs\" = \"src/lib.rs\"\n",
+        );
+        let mut i = interp("/workspace");
+        let dir = "/workspace/deployment/current";
+        i.fs.write_file(&format!("{dir}/webhook/ui-api.js"), b"api")
+            .unwrap();
+        i.fs.write_file(&format!("{dir}/webhook/ui/shell.js"), b"shell")
+            .unwrap();
+        i.fs.write_file(&format!("{dir}/src/lib.rs"), b"rs")
+            .unwrap();
+        let api = format!("sha256:{}", sha256_hex(b"api"));
+        let shell = format!("sha256:{}", sha256_hex(b"shell"));
+        let rs = format!("sha256:{}", sha256_hex(b"rs"));
+        let expected = format!(
+            concat!(
+                "[[webhook_endpoint]]\n",
+                "location = \"webhook/ui-api.js\"\n",
+                "content_digest = \"{api}\"\n",
+                "component_files = {{ \"webhook/ui-api.js\" = \"{api}\", \"webhook/ui/shell.js\" = \"{shell}\" }}\n",
+                "[webhook_endpoint.backtrace.sources]\n",
+                "\"/abs/src/lib.rs\" = {{ path = \"src/lib.rs\", content_digest = \"{rs}\" }}\n",
+            ),
+            api = api,
+            shell = shell,
+            rs = rs,
+        );
+        assert_eq!(manifest_with_digests(&i.fs, dir, collapsed), expected);
+    }
+
+    #[test]
+    fn deployment_submit_uploads_an_edited_component_file() {
+        // The exact bug: a `component_files` source edited in the VFS must be
+        // collected, re-hashed, and attached when the server reports it missing.
+        let collapsed = concat!(
+            "[[webhook_endpoint]]\n",
+            "name = \"ui\"\n",
+            "location = \"webhook/ui-api.js\"\n",
+            "component_files = { \"webhook/ui-api.js\" = \"auto\", \"webhook/ui/shell.js\" = \"auto\" }\n",
+        );
+        let mut i = interp("/workspace");
+        let dir = "/workspace/deployment/current";
+        i.fs.write_file(&format!("{dir}/deployment.toml"), collapsed.as_bytes())
+            .unwrap();
+        i.fs.write_file(&format!("{dir}/webhook/ui-api.js"), b"api")
+            .unwrap();
+        i.fs.write_file(&format!("{dir}/webhook/ui/shell.js"), b"shell")
+            .unwrap();
+        let shell = format!("sha256:{}", sha256_hex(b"shell"));
+        let mut host = FakeHost::new()
+            .with_err(
+                SUBMIT_FFQN,
+                &format!(
+                    r#"{{"permanent_missing_files":[{{"path":"webhook/ui/shell.js","digest":"{shell}"}}]}}"#
+                ),
+            )
+            .with(SUBMIT_FFQN, "\"Dep_x\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+        let retry: Value = serde_json::from_str(&host.calls[1].1).unwrap();
+        assert_eq!(
+            retry[1],
+            json!([{"path": "webhook/ui/shell.js", "digest": shell, "content": "shell"}])
+        );
+    }
+
+    #[test]
+    fn deployment_submit_propagates_a_terminal_error() {
+        // A permanent/transient tool-error (not the missing-files arm) is not
+        // recoverable: it surfaces to the agent and stops the loop.
+        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
+        let mut i = interp("/workspace");
+        i.fs.write_file(
+            "/workspace/deployment/current/deployment.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        let mut host = FakeHost::new().with_err(
+            SUBMIT_FFQN,
+            "deployment cannot be submitted: unexpected files: x",
+        );
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(
+            out.stderr.contains("unexpected files"),
+            "stderr: {}",
+            out.stderr
+        );
+        assert_eq!(host.calls.len(), 1);
+    }
+
+    #[test]
+    fn deployment_submit_errors_when_a_blob_stays_missing_after_attaching() {
+        // If the server keeps reporting the same file after it was attached (a
+        // digest mismatch it cannot fix by resending), the loop stops instead of
+        // spinning forever.
+        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
+        let mut i = interp("/workspace");
+        i.fs.write_file(
+            "/workspace/deployment/current/deployment.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        i.fs.write_file("/workspace/deployment/current/a.wasm", b"bytes")
+            .unwrap();
+        let missing = r#"{"permanent_missing_files":[{"path":"a.wasm","digest":"sha256:zz"}]}"#;
+        let mut host = FakeHost::new()
+            .with_err(SUBMIT_FFQN, missing)
+            .with_err(SUBMIT_FFQN, missing);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(
+            out.stderr.contains("still missing"),
+            "stderr: {}",
+            out.stderr
+        );
+        assert_eq!(host.calls.len(), 2);
     }
 
     // -- wiring: registered via `Bash::register_command`, dispatched through

@@ -53,14 +53,22 @@ interface webapi {
     files: list<checkout-file>,
   }
 
-  record edited-file {
+  record attached-file {
     path: string,
+    digest: string,
     content: string,
   }
 
-  record submit-result {
-    deployment-id: string,
-    deployment-toml: string,
+  record missing-file {
+    path: string,
+    digest: string,
+  }
+
+  variant submit-error {
+    permanent-missing-files(list<missing-file>),
+    permanent-error(string),
+    transient-error(string),
+    execution-failed,
   }
 
   enum action-kind {
@@ -138,11 +146,11 @@ interface webapi {
   deployment-read-blob: func(digest: string) -> result<string, string>;
   deployment-submit: func(
     deployment-toml: string,
-    edited-files: list<edited-file>,
+    attachments: list<attached-file>,
     description: string,
     allow-missing-runtime-config: bool,
     deployment-id: string,
-  ) -> result<submit-result, tool-error>;
+  ) -> result<string, submit-error>;
   deployment-switch: func(deployment-id: string, allow-missing-runtime-config: bool) -> result<string, string>;
   pause-execution: func(execution-id: string) -> result<action-result, tool-error>;
   unpause-execution: func(execution-id: string) -> result<action-result, tool-error>;

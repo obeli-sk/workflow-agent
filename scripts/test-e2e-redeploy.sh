@@ -23,14 +23,14 @@ echo ">>> active deployment: ${ORIG_ID}"
 node scripts/e2e-json.js redeploy-params "$E2E_TMP/manifest.toml" > "$E2E_TMP/params.json"
 EXEC_ID="$("$OBELISK" generate execution-id)"
 SUBMIT_FFQN="obelisk-agent:tools/webapi.deployment-submit"
-echo ">>> redeploying via ${SUBMIT_FFQN} as ${EXEC_ID} (empty edited-files list)"
+echo ">>> redeploying via ${SUBMIT_FFQN} as ${EXEC_ID} (no attachments)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$EXEC_ID" "$SUBMIT_FFQN" @"$E2E_TMP/params.json"
 
 echo ">>> fetching result"
 RESULT="$("$OBELISK" execution result --follow -j -a "$E2E_API_URL" "$EXEC_ID")"
 
-if ! grep -q '"ok"' <<<"$RESULT" || ! grep -q "deployment_id" <<<"$RESULT"; then
-    echo ">>> E2E FAIL: redeploy did not return an ok deployment_id" >&2
+if ! grep -q '"ok"' <<<"$RESULT"; then
+    echo ">>> E2E FAIL: redeploy did not return an ok deployment id" >&2
     echo "$RESULT" >&2
     exit 1
 fi

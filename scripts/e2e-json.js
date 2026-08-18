@@ -151,7 +151,9 @@ switch (command) {
     }
     case "deployment-id": {
         const result = json();
-        process.stdout.write(result.ok?.deployment_id ?? "");
+        // deployment-submit's ok side is the deployment id string.
+        const ok = result.ok;
+        process.stdout.write(typeof ok === "string" ? ok : (ok?.deployment_id ?? ""));
         break;
     }
     default:

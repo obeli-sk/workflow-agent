@@ -44,7 +44,7 @@ test-e2e-agent-workflow:
   ./scripts/test-e2e-agent-workflow.sh
 
 # End-to-end no-op redeploy of the current deployment via the content-addressed
-# submit tool (empty edited-files list, no source uploads).
+# submit tool (no attachments, no source uploads).
 test-e2e-redeploy:
   ./scripts/test-e2e-redeploy.sh
 
