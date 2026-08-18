@@ -9,14 +9,13 @@ update-exe-gateway-models: update-exe-models
 # Run the keyless stateless MCP example used by the interactive guide and E2E.
 sample-mcp-server:
   node examples/stateless-mcp-server.mjs
-# Assemble the workflow's generated WIT dependency folder from wit/deps.
-wit-deps:
-  scripts/generate-wit-deps.sh
 
 # deployment.toml's [[workflow_wasm]] entry points at it; the crate's
 # .cargo/config.toml pins the wasm32-unknown-unknown target.
 # Build the native Rust workflow component (workflow/workflow-rs).
-build: wit-deps
+# The generated wit/deps are committed; regenerate with scripts/generate-wit-deps.sh
+# after changing the source WIT.
+build:
   cd workflow/workflow-rs && cargo build --release
 
 verify: build
@@ -32,7 +31,7 @@ sync:
 test: test-rs test-e2e test-e2e-agent-workflow test-e2e-redeploy test-e2e-mcp
 
 # Rust port: unit tests for the workflow and just-bash-rs interpreter.
-test-rs: wit-deps
+test-rs:
   cargo test -p just-bash-rs -p workflow-agent-rs
 
 # Rust port: end-to-end test of the bash workflow component under Obelisk.
@@ -41,7 +40,7 @@ test-e2e:
 
 # deployed via the real deployment.toml.
 # Rust port: end-to-end test of the full workflow component.
-test-e2e-agent-workflow: wit-deps
+test-e2e-agent-workflow:
   ./scripts/test-e2e-agent-workflow.sh
 
 # End-to-end no-op redeploy of the current deployment via the content-addressed
