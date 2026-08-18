@@ -23,4 +23,6 @@ wit-parser = "0.253.0"
 
 [profile.release]
 opt-level = "s"
-debug = "line-tables-only"
+codegen-units = 1
+lto = "fat"
+strip = "symbols"
