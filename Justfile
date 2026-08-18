@@ -28,11 +28,15 @@ sync:
   obelisk deployment get $(obelisk deployment active) --force
 
 # Run everything: unit tests plus all end-to-end suites.
-test: test-rs test-e2e test-e2e-agent-workflow test-e2e-redeploy test-e2e-mcp
+test: test-rs test-js test-e2e test-e2e-agent-workflow test-e2e-redeploy test-e2e-mcp
 
 # Rust port: unit tests for the workflow and just-bash-rs interpreter.
 test-rs:
   cargo test -p just-bash-rs -p workflow-agent-rs
+
+# Web UI: unit tests for the served transcript renderer (turn/step grouping).
+test-js:
+  node --test webhook/ui/shell.test.js
 
 # Rust port: end-to-end test of the bash workflow component under Obelisk.
 test-e2e:

@@ -85,9 +85,12 @@ const SHELL_HTML = `<!doctype html>
   .bubble.mermaid-block svg { max-width: 100%; height: auto; }
   .bubble.mermaid-block .render-error { color: var(--err); white-space: pre-wrap; }
   .label { font-size: 0.75em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.25em; }
-  .turn { margin: 1em 0; }
+  .turn { margin: 1.2em 0; }
   .turn .bubble { max-width: none; }
   .turn-header { display: flex; align-items: baseline; gap: 0.7em; font-weight: 600; color: var(--muted); font-size: 0.85em; margin-bottom: 0.3em; }
+  .step { margin: 0.6em 0; padding-left: 0.8em; border-left: 2px solid var(--line); }
+  .step-header { display: flex; align-items: baseline; gap: 0.7em; font-weight: 600; color: var(--muted); font-size: 0.8em; margin-bottom: 0.3em; }
+  .turn-final { font-size: 0.75em; color: var(--ok); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.3em; }
   .calls { display: flex; flex-direction: column; gap: 0.4em; }
   .call { border: 1px solid var(--line); border-radius: 6px; background: white; }
   .call summary { padding: 0.5em 0.8em; cursor: pointer; display: flex; gap: 0.5em; align-items: baseline; }
@@ -733,7 +736,7 @@ function renderDetail(forceScroll = false) {
   }
   let turnsHtml;
   if (d.turns.length > 0) {
-    turnsHtml = d.turns.map((t, i) => renderTurn(t, i)).join('');
+    turnsHtml = groupTurns(d.turns).map((g, i) => renderTurnGroup(g, i)).join('');
   } else if (phase === 'terminal') {
     turnsHtml = '<p style="color: var(--muted)">No messages were recorded.</p>';
   } else if (d.input_offer) {
@@ -1067,58 +1070,110 @@ function renderMermaidWhenReady(nodes, attempt, keepAtBottom) {
   }
 }
 
-function renderTurn(t, i) {
-  if (t.kind === 'user_message') {
-    return '<div class="turn">' + turnHeader(t, 'user message')
-      + '<div class="bubble user"><div class="label">user</div><pre>' + esc(t.text) + '</pre></div></div>';
+// Group the flat timeline (agent steps, user messages, shell commands, and the
+// terminal response/error) into conversation turns keyed by turn_index. A turn
+// is one user input through the agent's final response, error, or yield. Items
+// arrive in chronological order and carry their own turn_index; an optimistic
+// item with no durable turn_index yet attaches to the turn in progress.
+function groupTurns(items) {
+  const groups = [];
+  let current = null;
+  for (const item of items) {
+    const idx = Number.isInteger(item.turn_index) ? item.turn_index : null;
+    if (!current || (idx !== null && current.turn_index !== null && idx !== current.turn_index)) {
+      current = { turn_index: idx, items: [] };
+      groups.push(current);
+    }
+    if (idx !== null && current.turn_index === null) current.turn_index = idx;
+    current.items.push(item);
   }
-  if (t.kind === 'assistant_response') {
-    const headed = Number.isInteger(t.turn_index);
-    // The header carries the total when present; otherwise fall back to the bubble.
-    const blocks = displayBlocksHtml(t.blocks, headed ? null : t.total_latency_ms);
-    return headed
-      ? '<div class="turn">' + turnHeader(t, 'agent response', -1, t.total_latency_ms) + blocks + '</div>'
-      : blocks;
-  }
-  if (t.kind === 'error') {
-    const headed = Number.isInteger(t.turn_index);
-    const body = displayBlocksHtml(t.blocks)
-      + '<div class="bubble error"><div class="bubble-head"><div class="label">error</div>'
-      + (headed ? '' : latencyHtml(t.total_latency_ms, 'total latency')) + '</div><pre>' + esc(t.text) + '</pre></div>';
-    return headed
-      ? '<div class="turn">' + turnHeader(t, 'agent error', -1, t.total_latency_ms) + body + '</div>'
-      : body;
-  }
-  if (t.kind !== 'tool_calls') return '';
-
-  const items = t.calls.map((c, k) => renderCall(c, i, k)).join('');
-  // Header shows the whole-turn total; the thinking bubble keeps the LLM latency
-  // and each call keeps its own, so the breakdown is visible alongside the total.
-  return '<div class="turn">'
-    + turnHeader(t, t.calls.length + ' tool call' + (t.calls.length === 1 ? '' : 's'), i, t.total_latency_ms)
-    + displayBlocksHtml(t.blocks, t.llm_latency_ms)
-    + '<div class="calls">' + items + '</div>'
-    + '</div>';
+  return groups;
 }
 
-function turnHeader(turn, detail, index = -1, totalLatencyMs = null) {
-  let number = Number.isInteger(turn?.turn_index) ? turn.turn_index + 1 : null;
-  if (number === null && index >= 0) {
-    number = 0;
-    for (let i = 0; i <= index; i += 1) {
-      if (state.detail.turns[i].kind === 'tool_calls') number += 1;
+// A step is one LLM invocation: a tool-calling reply or the final assistant
+// response. A user-typed shell command (source 'shell') and the turn-limit
+// error are turn events, not steps, so they do not count toward the step total.
+function isAgentStep(item) {
+  return (item.kind === 'tool_calls' && item.source !== 'shell')
+    || item.kind === 'assistant_response';
+}
+
+function renderTurnGroup(group, ordinal) {
+  const number = Number.isInteger(group.turn_index) ? group.turn_index + 1 : ordinal + 1;
+  const stepCount = group.items.filter(isAgentStep).length;
+  let toolCallCount = 0;
+  for (const item of group.items) {
+    if (item.kind === 'tool_calls') toolCallCount += (item.calls || []).length;
+  }
+  // The terminal item (final response, turn-limit error, or completed shell
+  // command) carries the whole-turn latency from the user prompt to that point.
+  const terminal = [...group.items].reverse().find((item) => item.turn_complete === true);
+  const totalLatencyMs = terminal ? terminal.total_latency_ms : null;
+
+  let stepNumber = 0;
+  let body = '';
+  for (const item of group.items) {
+    if (item.kind === 'user_message') {
+      body += '<div class="bubble user"><div class="label">user</div><pre>' + esc(item.text) + '</pre></div>';
+    } else if (isAgentStep(item)) {
+      stepNumber += 1;
+      body += renderStep(item, number, stepNumber);
+    } else if (item.kind === 'tool_calls') {
+      body += renderShellStep(item, number);
+    } else if (item.kind === 'error') {
+      body += renderTurnError(item);
     }
   }
-  return '<div class="turn-header">'
-    + '<span>' + (number === null ? '' : 'Turn ' + number + ' &middot; ') + esc(detail) + '</span>'
-    + latencyHtml(totalLatencyMs, 'total latency') + '</div>';
+  return '<div class="turn">'
+    + turnGroupHeader(number, stepCount, toolCallCount, totalLatencyMs) + body + '</div>';
 }
 
-function renderCall(call, turnIndex, callIndex) {
+function turnGroupHeader(number, stepCount, toolCallCount, totalLatencyMs) {
+  const parts = ['Turn ' + number,
+    stepCount + ' step' + (stepCount === 1 ? '' : 's'),
+    toolCallCount + ' tool call' + (toolCallCount === 1 ? '' : 's')];
+  return '<div class="turn-header"><span>' + esc(parts.join(' · ')) + '</span>'
+    + latencyHtml(totalLatencyMs, 'total turn latency', 'total ') + '</div>';
+}
+
+// One step: the LLM latency lives in the step header (so it stays visible even
+// for a silent step that emitted no narration), the narration renders beneath
+// it, then the tool calls or the final-response marker.
+function renderStep(step, turnNumber, stepNumber) {
+  const header = '<div class="step-header"><span>Step ' + stepNumber + '</span>'
+    + latencyHtml(step.llm_latency_ms, 'LLM latency', 'LLM ') + '</div>';
+  if (step.kind === 'assistant_response') {
+    return '<div class="step">' + header
+      + '<div class="turn-final">final response</div>'
+      + displayBlocksHtml(step.blocks) + '</div>';
+  }
+  const calls = (step.calls || []).map((call, k) =>
+    renderCall(call, 't' + turnNumber + 's' + stepNumber + 'c' + k)).join('');
+  return '<div class="step">' + header
+    + displayBlocksHtml(step.blocks)
+    + '<div class="calls">' + calls + '</div></div>';
+}
+
+// A user-typed shell command runs directly against the session, without an LLM
+// step, so it renders as a bare tool call rather than a numbered step.
+function renderShellStep(item, turnNumber) {
+  const calls = (item.calls || []).map((call, k) =>
+    renderCall(call, 't' + turnNumber + 'shell' + k)).join('');
+  return '<div class="step"><div class="step-header"><span>shell command</span></div>'
+    + '<div class="calls">' + calls + '</div></div>';
+}
+
+function renderTurnError(item) {
+  return displayBlocksHtml(item.blocks)
+    + '<div class="bubble error"><div class="bubble-head"><div class="label">error</div></div><pre>'
+    + esc(item.text) + '</pre></div>';
+}
+
+function renderCall(call, keyBase) {
   const name = call && typeof call.name === 'string' ? call.name : '?';
   const callLatencyTitle = name === 'bash' ? 'bash latency' : 'tool latency';
   const argsBlock = renderCallArgs(name, call && call.args);
-  const key = call.child_id || (name + '#' + turnIndex + ':' + callIndex);
+  const key = call.child_id || keyBase;
   const childLink = call.child_id
     ? ' <a class="child-link" href="' + esc(execLink(call.child_id)) + '" target="_blank" rel="noopener" title="open in obelisk web UI">' + esc(shortChildId(call.child_id)) + '</a>'
     : '';

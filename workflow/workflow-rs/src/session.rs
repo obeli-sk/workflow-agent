@@ -75,11 +75,23 @@ fn current_deployment_id() -> Result<String, String> {
     webapi::current_deployment_id()
 }
 
-const MAX_TURNS: u32 = 10;
+// The per-turn agent-loop budget: how many LLM invocations (steps) a single
+// user turn may take before the loop gives up without a final response.
+const MAX_STEPS: u32 = 10;
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const SESSION_EVENTS_JOIN_SET: &str = "session-events";
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
+
+/// The terminal error raised when a turn burns through its step budget without
+/// the model yielding a final assistant response.
+fn step_limit_error(turn_index: u64) -> AgentErrorEvent {
+    AgentErrorEvent {
+        id: format!("step-limit-{turn_index}"),
+        text: format!("exceeded MAX_STEPS={MAX_STEPS} without yielding an assistant response"),
+        turn_index,
+    }
+}
 
 /// The durable input channel: a user-injection offer raced against LLM
 /// completion children on the session-wide named `user` join set. Unlike
@@ -301,21 +313,13 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
     loop {
         session.turn_index = turn_index;
         notifications.set_turn_index(turn_index);
-        if should_call_llm && agent_steps >= MAX_TURNS {
-            let message =
-                format!("exceeded MAX_TURNS={MAX_TURNS} without yielding an assistant response");
+        if should_call_llm && agent_steps >= MAX_STEPS {
+            let error = step_limit_error(turn_index);
             messages.push(json!({
                 "role": "assistant",
-                "content": [{"type": "text", "text": message}],
+                "content": [{"type": "text", "text": error.text.clone()}],
             }));
-            notifications.notify(
-                SESSION_EVENTS_JOIN_SET,
-                &SessionEvent::AgentError(AgentErrorEvent {
-                    id: format!("turn-limit-{turn_index}"),
-                    text: message,
-                    turn_index,
-                }),
-            )?;
+            notifications.notify(SESSION_EVENTS_JOIN_SET, &SessionEvent::AgentError(error))?;
             should_call_llm = false;
             publish_agent_status(&notifications, false, turn_index)?;
             agent_steps = 0;
@@ -899,6 +903,17 @@ mod tests {
             serde_json::from_str::<Value>(result["content"].as_str().unwrap()).unwrap(),
             serde_json::to_value(&record.result).unwrap()
         );
+    }
+
+    #[test]
+    fn step_limit_error_names_the_step_budget() {
+        let error = step_limit_error(2);
+        assert_eq!(error.id, "step-limit-2");
+        assert_eq!(
+            error.text,
+            "exceeded MAX_STEPS=10 without yielding an assistant response"
+        );
+        assert_eq!(error.turn_index, 2);
     }
 
     #[test]
