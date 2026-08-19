@@ -87,6 +87,10 @@ interface webapi {
 
   list-functions: func(ffqn-prefix: string, length: u32) -> result<list<function-info>, tool-error>;
   get-function-wit: func(ffqn: string) -> result<string, string>;
+  // Submit `ffqn` to the target Obelisk over HTTP and block for the result,
+  // returning the raw Execution Result envelope JSON. native.call delegates here
+  // because a workflow can't fetch and the target may be a remote instance.
+  call-target: func(ffqn: string, params-json: string) -> result<string, tool-error>;
   list-executions: func(
     ffqn-prefix: string,
     execution-id-prefix: string,
