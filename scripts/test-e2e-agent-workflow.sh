@@ -140,14 +140,20 @@ echo ">>> submitting $RUN_FFQN as $EXEC_ID"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$EXEC_ID" "$RUN_FFQN" \
     '["hello from the e2e test", null, null, null]'
 
-echo ">>> fetching result"
-RESULT="$("$OBELISK" execution result --follow -j -a "$E2E_API_URL" "$EXEC_ID")"
-echo "$RESULT"
-
 EXPECT="AGENT_MODELS must be a non-empty JSON array"
-if grep -q "$EXPECT" <<<"$RESULT"; then
-    echo ">>> E2E PASS: the workflow surfaced the LLM activity's expected configuration error"
-else
-    echo ">>> E2E FAIL: expected '$EXPECT' in result" >&2
-    exit 1
-fi
+echo ">>> waiting for the recoverable LLM configuration error"
+SECONDS=0
+while true; do
+    if ! ERROR_PROJECTION="$(run_detail "$EXEC_ID")"; then
+        [[ $SECONDS -ge 30 ]] && { echo "agent error detail unavailable: $ERROR_PROJECTION" >&2; exit 1; }
+        sleep 1
+        continue
+    fi
+    if node scripts/e2e-json.js check-agent-error "$EXPECT" <<<"$ERROR_PROJECTION" 2>/dev/null; then
+        break
+    fi
+    [[ $SECONDS -ge 30 ]] && { echo "agent error was not projected or the session did not recover: $ERROR_PROJECTION" >&2; exit 1; }
+    sleep 1
+done
+echo ">>> E2E PASS: the session surfaced the LLM configuration error and returned to idle"
+"$OBELISK" execution cancel -a "$E2E_API_URL" "$EXEC_ID" >/dev/null || true

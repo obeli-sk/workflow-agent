@@ -117,6 +117,20 @@ switch (command) {
         process.exit(valid ? 0 : 1);
         break;
     }
+    case "check-agent-error": {
+        const projection = json();
+        const expected = process.argv[3];
+        const error = projection?.transcript?.replies
+            ?.find((candidate) => candidate?.reply?.error?.includes(expected));
+        const valid = Boolean(error)
+            && error.turn_complete === true
+            && typeof projection?.transcript?.input_offer?.id === "string"
+            && projection.transcript.input_offer.id.length > 0
+            && projection.transcript.agent_working === false;
+        if (!valid) console.error(`expected recovered agent error: ${JSON.stringify(projection)}`);
+        process.exit(valid ? 0 : 1);
+        break;
+    }
     case "check-human-input-request": {
         const projection = json();
         const event = projection?.transcript?.human_input_events
