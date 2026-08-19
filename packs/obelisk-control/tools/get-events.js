@@ -17,11 +17,11 @@ export default async function get_events(
         `including_cursor=${includingCursor ? "true" : "false"}`,
         `length=${encodeURIComponent(String(pageLength))}`,
     ];
-    const base = process.env["OBELISK_API_URL"];
-    if (!base) throw "OBELISK_API_URL is not configured";
+    const base = process.env["TARGET_OBELISK_API_URL"];
+    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/events?${params.join("&")}`,
-        { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
+        { headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.text();

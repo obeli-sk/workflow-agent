@@ -14,11 +14,11 @@ const MAX_RESULT_BYTES = 96 * 1024;
 
 export default async function get_deployment(deploymentId, componentType, offset, length, maxBytes) {
     if (!deploymentId) throw "deployment-id is required";
-    const base = process.env["OBELISK_API_URL"];
-    if (!base) throw "OBELISK_API_URL is not configured";
+    const base = process.env["TARGET_OBELISK_API_URL"];
+    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}`,
-        { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
+        { headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     const record = JSON.parse(await resp.text());

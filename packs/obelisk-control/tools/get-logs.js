@@ -16,8 +16,8 @@ export default async function get_logs(
     length,
 ) {
     if (!executionId) throw "execution-id is required";
-    const base = process.env["OBELISK_API_URL"];
-    if (!base) throw "OBELISK_API_URL is not configured";
+    const base = process.env["TARGET_OBELISK_API_URL"];
+    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const params = [
         `show_derived=${showDerived ? "true" : "false"}`,
         `show_logs=${showLogs ? "true" : "false"}`,
@@ -33,7 +33,7 @@ export default async function get_logs(
     if (length > 0) params.push(`length=${encodeURIComponent(String(length))}`);
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/logs?${params.join("&")}`,
-        { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
+        { headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.text();

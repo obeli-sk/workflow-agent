@@ -13,6 +13,11 @@ e2e_init() {
     E2E_DEPLOYMENTS=()
 
     export OBELISK__API__TOKEN="$token"
+    # Control/deploy tools + the deployment mount target this same isolated
+    # instance (self-host default; matches OBELISK_API_URL below).
+    export TARGET_OBELISK_TOKEN="$token"
+    export TARGET_OBELISK_API_URL="$E2E_API_URL"
+    export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${api_port}"
     export OBELISK__API__LISTENING_ADDR="127.0.0.1:${api_port}"
     export OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}"
     export OBELISK__WEBUI__ENABLED=false

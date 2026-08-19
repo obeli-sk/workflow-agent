@@ -25,11 +25,11 @@ async function get_component_source_impl(deploymentId, component, offset, length
     if (!deploymentId) throw "deployment-id is required";
     if (!component) throw "component is required";
 
-    const base = process.env["OBELISK_API_URL"];
-    if (!base) throw "OBELISK_API_URL is not configured";
+    const base = process.env["TARGET_OBELISK_API_URL"];
+    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}`,
-        { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
+        { headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } },
     );
     if (!resp.ok) throw `deployment HTTP ${resp.status}: ${await resp.text()}`;
     const record = JSON.parse(await resp.text());

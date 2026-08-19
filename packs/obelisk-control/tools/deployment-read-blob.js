@@ -7,10 +7,10 @@
 // fetches the body so the workflow can show or edit it.
 export default async function deployment_read_blob(digest) {
     if (typeof digest !== "string" || !digest.trim()) throw "digest is required";
-    const base = process.env["OBELISK_API_URL"];
-    if (!base) throw "OBELISK_API_URL is not configured";
+    const base = process.env["TARGET_OBELISK_API_URL"];
+    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(`${base}/v1/files/${encodeURIComponent(digest.trim())}`, {
-        headers: { authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` },
+        headers: { authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` },
     });
     if (resp.status === 404) throw `no blob for digest ${digest}`;
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;

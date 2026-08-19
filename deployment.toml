@@ -91,12 +91,32 @@ name = "tool_list_functions"
 ffqn = "obelisk-agent:tools/webapi.list-functions"
 wit = "wit"
 location = "packs/obelisk-control/tools/list-functions.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/(components|functions/wit)"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/(components|functions/wit)"
+secrets = ["TARGET_OBELISK_TOKEN"]
+replace_in = ["headers"]
+
+# Dynamic call against the target: native.call delegates here so `obelisk call`
+# reaches the target over HTTP (a workflow can't fetch). One POST with
+# follow=true blocks until the target execution finishes, so it needs a long
+# lock; max_retries = 0 because POST auto-generates the execution id and a retry
+# would double-submit.
+[[activity_js]]
+name = "tool_call_target"
+ffqn = "obelisk-agent:tools/webapi.call-target"
+wit = "wit"
+exec.lock_expiry.minutes = 10
+max_retries = 0
+location = "packs/obelisk-control/tools/call-target.js"
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+[[activity_js.allowed_host]]
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["POST"]
+request_url_regex = "^POST ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -104,12 +124,12 @@ name = "tool_get_function_wit"
 ffqn = "obelisk-agent:tools/webapi.get-function-wit"
 wit = "wit"
 location = "packs/obelisk-control/tools/get-function-wit.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/functions/wit"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/functions/wit"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -117,12 +137,12 @@ name = "tool_list_executions"
 ffqn = "obelisk-agent:tools/webapi.list-executions"
 wit = "wit"
 location = "packs/obelisk-control/tools/list-executions.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -130,12 +150,12 @@ name = "tool_get_execution"
 ffqn = "obelisk-agent:tools/webapi.get-execution"
 wit = "wit"
 location = "packs/obelisk-control/tools/get-execution.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -143,12 +163,12 @@ name = "tool_get_execution_record"
 ffqn = "obelisk-agent:tools/webapi.get-execution-record"
 wit = "wit"
 location = "packs/obelisk-control/tools/get-execution-record.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -156,12 +176,12 @@ name = "tool_get_events"
 ffqn = "obelisk-agent:tools/webapi.get-events"
 wit = "wit"
 location = "packs/obelisk-control/tools/get-events.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -169,12 +189,12 @@ name = "tool_get_responses"
 ffqn = "obelisk-agent:tools/webapi.get-responses"
 wit = "wit"
 location = "packs/obelisk-control/tools/get-responses.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -182,12 +202,12 @@ name = "tool_get_logs"
 ffqn = "obelisk-agent:tools/webapi.get-logs"
 wit = "wit"
 location = "packs/obelisk-control/tools/get-logs.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -196,12 +216,12 @@ ffqn = "obelisk-agent:tools/webapi.get-result-json"
 wit = "wit"
 location = "packs/obelisk-control/tools/get-result.js"
 exec.lock_expiry.minutes = 10
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -209,12 +229,12 @@ name = "tool_list_deployments"
 ffqn = "obelisk-agent:tools/webapi.list-deployments"
 wit = "wit"
 location = "packs/obelisk-control/tools/list-deployments.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -222,12 +242,12 @@ name = "tool_get_deployment"
 ffqn = "obelisk-agent:tools/webapi.get-deployment"
 wit = "wit"
 location = "packs/obelisk-control/tools/get-deployment.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -235,12 +255,12 @@ name = "tool_get_component_source"
 ffqn = "obelisk-agent:tools/webapi.get-component-source"
 wit = "wit"
 location = "packs/obelisk-control/tools/get-component-source.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/deployments/|/v1/files/)"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/deployments/|/v1/files/)"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -248,12 +268,12 @@ name = "tool_current_deployment"
 ffqn = "obelisk-agent:tools/webapi.current-deployment-id"
 wit = "wit"
 location = "packs/obelisk-control/tools/current-deployment.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployment-id"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployment-id"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 # --- Deployment editing: checkout -> edit one component -> submit -------------
@@ -269,12 +289,12 @@ name = "tool_deployment_checkout"
 ffqn = "obelisk-agent:tools/webapi.deployment-checkout"
 wit = "wit"
 location = "packs/obelisk-control/tools/deployment-checkout.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -282,12 +302,12 @@ name = "tool_deployment_read_blob"
 ffqn = "obelisk-agent:tools/webapi.deployment-read-blob"
 wit = "wit"
 location = "packs/obelisk-control/tools/deployment-read-blob.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/files/"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/files/"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -299,12 +319,12 @@ wit = "wit"
 exec.lock_expiry.minutes = 5
 max_retries = 0
 location = "packs/obelisk-control/tools/deployment-submit.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["POST"]
-request_url_regex = "^POST ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments$"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^POST ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments$"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -314,12 +334,12 @@ wit = "wit"
 # A cold switch re-verifies (compile + link) before enqueuing.
 exec.lock_expiry.minutes = 5
 location = "packs/obelisk-control/tools/deployment-switch.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["PUT"]
-request_url_regex = "^PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/Dep_[^/]+/switch$"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^PUT ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/Dep_[^/]+/switch$"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -487,12 +507,12 @@ wit = "wit"
 # A hot redeploy re-verifies (compile + link) before swapping executors.
 exec.lock_expiry.minutes = 5
 location = "packs/obelisk-control/tools/apply-deployment.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["PUT"]
-request_url_regex = "^PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/Dep_[^/]+/switch$"
-secrets = ["OBELISK__API__TOKEN"]
+request_url_regex = "^PUT ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/Dep_[^/]+/switch$"
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 # --- MCP servers (stateless) --------------------------------------------------

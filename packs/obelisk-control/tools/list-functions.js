@@ -14,10 +14,10 @@ export default async function list_functions(ffqnPrefix, length) {
 }
 
 async function list_functions_impl(ffqnPrefix, length) {
-    const base = process.env["OBELISK_API_URL"];
-    if (!base) throw "OBELISK_API_URL is not configured";
+    const base = process.env["TARGET_OBELISK_API_URL"];
+    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(`${base}/v1/components?exports=true&submittable=true&extensions=true`, {
-        headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` },
+        headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` },
     });
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
 
@@ -55,7 +55,7 @@ async function fetchWit(base, ffqn) {
     try {
         const resp = await fetch(
             `${base}/v1/functions/wit?ffqn=${encodeURIComponent(ffqn)}`,
-            { headers: { accept: "text/plain", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
+            { headers: { accept: "text/plain", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } },
         );
         if (!resp.ok) return `<wit unavailable: HTTP ${resp.status}>`;
         return (await resp.text()).trim();

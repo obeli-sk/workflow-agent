@@ -12,13 +12,13 @@
 // during the pre-enqueue verification (activation may still fail later).
 export default async function deployment_switch(deploymentId, allowMissing) {
     if (!deploymentId) throw "deployment-id is required";
-    const base = process.env["OBELISK_API_URL"];
-    if (!base) throw "OBELISK_API_URL is not configured";
+    const base = process.env["TARGET_OBELISK_API_URL"];
+    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}/switch`,
         {
             method: "PUT",
-            headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}`, "content-type": "application/json" },
+            headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}`, "content-type": "application/json" },
             body: JSON.stringify({ hot_redeploy: false, allow_unavailable_runtime_config: Boolean(allowMissing) }),
         },
     );

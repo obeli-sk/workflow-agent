@@ -15,8 +15,8 @@ export default async function list_executions(
     includingCursor,
     length,
 ) {
-    const base = process.env["OBELISK_API_URL"];
-    if (!base) throw "OBELISK_API_URL is not configured";
+    const base = process.env["TARGET_OBELISK_API_URL"];
+    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     // The activity JS runtime has no URLSearchParams; build the query manually.
     const params = [];
     if (ffqnPrefix) params.push(`ffqn_prefix=${encodeURIComponent(ffqnPrefix)}`);
@@ -32,7 +32,7 @@ export default async function list_executions(
     if (includingCursor) params.push("including_cursor=true");
     if (length > 0) params.push(`length=${encodeURIComponent(String(length))}`);
     const qs = params.length ? `?${params.join("&")}` : "";
-    const resp = await fetch(`${base}/v1/executions${qs}`, { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } });
+    const resp = await fetch(`${base}/v1/executions${qs}`, { headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } });
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.text();
 }

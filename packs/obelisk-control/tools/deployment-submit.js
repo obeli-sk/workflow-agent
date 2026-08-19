@@ -34,9 +34,9 @@ async function deployment_submit_impl(
     if (typeof deploymentToml !== "string" || !deploymentToml.trim()) {
         throw "deployment-toml is required";
     }
-    const base = process.env["OBELISK_API_URL"];
-    if (!base) throw "OBELISK_API_URL is not configured";
-    const token = process.env["OBELISK__API__TOKEN"];
+    const base = process.env["TARGET_OBELISK_API_URL"];
+    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
+    const token = process.env["TARGET_OBELISK_TOKEN"];
     const wantedId = (typeof deploymentId === "string" && deploymentId.trim())
         ? deploymentId.trim() : null;
     const desc = (typeof description === "string" && description.trim())

@@ -35,10 +35,11 @@ const AUTO_DIGEST: &str = "auto";
 /// Appended to the session system prompt by the workflow (`session.rs`).
 pub const SYSTEM_PROMPT: &str =
     "You are on a persistent virtual machine with a filesystem rooted at
-/workspace. The active Obelisk deployment has been fetched into
+/workspace. The target Obelisk's active deployment has been fetched into
 /workspace/deployment/current; read and edit its deployment.toml and component
 sources with ordinary shell commands. Use the obelisk command for operations
-against the running server (functions, executions, call, and deployment
+against the target server, which may be a different instance than the one you run
+on (functions, executions, call, and deployment
 current/refresh/check/submit/switch/apply). Edits under the deployment folder
 are local until you run `obelisk deployment submit` (store a new inactive
 deployment) or `obelisk deployment apply` (hot-redeploy); `obelisk deployment

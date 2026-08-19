@@ -5,11 +5,23 @@ methods = ["GET"]
 [secrets]
 LLM_API_KEY = { env = "LLM_API_KEY" }
 OBELISK__API__TOKEN = { env = "OBELISK__API__TOKEN" }
+# The target Obelisk the agent deploys to/controls; defaults to the agent's own
+# token for the self-host case (see .envrc-example, README recursion warning).
+TARGET_OBELISK_TOKEN = { env = "TARGET_OBELISK_TOKEN" }
 
+# Agent's own instance: webhook UI reads of the agent's own sessions plus the
+# pause/unpause/cancel/stub control of them.
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "POST", "PUT"]
 secrets = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
+
+# Target instance: the control/deploy tools and the VFS deployment mount.
+[[outbound_http.allowed_host]]
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "POST", "PUT"]
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[outbound_http.allowed_host]]

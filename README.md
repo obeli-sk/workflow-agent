@@ -43,6 +43,36 @@ user input stays live while a completion is pending, so `$ ` commands can
 edit the session VFS mid-turn; a prompt sent during the wait is queued for the
 next model turn.
 
+## Target instance
+
+There are two Obelisk instances in play:
+
+- The **agent instance** the workflow-agent runs on. Its own session runs, logs,
+  and the UI's pause/cancel/answer buttons live here, authenticated with
+  `OBELISK__API__TOKEN` (and `OBELISK_UI_URL` for links).
+- The **target instance** the agent inspects and deploys to. Every control/deploy
+  tool (`obelisk functions|executions|call|deployment ...`) and the
+  `/workspace/deployment` mount talk to it, configured by three vars that default
+  to the agent instance:
+
+  ```sh
+  export TARGET_OBELISK_API_URL=http://127.0.0.1:5005
+  export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:5005"
+  export TARGET_OBELISK_TOKEN="$OBELISK__API__TOKEN"
+  ```
+
+Point these at a separate Obelisk to deploy somewhere other than the agent's own
+instance.
+
+> [!WARNING]
+> The default targets the agent's **own** instance, which is recursive and risky.
+> A deployment the agent applies to itself can remove the agent, or worse remove
+> the very `deployment submit`/`switch` activity that is still running: a
+> deployment switch closes all executors *before* it acknowledges, so the
+> in-flight control execution is left Pending. Re-activating the previous
+> deployment then immediately switches back to the broken one and re-Pends it. Use
+> a separate target instance for anything beyond local experimentation.
+
 ## LLM endpoint
 
 One endpoint serves the whole catalog, configured by three env vars: the

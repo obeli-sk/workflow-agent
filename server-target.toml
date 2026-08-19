@@ -1,0 +1,10 @@
+api.listening_addr = "127.0.0.1:5205"
+webui.listening_addr = "127.0.0.1:8280"
+external.listening_addr = "127.0.0.1:9290"
+
+database.sqlite.directory = "${DATA_DIR}/target-obelisk-sqlite"
+
+[[outbound_http.allowed_host]]
+pattern = "*://*"
+methods = ["GET"]
+

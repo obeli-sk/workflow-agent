@@ -21,8 +21,8 @@ export default async function deployment_checkout(deploymentId) {
 }
 
 async function deployment_checkout_impl(deploymentId) {
-    const base = process.env["OBELISK_API_URL"];
-    if (!base) throw "OBELISK_API_URL is not configured";
+    const base = process.env["TARGET_OBELISK_API_URL"];
+    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const wanted = (typeof deploymentId === "string" && deploymentId.trim()) ? deploymentId.trim() : "";
     if (!wanted) throw "deployment-checkout requires a deployment-id";
     const record = await getJson(`${base}/v1/deployments/${encodeURIComponent(wanted)}`);
@@ -45,7 +45,7 @@ function classifyActivityError(error) {
 }
 
 async function getJson(url) {
-    const resp = await fetch(url, { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } });
+    const resp = await fetch(url, { headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } });
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.json();
 }
