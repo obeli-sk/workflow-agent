@@ -15,10 +15,8 @@ pattern = "https://obeli.sk"
 methods = ["GET"]
 request_url_regex = "^GET https://obeli\\.sk/docs/latest/llms.txt/"
 
-# --- Discoverable shell programs ---------------------------------------------
-# Every function in this interface has the same process-like signature. The
-# workflow discovers matching exports at session startup and registers each
-# function name as a just-bash command.
+# --- Shell programs ----------------------------------------------------------
+# The workflow explicitly registers curl as a just-bash command.
 
 [[activity_js]]
 name = "program_curl"
@@ -43,6 +41,56 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/native-call.js"
+
+# --- Reference mounts: GitHub repo trees --------------------------------------
+# Two lazily-listed VFS trees the session mounts to author deployments against
+# reference material: /workspace/components (obeli-sk/components) and
+# /workspace/docs (obeli-sk/website, private). One activity/github-contents.js
+# backs both; each block fixes the repo via GH_OWNER/GH_REPO/GH_REF and exposes
+# the GITHUB_TOKEN secret the runtime swaps into the Authorization header. The
+# workflow calls (method, params-json) on first `ls`/`cat` under the mount.
+
+[[activity_js]]
+name = "mount_components"
+ffqn = "obelisk-agent:mounts/components.request"
+params = [
+  { name = "method",      type = "string" },
+  { name = "params-json", type = "string" },
+]
+return_type = "result<string, string>"
+location = "activity/github-contents.js"
+env_vars = [
+  { key = "GH_OWNER", value = "obeli-sk" },
+  { key = "GH_REPO",  value = "components" },
+  { key = "GH_REF",   value = "${COMPONENTS_REF:-main}" },
+]
+[[activity_js.allowed_host]]
+pattern = "https://api.github.com"
+methods = ["GET"]
+request_url_regex = "^GET https://api\\.github\\.com/repos/obeli-sk/components/contents"
+secrets = ["GITHUB_TOKEN"]
+replace_in = ["headers"]
+
+[[activity_js]]
+name = "mount_docs"
+ffqn = "obelisk-agent:mounts/docs.request"
+params = [
+  { name = "method",      type = "string" },
+  { name = "params-json", type = "string" },
+]
+return_type = "result<string, string>"
+location = "activity/github-contents.js"
+env_vars = [
+  { key = "GH_OWNER", value = "obeli-sk" },
+  { key = "GH_REPO",  value = "website" },
+  { key = "GH_REF",   value = "${DOCS_REF:-main}" },
+]
+[[activity_js.allowed_host]]
+pattern = "https://api.github.com"
+methods = ["GET"]
+request_url_regex = "^GET https://api\\.github\\.com/repos/obeli-sk/website/contents"
+secrets = ["GITHUB_TOKEN"]
+replace_in = ["headers"]
 
 # --- LLM endpoint: multi-provider client --------------------------------------
 # The only way the agent talks to a model. It speaks a provider-neutral message
@@ -272,7 +320,7 @@ env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:
 [[activity_js.allowed_host]]
 pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployment-id"
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployment-id$"
 secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
@@ -518,9 +566,10 @@ replace_in = ["headers"]
 # --- MCP servers (stateless) --------------------------------------------------
 # Each configured MCP server is one activity block plus one outbound-host grant,
 # mirroring the single-LLM-endpoint precedent. The function name after
-# `obelisk-agent:mcp/server.` is the server name; the workflow discovers matching
-# exports and registers each as a shell command (`<server> tools|call|prompts|
-# prompt|info`), with a global `mcp` registry command over them. Resources are
+# `obelisk-agent:mcp/server.` is the server name. Add the same name and FFQN to
+# `MCP_SERVERS` in workflow/workflow-rs/src/session.rs so the workflow registers
+# it as a shell command (`<server> tools|call|prompts|prompt|info`) and includes
+# it in the global `mcp` registry command. Resources are
 # mounted lazily under `/workspace/mcp/<server>`. A single
 # activity/mcp.js is reused by every server: each block sets the fixed env var
 # MCP_SERVER_URL (the full endpoint the activity POSTs to) and, for an

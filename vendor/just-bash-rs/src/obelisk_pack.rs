@@ -50,7 +50,11 @@ the value \"auto\", and `backtrace.sources` entries are plain path strings; leav
 them that way. Add a component by writing its source and its
 [[activity_js]]/[[workflow_js]] table (name, location, params, return_type), and
 add a bundled file by writing it and listing its path in `component_files` with
-the value \"auto\", nothing more.";
+the value \"auto\", nothing more. Two read-only reference trees are mounted for
+you: /workspace/docs (the Obelisk documentation, obeli-sk/website) and
+/workspace/components (reusable example components, obeli-sk/components); browse
+them with ls and cat while authoring. They list and fetch lazily on first
+access, so an ls may pause briefly.";
 
 /// The one primitive the whole pack needs: dynamically invoke a deployed FFQN
 /// and get back its JSON result. Mirrors Obelisk's real

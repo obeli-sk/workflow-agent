@@ -8,6 +8,19 @@ OBELISK__API__TOKEN = { env = "OBELISK__API__TOKEN" }
 # The target Obelisk the agent deploys to/controls; defaults to the agent's own
 # token for the self-host case (see .envrc-example, README recursion warning).
 TARGET_OBELISK_TOKEN = { env = "TARGET_OBELISK_TOKEN" }
+# Read access for the /workspace/docs and /workspace/components GitHub mounts.
+# Required for the private obeli-sk/website (docs); shared by components to dodge
+# API rate limits.
+GITHUB_TOKEN = { env = "GITHUB_TOKEN" }
+
+# Reference mounts: GitHub contents API for /workspace/{docs,components}. The
+# per-repo path scope is enforced by each activity's own allowed_host regex; this
+# coarse operator grant is host-wide (like the OBELISK/TARGET grants above).
+[[outbound_http.allowed_host]]
+pattern = "https://api.github.com"
+methods = ["GET"]
+secrets = ["GITHUB_TOKEN"]
+replace_in = ["headers"]
 
 # Agent's own instance: webhook UI reads of the agent's own sessions plus the
 # pause/unpause/cancel/stub control of them.

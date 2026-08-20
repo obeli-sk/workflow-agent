@@ -71,7 +71,7 @@ until http_ok "http://127.0.0.1:${MCP_PORT}/" 2>/dev/null; do
 done
 
 # --- deployment: real manifest + one MCP block, keyless -----------------------
-e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"
+e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm" "e2e-mcp"
 DEPLOY="$ROOT/.e2e-mcp-deployment.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 cat >> "$DEPLOY" <<EOF

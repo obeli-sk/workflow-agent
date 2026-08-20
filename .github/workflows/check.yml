@@ -152,9 +152,15 @@ jobs:
 
       - name: bash workflow e2e
         run: nix develop --command just test-e2e
+        env:
+          GITHUB_TOKEN: ""
 
       - name: agent workflow e2e
         run: nix develop --command just test-e2e-agent-workflow
+        env:
+          GITHUB_TOKEN: ""
 
       - name: redeploy e2e
         run: nix develop --command just test-e2e-redeploy
+        env:
+          GITHUB_TOKEN: ""

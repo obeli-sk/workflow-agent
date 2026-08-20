@@ -14,10 +14,8 @@ up as files. Obelisk functions and MCP tools are surfaced as ordinary bash
 programs. The same shell is driven by the LLM and, directly, by the user:
 type a command with a `$ ` prefix in the UI to run it yourself, e.g. `$ pwd`.
 
-Programs are just Obelisk executions, so the agent can write and deploy its own.
-Any activity or workflow exported as `obelisk-agent:programs/program.<name>`
-with the shell-program WIT signature is discovered as the command `<name>`. The
-one that ships, a GET-only `curl`, is an Obelisk activity.
+External programs are Obelisk executions registered explicitly by the workflow.
+The one that ships, a GET-only `curl`, is an Obelisk activity.
 
 ![workflow-agent web UI](docs/workflow-agent.png)
 
@@ -106,9 +104,9 @@ point `LLM_BASE_URL` at it and add catalog entries.
 
 The core registers a broad command catalog ported from just-bash (file, path,
 text, search, checksum, encoding, and inspection tools; no `gzip`/`gunzip`/
-`zcat`). Run `help` to list built-ins and discovered programs, or `which NAME`.
+`zcat`). Run `help` to list commands, or `which NAME`.
 
-`ask-user` is deliberately not a general model tool or discovered program. It
+`ask-user` is deliberately not a general model tool or shell program. It
 is a UI-coordinated shell operation for answers needed before the current task
 can continue:
 
@@ -136,7 +134,9 @@ for durable external work instead.
 A dependency-free sample server exposes tools, a prompt, and two resources.
 Start it with `just sample-mcp-server`, uncomment the `mcp_obelisk_local`
 activity in `deployment.toml` and the keyless outbound host block in
-`server.toml`, then build and run as above. In a new empty session:
+`server.toml`, add its name and FFQN to `MCP_SERVERS` in
+`workflow/workflow-rs/src/session.rs`, then build and run as above. In a new
+empty session:
 
 ```sh
 mcp list
