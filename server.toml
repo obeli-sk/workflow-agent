@@ -1,5 +1,3 @@
-webui.listening_addr = "127.0.0.1:8081"
-
 [[outbound_http.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
