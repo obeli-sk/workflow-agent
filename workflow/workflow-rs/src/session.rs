@@ -32,7 +32,6 @@ use serde_json::{Value, json};
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult, Fd};
 use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
 
-use crate::generated::obelisk::types::execution::AwaitNextExtensionError;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::llm::chat::CompletionResult;
@@ -736,38 +735,34 @@ fn call_llm_with_user(
         );
 
         let res = loop {
-            match llm_ext::completion_await_next(&session.join_set) {
-                Ok(result) => {
-                    let completed_id = last_response_execution_id(&session.join_set);
-                    if completed_id.as_deref() != Some(completion_execution_id.id.as_str()) {
-                        return Err(format!("unexpected session response: {completed_id:?}"));
-                    }
-                    match result {
-                        Ok(completion) => break completion,
-                        Err(e) => {
-                            return Ok(LlmOutcome::Failed(format!("llm.completion failed: {e}")));
-                        }
-                    }
+            // The `user` join set is heterogeneous (completion child + injection
+            // offer), so await generically and dispatch on the completed id read
+            // from `last-id`, then fetch the typed value with the matching `-get`.
+            // A typed `-await-next` here would mark the next response processed
+            // even on a function mismatch, consuming the wrong child.
+            let _ = workflow_support::join_next(&session.join_set).map_err(|e| format!("{e:?}"))?;
+            let completed_id = last_response_execution_id(&session.join_set)
+                .expect("user join set has only child executions, never delays");
+            if completed_id == completion_execution_id.id {
+                match llm_ext::completion_get(&completion_execution_id).map_err(|e| format!("{e:?}"))? {
+                    Ok(completion) => break completion,
+                    Err(e) => return Ok(LlmOutcome::Failed(format!("llm.completion failed: {e}"))),
                 }
-                Err(AwaitNextExtensionError::FunctionMismatch(_)) => {
-                    let event = session_ext::injection_await_next(&session.join_set)
-                        .map_err(|e| format!("{e:?}"))?
-                        .map_err(|e| format!("session injection failed: {e}"))?;
-                    let completed_id = last_response_execution_id(&session.join_set);
-                    if completed_id.as_deref() != Some(session.injection_execution_id.id.as_str()) {
-                        return Err(format!("unexpected session response: {completed_id:?}"));
-                    }
-                    rearm_user_input(session, notifications)?;
-                    prompt_queued |= apply_session_input(
-                        event,
-                        session.turn_index,
-                        false,
-                        notifications,
-                        bash,
-                        messages,
-                    )?;
-                }
-                Err(err) => return Err(format!("{err:?}")),
+            } else if completed_id == session.injection_execution_id.id {
+                let event = session_ext::injection_get(&session.injection_execution_id)
+                    .map_err(|e| format!("{e:?}"))?
+                    .map_err(|e| format!("session injection failed: {e}"))?;
+                rearm_user_input(session, notifications)?;
+                prompt_queued |= apply_session_input(
+                    event,
+                    session.turn_index,
+                    false,
+                    notifications,
+                    bash,
+                    messages,
+                )?;
+            } else {
+                return Err(format!("unexpected session response: {completed_id}"));
             }
         };
 
@@ -882,15 +877,18 @@ fn take_user_event(
     session: &mut Session,
     notifications: &Notifications,
 ) -> Result<SessionInput, String> {
-    let event = session_ext::injection_await_next(&session.join_set)
+    // Same heterogeneous-join-set discipline as `call_llm_with_user`: await
+    // generically, confirm the completed id is the outstanding injection offer,
+    // then fetch its typed value with `injection-get`.
+    let _ = workflow_support::join_next(&session.join_set).map_err(|e| format!("{e:?}"))?;
+    let completed_id = last_response_execution_id(&session.join_set)
+        .expect("user join set has only child executions, never delays");
+    if completed_id != session.injection_execution_id.id {
+        return Err(format!("unexpected session response while idle: {completed_id}"));
+    }
+    let event = session_ext::injection_get(&session.injection_execution_id)
         .map_err(|e| format!("{e:?}"))?
         .map_err(|e| format!("session injection failed: {e}"))?;
-    let completed_id = last_response_execution_id(&session.join_set);
-    if completed_id.as_deref() != Some(session.injection_execution_id.id.as_str()) {
-        return Err(format!(
-            "unexpected session response while idle: {completed_id:?}"
-        ));
-    }
     rearm_user_input(session, notifications)?;
     Ok(event)
 }
