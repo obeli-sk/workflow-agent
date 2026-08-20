@@ -8,8 +8,6 @@ serve-target:
 sample-mcp-server:
   node examples/stateless-mcp-server.mjs
 
-# deployment.toml's [[workflow_wasm]] entry points at it; the crate's
-# .cargo/config.toml pins the wasm32-unknown-unknown target.
 # Build the native Rust workflow component (workflow/workflow-rs).
 # The generated wit/deps are committed; regenerate with scripts/generate-wit-deps.sh
 # after changing the source WIT.
@@ -25,10 +23,10 @@ fix: build
 sync:
   obelisk deployment get $(obelisk deployment active) --force
 
-# Run everything: unit tests plus all end-to-end suites.
+# Test everything: unit tests plus all end-to-end suites.
 test: test-rs test-js test-e2e test-e2e-agent-workflow test-e2e-redeploy test-e2e-mcp
 
-# Rust port: unit tests for the workflow and just-bash-rs interpreter.
+# Unit tests for the workflow and just-bash-rs interpreter.
 test-rs:
   cargo test -p just-bash-rs -p workflow-agent-rs
 
@@ -36,7 +34,7 @@ test-rs:
 test-js:
   node --test webhook/ui/shell.test.js
 
-# Rust port: end-to-end test of the bash workflow component under Obelisk.
+# End-to-end test of the bash workflow component under Obelisk.
 test-e2e:
   ./scripts/test-e2e.sh
 
