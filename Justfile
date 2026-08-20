@@ -49,7 +49,7 @@ test-e2e-redeploy:
   ./scripts/test-e2e-redeploy.sh
 
 # End-to-end MCP: runs a stateless MCP server in a docker/podman container and
-# drives discovery, the `mcp` registry, and tool/prompt calls over real HTTP.
+# drives the `mcp` registry and tool/prompt calls over real HTTP.
 # SKIPs when no container runtime is on PATH (the nix devshell ships neither
 # docker nor podman, so run this where docker is available).
 test-e2e-mcp:

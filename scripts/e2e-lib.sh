@@ -50,9 +50,14 @@ e2e_cleanup() {
 e2e_build_component() {
     local crate="$1"
     local artifact="$2"
+    local features="${3:-}"
 
     echo ">>> building ${crate} (wasm32-unknown-unknown)"
-    (cd "$ROOT/$crate" && cargo build --release)
+    if [[ -n "$features" ]]; then
+        (cd "$ROOT/$crate" && cargo build --release --features "$features")
+    else
+        (cd "$ROOT/$crate" && cargo build --release)
+    fi
 
     local target_dir
     target_dir="$(cd "$ROOT/$crate" && cargo metadata --no-deps --format-version=1 \

@@ -15,10 +15,8 @@ pattern = "https://obeli.sk"
 methods = ["GET"]
 request_url_regex = "^GET https://obeli\\.sk/docs/latest/llms.txt/"
 
-# --- Discoverable shell programs ---------------------------------------------
-# Every function in this interface has the same process-like signature. The
-# workflow discovers matching exports at session startup and registers each
-# function name as a just-bash command.
+# --- Shell programs ----------------------------------------------------------
+# The workflow explicitly registers curl as a just-bash command.
 
 [[activity_js]]
 name = "program_curl"
@@ -568,9 +566,10 @@ replace_in = ["headers"]
 # --- MCP servers (stateless) --------------------------------------------------
 # Each configured MCP server is one activity block plus one outbound-host grant,
 # mirroring the single-LLM-endpoint precedent. The function name after
-# `obelisk-agent:mcp/server.` is the server name; the workflow discovers matching
-# exports and registers each as a shell command (`<server> tools|call|prompts|
-# prompt|info`), with a global `mcp` registry command over them. Resources are
+# `obelisk-agent:mcp/server.` is the server name. Add the same name and FFQN to
+# `MCP_SERVERS` in workflow/workflow-rs/src/session.rs so the workflow registers
+# it as a shell command (`<server> tools|call|prompts|prompt|info`) and includes
+# it in the global `mcp` registry command. Resources are
 # mounted lazily under `/workspace/mcp/<server>`. A single
 # activity/mcp.js is reused by every server: each block sets the fixed env var
 # MCP_SERVER_URL (the full endpoint the activity POSTs to) and, for an

@@ -24,7 +24,7 @@
 //!   filter out of `Bash`'s fixed builtin table.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
@@ -44,7 +44,6 @@ use crate::generated::obelisk_agent::stub::stub::{
 };
 use crate::generated::obelisk_agent::stub_obelisk_ext::stub as session_ext;
 use crate::generated::obelisk_agent::stub_obelisk_stub::stub as session_stub;
-use crate::generated::obelisk_agent::tools::webapi;
 use crate::host::RealHost;
 use crate::support::last_response_execution_id;
 
@@ -67,18 +66,16 @@ fn host_sleep_ms(ms: u64) {
     let _ = workflow_support::sleep(ScheduleAt::In(Duration::Milliseconds(ms)), None);
 }
 
-/// The active deployment's id, used only to detect a redeploy between turns and
-/// re-register program commands. The value is compared verbatim (a redeploy
-/// yields a new id), so the exact JSON-string framing does not matter.
-fn current_deployment_id() -> Result<String, String> {
-    webapi::current_deployment_id()
-}
-
 // The per-turn agent-loop budget: how many LLM invocations (steps) a single
 // user turn may take before the loop gives up without a final response.
 const MAX_STEPS: u32 = 10;
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const SESSION_EVENTS_JOIN_SET: &str = "session-events";
+const PROGRAM_COMMANDS: &[(&str, &str)] = &[("curl", "obelisk-agent:programs/program.curl")];
+#[cfg(feature = "e2e-mcp")]
+const MCP_SERVERS: &[(&str, &str)] = &[("obelisk-e2e", "obelisk-agent:mcp/server.obelisk-e2e")];
+#[cfg(not(feature = "e2e-mcp"))]
+const MCP_SERVERS: &[(&str, &str)] = &[];
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
 
@@ -255,32 +252,39 @@ pub fn agent_loop(
         ..Default::default()
     });
     bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(host())));
+    for &(name, ffqn) in PROGRAM_COMMANDS {
+        bash.register_command(
+            name,
+            obelisk_program::command_handler(name, ffqn, Box::new(host())),
+        );
+    }
 
-    // Configured MCP servers surface as one shell command each; the global `mcp`
-    // command is the registry over them. The registry is shared with the servers
-    // discovered below (updated between turns on a redeploy) and read at command
-    // time, so `mcp` always lists the current set.
-    let mcp_registry: obelisk_mcp::ServerRegistry = Rc::new(RefCell::new(Vec::new()));
+    let mcp_registry: obelisk_mcp::ServerRegistry = Rc::new(RefCell::new(
+        MCP_SERVERS
+            .iter()
+            .map(|&(name, ffqn)| obelisk_mcp::Server {
+                name: name.to_string(),
+                ffqn: ffqn.to_string(),
+            })
+            .collect(),
+    ));
     bash.register_command(
         "mcp",
         obelisk_mcp::registry_command_handler(mcp_registry.clone(), Box::new(host())),
     );
-    // A server whose name would shadow a builtin, the `obelisk`/`mcp` command, or
-    // a discovered program is skipped (the reason recorded to `.mcp-error`),
-    // mirroring the program/mount error convention.
-    let mut reserved: BTreeSet<&str> = just_bash_rs::command_names().into_iter().collect();
-    reserved.insert("obelisk");
-    reserved.insert("mcp");
+    for &(name, ffqn) in MCP_SERVERS {
+        bash.register_command(
+            name,
+            obelisk_mcp::server_command_handler(name, ffqn, Box::new(host())),
+        );
+    }
 
     let system = format!(
         "{system_prompt}\n\n\
 # Shell\n\n\
 The only model-facing tool is bash. Its filesystem persists for this session. \
-Run `help` to list every built-in and discovered program available in the shell. \
-Deployed activities and workflows under `obelisk-agent:programs/program.<name>` \
-whose WIT signature is `(stdin: string, args: list<string>) -> result<record {{ \
-stdout: string, stderr: string, exit-code: u32 }}, string>` are discovered as \
-ordinary shell commands named `<name>`.\n\n\
+Run `help` to list every command available in the shell. The workflow registers \
+its external commands explicitly; `curl` is available as a GET-only HTTP client.\n\n\
 # User input\n\n\
 When you need a user answer before you can continue the current task, run \
 `obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. This \
@@ -308,16 +312,6 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
     )?;
 
     let mut pack_mounted = false;
-    // Program.* shell commands are (re-)registered whenever the active
-    // deployment changes, so a redeploy that adds program functions surfaces
-    // them as commands mid-session. `programs_registered` forces the first
-    // pass even when the deployment-id read is unavailable; `active_deployment_id`
-    // gates subsequent re-discovery; `registered_programs` keeps registration
-    // idempotent across turns.
-    let mut programs_registered = false;
-    let mut active_deployment_id: Option<String> = None;
-    let mut registered_programs: BTreeSet<String> = Default::default();
-    let mut registered_mcp_servers: BTreeSet<String> = Default::default();
     let mut turn_index: u64 = 0;
     let mut should_call_llm = !messages.is_empty();
     let mut agent_steps = 0u32;
@@ -342,103 +336,6 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
         }
 
         let mut turn_complete = false;
-
-        // Re-discover program commands on the first turn and whenever the
-        // active deployment changes (a successful redeploy). Both the
-        // deployment-id read and discovery are recorded host calls, so replay
-        // stays deterministic. Newly deployed program.* functions are added;
-        // commands from a prior deployment stay registered (their child call
-        // simply fails if the function is gone). Files are left untouched here:
-        // the model refreshes sources explicitly with `obelisk deployment
-        // refresh`, which would otherwise discard its in-progress edits.
-        let current_deployment = current_deployment_id();
-        let deployment_changed = match &current_deployment {
-            Ok(id) => active_deployment_id.as_deref() != Some(id.as_str()),
-            Err(_) => false,
-        };
-        if !programs_registered || deployment_changed {
-            match obelisk_program::discover(&mut host()) {
-                Ok(programs) => {
-                    for program in programs {
-                        if registered_programs.insert(program.name.clone()) {
-                            bash.register_command(
-                                &program.name,
-                                obelisk_program::command_handler(
-                                    &program.name,
-                                    program.ffqn,
-                                    Box::new(host()),
-                                ),
-                            );
-                        }
-                    }
-                }
-                Err(err) => {
-                    let _ = bash
-                        .fs_mut()
-                        .write_file("/workspace/.program-error", err.as_bytes());
-                }
-            }
-            // MCP servers are discovered the same way as programs (a recorded
-            // list-functions call), on the first turn and on every redeploy.
-            // Registration is idempotent; a server whose name collides is
-            // skipped and the reason recorded.
-            match obelisk_mcp::discover(&mut host()) {
-                Ok(servers) => {
-                    let mut skipped: Vec<String> = Vec::new();
-                    for server in servers {
-                        if registered_mcp_servers.contains(&server.name) {
-                            continue;
-                        }
-                        if reserved.contains(server.name.as_str())
-                            || registered_programs.contains(&server.name)
-                        {
-                            skipped.push(format!(
-                                "{}: name shadows a builtin, the obelisk/mcp command, or a program; command not registered",
-                                server.name
-                            ));
-                            continue;
-                        }
-                        registered_mcp_servers.insert(server.name.clone());
-                        mcp_registry.borrow_mut().push(server.clone());
-                        bash.register_command(
-                            &server.name,
-                            obelisk_mcp::server_command_handler(
-                                &server.name,
-                                &server.ffqn,
-                                Box::new(host()),
-                            ),
-                        );
-                        let mount_dir = format!("/workspace/mcp/{}", server.name);
-                        match obelisk_mcp::mount_resources(
-                            bash.fs_mut(),
-                            &mut host(),
-                            Box::new(host()),
-                            &server.ffqn,
-                            &mount_dir,
-                        ) {
-                            Ok(_) => {}
-                            Err(err) => skipped
-                                .push(format!("{}: resources not mounted: {err}", server.name)),
-                        }
-                    }
-                    if !skipped.is_empty() {
-                        let _ = bash
-                            .fs_mut()
-                            .write_file("/workspace/.mcp-error", skipped.join("\n").as_bytes());
-                    }
-                }
-                Err(err) => {
-                    let _ = bash
-                        .fs_mut()
-                        .write_file("/workspace/.mcp-error", err.as_bytes());
-                }
-            }
-            programs_registered = true;
-            if let Ok(id) = current_deployment {
-                active_deployment_id = Some(id);
-            }
-        }
-
         if !pack_mounted {
             // Open the input offer (in open_session) before mounting packs so
             // the UI can identify a live session immediately. Unlike JS,
@@ -471,6 +368,21 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
                 "obelisk-agent:mounts/docs.request",
                 "/workspace/docs",
             );
+            for &(name, ffqn) in MCP_SERVERS {
+                let mount_dir = format!("/workspace/mcp/{name}");
+                if let Err(err) = obelisk_mcp::mount_resources(
+                    bash.fs_mut(),
+                    &mut host(),
+                    Box::new(host()),
+                    ffqn,
+                    &mount_dir,
+                ) {
+                    let _ = bash.fs_mut().write_file(
+                        "/workspace/.mcp-error",
+                        format!("{name}: resources not mounted: {err}").as_bytes(),
+                    );
+                }
+            }
             pack_mounted = true;
         }
         if !should_call_llm {
@@ -758,7 +670,9 @@ fn call_llm_with_user(
             let completed_id = last_response_execution_id(&session.join_set)
                 .expect("user join set has only child executions, never delays");
             if completed_id == completion_execution_id.id {
-                match llm_ext::completion_get(&completion_execution_id).map_err(|e| format!("{e:?}"))? {
+                match llm_ext::completion_get(&completion_execution_id)
+                    .map_err(|e| format!("{e:?}"))?
+                {
                     Ok(completion) => break completion,
                     Err(e) => return Ok(LlmOutcome::Failed(format!("llm.completion failed: {e}"))),
                 }
@@ -898,7 +812,9 @@ fn take_user_event(
     let completed_id = last_response_execution_id(&session.join_set)
         .expect("user join set has only child executions, never delays");
     if completed_id != session.injection_execution_id.id {
-        return Err(format!("unexpected session response while idle: {completed_id}"));
+        return Err(format!(
+            "unexpected session response while idle: {completed_id}"
+        ));
     }
     let event = session_ext::injection_get(&session.injection_execution_id)
         .map_err(|e| format!("{e:?}"))?

@@ -137,7 +137,10 @@ impl std::fmt::Debug for Vfs {
             .field("lazy_cache", &self.lazy_cache)
             .field("loader", &self.loader.as_ref().map(|_| "..."))
             .field("mounted_loaders", &self.mounted_loaders.keys())
-            .field("web_mounts", &self.mounts.iter().map(|m| &m.root).collect::<Vec<_>>())
+            .field(
+                "web_mounts",
+                &self.mounts.iter().map(|m| &m.root).collect::<Vec<_>>(),
+            )
             .field("web", &self.web)
             .finish()
     }
@@ -717,7 +720,8 @@ impl Vfs {
                 }
                 let prefix = format!("{path}/");
                 web.dirs.retain(|k| k != &path && !k.starts_with(&prefix));
-                web.expanded.retain(|k| k != &path && !k.starts_with(&prefix));
+                web.expanded
+                    .retain(|k| k != &path && !k.starts_with(&prefix));
                 web.files.retain(|k, _| !k.starts_with(&prefix));
                 web.cache.retain(|k, _| !k.starts_with(&prefix));
                 return Ok(());
@@ -1061,10 +1065,7 @@ mod tests {
     fn web_mount_lists_lazily_and_reads_files_on_demand() {
         let provider = Rc::new(FakeProvider {
             listings: BTreeMap::from([
-                (
-                    "".to_string(),
-                    vec![dir("obelisk"), file("README.md", 5)],
-                ),
+                ("".to_string(), vec![dir("obelisk"), file("README.md", 5)]),
                 ("obelisk".to_string(), vec![file("deployment.toml", 3)]),
             ]),
             files: BTreeMap::from([
@@ -1135,7 +1136,10 @@ mod tests {
             fs.read_file("/workspace/docs/notes.md").as_deref(),
             Some(&b"local"[..])
         );
-        assert!(provider.reads.borrow().is_empty(), "a local edit wins with no fetch");
+        assert!(
+            provider.reads.borrow().is_empty(),
+            "a local edit wins with no fetch"
+        );
     }
 
     #[test]

@@ -35,8 +35,8 @@ impl DirProvider for GithubMount {
     fn list(&self, remote_path: &str) -> Result<Vec<WebEntry>, String> {
         // `list` returns a JSON array serialized as the activity's string result.
         let body = self.call("list", remote_path)?;
-        let entries: Value = serde_json::from_str(&body)
-            .map_err(|e| format!("list did not return JSON: {e}"))?;
+        let entries: Value =
+            serde_json::from_str(&body).map_err(|e| format!("list did not return JSON: {e}"))?;
         entries
             .as_array()
             .ok_or_else(|| "list did not return a JSON array".to_string())?
@@ -177,6 +177,10 @@ mod tests {
         let entry = json!({"name": "weird", "type": "symlink"});
         assert!(parse_entry(&entry).unwrap_err().contains("unknown type"));
         let unnamed = json!({"type": "file"});
-        assert!(parse_entry(&unnamed).unwrap_err().contains("no usable name"));
+        assert!(
+            parse_entry(&unnamed)
+                .unwrap_err()
+                .contains("no usable name")
+        );
     }
 }

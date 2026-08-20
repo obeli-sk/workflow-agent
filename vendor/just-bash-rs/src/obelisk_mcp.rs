@@ -1,8 +1,7 @@
-//! Discovery and command adapters for stateless MCP servers.
+//! Command adapters for stateless MCP servers.
 //!
-//! Each configured MCP server is one deployed activity under
-//! [`SERVER_INTERFACE_PREFIX`] whose WIT is the uniform stateless-transport
-//! contract:
+//! Each configured MCP server is one deployed activity with the uniform
+//! stateless-transport contract:
 //!
 //! `func(method: string, params-json: string) -> result<string, string>`
 //!
@@ -26,10 +25,6 @@ use crate::fs::{BlobLoader, Vfs};
 use crate::interpreter::CommandOutput;
 use crate::obelisk_pack::ObeliskHost;
 
-pub const SERVER_INTERFACE_PREFIX: &str = "obelisk-agent:mcp/server.";
-pub const LIST_FUNCTIONS_FFQN: &str = "obelisk-agent:tools/webapi.list-functions";
-const MAX_SERVERS: u32 = 100;
-
 /// Pseudo-method served inline by the transport activity (no HTTP): reports the
 /// configured endpoint URL and whether a bearer token is set, so `mcp list` can
 /// describe each server without reaching the network.
@@ -41,51 +36,8 @@ pub struct Server {
     pub ffqn: String,
 }
 
-/// The shared, mutable set of registered servers backing the global `mcp`
-/// command. The session updates it as deployments change; the `mcp` handler
-/// reads it at call time.
+/// The shared set of registered servers backing the global `mcp` command.
 pub type ServerRegistry = Rc<RefCell<Vec<Server>>>;
-
-/// Find deployed functions in the MCP server interface and keep only those with
-/// the uniform stateless-transport WIT signature.
-pub fn discover(host: &mut dyn ObeliskHost) -> Result<Vec<Server>, String> {
-    let params = json!([SERVER_INTERFACE_PREFIX, MAX_SERVERS]).to_string();
-    let raw = host
-        .call_json(LIST_FUNCTIONS_FFQN, &params)?
-        .ok_or_else(|| "mcp server discovery returned no body".to_string())?;
-    let outer: Value =
-        serde_json::from_str(&raw).map_err(|e| format!("invalid mcp discovery JSON: {e}"))?;
-    let functions = match outer {
-        // backcompat: 0.1.0 list-functions returned its array as a JSON string.
-        Value::String(inner) => serde_json::from_str::<Value>(&inner)
-            .map_err(|e| format!("invalid mcp server list JSON: {e}"))?,
-        other => other,
-    };
-    let functions = functions
-        .as_array()
-        .ok_or_else(|| "mcp discovery did not return an array".to_string())?;
-
-    let mut servers = Vec::new();
-    for function in functions {
-        let Some(ffqn) = function.get("ffqn").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(name) = ffqn.strip_prefix(SERVER_INTERFACE_PREFIX) else {
-            continue;
-        };
-        let Some(wit) = function.get("wit").and_then(Value::as_str) else {
-            continue;
-        };
-        if valid_server_name(name) && has_server_signature(name, wit) {
-            servers.push(Server {
-                name: name.to_string(),
-                ffqn: ffqn.to_string(),
-            });
-        }
-    }
-    servers.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(servers)
-}
 
 // ===== resources: an MCP server's files, mounted lazily into the VFS ==========
 //
@@ -332,7 +284,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Adapt one discovered server to a just-bash command:
+/// Adapt one configured server to a just-bash command:
 /// `<server> tools|call|prompts|prompt|info`.
 pub fn server_command_handler(
     server: impl Into<String>,
@@ -737,27 +689,6 @@ fn insert_flag_value(
     Ok(())
 }
 
-fn valid_server_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-}
-
-fn has_server_signature(name: &str, wit: &str) -> bool {
-    let compact: String = wit.chars().filter(|c| !c.is_whitespace()).collect();
-    let compact = compact.replace(",>", ">");
-    let prefix = format!("{name}:func(method:string,params-json:string)->");
-    let Some(tail) = compact
-        .split_once(&prefix)
-        .map(|(_, tail)| tail.split(';').next().unwrap_or(""))
-    else {
-        return false;
-    };
-    tail == "result<string,string>"
-}
-
 fn required<'a>(value: Option<&'a str>, label: &str) -> Result<&'a str, String> {
     match value {
         Some(v) if !v.is_empty() => Ok(v),
@@ -975,41 +906,6 @@ mod tests {
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn discovers_only_matching_server_exports() {
-        let functions = json!([
-            {
-                "ffqn": "obelisk-agent:mcp/server.obelisk-local",
-                "wit": "package obelisk-agent:mcp;\ninterface server {\n  obelisk-local: func(method: string, params-json: string) -> result<string, string>;\n}"
-            },
-            {
-                "ffqn": "obelisk-agent:mcp/server.bad",
-                "wit": "interface server { bad: func(method: string) -> string; }"
-            },
-            {
-                "ffqn": "elsewhere:mcp/server.other",
-                "wit": "interface server { other: func(method: string, params-json: string) -> result<string, string>; }"
-            }
-        ]);
-        let response = serde_json::to_string(&functions.to_string()).unwrap();
-        let mut host = FakeHost::new().with(LIST_FUNCTIONS_FFQN, &response);
-
-        assert_eq!(
-            discover(&mut host).unwrap(),
-            vec![Server {
-                name: "obelisk-local".to_string(),
-                ffqn: "obelisk-agent:mcp/server.obelisk-local".to_string(),
-            }]
-        );
-        assert_eq!(
-            host.calls,
-            vec![(
-                LIST_FUNCTIONS_FFQN.to_string(),
-                "[\"obelisk-agent:mcp/server.\",100]".to_string(),
-            )]
-        );
     }
 
     #[test]

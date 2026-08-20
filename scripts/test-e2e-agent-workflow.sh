@@ -132,7 +132,7 @@ node scripts/e2e-json.js check-shell-notification <<<"$SHELL_NOTIFICATION"
 SHELL_PROJECTION="$(curl --fail --silent \
     "http://127.0.0.1:28091/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")"
 node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"
-echo ">>> shell-only E2E PASS: curl was discovered and invoked without starting the agent"
+echo ">>> shell-only E2E PASS: curl was registered and invoked without starting the agent"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 
 EXEC_ID="$("$OBELISK" generate execution-id)"
