@@ -21,13 +21,14 @@ pub mod interpreter;
 pub mod obelisk_mcp;
 pub mod obelisk_pack;
 pub mod obelisk_program;
+pub mod obelisk_web;
 pub mod parser;
 pub mod types;
 
 pub use bash::Bash;
 pub use commands::command_names;
 pub use custom_command::{CustomCommandHandler, CustomCommands};
-pub use fs::{BlobLoader, FsError, Vfs};
+pub use fs::{BlobLoader, DirProvider, FsError, Vfs, WebEntry, WebEntryKind};
 pub use obelisk_pack::{MountResult, ObeliskHost, SYSTEM_PROMPT, blob_loader};
 pub use parser::parse;
 pub use types::{BashOptions, ExecOptions, ExecResult, ExecutionLimits, Fd, OutputChunk};

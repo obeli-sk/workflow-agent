@@ -21,6 +21,31 @@ pub trait BlobLoader {
     fn load(&self, digest: &str) -> Result<Vec<u8>, String>;
 }
 
+/// Lists and reads a lazily-mounted directory tree (a remote repo browsed over
+/// the network). Unlike `BlobLoader`, the structure is not known at mount time:
+/// `list` is called on first `ls` of a mounted directory to discover its
+/// children, and `read` fetches a file's bytes on first read. `remote_path` is
+/// the path within the mount's remote root (empty for the mount root itself).
+/// Installed by `Vfs::register_web_mount`; see `obelisk_web`.
+pub trait DirProvider {
+    fn list(&self, remote_path: &str) -> Result<Vec<WebEntry>, String>;
+    fn read(&self, remote_path: &str) -> Result<Vec<u8>, String>;
+}
+
+/// One child of a lazily-listed directory: a subdirectory (itself lazy) or a
+/// file with its authoritative byte length.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebEntry {
+    pub name: String,
+    pub kind: WebEntryKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WebEntryKind {
+    Dir,
+    File { size: u64 },
+}
+
 /// Largest lazy blob the VFS will materialize into workflow memory.
 pub const MAX_LAZY_FETCH_BYTES: u64 = 1024 * 1024;
 
@@ -39,6 +64,28 @@ pub enum FileReadError {
         path: String,
         reference: LazyFileRef,
     },
+}
+
+/// A directory tree mounted from a remote `DirProvider`, rooted at `root` in the
+/// VFS and at `base` in the provider's remote namespace.
+#[derive(Clone)]
+struct WebMount {
+    root: String,
+    base: String,
+    provider: Rc<dyn DirProvider>,
+}
+
+/// The read-path overlay for web mounts, materialized on access (like
+/// `lazy_cache`): `dirs`/`files` are children discovered by expanding a listed
+/// directory, `expanded` marks directories already listed, and `cache` holds
+/// fetched file bytes. Kept behind a `RefCell` so listing and reading stay
+/// `&self` calls, matching the rest of the read surface.
+#[derive(Clone, Default, Debug)]
+struct WebState {
+    expanded: BTreeSet<String>,
+    dirs: BTreeSet<String>,
+    files: BTreeMap<String, u64>,
+    cache: BTreeMap<String, Vec<u8>>,
 }
 
 /// An in-memory tree of text files keyed by absolute, normalized path.
@@ -72,6 +119,11 @@ pub struct Vfs {
     loader: Option<Rc<dyn BlobLoader>>,
     /// Path-specific loaders for mounts backed by a different blob source.
     mounted_loaders: BTreeMap<String, Rc<dyn BlobLoader>>,
+    /// Web mounts (lazily-listed remote directory trees), set at mount time and
+    /// read-only after; the discovered structure lives in `web`.
+    mounts: Vec<WebMount>,
+    /// Overlay for web mounts, materialized on access. See `WebState`.
+    web: RefCell<WebState>,
 }
 
 impl std::fmt::Debug for Vfs {
@@ -85,6 +137,8 @@ impl std::fmt::Debug for Vfs {
             .field("lazy_cache", &self.lazy_cache)
             .field("loader", &self.loader.as_ref().map(|_| "..."))
             .field("mounted_loaders", &self.mounted_loaders.keys())
+            .field("web_mounts", &self.mounts.iter().map(|m| &m.root).collect::<Vec<_>>())
+            .field("web", &self.web)
             .finish()
     }
 }
@@ -102,7 +156,121 @@ impl Vfs {
             lazy_cache: RefCell::new(BTreeMap::new()),
             loader: None,
             mounted_loaders: BTreeMap::new(),
+            mounts: Vec::new(),
+            web: RefCell::new(WebState::default()),
         }
+    }
+
+    /// Mount a lazily-listed remote directory tree at `root`, sourced from
+    /// `provider` at remote path `base`. The tree lists nothing until a
+    /// directory under `root` is first read (`ls`), and each file's bytes are
+    /// fetched on first read; see `WebState` and `DirProvider`.
+    pub fn register_web_mount(&mut self, root: &str, base: &str, provider: Rc<dyn DirProvider>) {
+        let root = Self::normalize(root);
+        if let Some(parent) = Self::parent(&root) {
+            self.ensure_dirs(&parent);
+        }
+        self.web.borrow_mut().dirs.insert(root.clone());
+        self.mounts.push(WebMount {
+            root,
+            base: base.to_string(),
+            provider,
+        });
+    }
+
+    /// The mount index and remote path for a VFS path inside a web mount, or
+    /// `None` if the path is not under any mount root.
+    fn web_remote(&self, path: &str) -> Option<(usize, String)> {
+        for (index, mount) in self.mounts.iter().enumerate() {
+            if path == mount.root {
+                return Some((index, mount.base.clone()));
+            }
+            if let Some(rest) = path.strip_prefix(&format!("{}/", mount.root)) {
+                let remote = if mount.base.is_empty() {
+                    rest.to_string()
+                } else {
+                    format!("{}/{rest}", mount.base)
+                };
+                return Some((index, remote));
+            }
+        }
+        None
+    }
+
+    /// List a web directory once, recording its children (subdirs and files)
+    /// into the overlay. A listing error still marks the directory expanded so
+    /// a failed fetch is not retried on every access.
+    fn ensure_expanded(&self, dir: &str) {
+        {
+            let web = self.web.borrow();
+            if web.expanded.contains(dir) || !web.dirs.contains(dir) {
+                return;
+            }
+        }
+        let Some((index, remote)) = self.web_remote(dir) else {
+            return;
+        };
+        let provider = self.mounts[index].provider.clone();
+        let entries = provider.list(&remote);
+        let mut web = self.web.borrow_mut();
+        web.expanded.insert(dir.to_string());
+        if let Ok(entries) = entries {
+            for entry in entries {
+                let child = format!("{dir}/{}", entry.name);
+                match entry.kind {
+                    WebEntryKind::Dir => {
+                        web.dirs.insert(child);
+                    }
+                    WebEntryKind::File { size } => {
+                        web.files.insert(child, size);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fetch a web-mounted file's bytes on first read, size-capped and cached.
+    fn read_web_file(&self, path: &str) -> Result<Vec<u8>, FileReadError> {
+        if let Some(bytes) = self.web.borrow().cache.get(path) {
+            return Ok(bytes.clone());
+        }
+        if let Some(parent) = Self::parent(path) {
+            self.ensure_expanded(&parent);
+        }
+        let size = match self.web.borrow().files.get(path).copied() {
+            Some(size) => size,
+            None => return Err(FileReadError::NotFound(path.to_string())),
+        };
+        if size > MAX_LAZY_FETCH_BYTES {
+            return Err(FileReadError::TooLarge {
+                path: path.to_string(),
+                reference: LazyFileRef {
+                    digest: String::new(),
+                    size,
+                },
+            });
+        }
+        let Some((index, remote)) = self.web_remote(path) else {
+            return Err(FileReadError::NotFound(path.to_string()));
+        };
+        let provider = self.mounts[index].provider.clone();
+        let bytes = provider
+            .read(&remote)
+            .map_err(|_| FileReadError::Unavailable(path.to_string()))?;
+        if bytes.len() as u64 > MAX_LAZY_FETCH_BYTES {
+            return Err(FileReadError::TooLarge {
+                path: path.to_string(),
+                reference: LazyFileRef {
+                    digest: String::new(),
+                    size: bytes.len() as u64,
+                },
+            });
+        }
+        self.web
+            .borrow_mut()
+            .cache
+            .insert(path.to_string(), bytes.clone());
+        Ok(bytes)
     }
 
     /// Install the loader that fetches bounded `pending` files on first read.
@@ -259,15 +427,22 @@ impl Vfs {
     }
 
     pub fn exists(&self, path: &str) -> bool {
-        let path = self.resolve(path);
-        self.files.contains_key(&path)
-            || self.dirs.contains(&path)
-            || self.pending.contains_key(&path)
+        self.is_file(path) || self.is_dir(path)
     }
 
     pub fn is_file(&self, path: &str) -> bool {
         let path = self.resolve(path);
-        self.files.contains_key(&path) || self.pending.contains_key(&path)
+        if self.files.contains_key(&path) || self.pending.contains_key(&path) {
+            return true;
+        }
+        if self.web.borrow().files.contains_key(&path) {
+            return true;
+        }
+        if let Some(parent) = Self::parent(&path) {
+            self.ensure_expanded(&parent);
+            return self.web.borrow().files.contains_key(&path);
+        }
+        false
     }
 
     /// True if `path` is a lazily-mounted file whose bytes have not been
@@ -288,14 +463,31 @@ impl Vfs {
     /// Byte length from local bytes or mounted metadata, without fetching.
     pub fn file_size(&self, path: &str) -> Option<u64> {
         let path = self.resolve(path);
-        self.files
-            .get(&path)
-            .map(|bytes| bytes.len() as u64)
-            .or_else(|| self.pending.get(&path).map(|reference| reference.size))
+        if let Some(bytes) = self.files.get(&path) {
+            return Some(bytes.len() as u64);
+        }
+        if let Some(reference) = self.pending.get(&path) {
+            return Some(reference.size);
+        }
+        if let Some(parent) = Self::parent(&path) {
+            self.ensure_expanded(&parent);
+        }
+        self.web.borrow().files.get(&path).copied()
     }
 
     pub fn is_dir(&self, path: &str) -> bool {
-        self.dirs.contains(&self.resolve(path))
+        let path = self.resolve(path);
+        if self.dirs.contains(&path) {
+            return true;
+        }
+        if self.web.borrow().dirs.contains(&path) {
+            return true;
+        }
+        if let Some(parent) = Self::parent(&path) {
+            self.ensure_expanded(&parent);
+            return self.web.borrow().dirs.contains(&path);
+        }
+        false
     }
 
     /// Read a file's bytes, returning mounted metadata when the size limit
@@ -309,10 +501,9 @@ impl Vfs {
         if let Some(bytes) = self.lazy_cache.borrow().get(&path) {
             return Ok(bytes.clone());
         }
-        let reference = self
-            .pending
-            .get(&path)
-            .ok_or_else(|| FileReadError::NotFound(path.clone()))?;
+        let Some(reference) = self.pending.get(&path) else {
+            return self.read_web_file(&path);
+        };
         if reference.size > MAX_LAZY_FETCH_BYTES {
             return Err(FileReadError::TooLarge {
                 path,
@@ -438,9 +629,11 @@ impl Vfs {
     /// directory.
     pub fn readdir(&self, path: &str) -> Option<Vec<String>> {
         let dir = self.resolve(path);
-        if !self.dirs.contains(&dir) {
+        let web_dir = self.web.borrow().dirs.contains(&dir);
+        if !self.dirs.contains(&dir) && !web_dir {
             return None;
         }
+        self.ensure_expanded(&dir);
         let mut names = BTreeSet::new();
         for entry in self
             .files
@@ -449,6 +642,17 @@ impl Vfs {
             .chain(self.pending.keys())
             .chain(self.symlinks.keys())
         {
+            if entry == &dir {
+                continue;
+            }
+            if Self::parent(entry).as_deref() == Some(dir.as_str())
+                && let Some(name) = entry.rsplit('/').next()
+            {
+                names.insert(name.to_string());
+            }
+        }
+        let web = self.web.borrow();
+        for entry in web.dirs.iter().chain(web.files.keys()) {
             if entry == &dir {
                 continue;
             }
@@ -498,6 +702,26 @@ impl Vfs {
                 .borrow_mut()
                 .retain(|k, _| k != &path && !k.starts_with(&prefix));
             return Ok(());
+        }
+        // Web-mounted entries live only in the overlay; drop the file, or the
+        // whole discovered subtree for a recursive directory removal.
+        {
+            let mut web = self.web.borrow_mut();
+            if web.files.remove(&path).is_some() {
+                web.cache.remove(&path);
+                return Ok(());
+            }
+            if web.dirs.contains(&path) {
+                if !recursive {
+                    return Err(FsError::IsDirectory(path));
+                }
+                let prefix = format!("{path}/");
+                web.dirs.retain(|k| k != &path && !k.starts_with(&prefix));
+                web.expanded.retain(|k| k != &path && !k.starts_with(&prefix));
+                web.files.retain(|k, _| !k.starts_with(&prefix));
+                web.cache.retain(|k, _| !k.starts_with(&prefix));
+                return Ok(());
+            }
         }
         Err(FsError::NotFound(path))
     }
@@ -790,5 +1014,152 @@ mod tests {
             fs.file_size("/dep/component.wasm"),
             Some(MAX_LAZY_FETCH_BYTES + 1)
         );
+    }
+
+    /// A web provider backed by fixed remote listings and file bodies, counting
+    /// every `list`/`read` so a test can assert lazy expansion fetches once.
+    struct FakeProvider {
+        listings: BTreeMap<String, Vec<WebEntry>>,
+        files: BTreeMap<String, Vec<u8>>,
+        lists: RefCell<Vec<String>>,
+        reads: RefCell<Vec<String>>,
+    }
+
+    impl DirProvider for FakeProvider {
+        fn list(&self, remote_path: &str) -> Result<Vec<WebEntry>, String> {
+            self.lists.borrow_mut().push(remote_path.to_string());
+            self.listings
+                .get(remote_path)
+                .cloned()
+                .ok_or_else(|| format!("no listing for {remote_path}"))
+        }
+
+        fn read(&self, remote_path: &str) -> Result<Vec<u8>, String> {
+            self.reads.borrow_mut().push(remote_path.to_string());
+            self.files
+                .get(remote_path)
+                .cloned()
+                .ok_or_else(|| format!("no file for {remote_path}"))
+        }
+    }
+
+    fn dir(name: &str) -> WebEntry {
+        WebEntry {
+            name: name.to_string(),
+            kind: WebEntryKind::Dir,
+        }
+    }
+
+    fn file(name: &str, size: u64) -> WebEntry {
+        WebEntry {
+            name: name.to_string(),
+            kind: WebEntryKind::File { size },
+        }
+    }
+
+    #[test]
+    fn web_mount_lists_lazily_and_reads_files_on_demand() {
+        let provider = Rc::new(FakeProvider {
+            listings: BTreeMap::from([
+                (
+                    "".to_string(),
+                    vec![dir("obelisk"), file("README.md", 5)],
+                ),
+                ("obelisk".to_string(), vec![file("deployment.toml", 3)]),
+            ]),
+            files: BTreeMap::from([
+                ("README.md".to_string(), b"hello".to_vec()),
+                ("obelisk/deployment.toml".to_string(), b"abc".to_vec()),
+            ]),
+            lists: RefCell::new(Vec::new()),
+            reads: RefCell::new(Vec::new()),
+        });
+        let mut fs = Vfs::new();
+        fs.register_web_mount("/workspace/components", "", provider.clone());
+
+        // The mount root shows up under its parent without any fetch.
+        assert!(fs.is_dir("/workspace/components"));
+        assert_eq!(
+            fs.readdir("/workspace"),
+            Some(vec!["components".to_string()])
+        );
+        assert!(provider.lists.borrow().is_empty());
+
+        // Listing the root expands it once; the subdir stays unexpanded.
+        assert_eq!(
+            fs.readdir("/workspace/components"),
+            Some(vec!["README.md".to_string(), "obelisk".to_string()])
+        );
+        assert_eq!(&*provider.lists.borrow(), &["".to_string()]);
+        assert!(fs.is_dir("/workspace/components/obelisk"));
+        assert!(fs.is_file("/workspace/components/README.md"));
+
+        // Descending fetches the child listing; re-listing the root is cached.
+        assert_eq!(
+            fs.readdir("/workspace/components/obelisk"),
+            Some(vec!["deployment.toml".to_string()])
+        );
+        fs.readdir("/workspace/components");
+        assert_eq!(
+            &*provider.lists.borrow(),
+            &["".to_string(), "obelisk".to_string()]
+        );
+
+        // File bytes fetch once on read, then serve from cache.
+        assert_eq!(
+            fs.read_file("/workspace/components/obelisk/deployment.toml")
+                .as_deref(),
+            Some(&b"abc"[..])
+        );
+        assert_eq!(
+            fs.read_file("/workspace/components/obelisk/deployment.toml")
+                .as_deref(),
+            Some(&b"abc"[..])
+        );
+        assert_eq!(&*provider.reads.borrow(), &["obelisk/deployment.toml"]);
+    }
+
+    #[test]
+    fn web_file_edit_shadows_the_remote_copy() {
+        let provider = Rc::new(FakeProvider {
+            listings: BTreeMap::from([("".to_string(), vec![file("notes.md", 6)])]),
+            files: BTreeMap::from([("notes.md".to_string(), b"remote".to_vec())]),
+            lists: RefCell::new(Vec::new()),
+            reads: RefCell::new(Vec::new()),
+        });
+        let mut fs = Vfs::new();
+        fs.register_web_mount("/workspace/docs", "", provider.clone());
+        fs.readdir("/workspace/docs");
+        fs.write_file("/workspace/docs/notes.md", b"local").unwrap();
+        assert_eq!(
+            fs.read_file("/workspace/docs/notes.md").as_deref(),
+            Some(&b"local"[..])
+        );
+        assert!(provider.reads.borrow().is_empty(), "a local edit wins with no fetch");
+    }
+
+    #[test]
+    fn oversized_web_file_reports_size_without_fetching() {
+        let provider = Rc::new(FakeProvider {
+            listings: BTreeMap::from([(
+                "".to_string(),
+                vec![file("big.bin", MAX_LAZY_FETCH_BYTES + 1)],
+            )]),
+            files: BTreeMap::new(),
+            lists: RefCell::new(Vec::new()),
+            reads: RefCell::new(Vec::new()),
+        });
+        let mut fs = Vfs::new();
+        fs.register_web_mount("/workspace/components", "", provider.clone());
+        fs.readdir("/workspace/components");
+        assert_eq!(
+            fs.file_size("/workspace/components/big.bin"),
+            Some(MAX_LAZY_FETCH_BYTES + 1)
+        );
+        assert!(matches!(
+            fs.read_file_checked("/workspace/components/big.bin"),
+            Err(FileReadError::TooLarge { .. })
+        ));
+        assert!(provider.reads.borrow().is_empty());
     }
 }

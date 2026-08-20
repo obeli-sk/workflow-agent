@@ -30,7 +30,7 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult, Fd};
-use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
+use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program, obelisk_web};
 
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
@@ -457,6 +457,20 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
                     .fs_mut()
                     .write_file("/workspace/.mount-error", err.as_bytes());
             }
+            // Reference trees for authoring: browsable GitHub repos listed and
+            // fetched lazily on first `ls`/`cat` (obelisk_web). Read-only.
+            obelisk_web::mount(
+                bash.fs_mut(),
+                Box::new(host()),
+                "obelisk-agent:mounts/components.request",
+                "/workspace/components",
+            );
+            obelisk_web::mount(
+                bash.fs_mut(),
+                Box::new(host()),
+                "obelisk-agent:mounts/docs.request",
+                "/workspace/docs",
+            );
             pack_mounted = true;
         }
         if !should_call_llm {
