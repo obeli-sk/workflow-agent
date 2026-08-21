@@ -71,7 +71,11 @@ fn host_sleep_ms(ms: u64) {
 const MAX_STEPS: u32 = 10;
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const SESSION_EVENTS_JOIN_SET: &str = "session-events";
-const PROGRAM_COMMANDS: &[(&str, &str)] = &[("curl", "obelisk-agent:programs/program.curl")];
+/// The shell-program registry, discovered at session start from an operator-owned
+/// JSON config (`PROGRAMS_JSON`) instead of a compile-time list, so programs (e.g.
+/// `curl`) are added by editing `deployment.toml` alone (no workflow rebuild). See
+/// `discover_programs` and `activity/programs-discover.js`.
+const PROGRAMS_DISCOVER_FFQN: &str = "obelisk-agent:programs/registry.discover";
 /// The MCP server registry, discovered at session start from an operator-owned
 /// JSON config (`MCP_SERVERS_JSON`) instead of a compile-time list, so servers
 /// are added by editing `deployment.toml` alone (no workflow rebuild). See
@@ -132,6 +136,81 @@ fn render_mount(mcp_servers: &[(String, String)], host: &mut dyn ObeliskHost) ->
 /// listing (a transport failure is usually a multi-line/verbose message).
 fn mount_probe_reason(err: &str) -> String {
     err.lines().next().unwrap_or("").chars().take(80).collect()
+}
+
+/// A shell program discovered from the operator-owned `PROGRAMS_JSON` registry:
+/// a command `name`, the `ffqn` of its Obelisk program activity, and a one-line
+/// `description` the workflow surfaces in the system prompt.
+struct Program {
+    name: String,
+    ffqn: String,
+    description: String,
+}
+
+/// Discover the configured shell programs by calling the `registry.discover`
+/// activity (which returns the operator's `PROGRAMS_JSON` as a WIT-typed
+/// `list<record { name, ffqn, description }>`). Mirrors `discover_mcp_servers`: a
+/// missing activity or malformed config is not fatal, yielding no programs and an
+/// error note the caller records for the model. One cheap call (env parse, no
+/// network) per session.
+fn discover_programs(host: &mut dyn ObeliskHost) -> Result<Vec<Program>, String> {
+    match host.call_json(PROGRAMS_DISCOVER_FFQN, "[]")? {
+        Some(json) => parse_programs(&json),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn parse_programs(json: &str) -> Result<Vec<Program>, String> {
+    let value: Value = serde_json::from_str(json)
+        .map_err(|e| format!("program discovery returned invalid JSON: {e}"))?;
+    let entries = value
+        .as_array()
+        .ok_or_else(|| "program discovery did not return an array".to_string())?;
+    entries
+        .iter()
+        .map(|entry| {
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "program entry has no name".to_string())?;
+            let ffqn = entry
+                .get("ffqn")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("program {name} has no ffqn"))?;
+            let description = entry
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            Ok(Program {
+                name: name.to_string(),
+                ffqn: ffqn.to_string(),
+                description: description.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The `# Shell` system-prompt paragraph, listing the discovered programs so the
+/// model knows which external commands exist and what each does. With no
+/// programs it names none, keeping bash the only advertised tool.
+fn render_program_help(programs: &[Program]) -> String {
+    let mut text = String::from(
+        "The only model-facing tool is bash. Its filesystem persists for this session. \
+Run `help` to list every command available in the shell.",
+    );
+    if programs.is_empty() {
+        text.push('\n');
+        return text;
+    }
+    text.push_str(" The workflow registers these external commands:\n");
+    for program in programs {
+        if program.description.is_empty() {
+            text.push_str(&format!("  {}\n", program.name));
+        } else {
+            text.push_str(&format!("  {}  {}\n", program.name, program.description));
+        }
+    }
+    text
 }
 
 /// Discover the configured MCP servers by calling the `registry.discover`
@@ -341,10 +420,18 @@ pub fn agent_loop(
         ..Default::default()
     });
     bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(host())));
-    for &(name, ffqn) in PROGRAM_COMMANDS {
+
+    // Discover the shell-program registry once, up front (same operator-owned,
+    // rebuild-free model as MCP below): each entry becomes a shell command and a
+    // system-prompt line. Discovery failure is non-fatal (no programs).
+    let (programs, programs_error) = match discover_programs(&mut host()) {
+        Ok(programs) => (programs, None),
+        Err(err) => (Vec::new(), Some(err)),
+    };
+    for program in &programs {
         bash.register_command(
-            name,
-            obelisk_program::command_handler(name, ffqn, Box::new(host())),
+            &program.name,
+            obelisk_program::command_handler(&program.name, &program.ffqn, Box::new(host())),
         );
     }
 
@@ -379,12 +466,11 @@ pub fn agent_loop(
         mount_command(mcp_servers.clone(), Box::new(host())),
     );
 
+    let shell_help = render_program_help(&programs);
     let system = format!(
         "{system_prompt}\n\n\
 # Shell\n\n\
-The only model-facing tool is bash. Its filesystem persists for this session. \
-Run `help` to list every command available in the shell. The workflow registers \
-its external commands explicitly; `curl` is available as a GET-only HTTP client.\n\n\
+{shell_help}\n\
 # User input\n\n\
 When you need a user answer before you can continue the current task, run \
 `obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. This \
@@ -480,6 +566,12 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
                 let _ = bash.fs_mut().write_file(
                     "/workspace/.mcp-error",
                     format!("mcp discovery failed: {err}").as_bytes(),
+                );
+            }
+            if let Some(err) = &programs_error {
+                let _ = bash.fs_mut().write_file(
+                    "/workspace/.programs-error",
+                    format!("program discovery failed: {err}").as_bytes(),
                 );
             }
             pack_mounted = true;
@@ -942,6 +1034,59 @@ mod tests {
         assert!(parse_mcp_servers(r#"{"name":"a"}"#).is_err());
         assert!(parse_mcp_servers(r#"[{"ffqn":"x"}]"#).is_err());
         assert!(parse_mcp_servers(r#"[{"name":"a"}]"#).is_err());
+    }
+
+    #[test]
+    fn parse_programs_reads_name_ffqn_and_description() {
+        let programs = parse_programs(
+            r#"[{"name":"curl","ffqn":"ns:programs/program.curl","description":"GET-only HTTP client"}]"#,
+        )
+        .unwrap();
+        assert_eq!(programs.len(), 1);
+        assert_eq!(programs[0].name, "curl");
+        assert_eq!(programs[0].ffqn, "ns:programs/program.curl");
+        assert_eq!(programs[0].description, "GET-only HTTP client");
+        // description is optional, defaulting to empty.
+        let bare =
+            parse_programs(r#"[{"name":"curl","ffqn":"ns:programs/program.curl"}]"#).unwrap();
+        assert_eq!(bare[0].description, "");
+        assert!(parse_programs("[]").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_programs_rejects_bad_shapes() {
+        assert!(parse_programs("not json").is_err());
+        assert!(parse_programs(r#"{"name":"curl"}"#).is_err());
+        assert!(parse_programs(r#"[{"ffqn":"x"}]"#).is_err());
+        assert!(parse_programs(r#"[{"name":"curl"}]"#).is_err());
+    }
+
+    #[test]
+    fn program_help_lists_discovered_commands() {
+        let programs = vec![
+            Program {
+                name: "curl".to_string(),
+                ffqn: "ns:programs/program.curl".to_string(),
+                description: "GET-only HTTP client".to_string(),
+            },
+            Program {
+                name: "jq".to_string(),
+                ffqn: "ns:programs/program.jq".to_string(),
+                description: String::new(),
+            },
+        ];
+        let help = render_program_help(&programs);
+        assert!(
+            help.contains("registers these external commands:"),
+            "{help}"
+        );
+        assert!(help.contains("\n  curl  GET-only HTTP client\n"), "{help}");
+        // A program without a description is listed by name alone.
+        assert!(help.contains("\n  jq\n"), "{help}");
+        // With no programs, bash is the only advertised tool.
+        let none = render_program_help(&[]);
+        assert!(!none.contains("external commands"), "{none}");
+        assert!(none.contains("bash"), "{none}");
     }
 
     #[test]

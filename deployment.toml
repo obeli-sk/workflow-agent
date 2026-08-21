@@ -16,7 +16,24 @@ methods = ["GET"]
 request_url_regex = "^GET https://obeli\\.sk/docs/latest/llms.txt/"
 
 # --- Shell programs ----------------------------------------------------------
-# The workflow explicitly registers curl as a just-bash command.
+# Programs are Obelisk-backed just-bash commands (contract
+# `func(stdin, args) -> result<record { stdout, stderr, exit-code }>`). The
+# workflow learns which to wire up by calling the `registry.discover` activity
+# below, so adding a program means editing this manifest alone (no workflow
+# rebuild): add its activity block here and append `{ name, ffqn, description }`
+# to the discovery registry's PROGRAMS_JSON. The workflow registers a shell
+# command per entry and lists it (with its description) in the system prompt.
+
+# The program registry: the operator-owned list the workflow discovers at
+# session start. Keep PROGRAMS_JSON in sync with the program blocks below;
+# override it from the host env to reconfigure without editing the manifest.
+[[activity_js]]
+name = "programs_discover"
+ffqn = "obelisk-agent:programs/registry.discover"
+params = []
+return_type = "result<list<record { name: string, ffqn: string, description: string }>, string>"
+location = "activity/programs-discover.js"
+env_vars = [{ key = "PROGRAMS_JSON", value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"}]}' }]
 
 [[activity_js]]
 name = "program_curl"

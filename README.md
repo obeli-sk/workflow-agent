@@ -14,8 +14,11 @@ up as files. Obelisk functions and MCP tools are surfaced as ordinary bash
 programs. The same shell is driven by the LLM and, directly, by the user:
 type a command with a `$ ` prefix in the UI to run it yourself, e.g. `$ pwd`.
 
-External programs are Obelisk executions registered explicitly by the workflow.
-The one that ships, a GET-only `curl`, is an Obelisk activity.
+External programs are Obelisk executions the workflow discovers at session start
+from an operator-owned registry (`PROGRAMS_JSON`), so adding one is a
+`deployment.toml` edit with no workflow rebuild. Each entry's description is
+surfaced in the system prompt. The one that ships, a GET-only `curl`, is an
+Obelisk activity.
 
 ![workflow-agent web UI](docs/workflow-agent.png)
 
