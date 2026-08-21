@@ -564,34 +564,48 @@ secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 # --- MCP servers (stateless) --------------------------------------------------
-# Each configured MCP server is one activity block plus one outbound-host grant,
-# mirroring the single-LLM-endpoint precedent. The function name after
-# `obelisk-agent:mcp/server.` is the server name. Add the same name and FFQN to
-# `MCP_SERVERS` in workflow/workflow-rs/src/session.rs so the workflow registers
-# it as a shell command (`<server> tools|call|prompts|prompt|info`) and includes
-# it in the global `mcp` registry command. Resources are
-# mounted lazily under `/workspace/mcp/<server>`. A single
-# activity/mcp.js is reused by every server: each block sets the fixed env var
-# MCP_SERVER_URL (the full endpoint the activity POSTs to) and, for an
+# Each configured MCP server is one transport activity block plus one
+# outbound-host grant, mirroring the single-LLM-endpoint precedent. The function
+# name after `obelisk-agent:mcp/server.` is the server name. The workflow learns
+# which servers to wire up by calling the `registry.discover` activity below, so
+# adding a server means editing this manifest alone (no workflow rebuild): add
+# its transport block here and append `{ name, ffqn }` to the discovery
+# registry's MCP_SERVERS_JSON. The workflow then registers a shell command
+# (`<server> tools|call|prompts|prompt|info`), lists it in the global `mcp`
+# registry command, and mounts its resources lazily under `/workspace/mcp/<server>`.
+# A single activity/mcp.js is reused by every server: each block sets the fixed
+# env var MCP_SERVER_URL (the full endpoint the activity POSTs to) and, for an
 # authenticated server, exposes the fixed secret MCP_SERVER_TOKEN (a placeholder
 # bearer the runtime swaps for the real secret in the outbound header). Every
 # activity instance has its own env, so URLs differ per block freely; one
 # server.toml can name only one MCP_SERVER_TOKEN, so >1 authenticated server is a
-# v1 limitation. Copy the block below, rename the server, point MCP_SERVER_URL at
-# it, and add the matching server.toml grant. See docs/mcp.md.
-#
-# [[activity_js]]
-# name = "mcp_obelisk_local"
-# ffqn = "obelisk-agent:mcp/server.obelisk-local"
-# params = [
-#   { name = "method",      type = "string" },
-#   { name = "params-json", type = "string" },
-# ]
-# return_type = "result<string, string>"
-# location = "activity/mcp.js"
-# env_vars = [{ key = "MCP_SERVER_URL", value = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071/mcp}" }]
-# [[activity_js.allowed_host]]
-# pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
-# methods = ["POST"]
-# secrets = ["MCP_SERVER_TOKEN"]   # optional bearer; omit this and the server.toml secret for a keyless server
-# replace_in = ["headers"]
+# v1 limitation. Copy the transport block below, rename the server, point
+# MCP_SERVER_URL at it, add the matching server.toml grant, and register it in
+# MCP_SERVERS_JSON. See docs/mcp.md.
+
+# The MCP server registry: the operator-owned list the workflow discovers at
+# session start. Keep MCP_SERVERS_JSON in sync with the transport blocks below;
+# override it from the host env to reconfigure without editing the manifest.
+[[activity_js]]
+name = "mcp_discover"
+ffqn = "obelisk-agent:mcp/registry.discover"
+params = []
+return_type = "result<list<record { name: string, ffqn: string }>, string>"
+location = "activity/mcp-discover.js"
+env_vars = [{ key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' }]
+
+[[activity_js]]
+name = "mcp_obelisk_local"
+ffqn = "obelisk-agent:mcp/server.obelisk-local"
+params = [
+  { name = "method",      type = "string" },
+  { name = "params-json", type = "string" },
+]
+return_type = "result<string, string>"
+location = "activity/mcp.js"
+env_vars = [{ key = "MCP_SERVER_URL", value = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071/mcp}" }]
+[[activity_js.allowed_host]]
+pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
+methods = ["POST"]
+secrets = ["MCP_SERVER_TOKEN"]   # optional bearer; omit this and the server.toml secret for a keyless server
+replace_in = ["headers"]

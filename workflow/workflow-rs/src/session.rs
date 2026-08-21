@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use serde_json::{Value, json};
 
-use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult, Fd};
+use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult, Fd, ObeliskHost};
 use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program, obelisk_web};
 
 use crate::generated::obelisk::types::time::Duration;
@@ -72,24 +72,26 @@ const MAX_STEPS: u32 = 10;
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const SESSION_EVENTS_JOIN_SET: &str = "session-events";
 const PROGRAM_COMMANDS: &[(&str, &str)] = &[("curl", "obelisk-agent:programs/program.curl")];
-#[cfg(feature = "e2e-mcp")]
-const MCP_SERVERS: &[(&str, &str)] = &[("obelisk-e2e", "obelisk-agent:mcp/server.obelisk-e2e")];
-#[cfg(not(feature = "e2e-mcp"))]
-const MCP_SERVERS: &[(&str, &str)] = &[];
+/// The MCP server registry, discovered at session start from an operator-owned
+/// JSON config (`MCP_SERVERS_JSON`) instead of a compile-time list, so servers
+/// are added by editing `deployment.toml` alone (no workflow rebuild). See
+/// `discover_mcp_servers` and `activity/mcp-discover.js`.
+const MCP_DISCOVER_FFQN: &str = "obelisk-agent:mcp/registry.discover";
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
 
 /// The `mount` shell command: a static listing of the session's network-backed
 /// mount points and their laziness, so the model can see what is mounted (and
-/// which trees to avoid recursively scanning) without probing.
-fn mount_command() -> just_bash_rs::CustomCommandHandler {
+/// which trees to avoid recursively scanning) without probing. `mcp_servers` is
+/// the discovered registry (see `discover_mcp_servers`).
+fn mount_command(mcp_servers: &[(String, String)]) -> just_bash_rs::CustomCommandHandler {
     let mut text = String::from(
         "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n\
   /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n\
   /workspace/docs                Obelisk documentation, read-only (obeli-sk/website)\n\
   /workspace/components          example components, read-only (obeli-sk/components)\n",
     );
-    for &(name, _) in MCP_SERVERS {
+    for (name, _) in mcp_servers {
         text.push_str(&format!(
             "  /workspace/mcp/{name}  MCP server resources, read-only\n"
         ));
@@ -106,6 +108,40 @@ fn mount_command() -> just_bash_rs::CustomCommandHandler {
             }
         },
     )
+}
+
+/// Discover the configured MCP servers by calling the `registry.discover`
+/// activity (which returns the operator's `MCP_SERVERS_JSON` as a WIT-typed
+/// `list<record { name, ffqn }>`). A missing activity or malformed config is not
+/// fatal: it yields no servers and an error note the caller records for the
+/// model to see. One cheap call (env parse, no network) per session.
+fn discover_mcp_servers(host: &mut dyn ObeliskHost) -> Result<Vec<(String, String)>, String> {
+    match host.call_json(MCP_DISCOVER_FFQN, "[]")? {
+        Some(json) => parse_mcp_servers(&json),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn parse_mcp_servers(json: &str) -> Result<Vec<(String, String)>, String> {
+    let value: Value =
+        serde_json::from_str(json).map_err(|e| format!("mcp discovery returned invalid JSON: {e}"))?;
+    let entries = value
+        .as_array()
+        .ok_or_else(|| "mcp discovery did not return an array".to_string())?;
+    entries
+        .iter()
+        .map(|entry| {
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "mcp server entry has no name".to_string())?;
+            let ffqn = entry
+                .get("ffqn")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("mcp server {name} has no ffqn"))?;
+            Ok((name.to_string(), ffqn.to_string()))
+        })
+        .collect()
 }
 
 /// The terminal error raised when a turn burns through its step budget without
@@ -288,12 +324,19 @@ pub fn agent_loop(
         );
     }
 
+    // Discover the MCP registry once, up front: the shell commands below must
+    // exist before the agent's first turn, and the resource mounts (deferred
+    // below) reuse the same list. Discovery failure is non-fatal (no servers).
+    let (mcp_servers, mcp_error) = match discover_mcp_servers(&mut host()) {
+        Ok(servers) => (servers, None),
+        Err(err) => (Vec::new(), Some(err)),
+    };
     let mcp_registry: obelisk_mcp::ServerRegistry = Rc::new(RefCell::new(
-        MCP_SERVERS
+        mcp_servers
             .iter()
-            .map(|&(name, ffqn)| obelisk_mcp::Server {
-                name: name.to_string(),
-                ffqn: ffqn.to_string(),
+            .map(|(name, ffqn)| obelisk_mcp::Server {
+                name: name.clone(),
+                ffqn: ffqn.clone(),
             })
             .collect(),
     ));
@@ -301,13 +344,13 @@ pub fn agent_loop(
         "mcp",
         obelisk_mcp::registry_command_handler(mcp_registry.clone(), Box::new(host())),
     );
-    for &(name, ffqn) in MCP_SERVERS {
+    for (name, ffqn) in &mcp_servers {
         bash.register_command(
             name,
             obelisk_mcp::server_command_handler(name, ffqn, Box::new(host())),
         );
     }
-    bash.register_command("mount", mount_command());
+    bash.register_command("mount", mount_command(&mcp_servers));
 
     let system = format!(
         "{system_prompt}\n\n\
@@ -394,20 +437,23 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
                 "obelisk-agent:mounts/docs.request",
                 "/workspace/docs",
             );
-            for &(name, ffqn) in MCP_SERVERS {
-                let mount_dir = format!("/workspace/mcp/{name}");
-                if let Err(err) = obelisk_mcp::mount_resources(
+            // Each MCP server's resources mount lazily too: registering a
+            // deferred mount defers its `resources/list` until the session first
+            // touches `/workspace/mcp/<name>`.
+            for (name, ffqn) in &mcp_servers {
+                obelisk_mcp::register_deferred_mount(
                     bash.fs_mut(),
-                    &mut host(),
+                    Box::new(host()),
                     Box::new(host()),
                     ffqn,
-                    &mount_dir,
-                ) {
-                    let _ = bash.fs_mut().write_file(
-                        "/workspace/.mcp-error",
-                        format!("{name}: resources not mounted: {err}").as_bytes(),
-                    );
-                }
+                    &format!("/workspace/mcp/{name}"),
+                );
+            }
+            if let Some(err) = &mcp_error {
+                let _ = bash.fs_mut().write_file(
+                    "/workspace/.mcp-error",
+                    format!("mcp discovery failed: {err}").as_bytes(),
+                );
             }
             pack_mounted = true;
         }
@@ -852,6 +898,22 @@ fn take_user_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_mcp_servers_reads_name_and_ffqn() {
+        let servers =
+            parse_mcp_servers(r#"[{"name":"a","ffqn":"ns:mcp/server.a"}]"#).unwrap();
+        assert_eq!(servers, vec![("a".to_string(), "ns:mcp/server.a".to_string())]);
+        assert!(parse_mcp_servers("[]").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_mcp_servers_rejects_bad_shapes() {
+        assert!(parse_mcp_servers("not json").is_err());
+        assert!(parse_mcp_servers(r#"{"name":"a"}"#).is_err());
+        assert!(parse_mcp_servers(r#"[{"ffqn":"x"}]"#).is_err());
+        assert!(parse_mcp_servers(r#"[{"name":"a"}]"#).is_err());
+    }
 
     #[test]
     fn direct_shell_exchange_is_valid_model_tool_history() {

@@ -12,6 +12,8 @@ TARGET_OBELISK_TOKEN = { env = "TARGET_OBELISK_TOKEN" }
 # Required for the private obeli-sk/website (docs); shared by components to dodge
 # API rate limits.
 GITHUB_TOKEN = { env = "GITHUB_TOKEN" }
+# Set to empty value for the testing mcp server
+MCP_SERVER_TOKEN = { env = "MCP_SERVER_TOKEN" }
 
 # Reference mounts: GitHub contents API for /workspace/{docs,components}. The
 # per-repo path scope is enforced by each activity's own allowed_host regex; this
@@ -50,11 +52,9 @@ replace_in = ["headers"]
 # MCP_SERVER_TOKEN (the fixed placeholder activity/mcp.js reads) and source it
 # from any host env var. Omit the secret entirely for a keyless server.
 #
-# [secrets]
-# MCP_SERVER_TOKEN = { env = "MCP_OBELISK_LOCAL_TOKEN" }
 #
 [[outbound_http.allowed_host]]
 pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
 methods = ["POST"]
-# secrets = ["MCP_SERVER_TOKEN"]
-# replace_in = ["headers"]
+secrets = ["MCP_SERVER_TOKEN"]
+replace_in = ["headers"]

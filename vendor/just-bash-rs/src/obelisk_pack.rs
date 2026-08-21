@@ -457,7 +457,7 @@ fn execute_deployment(
         "refresh" => {
             // An explicit refresh populates the tree now, so drop the deferred
             // mount to keep a later deployment access from re-fetching it.
-            interp.fs.clear_deferred_mount();
+            interp.fs.clear_deferred_mount(DEPLOYMENT_ROOT);
             let refreshed = refresh_deployment_mount(&mut interp.fs, host, true)?;
             Ok(ok(format!("{}\n", mount_result_json(&refreshed))))
         }

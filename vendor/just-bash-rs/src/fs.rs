@@ -128,13 +128,14 @@ pub struct Vfs {
     mounts: Vec<WebMount>,
     /// Overlay for web mounts, materialized on access. See `WebState`.
     web: RefCell<WebState>,
-    /// A one-shot deferred mount: `(root, populate)`. The deployment tree is not
-    /// fetched at session start; the first shell command that references a path
-    /// under `root` runs `populate` (a checkout + lazy-file registration) via
-    /// `ensure_mounted_for`, so a session that never touches the deployment pays
-    /// nothing. An `Rc<dyn Fn>` (not `FnOnce`) so `Vfs` stays `Clone`; it is
-    /// `take`n before running, guaranteeing it fires at most once.
-    deferred: Option<(String, DeferredMount)>,
+    /// One-shot deferred mounts, `(root, populate)` each. A remote tree (the
+    /// deployment checkout, an MCP server's resources) is not fetched at session
+    /// start; the first shell command that references a path under `root` runs
+    /// its `populate` via `ensure_mounted_for`, so a session that never touches a
+    /// given tree pays nothing for it. Each `populate` is `Rc<dyn Fn>` (not
+    /// `FnOnce`) so `Vfs` stays `Clone`; an entry is removed before running,
+    /// guaranteeing it fires at most once.
+    deferred: Vec<(String, DeferredMount)>,
 }
 
 impl std::fmt::Debug for Vfs {
@@ -153,7 +154,10 @@ impl std::fmt::Debug for Vfs {
                 &self.mounts.iter().map(|m| &m.root).collect::<Vec<_>>(),
             )
             .field("web", &self.web)
-            .field("deferred", &self.deferred.as_ref().map(|(root, _)| root))
+            .field(
+                "deferred",
+                &self.deferred.iter().map(|(root, _)| root).collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -173,7 +177,7 @@ impl Vfs {
             mounted_loaders: BTreeMap::new(),
             mounts: Vec::new(),
             web: RefCell::new(WebState::default()),
-            deferred: None,
+            deferred: Vec::new(),
         }
     }
 
@@ -185,29 +189,31 @@ impl Vfs {
     pub fn register_deferred_mount(&mut self, root: &str, populate: DeferredMount) {
         let root = Self::normalize(root);
         self.ensure_dirs(&root);
-        self.deferred = Some((root, populate));
+        self.deferred.push((root, populate));
     }
 
-    /// Run the deferred mount if `path` is at or under its root. A no-op once it
-    /// has fired (or if none is registered). Called from the interpreter's
-    /// command dispatch, the only `&mut Vfs` chokepoint before a command's
-    /// `&self` reads.
+    /// Run the deferred mount whose root is at or above `path`, if any. A no-op
+    /// once that mount has fired. Called from the interpreter's command dispatch,
+    /// the only `&mut Vfs` chokepoint before a command's `&self` reads. Roots are
+    /// distinct directories, so at most one matches.
     pub fn ensure_mounted_for(&mut self, path: &str) {
         let path = Self::normalize(path);
-        let fire = matches!(
-            &self.deferred,
-            Some((root, _)) if path == *root || path.starts_with(&format!("{root}/"))
-        );
-        if fire && let Some((_, populate)) = self.deferred.take() {
+        let hit = self
+            .deferred
+            .iter()
+            .position(|(root, _)| path == *root || path.starts_with(&format!("{root}/")));
+        if let Some(index) = hit {
+            let (_, populate) = self.deferred.remove(index);
             populate(self);
         }
     }
 
-    /// Drop the deferred mount without running it. Used when an explicit
-    /// `deployment refresh` has already populated the tree, so a later access
-    /// does not re-fetch it.
-    pub fn clear_deferred_mount(&mut self) {
-        self.deferred = None;
+    /// Drop the deferred mount rooted at `root` without running it. Used when an
+    /// explicit `deployment refresh` has already populated the tree, so a later
+    /// access does not re-fetch it.
+    pub fn clear_deferred_mount(&mut self, root: &str) {
+        let root = Self::normalize(root);
+        self.deferred.retain(|(existing, _)| existing != &root);
     }
 
     /// Mount a lazily-listed remote directory tree at `root`, sourced from
@@ -1148,9 +1154,31 @@ mod tests {
             "/workspace/deployment",
             Rc::new(move |_: &mut Vfs| counter.set(counter.get() + 1)),
         );
-        fs.clear_deferred_mount();
+        fs.clear_deferred_mount("/workspace/deployment");
         fs.ensure_mounted_for("/workspace/deployment/current");
         assert_eq!(fired.get(), 0);
+    }
+
+    #[test]
+    fn multiple_deferred_mounts_fire_independently() {
+        use std::cell::Cell;
+        let dep = Rc::new(Cell::new(0u32));
+        let mcp = Rc::new(Cell::new(0u32));
+        let (d, m) = (dep.clone(), mcp.clone());
+        let mut fs = Vfs::new();
+        fs.register_deferred_mount(
+            "/workspace/deployment",
+            Rc::new(move |_: &mut Vfs| d.set(d.get() + 1)),
+        );
+        fs.register_deferred_mount(
+            "/workspace/mcp/srv",
+            Rc::new(move |_: &mut Vfs| m.set(m.get() + 1)),
+        );
+        // Touching one root fires only its mount.
+        fs.ensure_mounted_for("/workspace/mcp/srv/README.md");
+        assert_eq!((dep.get(), mcp.get()), (0, 1));
+        fs.ensure_mounted_for("/workspace/deployment/current");
+        assert_eq!((dep.get(), mcp.get()), (1, 1));
     }
 
     #[test]
