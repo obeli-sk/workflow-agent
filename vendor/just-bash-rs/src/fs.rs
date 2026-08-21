@@ -156,7 +156,11 @@ impl std::fmt::Debug for Vfs {
             .field("web", &self.web)
             .field(
                 "deferred",
-                &self.deferred.iter().map(|(root, _)| root).collect::<Vec<_>>(),
+                &self
+                    .deferred
+                    .iter()
+                    .map(|(root, _)| root)
+                    .collect::<Vec<_>>(),
             )
             .finish()
     }

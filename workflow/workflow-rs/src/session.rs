@@ -88,8 +88,7 @@ const MOUNT_HEADER: &str = concat!(
     "  /workspace/docs                Obelisk documentation, read-only (obeli-sk/website)\n",
     "  /workspace/components          example components, read-only (obeli-sk/components)\n",
 );
-const MOUNT_FOOTER: &str =
-    "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
+const MOUNT_FOOTER: &str = "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
 /// The `mount` shell command: list the session's network-backed mount points and
 /// their laziness, so the model sees what is mounted and which trees to avoid
@@ -148,8 +147,8 @@ fn discover_mcp_servers(host: &mut dyn ObeliskHost) -> Result<Vec<(String, Strin
 }
 
 fn parse_mcp_servers(json: &str) -> Result<Vec<(String, String)>, String> {
-    let value: Value =
-        serde_json::from_str(json).map_err(|e| format!("mcp discovery returned invalid JSON: {e}"))?;
+    let value: Value = serde_json::from_str(json)
+        .map_err(|e| format!("mcp discovery returned invalid JSON: {e}"))?;
     let entries = value
         .as_array()
         .ok_or_else(|| "mcp discovery did not return an array".to_string())?;
@@ -375,7 +374,10 @@ pub fn agent_loop(
             obelisk_mcp::server_command_handler(name, ffqn, Box::new(host())),
         );
     }
-    bash.register_command("mount", mount_command(mcp_servers.clone(), Box::new(host())));
+    bash.register_command(
+        "mount",
+        mount_command(mcp_servers.clone(), Box::new(host())),
+    );
 
     let system = format!(
         "{system_prompt}\n\n\
@@ -926,9 +928,11 @@ mod tests {
 
     #[test]
     fn parse_mcp_servers_reads_name_and_ffqn() {
-        let servers =
-            parse_mcp_servers(r#"[{"name":"a","ffqn":"ns:mcp/server.a"}]"#).unwrap();
-        assert_eq!(servers, vec![("a".to_string(), "ns:mcp/server.a".to_string())]);
+        let servers = parse_mcp_servers(r#"[{"name":"a","ffqn":"ns:mcp/server.a"}]"#).unwrap();
+        assert_eq!(
+            servers,
+            vec![("a".to_string(), "ns:mcp/server.a".to_string())]
+        );
         assert!(parse_mcp_servers("[]").unwrap().is_empty());
     }
 
