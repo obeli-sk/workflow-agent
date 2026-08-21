@@ -79,6 +79,35 @@ const MCP_SERVERS: &[(&str, &str)] = &[];
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
 
+/// The `mount` shell command: a static listing of the session's network-backed
+/// mount points and their laziness, so the model can see what is mounted (and
+/// which trees to avoid recursively scanning) without probing.
+fn mount_command() -> just_bash_rs::CustomCommandHandler {
+    let mut text = String::from(
+        "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n\
+  /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n\
+  /workspace/docs                Obelisk documentation, read-only (obeli-sk/website)\n\
+  /workspace/components          example components, read-only (obeli-sk/components)\n",
+    );
+    for &(name, _) in MCP_SERVERS {
+        text.push_str(&format!(
+            "  /workspace/mcp/{name}  MCP server resources, read-only\n"
+        ));
+    }
+    text.push_str(
+        "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n",
+    );
+    Box::new(
+        move |_: &mut just_bash_rs::interpreter::Interpreter, _: &[String], _: String| {
+            just_bash_rs::interpreter::CommandOutput {
+                stdout: text.clone(),
+                stderr: String::new(),
+                exit_code: 0,
+            }
+        },
+    )
+}
+
 /// The terminal error raised when a turn burns through its step budget without
 /// the model yielding a final assistant response.
 fn step_limit_error(turn_index: u64) -> AgentErrorEvent {
@@ -278,6 +307,7 @@ pub fn agent_loop(
             obelisk_mcp::server_command_handler(name, ffqn, Box::new(host())),
         );
     }
+    bash.register_command("mount", mount_command());
 
     let system = format!(
         "{system_prompt}\n\n\
@@ -338,22 +368,18 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
         let mut turn_complete = false;
         if !pack_mounted {
             // Open the input offer (in open_session) before mounting packs so
-            // the UI can identify a live session immediately. Unlike JS,
-            // there is no `console.log` to report a mount failure to (see
-            // module docs), so a failed mount records the error into the
-            // workspace (`/workspace/.mount-error`) instead of leaving an
-            // empty workspace with no explanation (see port-findings.md A).
+            // the UI can identify a live session immediately.
             //
-            // Install the lazy blob loader before mounting: `mount` only
-            // registers the deployment's file *structure*, so each source is
-            // fetched from the CAS by this loader the first time it is read.
+            // Install the lazy blob loader (cheap, no network), then register
+            // the deployment tree as a *deferred* mount: the checkout runs only
+            // when the session first references `/workspace/deployment`, so a
+            // bash-only session never touches the target. A failed mount records
+            // the reason in `/workspace/.mount-error` (there is no `console.log`
+            // here; see module docs / port-findings.md A). Each owned source is
+            // fetched from the CAS by the blob loader the first time it is read.
             bash.fs_mut()
                 .set_blob_loader(obelisk_pack::blob_loader(Box::new(host())));
-            if let Err(err) = obelisk_pack::mount(bash.fs_mut(), &mut host()) {
-                let _ = bash
-                    .fs_mut()
-                    .write_file("/workspace/.mount-error", err.as_bytes());
-            }
+            obelisk_pack::register_deferred_mount(bash.fs_mut(), Box::new(host()));
             // Reference trees for authoring: browsable GitHub repos listed and
             // fetched lazily on first `ls`/`cat` (obelisk_web). Read-only.
             obelisk_web::mount(
