@@ -41,7 +41,7 @@ const DEPLOYMENT_TEMPLATE: &str =
 /// Appended to the session system prompt by the workflow (`session.rs`).
 pub const SYSTEM_PROMPT: &str =
     "You are on a persistent virtual machine with a filesystem rooted at
-/workspace. The target Obelisk's active deployment has been fetched into
+/workspace. The target Obelisk's active deployment is available at
 /workspace/deployment/current; read and edit its deployment.toml and component
 sources with ordinary shell commands. Use the obelisk command for operations
 against the target server, which may be a different instance than the one you run
@@ -58,11 +58,19 @@ them that way. Add a component by writing its source and its
 add a bundled file by writing it and listing its path in `component_files` with
 the value \"auto\", nothing more. Run `obelisk generate deployment` for a
 fully-commented starter deployment.toml when authoring one from scratch. Two
-read-only reference trees are mounted for
-you: /workspace/docs (the Obelisk documentation, obeli-sk/website) and
-/workspace/components (reusable example components, obeli-sk/components); browse
-them with ls and cat while authoring. They list and fetch lazily on first
-access, so an ls may pause briefly.";
+read-only reference trees are mounted for you: /workspace/docs (the Obelisk
+documentation, obeli-sk/website) and /workspace/components (reusable example
+components, obeli-sk/components); browse them with ls and cat while authoring.
+Run `mount` to see the network-backed mount points; it reports whether each MCP
+server is responding. These mounts
+(/workspace/deployment, /workspace/docs, /workspace/components, /workspace/mcp)
+are lazy: a directory lists and a file's bytes fetch over the network on first
+access, so the first touch of a path may pause briefly. The deployment mount is
+cheap (one request for its whole file index), but the reference trees fetch one
+network request per directory listed, so avoid recursive scans over them: do not
+run tree, find, or a recursive grep (grep -r / fgrep -r) across a mount. Navigate
+with targeted ls and cat, or read a known path directly, instead of walking the
+whole tree.";
 
 /// The one primitive the whole pack needs: dynamically invoke a deployed FFQN
 /// and get back its JSON result. Mirrors Obelisk's real
@@ -180,6 +188,23 @@ pub fn refresh_deployment_mount(
 /// `replace = false`.
 pub fn mount(fs: &mut Vfs, host: &mut dyn ObeliskHost) -> Result<MountResult, String> {
     refresh_deployment_mount(fs, host, false)
+}
+
+/// Register the deployment tree as a deferred mount instead of fetching it at
+/// session start: the checkout (`current-deployment-id` + `deployment-checkout`)
+/// runs only when the session first references a path under
+/// `/workspace/deployment`, so a bash-only session never touches the target.
+/// A failed mount records the reason in `/workspace/.mount-error`, matching the
+/// old eager path (there is no `console.log` to report it to; see `session.rs`).
+pub fn register_deferred_mount(fs: &mut Vfs, host: Box<dyn ObeliskHost>) {
+    let host = RefCell::new(host);
+    let populate = Rc::new(move |fs: &mut Vfs| {
+        let mut host = host.borrow_mut();
+        if let Err(err) = refresh_deployment_mount(fs, &mut **host, false) {
+            let _ = fs.write_file("/workspace/.mount-error", err.as_bytes());
+        }
+    });
+    fs.register_deferred_mount(DEPLOYMENT_ROOT, populate);
 }
 
 /// The `Vfs` blob loader for a mounted session: fetch a deployment file's bytes
@@ -431,6 +456,9 @@ fn execute_deployment(
             json!([]),
         ),
         "refresh" => {
+            // An explicit refresh populates the tree now, so drop the deferred
+            // mount to keep a later deployment access from re-fetching it.
+            interp.fs.clear_deferred_mount(DEPLOYMENT_ROOT);
             let refreshed = refresh_deployment_mount(&mut interp.fs, host, true)?;
             Ok(ok(format!("{}\n", mount_result_json(&refreshed))))
         }
@@ -2585,6 +2613,49 @@ content_digest = \"sha256:1\"\n\
         let out = bash.exec("obelisk functions list | cat", Default::default());
         assert_eq!(out.exit_code, 0);
         assert_eq!(out.stdout, "");
+    }
+
+    #[test]
+    fn deployment_mount_is_deferred_until_the_tree_is_accessed() {
+        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
+        let host = FakeHost::new()
+            .with(
+                "obelisk-agent:tools/webapi.current-deployment-id",
+                "\"dep-1\"",
+            )
+            .with(
+                "obelisk-agent:tools/webapi.deployment-checkout",
+                &json!({
+                    "deployment_toml": manifest,
+                    "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 12}]
+                })
+                .to_string(),
+            );
+        let mut bash = Bash::new(BashOptions {
+            cwd: "/workspace".into(),
+            ..Default::default()
+        });
+        register_deferred_mount(bash.fs_mut(), Box::new(host));
+
+        // A session that never references the deployment never checks it out:
+        // the manifest is absent until first access.
+        let out = bash.exec("echo hi; ls /workspace", Default::default());
+        assert_eq!(out.exit_code, 0);
+        assert!(
+            !bash
+                .fs_mut()
+                .exists("/workspace/deployment/current/deployment.toml")
+        );
+
+        // The first command that references the deployment path fires the
+        // checkout and materializes the tree.
+        let out = bash.exec(
+            "cat /workspace/deployment/current/deployment.toml",
+            Default::default(),
+        );
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(out.stdout, simplify_manifest(manifest));
+        assert!(bash.fs_mut().is_dir("/workspace/deployment/current"));
     }
 
     #[test]

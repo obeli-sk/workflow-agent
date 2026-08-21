@@ -541,6 +541,7 @@ impl Interpreter {
             match &redirect.target {
                 RedirectTarget::File(word) => {
                     let path = self.resolve_path(word)?;
+                    self.fs.ensure_mounted_for(&path);
                     match redirect.kind {
                         RedirectKind::Read => match self.fs.read_file(&path).as_deref() {
                             Some(bytes) => stdin = String::from_utf8_lossy(bytes).into_owned(),
@@ -630,6 +631,20 @@ impl Interpreter {
         // command's own redirections, matching bash) before running it.
         if self.options.xtrace {
             self.out.push_err(&format!("+ {}\n", args.join(" ")));
+        }
+
+        // Fire a deferred mount (the deployment tree) if this command references
+        // a path under its root, so a session that never touches the deployment
+        // never fetches it. Check the cwd (for `cd .../current; cat foo`) and
+        // each expanded argument (for absolute or `./`-relative references).
+        // Runs after glob expansion, so a glob as the *first* reference in a
+        // session lists nothing until the mount materializes on the next access;
+        // the common ls/cat/cd/test paths trigger it directly.
+        let cwd = self.cwd.clone();
+        self.fs.ensure_mounted_for(&cwd);
+        for arg in &args {
+            self.fs
+                .ensure_mounted_for(&commands::normalize_path(&cwd, arg));
         }
 
         let mut result = commands::dispatch(self, &args, stdin, scoped);

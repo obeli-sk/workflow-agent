@@ -38,6 +38,13 @@ e2e_init "mcp-e2e" 28116 28191 "e2e-mcp-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28116"
 export AGENT_MODELS="[]"
+# The workflow discovers MCP servers from MCP_SERVERS_JSON (the mcp_discover
+# activity), overriding the manifest default so this run wires only the injected
+# obelisk-e2e server. Empty MCP_SERVER_TOKEN keeps the manifest's sample
+# obelisk-local block keyless so it deploys without a real secret (it is never
+# invoked here, since discovery does not return it).
+export MCP_SERVERS_JSON="[{\"name\":\"${SERVER_NAME}\",\"ffqn\":\"obelisk-agent:mcp/server.${SERVER_NAME}\"}]"
+export MCP_SERVER_TOKEN=""
 
 # Extend the library cleanup to also remove the MCP container.
 mcp_cleanup() {
@@ -71,7 +78,7 @@ until http_ok "http://127.0.0.1:${MCP_PORT}/" 2>/dev/null; do
 done
 
 # --- deployment: real manifest + one MCP block, keyless -----------------------
-e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm" "e2e-mcp"
+e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"
 DEPLOY="$ROOT/.e2e-mcp-deployment.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 cat >> "$DEPLOY" <<EOF

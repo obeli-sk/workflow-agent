@@ -194,6 +194,40 @@ pub fn mount_resources(
     Ok(refs)
 }
 
+/// Register a server's resources as a *deferred* mount: the `resources/list`
+/// call (and lazy-read loader) run only when the session first references a path
+/// under `mount_dir`, so a session that never opens this MCP tree never lists it.
+/// `list_host` drives the eventual listing; `loader_host` is owned by the
+/// installed loader. A failed listing records the reason in
+/// `<mount_dir>/.mcp-error`. Mirrors `obelisk_pack::register_deferred_mount`.
+pub fn register_deferred_mount(
+    fs: &mut Vfs,
+    list_host: Box<dyn ObeliskHost>,
+    loader_host: Box<dyn ObeliskHost>,
+    ffqn: &str,
+    mount_dir: &str,
+) {
+    let list_host = RefCell::new(list_host);
+    let loader_host = RefCell::new(Some(loader_host));
+    let ffqn = ffqn.to_string();
+    let root = mount_dir.trim_end_matches('/').to_string();
+    let dir = root.clone();
+    let populate = Rc::new(move |fs: &mut Vfs| {
+        let Some(loader_host) = loader_host.borrow_mut().take() else {
+            return;
+        };
+        if let Err(err) =
+            mount_resources(fs, &mut **list_host.borrow_mut(), loader_host, &ffqn, &dir)
+        {
+            let _ = fs.write_file(
+                &format!("{dir}/.mcp-error"),
+                format!("resources not mounted: {err}").as_bytes(),
+            );
+        }
+    });
+    fs.register_deferred_mount(&root, populate);
+}
+
 /// The VFS blob loader for a resource-backed mount: read a file's bytes via
 /// `resources/read`, resolving the digest the VFS holds back to the URI the
 /// listing paired it with. Two resources with identical content share a digest
@@ -1357,6 +1391,54 @@ mod tests {
                 .as_deref(),
             Some(&[0u8, 1, 2][..])
         );
+    }
+
+    #[test]
+    fn register_deferred_mount_defers_resources_list_until_access() {
+        use std::cell::Cell;
+        let ffqn = "obelisk-agent:mcp/server.srv";
+        let page = ok_arm(json!({
+            "resources": [{"uri": "file:///README.md", "size": 5,
+                "_meta": {"sk.obeli/content-digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]
+        }));
+
+        struct CountingHost {
+            count: Rc<Cell<usize>>,
+            page: String,
+        }
+        impl ObeliskHost for CountingHost {
+            fn call_json(&mut self, _ffqn: &str, _params: &str) -> Result<Option<String>, String> {
+                self.count.set(self.count.get() + 1);
+                Ok(Some(self.page.clone()))
+            }
+        }
+
+        let count = Rc::new(Cell::new(0usize));
+        let list_host = CountingHost {
+            count: count.clone(),
+            page,
+        };
+        let loader_host = CountingHost {
+            count: Rc::new(Cell::new(0)),
+            page: String::new(),
+        };
+        let mut fs = Vfs::new();
+        register_deferred_mount(
+            &mut fs,
+            Box::new(list_host),
+            Box::new(loader_host),
+            ffqn,
+            "/workspace/mcp/srv",
+        );
+
+        // The dir lists (pre-created) but no resources/list has run yet.
+        assert!(fs.is_dir("/workspace/mcp/srv"));
+        assert_eq!(count.get(), 0);
+
+        // First access under the mount fires resources/list exactly once.
+        fs.ensure_mounted_for("/workspace/mcp/srv/README.md");
+        assert_eq!(count.get(), 1);
+        assert!(fs.is_file("/workspace/mcp/srv/README.md"));
     }
 
     #[test]

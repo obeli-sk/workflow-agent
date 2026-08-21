@@ -13,8 +13,9 @@
 // their bytes live in the CAS and are fetched on demand with
 // webapi.deployment-read-blob.
 //
-// The caller passes the deployment-id to check out; the workflow already reads
-// the active deployment id each turn, so this activity does not re-resolve it.
+// The caller passes the deployment-id to check out; the workflow resolves the
+// active id (webapi.current-deployment-id) when it lazily mounts the deployment
+// tree on first access, so this activity does not re-resolve it.
 export default async function deployment_checkout(deploymentId) {
     try { return await deployment_checkout_impl(deploymentId); }
     catch (error) { throw classifyActivityError(error); }
