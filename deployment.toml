@@ -603,10 +603,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/mcp.js"
-# Fail fast for interactive use: a not-yet-started server errors on the first
-# attempt instead of blocking the shell through retry backoff, so a down server
-# never stalls a session (the mount and `mount`'s reachability probe are lazy).
-max_retries = 0
 env_vars = [{ key = "MCP_SERVER_URL", value = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071/mcp}" }]
 [[activity_js.allowed_host]]
 pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"

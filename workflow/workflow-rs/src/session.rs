@@ -80,11 +80,14 @@ const MCP_DISCOVER_FFQN: &str = "obelisk-agent:mcp/registry.discover";
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
 
-const MOUNT_HEADER: &str =
-    "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n\
-  /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n\
-  /workspace/docs                Obelisk documentation, read-only (obeli-sk/website)\n\
-  /workspace/components          example components, read-only (obeli-sk/components)\n";
+// `concat!` (not `\`-continuation) so each entry keeps its leading two-space
+// indent; a `\` line-continuation would strip the continued line's whitespace.
+const MOUNT_HEADER: &str = concat!(
+    "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n",
+    "  /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n",
+    "  /workspace/docs                Obelisk documentation, read-only (obeli-sk/website)\n",
+    "  /workspace/components          example components, read-only (obeli-sk/components)\n",
+);
 const MOUNT_FOOTER: &str =
     "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
@@ -960,6 +963,9 @@ mod tests {
             ("down".to_string(), "ns:mcp/server.down".to_string()),
         ];
         let out = render_mount(&servers, &mut host);
+        // Every entry (header and MCP) is indented two spaces consistently.
+        assert!(out.contains("\n  /workspace/deployment/current  "), "{out}");
+        assert!(out.contains("\n  /workspace/mcp/up  "), "{out}");
         assert!(
             out.contains("/workspace/mcp/up  MCP server, read-only (responding)"),
             "{out}"

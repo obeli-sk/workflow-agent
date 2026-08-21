@@ -93,7 +93,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/mcp.js"
-max_retries = 0
 env_vars = [{ key = "MCP_SERVER_URL", value = "${MCP_URL}" }]
 [[activity_js.allowed_host]]
 pattern = "http://127.0.0.1:${MCP_PORT}"
