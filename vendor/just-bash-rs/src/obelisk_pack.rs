@@ -31,6 +31,12 @@ const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
 /// pinned digest; `deployment submit` replaces each with the file's real digest.
 const AUTO_DIGEST: &str = "auto";
 
+/// The fully-commented default `deployment.toml`, captured at build time from the
+/// devshell's `obelisk generate deployment` (see build.rs), so it always matches
+/// the Obelisk version this component is built against.
+const DEPLOYMENT_TEMPLATE: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/deployment-template.toml"));
+
 /// PORT: `packs/obelisk-control/workflow-pack.js`'s `descriptor.systemPrompt`.
 /// Appended to the session system prompt by the workflow (`session.rs`).
 pub const SYSTEM_PROMPT: &str =
@@ -50,7 +56,9 @@ the value \"auto\", and `backtrace.sources` entries are plain path strings; leav
 them that way. Add a component by writing its source and its
 [[activity_js]]/[[workflow_js]] table (name, location, params, return_type), and
 add a bundled file by writing it and listing its path in `component_files` with
-the value \"auto\", nothing more. Two read-only reference trees are mounted for
+the value \"auto\", nothing more. Run `obelisk generate deployment` for a
+fully-commented starter deployment.toml when authoring one from scratch. Two
+read-only reference trees are mounted for
 you: /workspace/docs (the Obelisk documentation, obeli-sk/website) and
 /workspace/components (reusable example components, obeli-sk/components); browse
 them with ls and cat while authoring. They list and fetch lazily on first
@@ -382,6 +390,9 @@ fn try_execute_obelisk(
             .unwrap_or("[]");
         return target_call(host, json!([ffqn, params_json]));
     }
+    if group == "generate" {
+        return execute_generate(action);
+    }
     if group == "deployment" {
         return execute_deployment(interp, action, rest, host);
     }
@@ -390,6 +401,21 @@ fn try_execute_obelisk(
         args.join(" "),
         help()
     )))
+}
+
+/// Print a starter config file. Purely local: unlike the other groups it never
+/// touches the target server, it just echoes a template baked in at build time.
+fn execute_generate(action: &str) -> Result<CommandOutput, String> {
+    match action {
+        "deployment" => Ok(ok(ensure_trailing_newline(DEPLOYMENT_TEMPLATE.to_string()))),
+        "" => Ok(fail(format!(
+            "obelisk generate: a subcommand is required\n{}",
+            generate_help()
+        ))),
+        _ => Ok(fail(format!(
+            "obelisk generate: unknown action '{action}'\n"
+        ))),
+    }
 }
 
 fn execute_deployment(
@@ -1047,6 +1073,7 @@ fn group_help(group: &str) -> String {
         "executions" => executions_help(),
         "call" => call_help(),
         "deployment" => deployment_help(),
+        "generate" => generate_help(),
         _ => help(),
     }
 }
@@ -1061,6 +1088,7 @@ fn action_help(group: &str, action: &str) -> String {
         ("deployment", "check") => deployment_check_help(),
         ("deployment", "switch") => deployment_switch_help(),
         ("deployment", "apply") => deployment_apply_help(),
+        ("generate", "deployment") => generate_deployment_help(),
         _ => group_help(group),
     }
 }
@@ -1076,6 +1104,7 @@ Commands:\n\
   executions   List executions, or show one execution's record, logs, or result.\n\
   call         Call a deployed function and print its result.\n\
   deployment   Inspect, edit, submit, and activate deployments.\n\
+  generate     Print a starter configuration file.\n\
 \n\
 Run `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n"
         .to_string()
@@ -1174,6 +1203,25 @@ fn deployment_apply_help() -> String {
     "Usage: obelisk deployment apply ID\n\
 \n\
 Hot-redeploy a stored deployment now (fails if it cannot be applied live).\n"
+        .to_string()
+}
+
+fn generate_help() -> String {
+    "Usage: obelisk generate <subcommand>\n\
+\n\
+Print a starter Obelisk configuration file.\n\
+\n\
+Subcommands:\n\
+  deployment   Print a default deployment.toml with every option documented.\n"
+        .to_string()
+}
+
+fn generate_deployment_help() -> String {
+    "Usage: obelisk generate deployment\n\
+\n\
+Print a default deployment.toml with every option documented as comments.\n\
+Redirect it to a file to scaffold a new deployment, e.g.\n\
+`obelisk generate deployment > deployment.toml`.\n"
         .to_string()
 }
 
@@ -1692,6 +1740,34 @@ mod tests {
         let out = execute_obelisk(&mut i, &words(&["deployment", "bogus"]), "", &mut host);
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk deployment: unknown action 'bogus'\n");
+    }
+
+    #[test]
+    fn generate_deployment_prints_the_embedded_template() {
+        // The template is captured from the real `obelisk generate deployment` at
+        // build time; assert on a stable marker rather than the whole body, and
+        // that it never touches the host (it is a purely local echo).
+        let mut host = FakeHost::new();
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["generate", "deployment"]), "", &mut host);
+        assert_eq!(out.exit_code, 0);
+        assert!(out.stdout.contains("[[activity_wasm]]"), "{}", out.stdout);
+        assert!(out.stdout.ends_with('\n'));
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn generate_requires_a_known_subcommand() {
+        let mut host = FakeHost::new();
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["generate"]), "", &mut host);
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stderr.contains("a subcommand is required"));
+
+        let out = execute_obelisk(&mut i, &words(&["generate", "bogus"]), "", &mut host);
+        assert_eq!(out.exit_code, 2);
+        assert_eq!(out.stderr, "obelisk generate: unknown action 'bogus'\n");
+        assert!(host.calls.is_empty());
     }
 
     #[test]
