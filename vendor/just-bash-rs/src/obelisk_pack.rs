@@ -61,7 +61,8 @@ fully-commented starter deployment.toml when authoring one from scratch. Two
 read-only reference trees are mounted for you: /workspace/docs (the Obelisk
 documentation, obeli-sk/website) and /workspace/components (reusable example
 components, obeli-sk/components); browse them with ls and cat while authoring.
-Run `mount` to see the network-backed mount points. These mounts
+Run `mount` to see the network-backed mount points; it reports whether each MCP
+server is responding. These mounts
 (/workspace/deployment, /workspace/docs, /workspace/components, /workspace/mcp)
 are lazy: a directory lists and a file's bytes fetch over the network on first
 access, so the first touch of a path may pause briefly. The deployment mount is

@@ -53,9 +53,12 @@ cat /workspace/mcp/<server>/<path> # resources/read (lazy)
 
 The resource tree is mounted lazily: its `resources/list` runs only when the
 session first touches `/workspace/mcp/<server>`, and each file's bytes fetch via
-`resources/read` on first read. Run `mount` to see all network-backed mounts.
-Avoid `tree`/`find`/recursive `grep` across a mount; navigate with targeted `ls`
-and `cat`.
+`resources/read` on first read. So a server that is not running never stalls a
+session; the transport activity also sets `max_retries = 0` to fail fast. Run
+`mount` to see all network-backed mounts; it live-probes each MCP server (a
+`tools/list` round-trip) and reports whether it is responding. Avoid
+`tree`/`find`/recursive `grep` across a mount; navigate with targeted `ls` and
+`cat`.
 
 ## Sample server and E2E
 

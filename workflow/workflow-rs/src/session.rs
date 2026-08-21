@@ -80,34 +80,56 @@ const MCP_DISCOVER_FFQN: &str = "obelisk-agent:mcp/registry.discover";
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
 
-/// The `mount` shell command: a static listing of the session's network-backed
-/// mount points and their laziness, so the model can see what is mounted (and
-/// which trees to avoid recursively scanning) without probing. `mcp_servers` is
-/// the discovered registry (see `discover_mcp_servers`).
-fn mount_command(mcp_servers: &[(String, String)]) -> just_bash_rs::CustomCommandHandler {
-    let mut text = String::from(
-        "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n\
+const MOUNT_HEADER: &str =
+    "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n\
   /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n\
   /workspace/docs                Obelisk documentation, read-only (obeli-sk/website)\n\
-  /workspace/components          example components, read-only (obeli-sk/components)\n",
-    );
-    for (name, _) in mcp_servers {
-        text.push_str(&format!(
-            "  /workspace/mcp/{name}  MCP server resources, read-only\n"
-        ));
-    }
-    text.push_str(
-        "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n",
-    );
+  /workspace/components          example components, read-only (obeli-sk/components)\n";
+const MOUNT_FOOTER: &str =
+    "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
+
+/// The `mount` shell command: list the session's network-backed mount points and
+/// their laziness, so the model sees what is mounted and which trees to avoid
+/// recursively scanning. For each discovered MCP server it live-probes the
+/// endpoint (a `tools/list` round-trip via the transport activity) and reports
+/// whether it is responding, so a not-yet-started server is visible without the
+/// model having to open its resource tree.
+fn mount_command(
+    mcp_servers: Vec<(String, String)>,
+    host: Box<dyn ObeliskHost>,
+) -> just_bash_rs::CustomCommandHandler {
+    let mut host = host;
     Box::new(
         move |_: &mut just_bash_rs::interpreter::Interpreter, _: &[String], _: String| {
             just_bash_rs::interpreter::CommandOutput {
-                stdout: text.clone(),
+                stdout: render_mount(&mcp_servers, host.as_mut()),
                 stderr: String::new(),
                 exit_code: 0,
             }
         },
     )
+}
+
+/// Render the `mount` listing, live-probing each MCP server for reachability.
+fn render_mount(mcp_servers: &[(String, String)], host: &mut dyn ObeliskHost) -> String {
+    let mut text = String::from(MOUNT_HEADER);
+    for (name, ffqn) in mcp_servers {
+        let status = match host.call_json(ffqn, "[\"tools/list\",\"{}\"]") {
+            Ok(_) => "responding".to_string(),
+            Err(err) => format!("not responding: {}", mount_probe_reason(&err)),
+        };
+        text.push_str(&format!(
+            "  /workspace/mcp/{name}  MCP server, read-only ({status})\n"
+        ));
+    }
+    text.push_str(MOUNT_FOOTER);
+    text
+}
+
+/// Reduce an MCP probe error to a short single-line reason for the `mount`
+/// listing (a transport failure is usually a multi-line/verbose message).
+fn mount_probe_reason(err: &str) -> String {
+    err.lines().next().unwrap_or("").chars().take(80).collect()
 }
 
 /// Discover the configured MCP servers by calling the `registry.discover`
@@ -350,7 +372,7 @@ pub fn agent_loop(
             obelisk_mcp::server_command_handler(name, ffqn, Box::new(host())),
         );
     }
-    bash.register_command("mount", mount_command(&mcp_servers));
+    bash.register_command("mount", mount_command(mcp_servers.clone(), Box::new(host())));
 
     let system = format!(
         "{system_prompt}\n\n\
@@ -913,6 +935,43 @@ mod tests {
         assert!(parse_mcp_servers(r#"{"name":"a"}"#).is_err());
         assert!(parse_mcp_servers(r#"[{"ffqn":"x"}]"#).is_err());
         assert!(parse_mcp_servers(r#"[{"name":"a"}]"#).is_err());
+    }
+
+    #[test]
+    fn mount_reports_mcp_reachability() {
+        struct FakeHost(BTreeMap<String, Result<Option<String>, String>>);
+        impl ObeliskHost for FakeHost {
+            fn call_json(&mut self, ffqn: &str, _: &str) -> Result<Option<String>, String> {
+                self.0
+                    .get(ffqn)
+                    .cloned()
+                    .unwrap_or_else(|| Err("no fixture".to_string()))
+            }
+        }
+        let mut host = FakeHost(BTreeMap::from([
+            ("ns:mcp/server.up".to_string(), Ok(Some("[]".to_string()))),
+            (
+                "ns:mcp/server.down".to_string(),
+                Err("connection refused\ntrace line".to_string()),
+            ),
+        ]));
+        let servers = vec![
+            ("up".to_string(), "ns:mcp/server.up".to_string()),
+            ("down".to_string(), "ns:mcp/server.down".to_string()),
+        ];
+        let out = render_mount(&servers, &mut host);
+        assert!(
+            out.contains("/workspace/mcp/up  MCP server, read-only (responding)"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "/workspace/mcp/down  MCP server, read-only (not responding: connection refused)"
+            ),
+            "{out}"
+        );
+        // Only the first line of a multi-line error is shown.
+        assert!(!out.contains("trace line"), "{out}");
     }
 
     #[test]
