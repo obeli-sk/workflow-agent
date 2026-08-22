@@ -151,19 +151,19 @@ jobs:
         run: nix develop --command echo
 
       - name: bash workflow e2e
-        run: nix develop --command just test-e2e
+        run: nix develop --command ./scripts/test-e2e-bash-workflow.sh
         env:
           GITHUB_TOKEN: ""
           MCP_SERVER_TOKEN: ""
 
       - name: agent workflow e2e
-        run: nix develop --command just test-e2e-agent-workflow
+        run: nix develop --command ./scripts/test-e2e-agent-workflow.sh
         env:
           GITHUB_TOKEN: ""
           MCP_SERVER_TOKEN: ""
 
       - name: redeploy e2e
-        run: nix develop --command just test-e2e-redeploy
+        run: nix develop --command ./scripts/test-e2e-redeploy.sh
         env:
           GITHUB_TOKEN: ""
           MCP_SERVER_TOKEN: ""

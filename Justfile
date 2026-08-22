@@ -24,7 +24,7 @@ sync:
   obelisk deployment get $(obelisk deployment active) --force
 
 # Test everything: unit tests plus all end-to-end suites.
-test: test-rs test-js test-e2e test-e2e-agent-workflow test-e2e-redeploy test-e2e-mcp
+test: test-rs test-js test-e2e
 
 # Unit tests for the workflow and just-bash-rs interpreter.
 test-rs:
@@ -34,23 +34,10 @@ test-rs:
 test-js:
   node --test webhook/ui/shell.test.js
 
-# End-to-end test of the bash workflow component under Obelisk.
+# All end-to-end suites, each against its own isolated, throwaway obelisk server.
+# See scripts/test-e2e-*.sh; the mcp suite SKIPs when no docker/podman is on PATH.
 test-e2e:
-  ./scripts/test-e2e.sh
-
-# deployed via the real deployment.toml.
-# Rust port: end-to-end test of the full workflow component.
-test-e2e-agent-workflow:
+  ./scripts/test-e2e-bash-workflow.sh
   ./scripts/test-e2e-agent-workflow.sh
-
-# End-to-end no-op redeploy of the current deployment via the content-addressed
-# submit tool (no attachments, no source uploads).
-test-e2e-redeploy:
   ./scripts/test-e2e-redeploy.sh
-
-# End-to-end MCP: runs a stateless MCP server in a docker/podman container and
-# drives the `mcp` registry and tool/prompt calls over real HTTP.
-# SKIPs when no container runtime is on PATH (the nix devshell ships neither
-# docker nor podman, so run this where docker is available).
-test-e2e-mcp:
   ./scripts/test-e2e-mcp.sh
