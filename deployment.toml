@@ -132,16 +132,6 @@ env_vars = [
   "AGENT_MODELS",
   { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
 ]
-
-# Single LLM endpoint. The origin comes from LLM_BASE_URL and every model in the
-# catalog shares it; the per-model `path` prefix plus the adapter route land under
-# /v1/(messages|chat/completions|responses). One LLM_API_KEY bearer token
-# authenticates the endpoint (unset for the keyless local backend). Switch
-# endpoints by setting AGENT_MODELS + LLM_BASE_URL (+ LLM_API_KEY) together:
-#   local     http://127.0.0.1:9190          (keyless, models.local.json)
-#   exe.dev   https://llm.int.exe.xyz         (keyless, models.exe-integration.json)
-#   exe tunnel http://localhost:7070          (keyless, models.exe-gateway.json)
-#   openrouter https://openrouter.ai/api     (models.openrouter.json)
 [[activity_js.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]

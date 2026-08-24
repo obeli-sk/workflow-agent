@@ -8,9 +8,18 @@ export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:5205"
 export TARGET_OBELISK_TOKEN="$OBELISK__API__TOKEN"
 
 # Pick a catalog + endpoint (README has the details):
-#   models.local.json        LLM_BASE_URL=http://127.0.0.1:9190     (keyless)
-#   models.exe-gateway.json  LLM_BASE_URL=http://localhost:7070     + LLM_API_KEY
-#   models.openrouter.json   LLM_BASE_URL=https://openrouter.ai/api + LLM_API_KEY
+## Local
+# export AGENT_MODELS="$(cat models.local.json)"
+# export LLM_BASE_URL=http://127.0.0.1:9190
+## Exe gateway
+# export AGENT_MODELS="$(cat models.exe-gateway.json)"
+# export LLM_BASE_URL=http://localhost:7070
+# export LLM_API_KEY="..."
+## OpenRouter
+# export AGENT_MODELS="$(cat models.openrouter.json)"
+# export LLM_BASE_URL="https://openrouter.ai"
+# export LLM_API_KEY="..."
+
 export AGENT_MODELS="$(cat models.json)"        # ln -sf models.local.json models.json
 export LLM_BASE_URL=http://127.0.0.1:9190
 # export LLM_API_KEY=...
