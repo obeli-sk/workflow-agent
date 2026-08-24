@@ -38,7 +38,7 @@ e2e_init "mcp-e2e" 28116 28191 "e2e-mcp-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28116"
 export AGENT_MODELS="[]"
-# The workflow discovers MCP servers from MCP_SERVERS_JSON (the mcp_discover
+# The workflow discovers MCP servers from MCP_SERVERS_JSON (the config_discover
 # activity), overriding the manifest default so this run wires only the injected
 # obelisk-e2e server. Empty MCP_SERVER_TOKEN keeps the manifest's sample
 # obelisk-local block keyless so it deploys without a real secret (it is never

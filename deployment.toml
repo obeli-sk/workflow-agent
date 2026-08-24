@@ -18,22 +18,26 @@ request_url_regex = "^GET https://obeli\\.sk/docs/latest/llms.txt/"
 # --- Shell programs ----------------------------------------------------------
 # Programs are Obelisk-backed just-bash commands (contract
 # `func(stdin, args) -> result<record { stdout, stderr, exit-code }>`). The
-# workflow learns which to wire up by calling the `registry.discover` activity
-# below, so adding a program means editing this manifest alone (no workflow
+# workflow learns which to wire up from the session config activity below, so
+# adding a program means editing this manifest alone (no workflow
 # rebuild): add its activity block here and append `{ name, ffqn, description }`
-# to the discovery registry's PROGRAMS_JSON. The workflow registers a shell
+# to the config activity's PROGRAMS_JSON. The workflow registers a shell
 # command per entry and lists it (with its description) in the system prompt.
 
-# The program registry: the operator-owned list the workflow discovers at
-# session start. Keep PROGRAMS_JSON in sync with the program blocks below;
-# override it from the host env to reconfigure without editing the manifest.
+# Session configuration is read once at session start. MAX_STEPS defaults to 10;
+# the program and MCP registries default to the deployed entries below. Override
+# any of them from the host environment without rebuilding the workflow.
 [[activity_js]]
-name = "programs_discover"
-ffqn = "obelisk-agent:programs/registry.discover"
+name = "config_discover"
+ffqn = "obelisk-agent:config/config.discover"
 params = []
-return_type = "result<list<record { name: string, ffqn: string, description: string }>, string>"
-location = "activity/programs-discover.js"
-env_vars = [{ key = "PROGRAMS_JSON", value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"}]}' }]
+return_type = "result<record { max-steps: u32, programs: list<record { name: string, ffqn: string, description: string }>, mcp-servers: list<record { name: string, ffqn: string }> }, string>"
+location = "activity/config-discover.js"
+env_vars = [
+  { key = "MAX_STEPS",        value = "${MAX_STEPS:-10}" },
+  { key = "PROGRAMS_JSON",    value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"}]}' },
+  { key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' },
+]
 
 [[activity_js]]
 name = "program_curl"
@@ -574,10 +578,10 @@ replace_in = ["headers"]
 # Each configured MCP server is one transport activity block plus one
 # outbound-host grant, mirroring the single-LLM-endpoint precedent. The function
 # name after `obelisk-agent:mcp/server.` is the server name. The workflow learns
-# which servers to wire up by calling the `registry.discover` activity below, so
+# which servers to wire up from the session config activity, so
 # adding a server means editing this manifest alone (no workflow rebuild): add
 # its transport block here and append `{ name, ffqn }` to the discovery
-# registry's MCP_SERVERS_JSON. The workflow then registers a shell command
+# activity's MCP_SERVERS_JSON. The workflow then registers a shell command
 # (`<server> tools|call|prompts|prompt|info`), lists it in the global `mcp`
 # registry command, and mounts its resources lazily under `/workspace/mcp/<server>`.
 # A single activity/mcp.js is reused by every server: each block sets the fixed
@@ -589,17 +593,6 @@ replace_in = ["headers"]
 # v1 limitation. Copy the transport block below, rename the server, point
 # MCP_SERVER_URL at it, add the matching server.toml grant, and register it in
 # MCP_SERVERS_JSON. See docs/mcp.md.
-
-# The MCP server registry: the operator-owned list the workflow discovers at
-# session start. Keep MCP_SERVERS_JSON in sync with the transport blocks below;
-# override it from the host env to reconfigure without editing the manifest.
-[[activity_js]]
-name = "mcp_discover"
-ffqn = "obelisk-agent:mcp/registry.discover"
-params = []
-return_type = "result<list<record { name: string, ffqn: string }>, string>"
-location = "activity/mcp-discover.js"
-env_vars = [{ key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' }]
 
 [[activity_js]]
 name = "mcp_obelisk_local"

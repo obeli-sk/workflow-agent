@@ -20,6 +20,9 @@ from an operator-owned registry (`PROGRAMS_JSON`), so adding one is a
 surfaced in the system prompt. The one that ships, a GET-only `curl`, is an
 Obelisk activity.
 
+The per-turn model invocation limit is configured with `MAX_STEPS`. It defaults
+to `10` and is read with the program and MCP registries when a session starts.
+
 ![workflow-agent web UI](docs/workflow-agent.png)
 
 ## Run

@@ -13,12 +13,11 @@ remembered across invocations (see `activity/mcp.js`).
   FFQN `obelisk-agent:mcp/server.<name>`. It performs the JSON-RPC-over-HTTP POST
   and returns the `result`. A fixed env var `MCP_SERVER_URL` sets the endpoint;
   an authenticated server also exposes the fixed secret `MCP_SERVER_TOKEN`.
-- **Registry activity** (`activity/mcp-discover.js`), FFQN
-  `obelisk-agent:mcp/registry.discover`, returns the configured servers as a
-  WIT-typed `result<list<record { name: string, ffqn: string }>, string>` parsed
-  from the operator-owned `MCP_SERVERS_JSON` env var. The WIT return type
-  structurally enforces the shape.
-- **The workflow** calls `registry.discover` once at session start and, for each
+- **Session config activity** (`activity/config-discover.js`), FFQN
+  `obelisk-agent:config/config.discover`, returns the configured servers along
+  with the other session settings. It parses the operator-owned
+  `MCP_SERVERS_JSON` env var and its WIT return type enforces the shape.
+- **The workflow** calls `config.discover` once at session start and, for each
   returned server, registers a `<name>` shell command, lists it in the global
   `mcp` command, and registers a deferred mount at `/workspace/mcp/<name>`.
 
@@ -31,7 +30,7 @@ workflow rebuild**: edit `deployment.toml` alone.
    `deployment.toml`), rename the server, and point `MCP_SERVER_URL` at it.
 2. Add the matching outbound-host grant in `server.toml`.
 3. Register it in the discovery registry by appending `{ name, ffqn }` to
-   `MCP_SERVERS_JSON` (the `mcp_discover` block's env var, overridable from the
+   `MCP_SERVERS_JSON` (the `config_discover` block's env var, overridable from the
    host env).
 
 Auth is a v1 limitation: `server.toml` can name only one `MCP_SERVER_TOKEN`, so

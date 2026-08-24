@@ -66,21 +66,9 @@ fn host_sleep_ms(ms: u64) {
     let _ = workflow_support::sleep(ScheduleAt::In(Duration::Milliseconds(ms)), None);
 }
 
-// The per-turn agent-loop budget: how many LLM invocations (steps) a single
-// user turn may take before the loop gives up without a final response.
-const MAX_STEPS: u32 = 10;
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const SESSION_EVENTS_JOIN_SET: &str = "session-events";
-/// The shell-program registry, discovered at session start from an operator-owned
-/// JSON config (`PROGRAMS_JSON`) instead of a compile-time list, so programs (e.g.
-/// `curl`) are added by editing `deployment.toml` alone (no workflow rebuild). See
-/// `discover_programs` and `activity/programs-discover.js`.
-const PROGRAMS_DISCOVER_FFQN: &str = "obelisk-agent:programs/registry.discover";
-/// The MCP server registry, discovered at session start from an operator-owned
-/// JSON config (`MCP_SERVERS_JSON`) instead of a compile-time list, so servers
-/// are added by editing `deployment.toml` alone (no workflow rebuild). See
-/// `discover_mcp_servers` and `activity/mcp-discover.js`.
-const MCP_DISCOVER_FFQN: &str = "obelisk-agent:mcp/registry.discover";
+const CONFIG_DISCOVER_FFQN: &str = "obelisk-agent:config/config.discover";
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
 
@@ -147,25 +135,51 @@ struct Program {
     description: String,
 }
 
-/// Discover the configured shell programs by calling the `registry.discover`
-/// activity (which returns the operator's `PROGRAMS_JSON` as a WIT-typed
-/// `list<record { name, ffqn, description }>`). Mirrors `discover_mcp_servers`: a
-/// missing activity or malformed config is not fatal, yielding no programs and an
-/// error note the caller records for the model. One cheap call (env parse, no
-/// network) per session.
-fn discover_programs(host: &mut dyn ObeliskHost) -> Result<Vec<Program>, String> {
-    match host.call_json(PROGRAMS_DISCOVER_FFQN, "[]")? {
-        Some(json) => parse_programs(&json),
-        None => Ok(Vec::new()),
-    }
+struct SessionConfig {
+    max_steps: u32,
+    programs: Vec<Program>,
+    mcp_servers: Vec<(String, String)>,
 }
 
-fn parse_programs(json: &str) -> Result<Vec<Program>, String> {
+/// Load all operator-owned session settings in one activity call so environment
+/// changes do not require rebuilding this deterministic workflow component.
+fn discover_session_config(host: &mut dyn ObeliskHost) -> Result<SessionConfig, String> {
+    let json = host
+        .call_json(CONFIG_DISCOVER_FFQN, "[]")?
+        .ok_or_else(|| "session config activity returned no value".to_string())?;
+    parse_session_config(&json)
+}
+
+fn parse_session_config(json: &str) -> Result<SessionConfig, String> {
     let value: Value = serde_json::from_str(json)
-        .map_err(|e| format!("program discovery returned invalid JSON: {e}"))?;
+        .map_err(|e| format!("session config returned invalid JSON: {e}"))?;
+    let max_steps = value
+        .get("max_steps")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "session config has invalid max_steps".to_string())?;
+    let programs = parse_programs(
+        value
+            .get("programs")
+            .ok_or_else(|| "session config has no programs".to_string())?,
+    )?;
+    let mcp_servers = parse_mcp_servers(
+        value
+            .get("mcp_servers")
+            .ok_or_else(|| "session config has no mcp_servers".to_string())?,
+    )?;
+    Ok(SessionConfig {
+        max_steps,
+        programs,
+        mcp_servers,
+    })
+}
+
+fn parse_programs(value: &Value) -> Result<Vec<Program>, String> {
     let entries = value
         .as_array()
-        .ok_or_else(|| "program discovery did not return an array".to_string())?;
+        .ok_or_else(|| "session config programs is not an array".to_string())?;
     entries
         .iter()
         .map(|entry| {
@@ -213,24 +227,10 @@ Run `help` to list every command available in the shell.",
     text
 }
 
-/// Discover the configured MCP servers by calling the `registry.discover`
-/// activity (which returns the operator's `MCP_SERVERS_JSON` as a WIT-typed
-/// `list<record { name, ffqn }>`). A missing activity or malformed config is not
-/// fatal: it yields no servers and an error note the caller records for the
-/// model to see. One cheap call (env parse, no network) per session.
-fn discover_mcp_servers(host: &mut dyn ObeliskHost) -> Result<Vec<(String, String)>, String> {
-    match host.call_json(MCP_DISCOVER_FFQN, "[]")? {
-        Some(json) => parse_mcp_servers(&json),
-        None => Ok(Vec::new()),
-    }
-}
-
-fn parse_mcp_servers(json: &str) -> Result<Vec<(String, String)>, String> {
-    let value: Value = serde_json::from_str(json)
-        .map_err(|e| format!("mcp discovery returned invalid JSON: {e}"))?;
+fn parse_mcp_servers(value: &Value) -> Result<Vec<(String, String)>, String> {
     let entries = value
         .as_array()
-        .ok_or_else(|| "mcp discovery did not return an array".to_string())?;
+        .ok_or_else(|| "session config mcp_servers is not an array".to_string())?;
     entries
         .iter()
         .map(|entry| {
@@ -249,10 +249,10 @@ fn parse_mcp_servers(json: &str) -> Result<Vec<(String, String)>, String> {
 
 /// The terminal error raised when a turn burns through its step budget without
 /// the model yielding a final assistant response.
-fn step_limit_error(turn_index: u64) -> AgentErrorEvent {
+fn step_limit_error(turn_index: u64, max_steps: u32) -> AgentErrorEvent {
     AgentErrorEvent {
         id: format!("step-limit-{turn_index}"),
-        text: format!("exceeded MAX_STEPS={MAX_STEPS} without yielding an assistant response"),
+        text: format!("exceeded MAX_STEPS={max_steps} without yielding an assistant response"),
         turn_index,
     }
 }
@@ -421,13 +421,11 @@ pub fn agent_loop(
     });
     bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(host())));
 
-    // Discover the shell-program registry once, up front (same operator-owned,
-    // rebuild-free model as MCP below): each entry becomes a shell command and a
-    // system-prompt line. Discovery failure is non-fatal (no programs).
-    let (programs, programs_error) = match discover_programs(&mut host()) {
-        Ok(programs) => (programs, None),
-        Err(err) => (Vec::new(), Some(err)),
-    };
+    let config = discover_session_config(&mut host())?;
+    let max_steps = config.max_steps;
+    let programs = config.programs;
+    let mcp_servers = config.mcp_servers;
+
     for program in &programs {
         bash.register_command(
             &program.name,
@@ -435,13 +433,6 @@ pub fn agent_loop(
         );
     }
 
-    // Discover the MCP registry once, up front: the shell commands below must
-    // exist before the agent's first turn, and the resource mounts (deferred
-    // below) reuse the same list. Discovery failure is non-fatal (no servers).
-    let (mcp_servers, mcp_error) = match discover_mcp_servers(&mut host()) {
-        Ok(servers) => (servers, None),
-        Err(err) => (Vec::new(), Some(err)),
-    };
     let mcp_registry: obelisk_mcp::ServerRegistry = Rc::new(RefCell::new(
         mcp_servers
             .iter()
@@ -507,8 +498,8 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
     loop {
         session.turn_index = turn_index;
         notifications.set_turn_index(turn_index);
-        if should_call_llm && agent_steps >= MAX_STEPS {
-            let error = step_limit_error(turn_index);
+        if should_call_llm && agent_steps >= max_steps {
+            let error = step_limit_error(turn_index, max_steps);
             messages.push(json!({
                 "role": "assistant",
                 "content": [{"type": "text", "text": error.text.clone()}],
@@ -560,18 +551,6 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
                     Box::new(host()),
                     ffqn,
                     &format!("/workspace/mcp/{name}"),
-                );
-            }
-            if let Some(err) = &mcp_error {
-                let _ = bash.fs_mut().write_file(
-                    "/workspace/.mcp-error",
-                    format!("mcp discovery failed: {err}").as_bytes(),
-                );
-            }
-            if let Some(err) = &programs_error {
-                let _ = bash.fs_mut().write_file(
-                    "/workspace/.programs-error",
-                    format!("program discovery failed: {err}").as_bytes(),
                 );
             }
             pack_mounted = true;
@@ -1020,45 +999,57 @@ mod tests {
 
     #[test]
     fn parse_mcp_servers_reads_name_and_ffqn() {
-        let servers = parse_mcp_servers(r#"[{"name":"a","ffqn":"ns:mcp/server.a"}]"#).unwrap();
+        let servers = parse_mcp_servers(&json!([{"name":"a","ffqn":"ns:mcp/server.a"}])).unwrap();
         assert_eq!(
             servers,
             vec![("a".to_string(), "ns:mcp/server.a".to_string())]
         );
-        assert!(parse_mcp_servers("[]").unwrap().is_empty());
+        assert!(parse_mcp_servers(&json!([])).unwrap().is_empty());
     }
 
     #[test]
     fn parse_mcp_servers_rejects_bad_shapes() {
-        assert!(parse_mcp_servers("not json").is_err());
-        assert!(parse_mcp_servers(r#"{"name":"a"}"#).is_err());
-        assert!(parse_mcp_servers(r#"[{"ffqn":"x"}]"#).is_err());
-        assert!(parse_mcp_servers(r#"[{"name":"a"}]"#).is_err());
+        assert!(parse_mcp_servers(&json!({"name":"a"})).is_err());
+        assert!(parse_mcp_servers(&json!([{"ffqn":"x"}])).is_err());
+        assert!(parse_mcp_servers(&json!([{"name":"a"}])).is_err());
     }
 
     #[test]
     fn parse_programs_reads_name_ffqn_and_description() {
-        let programs = parse_programs(
-            r#"[{"name":"curl","ffqn":"ns:programs/program.curl","description":"GET-only HTTP client"}]"#,
-        )
+        let programs = parse_programs(&json!([
+            {"name":"curl","ffqn":"ns:programs/program.curl","description":"GET-only HTTP client"}
+        ]))
         .unwrap();
         assert_eq!(programs.len(), 1);
         assert_eq!(programs[0].name, "curl");
         assert_eq!(programs[0].ffqn, "ns:programs/program.curl");
         assert_eq!(programs[0].description, "GET-only HTTP client");
         // description is optional, defaulting to empty.
-        let bare =
-            parse_programs(r#"[{"name":"curl","ffqn":"ns:programs/program.curl"}]"#).unwrap();
+        let bare = parse_programs(&json!([
+            {"name":"curl","ffqn":"ns:programs/program.curl"}
+        ]))
+        .unwrap();
         assert_eq!(bare[0].description, "");
-        assert!(parse_programs("[]").unwrap().is_empty());
+        assert!(parse_programs(&json!([])).unwrap().is_empty());
     }
 
     #[test]
     fn parse_programs_rejects_bad_shapes() {
-        assert!(parse_programs("not json").is_err());
-        assert!(parse_programs(r#"{"name":"curl"}"#).is_err());
-        assert!(parse_programs(r#"[{"ffqn":"x"}]"#).is_err());
-        assert!(parse_programs(r#"[{"name":"curl"}]"#).is_err());
+        assert!(parse_programs(&json!({"name":"curl"})).is_err());
+        assert!(parse_programs(&json!([{"ffqn":"x"}])).is_err());
+        assert!(parse_programs(&json!([{"name":"curl"}])).is_err());
+    }
+
+    #[test]
+    fn parse_session_config_reads_step_limit_and_registries() {
+        let config =
+            parse_session_config(r#"{"max_steps":25,"programs":[],"mcp_servers":[]}"#).unwrap();
+        assert_eq!(config.max_steps, 25);
+        assert!(config.programs.is_empty());
+        assert!(config.mcp_servers.is_empty());
+
+        assert!(parse_session_config(r#"{"max_steps":0,"programs":[],"mcp_servers":[]}"#).is_err());
+        assert!(parse_session_config(r#"{"max_steps":10,"programs":[]}"#).is_err());
     }
 
     #[test]
@@ -1171,11 +1162,11 @@ mod tests {
 
     #[test]
     fn step_limit_error_names_the_step_budget() {
-        let error = step_limit_error(2);
+        let error = step_limit_error(2, 25);
         assert_eq!(error.id, "step-limit-2");
         assert_eq!(
             error.text,
-            "exceeded MAX_STEPS=10 without yielding an assistant response"
+            "exceeded MAX_STEPS=25 without yielding an assistant response"
         );
         assert_eq!(error.turn_index, 2);
     }
