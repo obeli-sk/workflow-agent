@@ -818,6 +818,10 @@ impl Interpreter {
             // separate-word behaviour of `"$@"` lives in `expand_positional`.
             "@" | "*" => self.positional.join(" "),
             "0" => self.arg0.clone(),
+            // The parser yields an empty variable name for a `$` that starts
+            // no expansion; bash keeps such a `$` literal (so a command like
+            // `chat create $ ls` passes the `$` through as an argument).
+            "" => "$".to_string(),
             _ => {
                 if let Some(idx) = positional_index(name) {
                     return self.positional.get(idx - 1).cloned().unwrap_or_default();
