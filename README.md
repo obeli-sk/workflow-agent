@@ -16,12 +16,10 @@ type a command with a `$ ` prefix in the UI to run it yourself, e.g. `$ pwd`.
 
 External programs are Obelisk executions the workflow discovers at session start
 from an operator-owned registry (`PROGRAMS_JSON`), so adding one is a
-`deployment.toml` edit with no workflow rebuild. Each entry's description is
+`deployment.toml` edit with no workflow rebuild; each entry's description is
 surfaced in the system prompt. The one that ships, a GET-only `curl`, is an
-Obelisk activity.
-
-The per-turn model invocation limit is configured with `MAX_STEPS`. It defaults
-to `10` and is read with the program and MCP registries when a session starts.
+Obelisk activity. The per-turn model invocation limit comes out of the same
+registry read: `MAX_STEPS`, defaulting to `20`.
 
 ![workflow-agent web UI](docs/workflow-agent.png)
 
@@ -41,11 +39,11 @@ Everything is pinned by the flake, so `nix develop` provides the matching
 Obelisk and Rust (wasm32) toolchain. The workflow is a native Rust component
 (`workflow/workflow-rs`); no special Obelisk build is required.
 
-Then open http://localhost:9090. Create an empty session to use the shell
-directly, or submit a prompt and inspect the same filesystem afterward. The
-user input stays live while a completion is pending, so `$ ` commands can
-edit the session VFS mid-turn; a prompt sent during the wait is queued for the
-next model turn.
+Then open http://localhost:9090 (the external/webhook listener; `server.toml`
+keeps the built-in default). Create an empty session to use the shell directly,
+or submit a prompt and inspect the same filesystem afterward. The user input
+stays live while a completion is pending, so `$ ` commands can edit the session
+VFS mid-turn; a prompt sent during the wait is queued for the next model turn.
 
 ## Target instance
 
@@ -60,8 +58,8 @@ There are two Obelisk instances in play:
   to the agent instance:
 
   ```sh
-  export TARGET_OBELISK_API_URL=http://127.0.0.1:5005
-  export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:5005"
+  export TARGET_OBELISK_API_URL=http://127.0.0.1:5205
+  export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:5205"
   export TARGET_OBELISK_TOKEN="$OBELISK__API__TOKEN"
   ```
 
@@ -94,20 +92,27 @@ that origin. Four catalogs ship:
 - `models.local.json` (keyless) : the sibling
   [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server),
   a Claude/Codex subscription in docker on `:9190`.
-- `models.exe-integration.json` (keyless) : the exe.dev LLM integration for a
-  deployment inside an attached exe.dev VM. Set
+- `models.exe-integration.json` (keyless) : the exe.dev LLM integration, for a
+  deployment **inside an attached exe.dev VM**. Set
   `LLM_BASE_URL=https://llm.int.exe.xyz`; exe.dev authenticates the VM at the
-  network edge.
+  network edge — plain OpenAI-compatible requests just work, no key:
+
+  ```sh
+  curl -X POST https://llm.int.exe.xyz/v1/chat/completions \
+    -H content-type:application/json \
+    -d '{"model":"...","messages":[{"role":"user","content":"hi"}]}'
+  ```
+
 - `models.exe-gateway.json` (keyless) : the legacy exe.dev gateway for a
-  deployment outside exe.dev. Forward it with
+  deployment running **outside** exe.dev. Forward it over SSH with
   `ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz` and set
   `LLM_BASE_URL=http://localhost:7070`.
 - `models.openrouter.json` (`LLM_API_KEY`) : [OpenRouter](https://openrouter.ai).
   The key is injected into the outbound header at the edge, never seen by the JS.
 
 Regenerate both exe.dev catalogs from its published model list with
-`just update-exe-models`. Leave `LLM_API_KEY` unset for either exe.dev
-catalog.
+`node scripts/update-exe-gateway-models.mjs`. Leave `LLM_API_KEY` unset for
+either exe.dev catalog.
 
 Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama) works:
 point `LLM_BASE_URL` at it and add catalog entries.
@@ -118,9 +123,9 @@ The core registers a broad command catalog ported from just-bash (file, path,
 text, search, checksum, encoding, and inspection tools; no `gzip`/`gunzip`/
 `zcat`). Run `help` to list commands, or `which NAME`.
 
-`ask-user` is deliberately not a general model tool or shell program. It
-is a UI-coordinated shell operation for answers needed before the current task
-can continue:
+`ask-user` is deliberately not a general model tool or shell program. It is a
+UI-coordinated shell operation for answers needed before the current task can
+continue:
 
 ```sh
 obelisk call obelisk-agent:stub/stub.ask-user '["Which deployment?"]'
@@ -133,8 +138,7 @@ and is still the right way to ask a non-blocking conversational question.
 The deployment mount under `/workspace/deployment` is lazy: the tree lists
 immediately from digests and byte sizes, and bounded file bodies are fetched
 from the content-addressed store on first read. Files over 1 MiB stay
-digest-only and read as a placeholder (see
-`meta/designs/workflow-agent-lazy-deployment-mount.md`).
+digest-only and read as a placeholder.
 
 Interactive job control is not available: `jobs`, `wait`, `fg`, `bg`, signals,
 and durable background execution with `&` are unsupported (a trailing `&` is
@@ -144,11 +148,10 @@ for durable external work instead.
 ## Stateless MCP sample
 
 A dependency-free sample server exposes tools, a prompt, and two resources.
-Start it with `just sample-mcp-server`, uncomment the `mcp_obelisk_local`
-activity in `deployment.toml` and the keyless outbound host block in
-`server.toml`, add its name and FFQN to `MCP_SERVERS` in
-`workflow/workflow-rs/src/session.rs`, then build and run as above. In a new
-empty session:
+Start it with `just sample-mcp-server`; the sample's transport block in
+`deployment.toml`, its outbound-host grant in `server.toml`, and its
+`MCP_SERVERS_JSON` entry are already shipped and enabled, so just build and run
+as above. In a new empty session:
 
 ```sh
 mcp list
