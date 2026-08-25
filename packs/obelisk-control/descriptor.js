@@ -8,7 +8,6 @@
 // The model's only tool is `bash`. `tools-json` is an unused compatibility
 // field from the former model-facing catalog and is always empty.
 
-const OBELISK_DOCS_URL = 'https://obeli.sk/docs/latest/llms.txt/';
 const nl = String.fromCharCode(10);
 
 // Encoding rules for `obelisk call <ffqn> <params-json>`, the one shell command
@@ -47,12 +46,17 @@ const SYSTEM_PROMPT = [
     WIT_JSON_MAPPING,
 ].join(nl + nl);
 
+const DOCS_SECTION = [
+    '# Obelisk documentation',
+    'The documentation tree is mounted read-only at `/workspace/docs`; read it with `ls`/`cat`. Useful entries:',
+    '/workspace/docs/content/docs/latest/cli.md',
+    '/workspace/docs/content/docs/latest/configuration.md',
+    '/workspace/docs/content/docs/latest/programmatic-access.md',
+    '/workspace/docs/content/docs/latest/concepts/',
+    '/workspace/docs/content/docs/latest/js/',
+    '/workspace/docs/content/docs/latest/patterns/',
+].join(nl);
+
 export default async function describe() {
-    const response = await fetch(OBELISK_DOCS_URL, { headers: { accept: 'text/plain' } });
-    if (!response.ok) {
-        throw `failed to fetch Obelisk documentation: HTTP ${response.status}: ${await response.text()}`;
-    }
-    const docs = await response.text();
-    const prompt = [SYSTEM_PROMPT, '', '# Obelisk documentation', 'The following reference was fetched from ' + OBELISK_DOCS_URL + '.', '', docs].join(nl);
-    return { prompt, tools_json: '[]' };
+    return { prompt: SYSTEM_PROMPT + nl + nl + DOCS_SECTION, tools_json: '[]' };
 }

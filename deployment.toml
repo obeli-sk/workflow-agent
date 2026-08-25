@@ -10,10 +10,6 @@ ffqn = "obelisk-control:agent/pack.describe"
 params = []
 return_type = "result<record { prompt: string, tools-json: string }, string>"
 location = "packs/obelisk-control/descriptor.js"
-[[activity_js.allowed_host]]
-pattern = "https://obeli.sk"
-methods = ["GET"]
-request_url_regex = "^GET https://obeli\\.sk/docs/latest/llms.txt/"
 
 # --- Shell programs ----------------------------------------------------------
 # Programs are Obelisk-backed just-bash commands (contract

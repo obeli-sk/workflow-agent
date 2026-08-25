@@ -25,8 +25,6 @@ pub fn run(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_DESCRIPTOR_FFQN.to_string());
 
-    let execution_id = workflow_support::execution_id_current();
-
     let descriptor_function = split_ffqn(&descriptor)?;
     let described_json = match workflow_support::call_json(&descriptor_function, "[]") {
         Ok(Ok(value)) => value,
@@ -36,18 +34,10 @@ pub fn run(
     .ok_or_else(|| format!("descriptor {descriptor} did not return {{ prompt }}"))?;
     let described: Value = serde_json::from_str(&described_json)
         .map_err(|e| format!("descriptor {descriptor} returned invalid JSON: {e}"))?;
-    let system_prompt_base = described
+    let system_prompt = described
         .get("prompt")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("descriptor {descriptor} did not return {{ prompt }}"))?;
 
-    let system_prompt = format!(
-        "{system_prompt_base}\n\n\
-# This execution\n\n\
-Your own workflow execution id is `{}`. Pass it to\n\
-obelisk.get_execution / obelisk.get_logs to inspect your own run.",
-        execution_id.id
-    );
-
-    crate::session::agent_loop(prompt, system_prompt, model_id, effort_level)
+    crate::session::agent_loop(prompt, system_prompt.to_string(), model_id, effort_level)
 }
