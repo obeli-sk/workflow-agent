@@ -22,6 +22,7 @@ interface stub {
     prompt: string,
     backend: string,
     effort: string,
+    system-prompt: string,
   }
 
   record input-offered-event {

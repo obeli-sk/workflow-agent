@@ -111,6 +111,8 @@ const SHELL_HTML = `<!doctype html>
   .call pre { margin: 0; padding: 0.5em 0.8em; background: #f7f7f7; border-radius: 4px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; max-height: 14em; overflow-y: auto; }
   .call pre.stderr { color: var(--err); background: var(--err-bg); }
   .call .args .key, .call .result .key { color: var(--muted); font-size: 0.8em; margin: 0.5em 0 0.2em; }
+  .sysprompt { max-width: 720px; margin: 0.8em 0 1.2em; }
+  .sysprompt .rendered-markdown { padding: 0.6em 0.9em; font-size: 0.9em; }
   form.ask { background: #fffaf2; border: 1px solid #f0d8a8; border-radius: 6px; padding: 0.8em 1em; margin: 1.4em 0; max-width: 720px; }
   form.ask p { margin: 0 0 0.5em; font-weight: 600; }
   form.ask .ask-question { margin-bottom: 0.6em; font-weight: 600; }
@@ -187,6 +189,7 @@ const state = {
   logs: null,
   logsCursor: '',
   logsOpen: false,
+  syspromptOpen: false,
   pendingShell: null,
 };
 const SIDEBAR_POLL_MS = 10000;
@@ -275,6 +278,7 @@ function setSelected(id) {
   state.logs = null;
   state.logsCursor = '';
   state.logsOpen = false;
+  state.syspromptOpen = false;
   state.pendingShell = null;
   clearTimeout(detailTimer);
   const u = new URL(window.location.href);
@@ -377,6 +381,7 @@ function refreshDetail() {
         detail.prompt = started.prompt || null;
         detail.backend = started.backend || null;
         detail.effort = started.effort || null;
+        detail.system_prompt = started.system_prompt || null;
       }
       detail.pending_asks = state.transcript?.pending_asks || [];
       detail.input_offer = state.transcript?.input_offer || null;
@@ -714,7 +719,8 @@ function renderDetail(forceScroll = false) {
   // <details> the user opened.
   const sig = JSON.stringify({
     id: d.id, status: d.status, result_kind: d.result_kind, join_name: d.join_name,
-    prompt: d.prompt, backend: d.backend, effort: d.effort, turns: d.turns, final_result: d.final_result,
+    prompt: d.prompt, backend: d.backend, effort: d.effort, system_prompt: d.system_prompt,
+    turns: d.turns, final_result: d.final_result,
     pending_asks: d.pending_asks,
     input_offer: d.input_offer,
     agent_working: d.agent_working,
@@ -780,10 +786,12 @@ function renderDetail(forceScroll = false) {
     +   ' &middot; ' + esc(ago(d.created_at))
     +   (d.backend ? ' &middot; <code>' + esc(d.backend) + '</code>' : '')
     +   (d.effort ? ' &middot; <code>effort: ' + esc(d.effort) + '</code>' : '')
-    +   ' &middot; <button type="button" id="logs-toggle">logs (including nested)</button>'
+    +   (d.system_prompt ? ' &middot; <button type="button" id="sysprompt-toggle">system prompt</button>' : '')
+    +   ' &middot; <button type="button" id="logs-toggle">logs</button>'
     +   pauseBtn
     +   cancelBtn
     + '</div>'
+    + '<div id="sysprompt-slot">' + renderSysprompt() + '</div>'
     + '<div id="logs-slot">' + renderLogs() + '</div>'
     + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div>' + preBlock(d.prompt) + '</div>' : '')
     + turnsHtml
@@ -804,6 +812,7 @@ function renderDetail(forceScroll = false) {
   }
 
   main.querySelector('#logs-toggle')?.addEventListener('click', toggleLogs);
+  main.querySelector('#sysprompt-toggle')?.addEventListener('click', toggleSysprompt);
   main.querySelector('#pause-btn')?.addEventListener('click', () => setPaused(state.selected, false));
   main.querySelector('#unpause-btn')?.addEventListener('click', () => setPaused(state.selected, true));
   main.querySelector('#cancel-btn')?.addEventListener('click', (ev) => {
@@ -952,6 +961,23 @@ async function toggleLogs() {
   state.logsOpen = !state.logsOpen;
   updateLogsSlot();
   if (state.logsOpen) await refreshLogs();
+}
+
+// The system prompt (assembled at session start) hides behind a meta-row link
+// and renders as markdown once revealed.
+function renderSysprompt() {
+  const prompt = state.detail?.system_prompt;
+  if (!state.syspromptOpen || !prompt) return '';
+  return '<div class="call sysprompt"><div class="label">system prompt</div>'
+    + renderedMarkdownHtml('', prompt) + '</div>';
+}
+
+function toggleSysprompt() {
+  state.syspromptOpen = !state.syspromptOpen;
+  const slot = document.getElementById('sysprompt-slot');
+  if (!slot) return;
+  slot.innerHTML = renderSysprompt();
+  hydrateDisplayBlocks(slot);
 }
 
 function updateLogsSlot() {

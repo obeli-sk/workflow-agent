@@ -85,6 +85,7 @@ function appendSessionEvent(target, event, response) {
             prompt: typeof started.prompt === "string" ? started.prompt : "",
             backend: typeof started.backend === "string" ? started.backend : "",
             effort: typeof started.effort === "string" ? started.effort : "",
+            system_prompt: typeof started.system_prompt === "string" ? started.system_prompt : "",
         };
     } else if (event.input_offered) {
         const offer = event.input_offered;

@@ -522,10 +522,13 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
     notifications.notify(
         SESSION_EVENTS_JOIN_SET,
         &SessionEvent::SessionStarted(SessionStartedEvent {
-            protocol_version: 5,
+            protocol_version: 6,
             prompt: prompt.clone(),
             backend: model.clone(),
             effort: effort.clone(),
+            // The exact system string the LLM receives; the UI surfaces it for
+            // inspection.
+            system_prompt: system.clone(),
         }),
     )?;
 

@@ -53,7 +53,7 @@ async function loadRenderer() {
     const open = html.indexOf(">", start) + 1;
     const end = html.indexOf("</script>", open);
     const code = html.slice(open, end)
-        + "\n;globalThis.__render = { state, buildCachedTurns, groupTurns, renderTurnGroup };";
+        + "\n;globalThis.__render = { state, buildCachedTurns, groupTurns, renderTurnGroup, renderDetail, toggleSysprompt, document };";
     const ctx = vm.createContext(sandbox());
     vm.runInContext(code, ctx);
     return ctx.__render;
@@ -245,4 +245,74 @@ test("preserves a leading newline in command output (pre-tag guard)", async () =
     // A bare `<pre>\n[[...` would have its first newline swallowed by the HTML
     // parser; the guard newline the renderer inserts keeps the blank first line.
     assert.match(turn0, /<pre>\n\n\[\[webhook_endpoint_js\]\]/);
+});
+
+function detailFixture(overrides) {
+    return Object.assign({
+        id: "E_run",
+        status: "finished",
+        result_kind: { ok: "" },
+        join_name: "",
+        created_at: "2026-08-18T10:00:00.000Z",
+        prompt: "do the thing",
+        backend: "claude-x",
+        effort: "",
+        system_prompt: null,
+        turns: [],
+        final_result: null,
+        pending_asks: [],
+        input_offer: null,
+        agent_working: false,
+    }, overrides);
+}
+
+// Run fn while getElementById caches stubs by id, so callers can inspect the
+// same element objects the renderer wrote to (the sandbox otherwise returns a
+// fresh stub per call).
+function withCachedElements(renderer, elements, fn) {
+    const realGet = renderer.document.getElementById;
+    renderer.document.getElementById = (id) => {
+        if (!elements[id]) elements[id] = realGet(id);
+        return elements[id];
+    };
+    try {
+        fn();
+    } finally {
+        renderer.document.getElementById = realGet;
+    }
+}
+
+function renderDetailHtml(renderer) {
+    const elements = {};
+    withCachedElements(renderer, elements, () => { renderer.renderDetail(); });
+    return elements.detail ? elements.detail.innerHTML : "";
+}
+
+test("hides the system prompt behind a meta-row link next to logs", async () => {
+    const renderer = await loadRenderer();
+    renderer.state.detail = detailFixture({
+        system_prompt: "You are an agent.\n\n# Shell\n\nRun `help`.",
+    });
+    const html = renderDetailHtml(renderer);
+    // Both meta-row links exist, system prompt first; logs is just "logs".
+    const syspromptAt = html.indexOf('id="sysprompt-toggle"');
+    const logsAt = html.indexOf('id="logs-toggle"');
+    assert.ok(syspromptAt !== -1 && syspromptAt < logsAt);
+    assert.match(html, /<button type="button" id="logs-toggle">logs<\/button>/);
+    // The prompt itself stays hidden until the link is clicked.
+    assert.doesNotMatch(html, /class="call sysprompt"/);
+    // Toggling reveals it as markdown (source URL-encoded for hydration).
+    const elements = { detail: null };
+    withCachedElements(renderer, elements, () => { renderer.toggleSysprompt(); });
+    const slot = elements["sysprompt-slot"] ? elements["sysprompt-slot"].innerHTML : "";
+    assert.match(slot,
+        /<div class="call sysprompt"><div class="label">system prompt<\/div><div class="rendered-markdown" data-source="/);
+    assert.match(slot, new RegExp(encodeURIComponent("You are an agent.")));
+});
+
+test("omits the system-prompt link for runs recorded before it existed", async () => {
+    const renderer = await loadRenderer();
+    renderer.state.detail = detailFixture({});
+    const html = renderDetailHtml(renderer);
+    assert.doesNotMatch(html, /sysprompt-toggle/);
 });

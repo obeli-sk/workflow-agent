@@ -64,6 +64,7 @@ export async function detailRun(id, cursorState) {
         prompt: started?.prompt || null,
         backend: started?.backend || null,
         effort: started?.effort || null,
+        system_prompt: started?.system_prompt || null,
         transcript: {
             reset: resetTranscript,
             workflow_id: id,
