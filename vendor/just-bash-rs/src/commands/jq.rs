@@ -1365,10 +1365,14 @@ fn eval_call(name: &str, args: &[Filter], value: &Value) -> EResult {
             Value::String(s) => serde_json::from_str(s.trim())
                 .map(|v: Value| vec![v])
                 .map_err(|e| format!("{name}: {e}")),
-            other => Err(format!("{name} requires a string, got {}", type_name(other))),
+            other => Err(format!(
+                "{name} requires a string, got {}",
+                type_name(other)
+            )),
         },
-        "tojson" if args.is_empty() => Ok(vec![Value::String(serde_json::to_string(value)
-            .unwrap_or_else(|_| "null".to_string()))]),
+        "tojson" if args.is_empty() => Ok(vec![Value::String(
+            serde_json::to_string(value).unwrap_or_else(|_| "null".to_string()),
+        )]),
         "split" => match value {
             Value::String(s) => {
                 let sep = one_arg(args, value)?;
@@ -1672,10 +1676,7 @@ mod tests {
             5
         );
         // Non-string input is rejected like upstream.
-        assert_eq!(
-            run(&mut bash, "echo 42 | jq 'fromjson'").exit_code,
-            5
-        );
+        assert_eq!(run(&mut bash, "echo 42 | jq 'fromjson'").exit_code, 5);
     }
 
     #[test]
