@@ -42,7 +42,7 @@ return_type = "result<record { max-steps: u32, programs: list<record { name: str
 location = "activity/config-discover.js"
 env_vars = [
   { key = "MAX_STEPS",        value = "${MAX_STEPS:-20}" },
-  { key = "PROGRAMS_JSON",    value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"}]}' },
+  { key = "PROGRAMS_JSON",    value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"},{"name":"chat","ffqn":"obelisk-agent:programs/program.chat","description":"discover, read, message, and create peer agent sessions on this instance"}]}' },
   { key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' },
   { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
 ]
@@ -81,6 +81,32 @@ methods = ["GET"]
 [[activity_js.allowed_host]]
 pattern = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}"
 methods = ["GET"]
+
+# Peer sessions: discover, inspect, message, and create other workflow-agent
+# sessions on THIS instance (OBELISK_API_URL, not the target one).
+[[activity_js]]
+name = "program_chat"
+ffqn = "obelisk-agent:programs/program.chat"
+params = [
+  { name = "stdin", type = "string" },
+  { name = "args",  type = "list<string>" },
+]
+return_type = "result<record { stdout: string, stderr: string, exit-code: u32 }, string>"
+location = "activity/chat.js"
+# create POSTs new executions; a retry after an ambiguous failure would
+# double-submit. (The session loop also intercepts create/rename/current.)
+max_retries = 0
+exec.lock_expiry.seconds = 30
+env_vars = [
+  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  "AGENT_MODELS",
+]
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT", "POST"]
+request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions|PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub$|POST ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions$"
+secrets = ["OBELISK__API__TOKEN"]
+replace_in = ["headers"]
 
 # Native call: run any deployed Obelisk function chosen at runtime by the model
 # (obelisk-control pack). A workflow, so obelisk.call runs durably in-loop.

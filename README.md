@@ -174,6 +174,38 @@ and durable background execution with `&` are unsupported (a trailing `&` is
 rejected rather than run in the foreground). Packs use Obelisk child executions
 for durable external work instead.
 
+## Peer sessions: the `chat` command
+
+Sessions on the same Obelisk instance can talk to each other. The `chat`
+program (available to the agent as a shell command and to you with the `$ `
+prefix) discovers, inspects, messages, and creates peer sessions:
+
+```sh
+chat models                          # LLM catalog: id, label, api type
+chat list                            # sessions, newest first
+chat read E_...                      # normalized transcript (--tail N, --json)
+chat state E_...                     # one JSON line: state, working, offer id
+chat send E_... please re-check X    # queue a user prompt for a peer
+chat create --model claude "prompt"  # new session; prints its execution id
+chat current                         # this session's identity (JSON)
+chat rename my-session               # slug-name this session ([a-z0-9-])
+```
+
+Notes:
+
+- `chat` talks to the agent's **own** instance (`OBELISK_API_URL`), unlike the
+  obelisk-control tools which target `TARGET_OBELISK_API_URL`.
+- `send` looks up the peer's open input offer on every call (offers rotate each
+  turn); while the peer is thinking the message queues for its next turn, when
+  idle it is delivered immediately. Never invent or reuse offer ids.
+- `current`, `rename`, and `create` are answered by the session workflow
+  itself, not the HTTP activity: only a session knows its own identity, and by
+  default `create` schedules the new session durably as a child of the caller
+  (it is cancelled together with its parent). Use `create --top-level` for an
+  independent session.
+- A rename is recorded on the session's event stream, so the UI sidebar and
+  `chat list` show slugs in place of the prompt preview.
+
 ## Stateless MCP sample
 
 A dependency-free sample server exposes tools, a prompt, and two resources.
