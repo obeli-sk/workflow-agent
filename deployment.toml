@@ -10,6 +10,15 @@ ffqn = "obelisk-control:agent/pack.describe"
 params = []
 return_type = "result<record { prompt: string, tools-json: string }, string>"
 location = "packs/obelisk-control/descriptor.js"
+exec.lock_expiry.seconds = 30
+# The descriptor inlines the docs indexes listed in DOCS_URLS_JSON (see the
+# curl-program block below) into the system prompt at session start.
+env_vars = [
+  { key = "DOCS_URLS_JSON", value = "${DOCS_URLS_JSON:-[\"https://obeli.sk/docs/${OBELISK_VERSION:-latest}/llms.txt/\"]}" },
+]
+[[activity_js.allowed_host]]
+pattern = "https://obeli.sk"
+methods = ["GET"]
 
 # --- Shell programs ----------------------------------------------------------
 # Programs are Obelisk-backed just-bash commands (contract
@@ -35,7 +44,22 @@ env_vars = [
   { key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' },
   { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
 ]
+exec.lock_expiry.seconds = 30
 
+# --- Docs: rendered llms.txt over the curl program ----------------------------
+# The session reads the Obelisk docs through the GET-only curl program instead
+# of a GitHub contents mount. Two pieces:
+#
+#   * OBELISK_VERSION pins the doc set to the target runtime's version. Empty
+#     falls back to `latest`. Set it from the flake lock when pinning matters
+#     (https://obeli.sk/docs/v${OBELISK_VERSION}/llms.txt/).
+#   * DOCS_URLS_JSON lists llms.txt-style indexes; each entry is fetched once at
+#     session start by the descriptor above and inlined into the system prompt,
+#     so the model always knows the API surface and which URLs to `curl` for
+#     detail pages.
+#
+# The curl program's obeli.sk allowlist (below) covers both the index and every
+# page URL it references.
 [[activity_js]]
 name = "program_curl"
 ffqn = "obelisk-agent:programs/program.curl"
@@ -46,6 +70,8 @@ params = [
 return_type = "result<record { stdout: string, stderr: string, exit-code: u32 }, string>"
 location = "activity/curl.js"
 exec.lock_expiry.seconds = 30
+# Docs (llms.txt index + every page URL it references) and obeli.sk release
+# notes; the descriptor inlines the same hosts' indexes into the prompt.
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -65,57 +91,6 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "packs/obelisk-control/native-call.js"
-
-# --- Reference mounts: GitHub repo trees --------------------------------------
-# Two lazily-listed VFS trees the session mounts to author deployments against
-# reference material: /workspace/components (obeli-sk/components) and
-# /workspace/docs (obeli-sk/website, private). One activity/github-contents.js
-# backs both; each block fixes the repo via GH_OWNER/GH_REPO/GH_REF and exposes
-# the GITHUB_TOKEN secret the runtime swaps into the Authorization header. The
-# workflow calls (method, params-json) on first `ls`/`cat` under the mount.
-
-[[activity_js]]
-name = "mount_components"
-ffqn = "obelisk-agent:mounts/components.request"
-params = [
-  { name = "method",      type = "string" },
-  { name = "params-json", type = "string" },
-]
-return_type = "result<string, string>"
-location = "activity/github-contents.js"
-env_vars = [
-  { key = "GH_OWNER", value = "obeli-sk" },
-  { key = "GH_REPO",  value = "components" },
-  { key = "GH_REF",   value = "${COMPONENTS_REF:-main}" },
-]
-[[activity_js.allowed_host]]
-pattern = "https://api.github.com"
-methods = ["GET"]
-request_url_regex = "^GET https://api\\.github\\.com/repos/obeli-sk/components/contents"
-secrets = ["GITHUB_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "mount_docs"
-ffqn = "obelisk-agent:mounts/docs.request"
-params = [
-  { name = "method",      type = "string" },
-  { name = "params-json", type = "string" },
-]
-return_type = "result<string, string>"
-location = "activity/github-contents.js"
-exec.lock_expiry.seconds = 30
-env_vars = [
-  { key = "GH_OWNER", value = "obeli-sk" },
-  { key = "GH_REPO",  value = "website" },
-  { key = "GH_REF",   value = "${DOCS_REF:-main}" },
-]
-[[activity_js.allowed_host]]
-pattern = "https://api.github.com"
-methods = ["GET"]
-request_url_regex = "^GET https://api\\.github\\.com/repos/obeli-sk/website/contents"
-secrets = ["GITHUB_TOKEN"]
-replace_in = ["headers"]
 
 # --- LLM endpoint: multi-provider client --------------------------------------
 # The only way the agent talks to a model. It speaks a provider-neutral message

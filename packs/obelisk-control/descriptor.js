@@ -43,20 +43,47 @@ const SYSTEM_PROMPT = [
     'A response with no tool call ends the turn and hands control back to the user. Send your final answer, or a non-blocking question, as Markdown with no command attached (use fenced Mermaid blocks only for diagrams). For an answer required before you can continue the current task, use the UI-coordinated ask-user command described in the shell guidance.',
     'Never invent execution IDs, FFQNs, deployment IDs, or command arguments. Discover them first.',
     'If a command returns an error, decide whether to retry, try another command, ask the user, or respond with an explanation.',
+    'Authoring JS workflows (obelisk.* host API): read the `/js/js-workflows/` docs page first — its signatures are exact. Prefer static ES-module imports of child functions over `obelisk.call`. In workflow code never invoke a host function speculatively to probe its signature: a malformed durable call traps the whole execution at commit time and cannot be caught in JS. Validate shapes against the docs instead; validation errors from correct-shaped calls ARE catchable.',
     WIT_JSON_MAPPING,
 ].join(nl + nl);
 
 const DOCS_SECTION = [
-    '# Obelisk documentation',
-    'The documentation tree is mounted read-only at `/workspace/docs`; read it with `ls`/`cat`. Useful entries:',
-    '/workspace/docs/content/docs/latest/cli.md',
-    '/workspace/docs/content/docs/latest/configuration.md',
-    '/workspace/docs/content/docs/latest/programmatic-access.md',
-    '/workspace/docs/content/docs/latest/concepts/',
-    '/workspace/docs/content/docs/latest/js/',
-    '/workspace/docs/content/docs/latest/patterns/',
+    '# Obelisk documentation (rendered llms.txt)',
+    'The full documentation index is inlined below. It lists every docs page as a URL; fetch any page with the GET-only curl program, e.g. `curl https://obeli.sk/docs/latest/js/js-workflows/ | sed -n 1,200p` (pages are HTML; strip tags or read selectively). Prefer the JS pages (`/js/js-activities/`, `/js/js-workflows/`, `/js/js-webhooks/`) before writing components.',
+    'Never guess workflow host API signatures (`obelisk.call`, `obelisk.sleep`, join sets): they are all documented on the `/js/js-workflows/` page. Read it first.',
 ].join(nl);
 
+// Docs indexes inlined into the prompt. The deployment manifest passes
+// DOCS_URLS_JSON (default: the current llms.txt for this Obelisk version); each
+// entry is fetched once here with plain fetch — the descriptor activity carries
+// its own outbound-host grant for https://obeli.sk. A failed or oversized
+// fetch degrades to a pointer line so session start never breaks.
+const MAX_INDEX_BYTES = 64 * 1024;
+
+async function loadDocsIndexes() {
+    let urls;
+    try { urls = JSON.parse(process.env["DOCS_URLS_JSON"] || "[]"); }
+    catch { urls = []; }
+    if (!Array.isArray(urls)) urls = [];
+    const sections = [];
+    for (const url of urls) {
+        if (typeof url !== "string" || !url.startsWith("https://")) continue;
+        try {
+            const resp = await fetch(url);
+            const text = await resp.text();
+            const body = resp.ok && text.length <= MAX_INDEX_BYTES
+                ? text
+                : `(index unavailable: HTTP ${resp.status}${text.length > MAX_INDEX_BYTES ? ", too large" : ""})`;
+            sections.push(`## ${url}\n\n${body}`);
+        } catch (e) {
+            sections.push(`## ${url}\n\n(index unavailable: ${String(e)})`);
+        }
+    }
+    return sections.length ? sections.join(nl + nl) : null;
+}
+
 export default async function describe() {
-    return { prompt: SYSTEM_PROMPT + nl + nl + DOCS_SECTION, tools_json: '[]' };
+    const docs = await loadDocsIndexes();
+    const docsBlock = docs ? `${DOCS_SECTION}${nl}${nl}${docs}` : DOCS_SECTION;
+    return { prompt: SYSTEM_PROMPT + nl + nl + docsBlock, tools_json: '[]' };
 }
