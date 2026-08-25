@@ -58,6 +58,10 @@ interface stub {
     turn-index: u64,
   }
 
+  record session-renamed-event {
+    name: string,
+  }
+
   record assistant-reply-event {
     content-json: string,
     turn-index: u64,
@@ -107,6 +111,7 @@ interface stub {
     user-message(user-message-event),
     assistant-reply(assistant-reply-event),
     agent-error(agent-error-event),
+    session-renamed(session-renamed-event),
     tool-result(tool-result-event),
     shell-output(shell-output-event),
   }

@@ -8,3 +8,7 @@ interface workflow {
     effort: option<string>,
   ) -> result<_, string>;
 }
+
+world exports {
+  export workflow;
+}

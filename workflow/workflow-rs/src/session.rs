@@ -32,6 +32,8 @@ use serde_json::{Value, json};
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult, Fd, ObeliskHost};
 use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
 
+use crate::chat;
+
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::llm::chat::CompletionResult;
@@ -39,8 +41,8 @@ use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
 use crate::generated::obelisk_agent::stub::stub::{
     AgentErrorEvent, AgentStatusEvent, AssistantReplyEvent, HumanInputRequestedEvent,
     HumanInputResolvedEvent, InputOfferedEvent, OutputChunk, PromptInput, SessionEvent,
-    SessionInput, SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput,
-    ToolResultEvent, UserMessageEvent,
+    SessionInput, SessionRenamedEvent, SessionStartedEvent, ShellInput, ShellOutputEvent,
+    ShellResult, ToolOutput, ToolResultEvent, UserMessageEvent,
 };
 use crate::generated::obelisk_agent::stub_obelisk_ext::stub as session_ext;
 use crate::generated::obelisk_agent::stub_obelisk_stub::stub as session_stub;
@@ -406,6 +408,7 @@ impl Notifications {
             SessionEvent::UserMessage(event) => event.id.clone(),
             SessionEvent::AssistantReply(event) => format!("turn-{}", event.turn_index),
             SessionEvent::AgentError(event) => event.id.clone(),
+            SessionEvent::SessionRenamed(event) => format!("session-renamed-{}", event.name),
             SessionEvent::ToolResult(event) => event.id.clone(),
             SessionEvent::ShellOutput(event) => event.id.clone(),
         };
@@ -449,6 +452,13 @@ impl Notifications {
                 execution_id,
                 turn_index,
             }),
+        )
+    }
+
+    pub(crate) fn session_renamed(&self, name: String) -> Result<(), String> {
+        self.notify(
+            SESSION_EVENTS_JOIN_SET,
+            &SessionEvent::SessionRenamed(SessionRenamedEvent { name }),
         )
     }
 }
@@ -500,11 +510,22 @@ pub fn agent_loop(
     let programs = config.programs;
     let mcp_servers = config.mcp_servers;
 
+    let own_session = chat::ChatSelf::new(
+        workflow_support::execution_id_current().id,
+        model.clone(),
+        effort.clone(),
+    );
     for program in &programs {
-        bash.register_command(
-            &program.name,
-            obelisk_program::command_handler(&program.name, &program.ffqn, Box::new(host())),
-        );
+        let handler =
+            obelisk_program::command_handler(&program.name, &program.ffqn, Box::new(host()));
+        // `chat` is wrapped so caller-aware subcommands (current/rename and
+        // child-scheduling create) are answered by this session itself.
+        let handler = if program.ffqn == chat::CHAT_PROGRAM_FFQN {
+            chat::command_handler(handler, own_session.clone(), notifications.clone())
+        } else {
+            handler
+        };
+        bash.register_command(&program.name, handler);
     }
 
     let mcp_registry: obelisk_mcp::ServerRegistry = Rc::new(RefCell::new(

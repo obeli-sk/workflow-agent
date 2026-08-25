@@ -7,6 +7,7 @@
 //! `just-bash` package.
 
 mod agent;
+mod chat;
 mod host;
 mod session;
 mod support;
