@@ -87,15 +87,15 @@ One endpoint serves the whole catalog, configured by three env vars: the
 catalog JSON `AGENT_MODELS` (required), the origin `LLM_BASE_URL` (default
 `http://127.0.0.1:9190`), and the bearer `LLM_API_KEY` (unset for keyless).
 Each catalog entry points a model at an OpenAI- or Anthropic-shaped route under
-that origin. Four catalogs ship:
+that origin. Three catalogs ship:
 
 - `models.local.json` (keyless) : the sibling
   [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server),
   a Claude/Codex subscription in docker on `:9190`.
-- `models.exe-integration.json` (keyless) : the exe.dev LLM integration, for a
-  deployment **inside an attached exe.dev VM**. Set
-  `LLM_BASE_URL=https://llm.int.exe.xyz`; exe.dev authenticates the VM at the
-  network edge — plain OpenAI-compatible requests just work, no key:
+- `models.exe-integration.json` (keyless) : the exe.dev LLM integration —
+  `LLM_BASE_URL=https://llm.int.exe.xyz`. Inside an attached exe.dev VM, exe.dev
+  authenticates at the network edge and plain OpenAI-compatible requests just
+  work, no key:
 
   ```sh
   curl -X POST https://llm.int.exe.xyz/v1/chat/completions \
@@ -103,22 +103,27 @@ that origin. Four catalogs ship:
     -d '{"model":"...","messages":[{"role":"user","content":"hi"}]}'
   ```
 
-- `models.exe-gateway.json` (keyless) : the same models for a deployment
-  running **outside** exe.dev. `llm.int.exe.xyz` resolves to a link-local
-  address only exe infra routes, so tunnel the VM's metadata listener and point
-  `LLM_BASE_URL` at the local end:
+  From **outside** exe.dev the hostname resolves to a link-local address only
+  exe infra routes, and the https endpoint routes on the Host header, so run an
+  nginx reverse proxy on an attached VM
+  ([`examples/exe-llm-proxy.conf`](examples/exe-llm-proxy.conf)) that fixes the
+  header, and tunnel to it:
 
   ```sh
-  ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz
-  export LLM_BASE_URL=http://localhost:7070
+  # on <yourinstance>.exe.xyz:
+  mkdir -p /tmp/exe-llm-proxy/{logs,tmp/body}
+  nginx -c $(pwd)/examples/exe-llm-proxy.conf   # plain HTTP on 127.0.0.1:7071
+
+  # on your machine:
+  ssh -L 7070:127.0.0.1:7071 <yourinstance>.exe.xyz
+  export LLM_BASE_URL=http://localhost:7070     # plain http, no custom CA
   ```
 
 - `models.openrouter.json` (`LLM_API_KEY`) : [OpenRouter](https://openrouter.ai).
   The key is injected into the outbound header at the edge, never seen by the JS.
 
-Regenerate both exe.dev catalogs from its published model list with
-`node scripts/update-exe-gateway-models.mjs`. Leave `LLM_API_KEY` unset for
-either exe.dev catalog.
+Regenerate the exe.dev catalog from the published model list with
+`node scripts/update-exe-models.mjs`. Leave `LLM_API_KEY` unset.
 
 Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama) works:
 point `LLM_BASE_URL` at it and add catalog entries.

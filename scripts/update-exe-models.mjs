@@ -7,11 +7,6 @@ const CATALOG_URL = "https://exe.dev/llm-gateway-models.json";
 const OUTPUTS = [
     {
         path: fileURLToPath(new URL("../models.exe-integration.json", import.meta.url)),
-        pathPrefix: "",
-    },
-    {
-        path: fileURLToPath(new URL("../models.exe-gateway.json", import.meta.url)),
-        pathPrefix: "/gateway/llm",
     },
 ];
 const API_TYPES = new Map([
@@ -28,10 +23,6 @@ function friendlyId(provider, wireModel) {
         return `${short.replace(/(\d)p(?=\d)/g, "$1.")}-fireworks`;
     }
     return wireModel;
-}
-
-function providerPath(path, pathPrefix) {
-    return `${pathPrefix}/${path.replace(/\/v1$/, "")}`;
 }
 
 function generate(catalog, pathPrefix) {
@@ -62,7 +53,9 @@ function generate(catalog, pathPrefix) {
                 id,
                 label: id,
                 api_type: apiType,
-                path: providerPath(provider.path, pathPrefix),
+                // Provider route under the shared origin; the endpoint's own
+                // published paths (e.g. "anthropic", "openai/v1").
+                path: `/${provider.path.replace(/\/v1$/, "")}`,
                 wire_model: model.id,
             };
             if (provider.id === "anthropic") entry.max_tokens = 8192;
