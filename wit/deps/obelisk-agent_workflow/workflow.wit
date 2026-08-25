@@ -6,6 +6,7 @@ interface workflow {
     model: option<string>,
     descriptor-ffqn: option<string>,
     effort: option<string>,
+    name: option<string>,
   ) -> result<_, string>;
 }
 

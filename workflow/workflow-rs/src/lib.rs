@@ -29,7 +29,8 @@ impl Guest for Component {
         model: Option<String>,
         descriptor_ffqn: Option<String>,
         effort: Option<String>,
+        name: Option<String>,
     ) -> Result<(), String> {
-        agent::run(prompt, model, descriptor_ffqn, effort)
+        agent::run(prompt, model, descriptor_ffqn, effort, name)
     }
 }

@@ -484,6 +484,7 @@ pub fn agent_loop(
     model: String,
     effort: String,
     descriptor_warnings: Vec<String>,
+    name: String,
 ) -> Result<(), String> {
     if system_prompt.is_empty() {
         return Err("system prompt is required".to_string());
@@ -510,10 +511,20 @@ pub fn agent_loop(
     let programs = config.programs;
     let mcp_servers = config.mcp_servers;
 
+    // A session created with a slug label (`chat create --name`) starts
+    // already renamed; anything else arrives unnamed.
+    let initial_name = if name.is_empty() {
+        None
+    } else {
+        chat::validate_slug(&name)
+            .map_err(|error| format!("invalid session name {name:?}: {error}"))?;
+        Some(name.clone())
+    };
     let own_session = chat::ChatSelf::new(
         workflow_support::execution_id_current().id,
         model.clone(),
         effort.clone(),
+        initial_name.clone(),
     );
     for program in &programs {
         let handler =
@@ -566,7 +577,8 @@ When you need a user answer before you can continue the current task, run \
 `obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. It \
 publishes the question to the UI, blocks, and returns the answer so you can \
 continue in the same turn. Use it only when the answer is required to proceed; \
-to end the turn, reply in Markdown without a command.\n\n{}",
+to end the turn, reply in Markdown without a command.\n\n{}\n\n{}",
+        chat::self_section(&own_session),
         obelisk_pack::SYSTEM_PROMPT
     );
 
@@ -592,6 +604,9 @@ to end the turn, reply in Markdown without a command.\n\n{}",
             system_prompt: system.clone(),
         }),
     )?;
+    if let Some(name) = &initial_name {
+        notifications.session_renamed(name.clone())?;
+    }
 
     // Degraded session-start fetches (e.g. docs indexes) are not fatal, but
     // they silently reduce the model's quality unless made visible. Emit each

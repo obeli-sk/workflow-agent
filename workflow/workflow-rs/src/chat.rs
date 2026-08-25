@@ -6,6 +6,7 @@
 //! default). Everything else delegates to the activity unchanged.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use just_bash_rs::CustomCommandHandler;
@@ -17,7 +18,7 @@ use crate::session::Notifications;
 
 pub(crate) const CHAT_PROGRAM_FFQN: &str = "obelisk-agent:programs/program.chat";
 
-const PEERS_JOIN_SET: &str = "peers";
+const DEFAULT_PEERS_JOIN_SET: &str = "peers";
 const MAX_SLUG_LEN: usize = 64;
 const EFFORTS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
@@ -29,21 +30,42 @@ pub(crate) struct ChatSelf {
     backend: String,
     effort: String,
     name: Rc<RefCell<Option<String>>>,
-    /// Join set holding the sessions created by `chat create`; created lazily
-    /// on first use and closed when the session ends, cancelling its peers.
-    peers: Rc<RefCell<Option<JoinSet>>>,
+    /// Join sets holding the sessions created by `chat create`, keyed by slug
+    /// (`--name` labels each child with its own join set, so its execution id
+    /// shows what it is); created lazily on first use and closed when the
+    /// session ends, cancelling outstanding children.
+    peers: Rc<RefCell<BTreeMap<String, JoinSet>>>,
 }
 
 impl ChatSelf {
-    pub(crate) fn new(execution_id: String, backend: String, effort: String) -> Self {
+    pub(crate) fn new(
+        execution_id: String,
+        backend: String,
+        effort: String,
+        name: Option<String>,
+    ) -> Self {
         Self {
             execution_id,
             backend,
             effort,
-            name: Rc::new(RefCell::new(None)),
-            peers: Rc::new(RefCell::new(None)),
+            name: Rc::new(RefCell::new(name)),
+            peers: Rc::new(RefCell::new(BTreeMap::new())),
         }
     }
+
+    /// The session that created this one, if any. Derived executions carry
+    /// their parent in the id (`<parent-id>.<join-set-ref>`).
+    pub(crate) fn parent_id(&self) -> Option<String> {
+        parent_of(&self.execution_id)
+    }
+}
+
+/// The session that created an execution, derived from the derived-execution
+/// id shape; None for top-level executions.
+pub(crate) fn parent_of(execution_id: &str) -> Option<String> {
+    execution_id
+        .rsplit_once('.')
+        .map(|(parent, _)| parent.to_string())
 }
 
 pub(crate) fn command_handler(
@@ -68,18 +90,47 @@ pub(crate) fn command_handler(
     })
 }
 
-fn current_output(own: &ChatSelf) -> CommandOutput {
-    let payload = serde_json::json!({
+fn current_payload(own: &ChatSelf) -> serde_json::Value {
+    serde_json::json!({
         "execution_id": own.execution_id,
         "backend": own.backend,
         "effort": own.effort,
         "name": own.name.borrow().clone(),
-    });
+        "parent_id": own.parent_id(),
+    })
+}
+
+fn current_output(own: &ChatSelf) -> CommandOutput {
+    let payload = current_payload(own);
     CommandOutput {
         stdout: format!("{payload}\n"),
         stderr: String::new(),
         exit_code: 0,
     }
+}
+
+/// The `# This session` system-prompt paragraph: the session's own identity
+/// (exactly what `chat current` prints), its parent for context gathering,
+/// and when to rename itself.
+pub(crate) fn self_section(own: &ChatSelf) -> String {
+    let payload = current_payload(own);
+    let mut text = format!(
+        "# This session\n\n\
+`chat current` output for the session you are running in:\n{payload}\n\n\
+Peers discover sessions by slug via `chat list`; read your own transcript \
+with `chat read {}`. When your task settles into something nameable, rename \
+this session once to a short kebab slug summarizing that task \
+(`chat rename <slug>`); do not rename repeatedly or preemptively.\n",
+        own.execution_id
+    );
+    if let Some(parent) = own.parent_id() {
+        text.push_str(&format!(
+            "\nYou were started as a child session by {parent}. If your prompt \
+leaves you short of context, run `chat read {parent}` to see the transcript \
+that created you.\n"
+        ));
+    }
+    text
 }
 
 fn rename(args: &[String], own: &ChatSelf, notifications: &Notifications) -> CommandOutput {
@@ -110,25 +161,35 @@ fn create_child(own: &ChatSelf, args: &[String]) -> CommandOutput {
         Ok(parsed) => parsed,
         Err(error) => return usage(&error),
     };
-    // A true derived child on the session-owned `peers` join set: it shows up
-    // under --show-derived listings and is cancelled when this session ends.
-    let mut peers = own.peers.borrow_mut();
-    if peers.is_none() {
-        match workflow_support::join_set_create_named(PEERS_JOIN_SET) {
-            Ok(join_set) => *peers = Some(join_set),
-            Err(error) => return failure(&format!("peers join set: {error:?}")),
-        }
-    }
-    let Some(join_set) = peers.as_ref() else {
-        return failure("peers join set is missing");
+    // A true derived child on a session-owned join set: it shows up under
+    // --show-derived listings and is cancelled when this session ends. A named
+    // child gets its own join set so its execution id carries the slug.
+    let set_name = match &parsed.name {
+        Some(name) => name,
+        None => DEFAULT_PEERS_JOIN_SET,
     };
-    let execution_id = workflow_ext::run_cancellable_submit(
-        join_set,
-        &parsed.prompt,
-        parsed.model.as_deref(),
-        None,
-        parsed.effort.as_deref(),
-    );
+    let execution_id = {
+        let mut peers = own.peers.borrow_mut();
+        if !peers.contains_key(set_name) {
+            match workflow_support::join_set_create_named(set_name) {
+                Ok(join_set) => {
+                    peers.insert(set_name.to_string(), join_set);
+                }
+                Err(error) => return failure(&format!("child join set: {error:?}")),
+            }
+        }
+        // The map keeps sole ownership of every handle; the submit only
+        // borrows, since a dropped duplicate would close the join set.
+        let join_set = peers.get(set_name).expect("join set just ensured");
+        workflow_ext::run_cancellable_submit(
+            join_set,
+            &parsed.prompt,
+            parsed.model.as_deref(),
+            None,
+            parsed.effort.as_deref(),
+            parsed.name.as_deref(),
+        )
+    };
     CommandOutput {
         stdout: format!("{}\n", execution_id.id),
         stderr: String::new(),
@@ -140,6 +201,7 @@ struct CreateArgs {
     prompt: String,
     model: Option<String>,
     effort: Option<String>,
+    name: Option<String>,
 }
 
 // Mirrors the activity-side create parser for the flags that matter to child
@@ -148,6 +210,7 @@ fn parse_create_args(args: &[String]) -> Result<CreateArgs, String> {
     let mut positional = Vec::new();
     let mut model = None;
     let mut effort = None;
+    let mut name = None;
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
@@ -156,8 +219,13 @@ fn parse_create_args(args: &[String]) -> Result<CreateArgs, String> {
             None => (arg.clone(), None),
         };
         match flag.as_str() {
-            "--model" | "--effort" => {
-                if flag == "--model" && model.is_some() || flag == "--effort" && effort.is_some() {
+            "--model" | "--effort" | "--name" => {
+                let already = match flag.as_str() {
+                    "--model" => model.is_some(),
+                    "--effort" => effort.is_some(),
+                    _ => name.is_some(),
+                };
+                if already {
                     return Err(format!("duplicate option: {flag}"));
                 }
                 let value = match value {
@@ -172,13 +240,20 @@ fn parse_create_args(args: &[String]) -> Result<CreateArgs, String> {
                 if value.is_empty() {
                     return Err(format!("option requires a non-empty value: {flag}"));
                 }
-                if flag == "--model" {
-                    model = Some(value);
-                } else {
-                    if !EFFORTS.contains(&value.as_str()) {
-                        return Err(format!("--effort must be one of: {}", EFFORTS.join("|")));
+                match flag.as_str() {
+                    "--model" => model = Some(value),
+                    "--name" => {
+                        if let Err(error) = validate_slug(&value) {
+                            return Err(format!("--name: {error}"));
+                        }
+                        name = Some(value);
                     }
-                    effort = Some(value);
+                    _ => {
+                        if !EFFORTS.contains(&value.as_str()) {
+                            return Err(format!("--effort must be one of: {}", EFFORTS.join("|")));
+                        }
+                        effort = Some(value);
+                    }
                 }
             }
             _ if arg.starts_with('-') => return Err(format!("unsupported option: {arg}")),
@@ -190,10 +265,13 @@ fn parse_create_args(args: &[String]) -> Result<CreateArgs, String> {
         prompt: positional.join(" "),
         model,
         effort,
+        name,
     })
 }
 
-fn validate_slug(name: &str) -> Result<(), String> {
+/// Slugs label sessions and name their child join sets: lowercase letters,
+/// digits, and single inner dashes.
+pub(crate) fn validate_slug(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > MAX_SLUG_LEN {
         return Err(format!("slug must be 1..={MAX_SLUG_LEN} characters"));
     }
@@ -260,11 +338,22 @@ mod tests {
         assert_eq!(parsed.prompt, "check the deploy");
         assert_eq!(parsed.model.as_deref(), Some("fake"));
         assert_eq!(parsed.effort.as_deref(), Some("low"));
+        assert_eq!(parsed.name, None);
+
+        let named = parse_create_args(&[
+            "--name=research".to_string(),
+            "$".to_string(),
+            "ls".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(named.name.as_deref(), Some("research"));
+        assert_eq!(named.prompt, "$ ls");
 
         let bare = parse_create_args(&[]).unwrap();
         assert_eq!(bare.prompt, "");
         assert_eq!(bare.model, None);
         assert_eq!(bare.effort, None);
+        assert_eq!(bare.name, None);
     }
 
     #[test]
@@ -280,5 +369,50 @@ mod tests {
             ])
             .is_err()
         );
+        assert!(parse_create_args(&["--name".to_string(), "Bad_Name".to_string()]).is_err());
+        assert!(
+            parse_create_args(&[
+                "--name".to_string(),
+                "one".to_string(),
+                "--name=two".to_string()
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parent_of_derives_from_derived_execution_ids() {
+        assert_eq!(
+            parent_of("E_01ABC.n:research_2"),
+            Some("E_01ABC".to_string())
+        );
+        // A grandchild's parent is the intermediate session, not the root.
+        assert_eq!(
+            parent_of("E_01ABC.n:a_1.n:b_1"),
+            Some("E_01ABC.n:a_1".to_string())
+        );
+        assert_eq!(parent_of("E_01ABC"), None);
+    }
+
+    #[test]
+    fn self_section_shows_identity_and_parent() {
+        let own = ChatSelf::new(
+            "E_01ABC.n:research_1".to_string(),
+            "claude".to_string(),
+            String::new(),
+            Some("research".to_string()),
+        );
+        let section = self_section(&own);
+        assert!(section.contains("# This session"));
+        assert!(section.contains("\"execution_id\":\"E_01ABC.n:research_1\""));
+        assert!(section.contains("\"name\":\"research\""));
+        assert!(section.contains("chat read E_01ABC.n:research_1"));
+        assert!(section.contains("chat read E_01ABC"));
+
+        let top = ChatSelf::new("E_01XYZ".to_string(), String::new(), String::new(), None);
+        let section = self_section(&top);
+        // Top-level sessions carry no parent beyond the JSON null.
+        assert!(section.contains("\"parent_id\":null"));
+        assert!(!section.contains("child session by"));
     }
 }
