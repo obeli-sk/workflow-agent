@@ -23,9 +23,9 @@ function pickRunState(workflowStatus) {
 
 export async function listRuns() {
     // Derived executions are included so child sessions created via
-    // `chat create` appear next to top-level ones (the FFQN prefix filters
+    // `chat create` appear nested under their parent (the FFQN prefix filters
     // out every other derived child kind).
-    const executions = await listExecutions(WORKFLOW_FFQN, "", true, false, 50);
+    const executions = await listExecutions(WORKFLOW_FFQN, "", true, false, 100);
     const runs = await Promise.all(executions.map(async (e) => {
         const id = e.execution_id;
         const prompt_preview = await loadPromptPreview(id);
@@ -44,7 +44,38 @@ export async function listRuns() {
             prompt_preview,
         };
     }));
-    return { runs };
+    return { runs: nestChildren(runs) };
+}
+
+// Child sessions (derived executions: `<parent-id>.<join-set-ref>`) render
+// indented below their parent when the parent row is on the same page;
+// orphans whose parent fell out of the listing window stay top-level.
+function nestChildren(runs) {
+    const byId = new Map(runs.map((run) => [run.id, run]));
+    for (const run of runs) {
+        const dot = run.id.lastIndexOf(".");
+        const parent = dot > 0 ? byId.get(run.id.slice(0, dot)) : undefined;
+        run.parent_id = parent ? parent.id : null;
+    }
+    const childrenOf = new Map();
+    const roots = [];
+    for (const run of runs) {
+        if (run.parent_id) {
+            if (!childrenOf.has(run.parent_id)) childrenOf.set(run.parent_id, []);
+            childrenOf.get(run.parent_id).push(run);
+        } else {
+            roots.push(run);
+        }
+    }
+    for (const children of childrenOf.values()) {
+        children.sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+    }
+    const nested = [];
+    for (const root of roots) {
+        nested.push(root);
+        nested.push(...(childrenOf.get(root.id) ?? []));
+    }
+    return nested;
 }
 
 async function loadPromptPreview(execId) {
