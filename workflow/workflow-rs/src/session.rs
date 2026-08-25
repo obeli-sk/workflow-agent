@@ -265,6 +265,29 @@ fn llm_error_event(turn_index: u64, message: &str) -> AgentErrorEvent {
     }
 }
 
+const EMPTY_REPLY_NUDGE: &str = "Your previous reply had no message content. Reply to the \
+user in Markdown, or call the bash tool to keep working.";
+
+fn empty_reply_error(turn_index: u64) -> AgentErrorEvent {
+    AgentErrorEvent {
+        id: format!("empty-reply-{turn_index}"),
+        text: "model returned an empty response again; ending the turn".to_string(),
+        turn_index,
+    }
+}
+
+/// Whether any block carries non-whitespace text the user can read; thinking-
+/// only or tool-only replies do not count.
+fn has_user_visible_text(content: &[Value]) -> bool {
+    content.iter().any(|block| {
+        block.get("type").and_then(Value::as_str) == Some("text")
+            && block
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty())
+    })
+}
+
 /// The durable input channel: a user-injection offer raced against LLM
 /// completion children on the session-wide named `user` join set. Unlike
 /// JS's `session.completionExecutionId`, the
@@ -490,6 +513,8 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
 
     let mut pack_mounted = false;
     let mut turn_index: u64 = 0;
+    // Turn index that already consumed its one empty-reply nudge; MAX means none.
+    let mut empty_reply_nudged_turn = u64::MAX;
     let mut should_call_llm = !messages.is_empty();
     let mut agent_steps = 0u32;
     let mut session = open_session(turn_index, &notifications)?;
@@ -617,7 +642,14 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
                     })
                 })
                 .collect();
-            let assistant_completes_turn = calls.is_empty() && !reply.prompt_queued;
+            // A reply with neither a tool call nor visible text would end the
+            // turn as an empty bubble: nudge once per turn before giving up.
+            let nudge_empty_reply = calls.is_empty()
+                && !reply.prompt_queued
+                && !has_user_visible_text(&reply.content)
+                && empty_reply_nudged_turn != turn_index;
+            let assistant_completes_turn =
+                calls.is_empty() && !reply.prompt_queued && !nudge_empty_reply;
             notifications.notify(
                 SESSION_EVENTS_JOIN_SET,
                 &SessionEvent::AssistantReply(AssistantReplyEvent {
@@ -654,7 +686,20 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
                     json!({"role": "user", "content": result_blocks}),
                 );
                 should_call_llm = true;
+            } else if nudge_empty_reply {
+                empty_reply_nudged_turn = turn_index;
+                messages.insert(
+                    reply.request_message_count + 1,
+                    user_text(EMPTY_REPLY_NUDGE),
+                );
+                should_call_llm = true;
             } else {
+                if !reply.prompt_queued && !has_user_visible_text(&reply.content) {
+                    notifications.notify(
+                        SESSION_EVENTS_JOIN_SET,
+                        &SessionEvent::AgentError(empty_reply_error(turn_index)),
+                    )?;
+                }
                 should_call_llm = reply.prompt_queued;
                 agent_steps = 0;
                 turn_complete = assistant_completes_turn;
@@ -1050,6 +1095,22 @@ mod tests {
 
         assert!(parse_session_config(r#"{"max_steps":0,"programs":[],"mcp_servers":[]}"#).is_err());
         assert!(parse_session_config(r#"{"max_steps":10,"programs":[]}"#).is_err());
+    }
+
+    #[test]
+    fn has_user_visible_text_ignores_blank_thinking_and_tool_blocks() {
+        let blocks = |v: Value| v.as_array().unwrap().clone();
+        assert!(!has_user_visible_text(&[]));
+        assert!(!has_user_visible_text(&blocks(json!([
+            {"type": "thinking", "thinking": "hmm"},
+            {"type": "tool_use", "id": "t", "name": "bash", "input": {}}
+        ]))));
+        assert!(!has_user_visible_text(&blocks(json!([
+            {"type": "text", "text": "  \n"}
+        ]))));
+        assert!(has_user_visible_text(&blocks(json!([
+            {"type": "text", "text": "done"}
+        ]))));
     }
 
     #[test]
