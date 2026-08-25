@@ -30,9 +30,11 @@ test: test-rs test-js test-e2e
 test-rs:
   cargo test -p just-bash-rs -p workflow-agent-rs
 
-# Web UI: unit tests for the served transcript renderer (turn/step grouping).
+# Web UI: unit tests for the served transcript renderer (turn/step grouping),
+# plus unit tests for the GitHub contents mount transport (symlink resolution).
 test-js:
   node --test webhook/ui/shell.test.js
+  node --test activity/github-contents.test.js
 
 # All end-to-end suites, each against its own isolated, throwaway obelisk server.
 # See scripts/test-e2e-*.sh; the mcp suite SKIPs when no docker/podman is on PATH.
