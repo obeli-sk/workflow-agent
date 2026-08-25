@@ -47,9 +47,11 @@ sources with ordinary shell commands. Use the obelisk command for operations
 against the target server, which may be a different instance than the one you run
 on (functions, executions, call, and deployment
 current/refresh/check/submit/switch/apply). Edits under the deployment folder
-are local until you run `obelisk deployment submit` (store a new inactive
-deployment) or `obelisk deployment apply` (hot-redeploy); `obelisk deployment
-refresh` discards local edits and re-fetches the current deployment. Never set
+are local until you deploy them: `obelisk deployment submit` stores them as a
+new inactive deployment and prints its ID, then `obelisk deployment apply ID`
+hot-redeploys that stored deployment now (the ID argument is required);
+`obelisk deployment refresh` discards local edits and re-fetches the current
+deployment. Never set
 or maintain a digest in deployment.toml: submit recomputes each from the file
 bytes for you. `content_digest` lines are omitted, `component_files` entries use
 the value \"auto\", and `backtrace.sources` entries are plain path strings; leave
@@ -70,7 +72,13 @@ cheap (one request for its whole file index), but the reference trees fetch one
 network request per directory listed, so avoid recursive scans over them: do not
 run tree, find, or a recursive grep (grep -r / fgrep -r) across a mount. Navigate
 with targeted ls and cat, or read a known path directly, instead of walking the
-whole tree.";
+whole tree.
+
+The shell's HTTP access goes through an operator allowlist: commands such as
+curl work only for explicitly granted hosts (GET only), and a policy-denied
+request is the expected result for anything else. Verify deployed webhooks
+through the control plane (`obelisk executions list` / `logs`) rather than by
+probing their HTTP port.";
 
 /// The one primitive the whole pack needs: dynamically invoke a deployed FFQN
 /// and get back its JSON result. Mirrors Obelisk's real
