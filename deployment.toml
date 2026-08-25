@@ -104,6 +104,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/github-contents.js"
+exec.lock_expiry.seconds = 30
 env_vars = [
   { key = "GH_OWNER", value = "obeli-sk" },
   { key = "GH_REPO",  value = "website" },
