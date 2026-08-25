@@ -15,10 +15,9 @@ export TARGET_OBELISK_WEBHOOK_URL="http://127.0.0.1:9290"
 ## Local
 # export AGENT_MODELS="$(cat models.local.json)"
 # export LLM_BASE_URL=http://127.0.0.1:9190
-## Exe gateway
-# export AGENT_MODELS="$(cat models.exe-gateway.json)"
-# export LLM_BASE_URL=http://localhost:7070
-# export LLM_API_KEY="..."
+## Exe integration (in a VM: direct; outside: tunnel + examples/exe-llm-proxy.conf)
+# export AGENT_MODELS="$(cat models.exe-integration.json)"
+# export LLM_BASE_URL=https://llm.int.exe.xyz   # or http://localhost:7070 via the tunnel
 ## OpenRouter
 # export AGENT_MODELS="$(cat models.openrouter.json)"
 # export LLM_BASE_URL="https://openrouter.ai"
