@@ -457,11 +457,23 @@ fn elapsed_milliseconds(start: i64, end: i64) -> u64 {
     u64::try_from(end.saturating_sub(start)).unwrap_or_default()
 }
 
+/// Stable event id for a descriptor warning so repeated sessions with the same
+/// degradation stay distinguishable in the transcript.
+fn short_warning_id(warning: &str) -> String {
+    warning
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(24)
+        .collect::<String>()
+        .to_lowercase()
+}
+
 pub fn agent_loop(
     prompt: String,
     system_prompt: String,
     model: String,
     effort: String,
+    descriptor_warnings: Vec<String>,
 ) -> Result<(), String> {
     if system_prompt.is_empty() {
         return Err("system prompt is required".to_string());
@@ -555,6 +567,20 @@ to end the turn, reply in Markdown without a command.\n\n{}",
             system_prompt: system.clone(),
         }),
     )?;
+
+    // Degraded session-start fetches (e.g. docs indexes) are not fatal, but
+    // they silently reduce the model's quality unless made visible. Emit each
+    // warning into the transcript so the user sees why a session may be off.
+    for warning in &descriptor_warnings {
+        notifications.notify(
+            SESSION_EVENTS_JOIN_SET,
+            &SessionEvent::AgentError(AgentErrorEvent {
+                id: format!("descriptor-warning-{}", short_warning_id(warning)),
+                text: warning.clone(),
+                turn_index: 0,
+            }),
+        )?;
+    }
 
     let mut pack_mounted = false;
     let mut turn_index: u64 = 0;

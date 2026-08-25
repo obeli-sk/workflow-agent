@@ -46,30 +46,64 @@ const SYSTEM_PROMPT = [
 ].join(nl);
 
 const DOCS_SECTION = [
-    '# Obelisk documentation',
-    'The full docs index is at https://obeli.sk/docs/latest/llms.txt/ — curl it (the GET-only program), then curl any page it lists, e.g. `curl https://obeli.sk/docs/latest/js/js-workflows/ | sed -n 1,200p` (pages are HTML; read selectively). Read `/js/js-activities/`, `/js/js-workflows/`, and `/js/js-webhooks/` before writing components; never guess workflow host API signatures (`obelisk.call`, `obelisk.sleep`, join sets) — they are all on `/js/js-workflows/`.',
-    'Inlined doc index pointers:',
+    '# Obelisk documentation (rendered llms.txt)',
+    'The full documentation index is inlined below; it lists every docs page as a URL. Fetch any page with the GET-only curl program, e.g. `curl https://obeli.sk/docs/latest/js/js-workflows/ | sed -n 1,200p` (pages are HTML; read selectively). Read `/js/js-activities/`, `/js/js-workflows/`, and `/js/js-webhooks/` before writing components; never guess workflow host API signatures (`obelisk.call`, `obelisk.sleep`, join sets) — they are all on `/js/js-workflows/`.',
 ].join(nl);
 
-// Docs pointers inlined into the prompt. The deployment manifest passes
-// DOCS_URLS_JSON (default: the current llms.txt for this Obelisk version); the
-// model fetches those indexes and every detail page itself via the GET-only
-// curl program, so this keeps only pointer lines in the prompt — never the
-// index bodies, which would bloat every request.
-async function loadDocsPointers() {
+// Docs indexes fetched once at session start and inlined into the prompt.
+// DOCS_URLS_JSON (deployment.toml; default: the current llms.txt for this
+// Obelisk version) lists the indexes; fetching here keeps the doc set pinned
+// to the deployed Obelisk without hardcoding anything that could drift. Any
+// failed or oversized fetch degrades to a placeholder plus a warning returned
+// alongside the prompt, so the session surfaces the degraded-docs state to
+// the user instead of failing silently.
+const MAX_INDEX_BYTES = 512 * 1024;
+const DEGRADE_NOTE = "the model is missing the docs index and may mis-guess API signatures";
+
+async function loadDocsIndexes() {
     let urls;
     try {
         urls = JSON.parse(process.env["DOCS_URLS_JSON"] || "[]");
     } catch {
-        return null;
+        return {
+            body: null,
+            warnings: [`DOCS_URLS_JSON is not valid JSON; ${DEGRADE_NOTE}`],
+        };
     }
-    if (!Array.isArray(urls)) return null;
-    const lines = urls.filter((u) => typeof u === "string" && u.startsWith("https://"));
-    return lines.length ? lines.map((url) => `- ${url}`).join(nl) : null;
+    if (!Array.isArray(urls)) {
+        return {
+            body: null,
+            warnings: [`DOCS_URLS_JSON is not an array; ${DEGRADE_NOTE}`],
+        };
+    }
+    const sections = [];
+    const warnings = [];
+    for (const url of urls) {
+        if (typeof url !== "string" || !url.startsWith("https://")) continue;
+        try {
+            const resp = await fetch(url);
+            const text = await resp.text();
+            if (!resp.ok) {
+                warnings.push(`docs index fetch failed (HTTP ${resp.status}): ${url}; ${DEGRADE_NOTE}`);
+                sections.push(`## ${url}\n\n(index unavailable: HTTP ${resp.status})`);
+                continue;
+            }
+            if (text.length > MAX_INDEX_BYTES) {
+                warnings.push(`docs index truncated (${url} exceeds ${MAX_INDEX_BYTES} bytes); some page URLs may be missing`);
+                sections.push(`## ${url}\n\n${text.slice(0, MAX_INDEX_BYTES)}\n(... truncated)`);
+                continue;
+            }
+            sections.push(`## ${url}\n\n${text}`);
+        } catch (e) {
+            warnings.push(`docs index fetch failed (${String(e)}): ${url}; ${DEGRADE_NOTE}`);
+            sections.push(`## ${url}\n\n(index unavailable: ${String(e)})`);
+        }
+    }
+    return { body: sections.length ? sections.join(nl + nl) : null, warnings };
 }
 
 export default async function describe() {
-    const pointers = await loadDocsPointers();
-    const docsBlock = pointers ? `${DOCS_SECTION}${nl}${nl}${pointers}` : DOCS_SECTION;
-    return { prompt: `${SYSTEM_PROMPT}${nl}${nl}${docsBlock}`, tools_json: '[]' };
+    const { body, warnings } = await loadDocsIndexes();
+    const docsBlock = body ? `${DOCS_SECTION}${nl}${nl}${body}` : DOCS_SECTION;
+    return { prompt: `${SYSTEM_PROMPT}${nl}${nl}${docsBlock}`, tools_json: '[]', warnings };
 }

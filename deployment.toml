@@ -8,13 +8,13 @@
 name = "pack_describe"
 ffqn = "obelisk-control:agent/pack.describe"
 params = []
-return_type = "result<record { prompt: string, tools-json: string }, string>"
+return_type = "result<record { prompt: string, tools-json: string, warnings: list<string> }, string>"
 location = "packs/obelisk-control/descriptor.js"
 exec.lock_expiry.seconds = 30
-# The descriptor inlines pointers to the docs indexes listed in DOCS_URLS_JSON
-# (see the curl-program block below) into the system prompt at session start;
-# the model fetches the index bodies itself via the curl program, so the
-# version-pinned docs never drift into a hardcoded prompt.
+# The descriptor fetches the docs indexes listed in DOCS_URLS_JSON (see the
+# curl-program block below) once at session start and inlines them into the
+# system prompt; failed or oversized fetches degrade to placeholders plus a
+# `warnings` list the workflow surfaces to the user in the UI.
 env_vars = [
   { key = "DOCS_URLS_JSON", value = "${DOCS_URLS_JSON:-[\"https://obeli.sk/docs/v${OBELISK_VERSION:-latest}/llms.txt/\"]}" },
 ]

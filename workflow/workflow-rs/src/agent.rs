@@ -38,6 +38,26 @@ pub fn run(
         .get("prompt")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("descriptor {descriptor} did not return {{ prompt }}"))?;
+    // Degraded session-start fetches (docs indexes and the like) come back as
+    // warnings; the loop surfaces them to the user in the UI transcript.
+    let descriptor_warnings: Vec<String> = described
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
 
-    crate::session::agent_loop(prompt, system_prompt.to_string(), model_id, effort_level)
+    crate::session::agent_loop(
+        prompt,
+        system_prompt.to_string(),
+        model_id,
+        effort_level,
+        descriptor_warnings,
+    )
 }
