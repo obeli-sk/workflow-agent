@@ -62,8 +62,13 @@ const MAX_INDEX_BYTES = 64 * 1024;
 
 async function loadDocsIndexes() {
     let urls;
-    try { urls = JSON.parse(process.env["DOCS_URLS_JSON"] || "[]"); }
-    catch { urls = []; }
+    try {
+        let urlsString = process.env["DOCS_URLS_JSON"] || "[]";
+        console.debug(`Fetching docs from ${urlsString}`);
+        urls = JSON.parse(urlsString);
+    } catch {
+        urls = [];
+    }
     if (!Array.isArray(urls)) urls = [];
     const sections = [];
     for (const url of urls) {

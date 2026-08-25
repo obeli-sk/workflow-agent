@@ -29,4 +29,4 @@ export LLM_BASE_URL=http://127.0.0.1:9190
 
 # Docs: pin the inlined llms.txt index to the target Obelisk version (empty =
 # latest). See the README "Documentation" section.
-export OBELISK_VERSION=""
+export OBELISK_VERSION="$(obelisk -v | cut -d ' ' -f 2)"

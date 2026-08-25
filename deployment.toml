@@ -14,7 +14,7 @@ exec.lock_expiry.seconds = 30
 # The descriptor inlines the docs indexes listed in DOCS_URLS_JSON (see the
 # curl-program block below) into the system prompt at session start.
 env_vars = [
-  { key = "DOCS_URLS_JSON", value = "${DOCS_URLS_JSON:-[\"https://obeli.sk/docs/${OBELISK_VERSION:-latest}/llms.txt/\"]}" },
+  { key = "DOCS_URLS_JSON", value = "${DOCS_URLS_JSON:-[\"https://obeli.sk/docs/v${OBELISK_VERSION:-latest}/llms.txt/\"]}" },
 ]
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
