@@ -49,6 +49,7 @@ params = [
 ]
 return_type = "result<record { stdout: string, stderr: string, exit-code: u32 }, string>"
 location = "activity/curl.js"
+exec.lock_expiry.seconds = 30
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
