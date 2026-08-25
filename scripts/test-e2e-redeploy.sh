@@ -8,6 +8,8 @@ source "$ROOT/scripts/e2e-lib.sh"
 e2e_init "redeploy-e2e" 28017 28092 "e2e-redeploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28017"
+# server.toml's [secrets] requires every named var to exist; empty is fine.
+export MCP_SERVER_TOKEN=""
 export AGENT_MODELS="[]"
 
 e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"

@@ -31,15 +31,17 @@ test-rs:
   cargo test -p just-bash-rs -p workflow-agent-rs
 
 # Web UI: unit tests for the served transcript renderer (turn/step grouping).
-# Activities: unit tests for the curl program's flag handling.
+# Activities: unit tests for the curl and chat programs' flag handling.
 test-js:
   node --test webhook/ui/shell.test.js
   node --test activity/curl.test.js
+  node --test activity/chat.test.js
 
 # All end-to-end suites, each against its own isolated, throwaway obelisk server.
 # See scripts/test-e2e-*.sh; the mcp suite SKIPs when no docker/podman is on PATH.
 test-e2e:
   ./scripts/test-e2e-bash-workflow.sh
   ./scripts/test-e2e-agent-workflow.sh
+  ./scripts/test-e2e-chat.sh
   ./scripts/test-e2e-redeploy.sh
   ./scripts/test-e2e-mcp.sh

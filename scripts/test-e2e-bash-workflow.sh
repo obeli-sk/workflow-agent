@@ -6,6 +6,8 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 e2e_init "bash-workflow-e2e" 28015 28090 "e2e-bash-workflow-token"
+# server.toml's [secrets] requires every named var to exist; empty is fine.
+export MCP_SERVER_TOKEN=""
 e2e_build_component "workflow/bash-rs" "bash_workflow.wasm"
 
 DEPLOY="$ROOT/.e2e-deployment.toml"
