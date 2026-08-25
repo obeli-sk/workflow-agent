@@ -118,6 +118,10 @@ interface stub {
 
   injection: func() -> result<session-input, string>;
   record-output: func(event-id: string) -> result<session-event, string>;
+  // Renames publish on their own join set (never through record-output), so
+  // consumers fetch a session's current name with one bounded request instead
+  // of racing the mixed event stream.
+  session-renamed: func(name: string) -> result<session-renamed-event, string>;
   ask-user: func(question: string) -> result<string, string>;
 }
 

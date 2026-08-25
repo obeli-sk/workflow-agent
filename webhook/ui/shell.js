@@ -326,7 +326,7 @@ function renderSidebar() {
     let { label, cls } = describeStatus(r.status, r.result_kind, r.join_name);
     if (r.join_name === 'user' && r.working) { label = 'thinking'; cls = 'working'; }
     const child = r.parent_id ? ' child' : '';
-    const title = (child ? '+ ' : '') + esc(r.name || r.prompt_preview || '(no prompt)');
+    const title = (child ? '+ ' : '') + esc(r.name || r.id);
     return '<a class="run-item' + child + (r.id === state.selected ? ' active' : '') + '" href="?run=' + encodeURIComponent(r.id) + '" data-id="' + esc(r.id) + '">'
       + '<div class="run-prompt">' + title + '</div>'
       + '<div class="run-meta"><span class="status ' + esc(cls) + '">' + esc(label) + '</span><span class="ago">' + esc(ago(r.created_at)) + '</span></div>'
@@ -784,7 +784,7 @@ function renderDetail(forceScroll = false) {
     : ' &middot; <button type="button" id="cancel-btn">cancel</button>';
 
   main.innerHTML = ''
-    + '<h2>' + esc(d.name || (d.prompt ? truncate(d.prompt, 80) : 'Run')) + '</h2>'
+    + '<h2>' + esc(d.name || d.id) + '</h2>'
     + '<div class="meta">'
     +   '<a href="' + esc(execLink(d.id)) + '" target="_blank" rel="noopener"><code>' + esc(d.id) + '</code></a>'
     +   ' &middot; <span class="status ' + esc(statusCls) + '">' + esc(label) + '</span>'

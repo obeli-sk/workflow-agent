@@ -3,13 +3,17 @@
 // the UI renders.
 
 import {
-    getExecutionEvents,
     getExecutionLogs,
     getExecutionRecord,
     getExecutionStatus,
     listExecutions,
 } from "./obelisk-api.js";
-import { loadLatestAgentState, loadResponses, parseJoinName } from "./responses.js";
+import {
+    loadLatestAgentState,
+    loadLatestSessionName,
+    loadResponses,
+    parseJoinName,
+} from "./responses.js";
 
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 function pickRunState(workflowStatus) {
@@ -28,20 +32,20 @@ export async function listRuns() {
     const executions = await listExecutions(WORKFLOW_FFQN, "", true, false, 100);
     const runs = await Promise.all(executions.map(async (e) => {
         const id = e.execution_id;
-        const prompt_preview = await loadPromptPreview(id);
         const runState = pickRunState(e);
         // The shared user set races input against completion, so its join
         // name alone cannot distinguish "your turn" from "thinking".
-        const latest = await loadLatestAgentState(id);
-        const working = runState.status === "blocked_by_join_set" && runState.join_name === "user"
-            && latest.working;
+        const [latest, name] = await Promise.all([
+            loadLatestAgentState(id),
+            loadLatestSessionName(id),
+        ]);
         return {
             id,
             created_at: e.created_at || "",
             ...runState,
-            working,
-            name: latest.name,
-            prompt_preview,
+            working: runState.status === "blocked_by_join_set" && runState.join_name === "user"
+                && latest.working,
+            name,
         };
     }));
     return { runs: nestChildren(runs) };
@@ -76,11 +80,6 @@ function nestChildren(runs) {
         nested.push(...(childrenOf.get(root.id) ?? []));
     }
     return nested;
-}
-
-async function loadPromptPreview(execId) {
-    const p = (await loadPrompt(execId)) || "";
-    return p.length > 120 ? p.substring(0, 120) + "..." : p;
 }
 
 export async function detailRun(id, cursorState) {
@@ -122,26 +121,6 @@ export async function detailRun(id, cursorState) {
 async function loadStatus(id) {
     try { return await getExecutionStatus(id); }
     catch (_) { return null; }
-}
-
-// The workflow.run-cancellable creation params are [prompt, model, descriptor-ffqn, effort].
-// version 0 is the `created` event; without including_cursor=true the server
-// skips it and returns the `locked` event at version 1, which has no params.
-async function loadCreated(id) {
-    try {
-        const payload = await getExecutionEvents(id, "version_from", 0, true, 1);
-        const params = payload.events?.[0]?.event?.created?.params;
-        if (!Array.isArray(params)) return null;
-        return {
-            prompt: typeof params[0] === "string" ? params[0] : null,
-            backend: typeof params[1] === "string" ? params[1] : null,
-            effort: typeof params[3] === "string" ? params[3] : null,
-        };
-    } catch (_) { return null; }
-}
-
-async function loadPrompt(id) {
-    return (await loadCreated(id))?.prompt ?? null;
 }
 
 async function loadFinalResult(id) {

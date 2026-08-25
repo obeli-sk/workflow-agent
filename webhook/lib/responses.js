@@ -49,6 +49,9 @@ export async function loadResponses(execId, startCursor = 0) {
         including = false;
         if (typeof payload.max_cursor === "number" && cursor >= payload.max_cursor) break;
     }
+    // Renames live on their own join set now; the stream scan only catches
+    // pre-protocol-7 sessions.
+    sessionName = (await loadLatestSessionName(execId)) ?? sessionName;
     return {
         replies,
         toolResults,
@@ -64,26 +67,45 @@ export async function loadResponses(execId, startCursor = 0) {
     };
 }
 
-// Newest-first scan for the live status bits the sidebar needs: the working
-// flag and the current slug. A rename older than this window falls back to
-// null and callers show the prompt preview instead.
+// The session's current slug, read straight off the dedicated `session-name`
+// join set. Read forward from the start and keep the last one: renames are
+// rare, so one small page always covers the set. (direction=older cannot be
+// used here: its newest-window scan misses filtered responses that sit below
+// newer responses of other join sets.)
+export async function loadLatestSessionName(execId) {
+    let payload;
+    try {
+        payload = await getExecutionResponses(execId, "session-name", 0, true, 200);
+    } catch (_) { return null; }
+    let name = null;
+    for (const r of payload.responses || []) {
+        const wrapped = r?.event?.event;
+        const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
+        // New renames carry their event directly ({name}); pre-protocol-7
+        // streams wrapped the variant ({session_renamed: {name}}).
+        if (typeof value?.name === "string") name = value.name;
+        else if (typeof value?.session_renamed?.name === "string") name = value.session_renamed.name;
+    }
+    return name;
+}
+
+// Newest-first scan for the live working flag. Names are NOT looked for here:
+// an agent-status event newer than the rename would win the race and hide it
+// (startup-named sessions publish renamed before their first agent-status);
+// they come from loadLatestSessionName instead.
 export async function loadLatestAgentState(execId) {
     let payload;
-    try { payload = await getLatestExecutionResponses(execId, "session-events", 200); }
+    try { payload = await getLatestExecutionResponses(execId, "session-events", 50); }
     catch (_) { return { working: false, name: null }; }
     const responses = payload.responses || [];
-    let name = null;
     for (let i = responses.length - 1; i >= 0; i -= 1) {
         const wrapped = responses[i]?.event?.event;
         const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
-        if (name === null && typeof value?.session_renamed?.name === "string") {
-            name = value.session_renamed.name;
-        }
         if (typeof value?.agent_status?.working === "boolean") {
-            return { working: value.agent_status.working, name };
+            return { working: value.agent_status.working, name: null };
         }
     }
-    return { working: false, name };
+    return { working: false, name: null };
 }
 
 function appendSessionEvent(target, event, response) {
@@ -107,6 +129,8 @@ function appendSessionEvent(target, event, response) {
     } else if (event.agent_status) {
         target.agentWorking = event.agent_status.working === true;
     } else if (event.session_renamed) {
+        // Legacy only: renames publish on their own join set now, so this
+        // just covers pre-protocol-7 streams.
         const renamed = event.session_renamed;
         target.sessionName = typeof renamed.name === "string" ? renamed.name : null;
     } else if (event.human_input_requested) {

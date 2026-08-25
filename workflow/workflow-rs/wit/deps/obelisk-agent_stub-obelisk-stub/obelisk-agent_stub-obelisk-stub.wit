@@ -9,6 +9,8 @@ interface stub {
 
   record-output-stub: func(execution-id: execution-id, execution-result: result<session-event, string>) -> result<_, stub-error>;
 
+  session-renamed-stub: func(execution-id: execution-id, execution-result: result<session-renamed-event, string>) -> result<_, stub-error>;
+
   ask-user-stub: func(execution-id: execution-id, execution-result: result<string, string>) -> result<_, stub-error>;
 }
 

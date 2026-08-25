@@ -239,29 +239,24 @@ async function describeRun(exec) {
     const status = exec.pending_state?.status ?? "unknown";
     const join = joinName(exec.pending_state?.join_set_id);
     let working = false;
-    let name = null;
     let prompt_preview = "";
     try {
         const latest = await latestResponses(id);
         const created = await createdParams(id);
         let needWorking = true;
-        let needName = true;
         scanBackward(latest, (value) => {
             if (needWorking && typeof value.agent_status?.working === "boolean") {
                 working = value.agent_status.working;
                 needWorking = false;
             }
-            if (needName && typeof value.session_renamed?.name === "string") {
-                name = value.session_renamed.name;
-                needName = false;
-            }
-            return !needWorking && !needName;
+            return !needWorking;
         });
         const prompt = created?.prompt ?? "";
         prompt_preview = prompt.length > 120 ? prompt.substring(0, 120) + "..." : prompt;
     } catch (_) {
         // A run whose children were reaped still lists, minus extras.
     }
+    const name = await latestSessionName(id);
     // The user join set races input against completion, so being parked there
     // does not distinguish waiting from thinking; agent_status does.
     const effectiveWorking = status === "blocked_by_join_set" && join === "user" && working;
@@ -305,7 +300,37 @@ async function walkResponses(executionId) {
         including = false;
         if (typeof payload.max_cursor === "number" && cursor >= payload.max_cursor) break;
     }
+    // Renames publish on their own join set now; the in-stream variant only
+    // exists on pre-protocol-7 sessions.
+    name = (await latestSessionName(executionId)) ?? name;
     return { events, sessionStarted, inputOffer, working, name };
+}
+
+// The current slug straight off the dedicated rename join set. Read forward
+// from the start and keep the last one: renames are rare, so one small page
+// always covers the set. (direction=older cannot be used here: its
+// newest-window scan misses filtered responses that sit below newer responses
+// of other join sets.)
+async function latestSessionName(executionId) {
+    let name = null;
+    try {
+        const payload = await apiJson(
+            "GET",
+            `/v1/executions/${encodeURIComponent(executionId)}/responses`
+            + `?join_set=session-name&cursor=0&including_cursor=true&length=200`,
+        );
+        for (const r of payload.responses ?? []) {
+            const value = responseValue(r);
+            if (!value) continue;
+            if (typeof value?.name === "string") name = value.name;
+            else if (typeof value?.session_renamed?.name === "string") {
+                name = value.session_renamed.name;
+            }
+        }
+    } catch (_) {
+        return null;
+    }
+    return name;
 }
 
 // Newest-first single window over the tail of the stream.

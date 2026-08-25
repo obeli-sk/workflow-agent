@@ -140,6 +140,17 @@ READ_SYS="$(chat_direct "[\"\",[\"read\",\"$BASH_CHILD_ID\",\"--system\"]]")"
 grep -q "# This session" <<<"$READ_SYS"
 grep -q "child session by $PARENT_ID" <<<"$READ_SYS"
 
+echo ">>> the startup name reaches /api/runs without any rename turn"
+SECONDS=0
+while true; do
+    if RUNS="$(curl --fail --silent http://127.0.0.1:28093/api/runs)" \
+        && node scripts/e2e-json.js check-runs-name e2e-child <<<"$RUNS"; then
+        break
+    fi
+    [[ $SECONDS -ge 30 ]] && { echo "startup-named child not listed by name: $RUNS" >&2; exit 1; }
+    sleep 1
+done
+
 echo ">>> /api/runs nests children under their parent"
 RUNS="$(curl --fail --silent http://127.0.0.1:28093/api/runs)"
 node scripts/e2e-json.js check-runs-parent "$PARENT_ID" "$CHILD_ID" <<<"$RUNS"

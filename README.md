@@ -205,8 +205,10 @@ Notes:
   default `create` schedules the new session durably as a child of the caller
   (it is cancelled together with its parent). Use `create --top-level` for an
   independent session.
-- A rename is recorded on the session's event stream, so the UI sidebar and
-  `chat list` show slugs in place of the prompt preview.
+- A rename is recorded on its own `session-name` join set (via the dedicated
+  `stub.session-renamed` stub), so readers fetch a session's current slug with
+  one small request; the UI sidebar shows the name, falling back to the
+  execution id.
 - A prompt starting with `$` runs directly in that session's shell instead of
   reaching the model, in `chat create` and the composer alike (the space after
   `$` is optional).

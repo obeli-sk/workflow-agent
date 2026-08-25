@@ -121,7 +121,28 @@ test("list queries sessions with derived included and renders rows", async () =>
     assert.equal(result.exit_code, 0);
     // Parked on the user join set while working: listed as working.
     assert.match(result.stdout, new RegExp(`${RUN_ID}.*blocked_by_join_set/working.*my-slug.*do things`));
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 4);
+});
+
+test("names come off the dedicated session-name join set", async () => {
+    const { result } = await run(["list"], [
+        ["GET", "join_set=session-name", (url) => {
+            // Read forward from the start; direction=older would miss rows
+            // shadowed by newer responses of other join sets.
+            assert.ok(url.includes("cursor=0"));
+            assert.ok(url.includes("including_cursor=true"));
+            return jsonResponse(200, responsesPayload([{ name: "older-slug" }, { name: "dedicated-slug" }]));
+        }],
+        ["GET", "ffqn_prefix", () => jsonResponse(200, [{
+            execution_id: RUN_ID,
+            created_at: "2026-08-25T01:02:03Z",
+            pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
+        }])],
+    ]);
+    assert.equal(result.exit_code, 0);
+    // The newest rename in the page wins.
+    assert.match(result.stdout, /dedicated-slug/);
+    assert.ok(!result.stdout.includes("older-slug"));
 });
 
 test("state emits one JSON line with offer, backend, and name", async () => {

@@ -70,6 +70,8 @@ fn host_sleep_ms(ms: u64) {
 
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const SESSION_EVENTS_JOIN_SET: &str = "session-events";
+/// Renames ride here alone, never on `session-events`.
+const SESSION_NAME_JOIN_SET: &str = "session-name";
 const CONFIG_DISCOVER_FFQN: &str = "obelisk-agent:config/config.discover";
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
@@ -408,7 +410,10 @@ impl Notifications {
             SessionEvent::UserMessage(event) => event.id.clone(),
             SessionEvent::AssistantReply(event) => format!("turn-{}", event.turn_index),
             SessionEvent::AgentError(event) => event.id.clone(),
-            SessionEvent::SessionRenamed(event) => format!("session-renamed-{}", event.name),
+            // Renames never ride the shared stream; see `session_renamed`.
+            SessionEvent::SessionRenamed(_) => {
+                unreachable!("renames publish on their own join set")
+            }
             SessionEvent::ToolResult(event) => event.id.clone(),
             SessionEvent::ShellOutput(event) => event.id.clone(),
         };
@@ -455,11 +460,37 @@ impl Notifications {
         )
     }
 
+    /// Publish a rename through the dedicated `session-renamed` stub on its
+    /// own join set, so consumers read the current name with one bounded
+    /// request (`/responses?join_set=session-name&direction=older`) instead of
+    /// racing agent-status events in the mixed stream.
     pub(crate) fn session_renamed(&self, name: String) -> Result<(), String> {
-        self.notify(
-            SESSION_EVENTS_JOIN_SET,
-            &SessionEvent::SessionRenamed(SessionRenamedEvent { name }),
+        let mut state = self.state.borrow_mut();
+        if !state.join_sets.contains_key(SESSION_NAME_JOIN_SET) {
+            let join_set = workflow_support::join_set_create_named(SESSION_NAME_JOIN_SET)
+                .map_err(|e| format!("{SESSION_NAME_JOIN_SET} join set: {e:?}"))?;
+            state
+                .join_sets
+                .insert(SESSION_NAME_JOIN_SET.to_string(), join_set);
+        }
+        let join_set = state
+            .join_sets
+            .get(SESSION_NAME_JOIN_SET)
+            .expect("session-name join set must exist");
+        let execution_id = session_ext::session_renamed_submit(join_set, &name);
+        session_stub::session_renamed_stub(
+            &execution_id,
+            Ok(&SessionRenamedEvent { name: name.clone() }),
         )
+        .map_err(|e| format!("{e:?}"))?;
+        let published = session_ext::session_renamed_await_next(join_set)
+            .map_err(|e| format!("{e:?}"))?
+            .map_err(|e| format!("session rename failed: {e}"))?;
+        let last_id = last_response_execution_id(join_set);
+        if last_id.as_deref() != Some(execution_id.id.as_str()) || published.name != name {
+            return Err(format!("unexpected session rename response: {last_id:?}"));
+        }
+        Ok(())
     }
 }
 
@@ -595,7 +626,9 @@ to end the turn, reply in Markdown without a command.\n\n{}\n\n{}",
     notifications.notify(
         SESSION_EVENTS_JOIN_SET,
         &SessionEvent::SessionStarted(SessionStartedEvent {
-            protocol_version: 6,
+            // 7: session renames moved off this stream onto their own
+            // `session-name` join set (via the dedicated session-renamed stub).
+            protocol_version: 7,
             prompt: prompt.clone(),
             backend: model.clone(),
             effort: effort.clone(),
