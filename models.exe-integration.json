@@ -375,6 +375,13 @@
     "wire_model": "accounts/fireworks/models/minimax-m2p7"
   },
   {
+    "id": "deepseek-v4-flash-fireworks",
+    "label": "deepseek-v4-flash-fireworks",
+    "api_type": "openai-chat-completions",
+    "path": "/fireworks/inference",
+    "wire_model": "accounts/fireworks/models/deepseek-v4-flash"
+  },
+  {
     "id": "deepseek-v4-flash-0731-fireworks",
     "label": "deepseek-v4-flash-0731-fireworks",
     "api_type": "openai-chat-completions",
