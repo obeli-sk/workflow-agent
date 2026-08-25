@@ -732,7 +732,8 @@ function commandHelp(sub) {
                 "from 'chat models'; effort is one of: " + EFFORTS.join("|") + ".",
                 "By default the session is scheduled durably as a child of this",
                 "session (it dies with this session's cancellation); --top-level",
-                "submits an independent execution instead.",
+                "submits an independent execution instead. A PROMPT starting",
+                "with '$' runs directly in the new session's shell.",
                 "",
             ].join("\n");
         case "current":
@@ -779,6 +780,7 @@ function help() {
         "                  Start a new session and print its id; effort is one of "
             + EFFORTS.join("|") + ". By default the new session is scheduled as a",
         "                  child of this session; --top-level makes it independent.",
+        "                  A PROMPT starting with '$' opens it straight in bash.",
         "  current         This session's identity as JSON (workflow-served)",
         "  rename NAME     Rename this session to a slug ([a-z0-9-]; workflow-served)",
         "",

@@ -117,6 +117,20 @@ if "$OBELISK" execution list -j -a "$E2E_API_URL" --limit 200 | grep -q "\"$CHIL
 fi
 "$OBELISK" execution list -j -a "$E2E_API_URL" --show-derived --limit 200 | grep -q "$CHILD_ID"
 
+echo ">>> chat create with a \$-prefixed prompt opens the child straight in bash"
+SHELL_OUT="$(shell_turn "$PARENT_ID" "shell-chat-create-bash" 'chat create --model fake $ echo opened-in-bash')"
+BASH_CHILD_ID="$(head -n 1 <<<"$SHELL_OUT")"
+[[ "$BASH_CHILD_ID" == E_* ]] || { echo "unexpected bash-child create output: $SHELL_OUT" >&2; exit 1; }
+SECONDS=0
+while true; do
+    if BASH_DETAIL="$(run_detail "$BASH_CHILD_ID")" \
+        && node scripts/e2e-json.js check-shell-script 'echo opened-in-bash' 'opened-in-bash' <<<"$BASH_DETAIL"; then
+        break
+    fi
+    [[ $SECONDS -ge 30 ]] && { echo "bash-first child never ran its script: $BASH_DETAIL" >&2; exit 1; }
+    sleep 1
+done
+
 echo ">>> chat list shows both sessions"
 LIST_OUT="$(chat_direct '["",["list","--json"]]')"
 grep -q "$CHILD_ID" <<<"$LIST_OUT"
@@ -161,4 +175,5 @@ echo ">>> cleaning up sessions"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$PARENT_ID" >/dev/null || true
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$CHILD_ID" >/dev/null || true
+"$OBELISK" execution cancel -a "$E2E_API_URL" "$BASH_CHILD_ID" >/dev/null || true
 echo ">>> chat E2E PASS"

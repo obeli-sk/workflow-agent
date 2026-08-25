@@ -570,7 +570,11 @@ to end the turn, reply in Markdown without a command.\n\n{}",
         obelisk_pack::SYSTEM_PROMPT
     );
 
-    let mut messages: Vec<Value> = if !prompt.trim().is_empty() {
+    // Like the webui composer, an opening prompt starting with `$` is a shell
+    // command: it runs directly in this session's bash and never reaches the
+    // model (see `opening_shell_script`).
+    let mut pending_shell = opening_shell_script(&prompt);
+    let mut messages: Vec<Value> = if pending_shell.is_none() && !prompt.trim().is_empty() {
         vec![user_text(prompt.trim())]
     } else {
         Vec::new()
@@ -671,7 +675,17 @@ to end the turn, reply in Markdown without a command.\n\n{}",
             pack_mounted = true;
         }
         if !should_call_llm {
-            let event = take_user_event(&mut session, &notifications)?;
+            // A `$`-prefixed opening prompt is consumed here instead of the
+            // input offer, after the deferred mounts registered above so the
+            // script sees the same filesystem as any composer shell command.
+            let event = match pending_shell.take() {
+                Some(script) => SessionInput::Shell(ShellInput {
+                    id: format!("shell-opened-{turn_index}"),
+                    script,
+                    stdin: String::new(),
+                }),
+                None => take_user_event(&mut session, &notifications)?,
+            };
             should_call_llm = apply_session_input(
                 event,
                 turn_index,
@@ -829,6 +843,15 @@ fn dispatch_bash(call: &ToolCall, bash: &mut Bash) -> ToolResultBlock {
         .unwrap_or("");
     let result = exec_shell(bash, script, stdin);
     tool_ok(&call.id, shell_result(result))
+}
+
+/// Script carried by an opening prompt that starts with `$`: such a prompt is
+/// a shell command for the new session, mirroring the webui composer's
+/// `$`-prefix rule (which also does not allow leading whitespace). Returns
+/// None when the prompt should reach the model instead.
+fn opening_shell_script(prompt: &str) -> Option<String> {
+    let script = prompt.strip_prefix('$')?.trim();
+    (!script.is_empty()).then(|| script.to_string())
 }
 
 fn apply_session_input(
@@ -1131,6 +1154,20 @@ fn take_user_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_prompt_dollar_prefix_runs_in_shell() {
+        assert_eq!(opening_shell_script("$ ls -la"), Some("ls -la".to_string()));
+        assert_eq!(opening_shell_script("$pwd"), Some("pwd".to_string()));
+        // No script after the prefix: an ordinary prompt for the model.
+        assert_eq!(opening_shell_script("$"), None);
+        assert_eq!(opening_shell_script("$ "), None);
+        assert_eq!(opening_shell_script("hello"), None);
+        assert_eq!(opening_shell_script("costs $5"), None);
+        // Leading whitespace means it is not a shell command (same rule as
+        // the composer's raw startsWith check).
+        assert_eq!(opening_shell_script("\n$ pwd"), None);
+    }
 
     #[test]
     fn parse_mcp_servers_reads_name_and_ffqn() {

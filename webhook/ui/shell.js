@@ -1521,9 +1521,9 @@ function sendComposer() {
   const raw = input.value;
   const text = raw.trim();
   if (!text) return;
-  const shell = raw.startsWith('$ ');
+  const shell = raw.startsWith('$');
   if (shell) {
-    const script = raw.slice(2).trim();
+    const script = raw.slice(1).trim();
     if (script && composerMode() === 'say') sendShell(state.selected, script);
     else if (script) createSessionForShell(script);
   } else if (composerMode() === 'say') sendToAgent(state.selected, text);

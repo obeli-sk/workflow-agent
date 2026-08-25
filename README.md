@@ -187,6 +187,7 @@ chat read E_...                      # normalized transcript (--tail N, --json)
 chat state E_...                     # one JSON line: state, working, offer id
 chat send E_... please re-check X    # queue a user prompt for a peer
 chat create --model claude "prompt"  # new session; prints its execution id
+chat create '$ ls -la'               # new session opened straight in bash
 chat current                         # this session's identity (JSON)
 chat rename my-session               # slug-name this session ([a-z0-9-])
 ```
@@ -205,6 +206,9 @@ Notes:
   independent session.
 - A rename is recorded on the session's event stream, so the UI sidebar and
   `chat list` show slugs in place of the prompt preview.
+- A prompt starting with `$` runs directly in that session's shell instead of
+  reaching the model, in `chat create` and the composer alike (the space after
+  `$` is optional).
 
 ## Stateless MCP sample
 

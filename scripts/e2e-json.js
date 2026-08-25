@@ -212,6 +212,20 @@ switch (command) {
         process.exit(event?.turn_complete === true ? 0 : 1);
         break;
     }
+    case "check-shell-script": {
+        // A completed shell event matched by its script (the id is generated
+        // inside the workflow), optionally asserting its stdout contains the
+        // fourth argument.
+        const script = process.argv[3];
+        const event = json()?.transcript?.shell_events?.find((candidate) => candidate.script === script);
+        const valid = event?.turn_complete === true && event?.result?.exit_code === 0
+            && (process.argv.length < 5 || shellStream(event.result, "stdout").includes(process.argv[4]));
+        if (!valid) {
+            console.error(`no completed shell event for ${JSON.stringify(script)}: ${JSON.stringify(json()?.transcript?.shell_events)}`);
+        }
+        process.exit(valid ? 0 : 1);
+        break;
+    }
     case "check-runs-name": {
         const name = process.argv[3];
         const hit = json()?.runs?.some((run) => run.name === name);
