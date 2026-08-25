@@ -123,7 +123,7 @@ that origin. Three catalogs ship:
   The key is injected into the outbound header at the edge, never seen by the JS.
 
 Regenerate the exe.dev catalog from the published model list with
-`node scripts/update-exe-gateway-models.mjs`. Leave `LLM_API_KEY` unset.
+`node scripts/update-exe-models.mjs`. Leave `LLM_API_KEY` unset.
 
 Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama) works:
 point `LLM_BASE_URL` at it and add catalog entries.
