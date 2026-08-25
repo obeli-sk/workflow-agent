@@ -144,10 +144,11 @@ fn week_number(p: &DateParts, start_day: u32) -> u32 {
     }
 }
 
-/// Format a subset of strftime directives against a UTC instant. Not
-/// ported: `%V`/`%G`/`%g` (ISO week-date, needs leap-week rules), `%N`
-/// (sub-second precision, none available), locale alternates (`%Ec` etc).
-fn format_strftime(fmt: &str, secs: i64) -> String {
+/// Format a subset of strftime directives against a UTC instant. The clock
+/// seam only carries milliseconds, so the sub-second directives (`%N`,
+/// `%<n>N`) zero-pad below milliseconds. Not ported: `%V`/`%G`/`%g`
+/// (ISO week-date, needs leap-week rules), locale alternates (`%Ec` etc).
+fn format_strftime(fmt: &str, secs: i64, millis: u32) -> String {
     let p = epoch_to_parts(secs);
     let pad2 = |n: u32| format!("{n:02}");
     let mut out = String::new();
@@ -158,6 +159,24 @@ fn format_strftime(fmt: &str, secs: i64) -> String {
             continue;
         }
         match chars.next() {
+            Some('N') => push_fraction(&mut out, millis, 9),
+            Some(d) if d.is_ascii_digit() => {
+                let mut width = String::from(d);
+                let mut follower = chars.next();
+                while matches!(follower, Some(c) if c.is_ascii_digit()) {
+                    width.push(follower.take().unwrap());
+                    follower = chars.next();
+                }
+                if follower == Some('N') {
+                    push_fraction(&mut out, millis, width.parse::<usize>().unwrap_or(9));
+                } else {
+                    out.push('%');
+                    out.push_str(&width);
+                    if let Some(c) = follower {
+                        out.push(c);
+                    }
+                }
+            }
             Some('Y') => out.push_str(&p.year.to_string()),
             Some('y') => out.push_str(&pad2((p.year.rem_euclid(100)) as u32)),
             Some('C') => out.push_str(&pad2((p.year.div_euclid(100)) as u32)),
@@ -226,6 +245,18 @@ fn format_strftime(fmt: &str, secs: i64) -> String {
         }
     }
     out
+}
+
+/// The `%[n]N` field: milliseconds scaled to nanoseconds (lower digits are
+/// zeros), truncated to `width` digits or zero-extended past 9.
+fn push_fraction(out: &mut String, millis: u32, width: usize) {
+    let mut digits = format!("{:09}", u64::from(millis) * 1_000_000);
+    if width > 9 {
+        digits.push_str(&"0".repeat(width - 9));
+    } else {
+        digits.truncate(width);
+    }
+    out.push_str(&digits);
 }
 
 /// Parse a `date -d`/`--date=` argument. Supports `@N` (Unix epoch seconds),
@@ -304,23 +335,24 @@ pub fn date(interp: &Interpreter, args: &[String]) -> CommandOutput {
         i += 1;
     }
 
-    let now_secs = (interp.now_ms)().div_euclid(1000);
-    let secs = match date_str {
-        Some(s) => match parse_date_spec(&s, now_secs) {
-            Some(secs) => secs,
+    let now_ms = (interp.now_ms)();
+    // A `-d` spec pins whole seconds only, so its sub-second field is zero.
+    let (secs, millis) = match date_str {
+        Some(s) => match parse_date_spec(&s, now_ms.div_euclid(1000)) {
+            Some(secs) => (secs, 0),
             None => return fail(format!("date: invalid date '{s}'\n"), 1),
         },
-        None => now_secs,
+        None => (now_ms.div_euclid(1000), now_ms.rem_euclid(1000) as u32),
     };
 
     let out = if let Some(fmt) = fmt {
-        format_strftime(&fmt, secs)
+        format_strftime(&fmt, secs, millis)
     } else if iso {
-        format_strftime("%Y-%m-%dT%H:%M:%S+00:00", secs)
+        format_strftime("%Y-%m-%dT%H:%M:%S+00:00", secs, millis)
     } else if rfc {
-        format_strftime("%a, %d %b %Y %H:%M:%S +0000", secs)
+        format_strftime("%a, %d %b %Y %H:%M:%S +0000", secs, millis)
     } else {
-        format_strftime("%a %b %e %H:%M:%S UTC %Y", secs)
+        format_strftime("%a %b %e %H:%M:%S UTC %Y", secs, millis)
     };
     ok(format!("{out}\n"))
 }
@@ -806,6 +838,45 @@ mod tests {
             let out = run(&mut bash, "date -d nonsense");
             assert_eq!(out.exit_code, 1);
             assert!(out.stderr.contains("invalid date"));
+        }
+
+        /// 1_700_000_123_456 ms: fraction .456; %N zero-pads to nanoseconds.
+        fn fractional_host_clock() -> i64 {
+            1_700_000_123_456
+        }
+
+        #[test]
+        fn sub_second_directives_zero_pad_below_milliseconds() {
+            let mut bash = Bash::new(BashOptions {
+                cwd: "/workspace".into(),
+                now_ms: fractional_host_clock,
+                ..Default::default()
+            });
+            assert_eq!(run(&mut bash, "date +%3N").stdout, "456\n");
+            assert_eq!(run(&mut bash, "date +%N").stdout, "456000000\n");
+            assert_eq!(run(&mut bash, "date +%1N").stdout, "4\n");
+            assert_eq!(run(&mut bash, "date +%6N").stdout, "456000\n");
+            assert_eq!(run(&mut bash, "date +%12N").stdout, "456000000000\n");
+            assert_eq!(run(&mut bash, "date +%s%N").stdout, "1700000123456000000\n");
+        }
+
+        #[test]
+        fn sub_second_field_is_zero_for_pinned_dates() {
+            let mut bash = Bash::new(BashOptions {
+                cwd: "/workspace".into(),
+                now_ms: fractional_host_clock,
+                ..Default::default()
+            });
+            assert_eq!(
+                run(&mut bash, "date -d @1000000000 +%s%N").stdout,
+                "1000000000000000000\n"
+            );
+        }
+
+        #[test]
+        fn digits_before_an_unknown_directive_pass_through() {
+            let mut bash = fresh();
+            assert_eq!(run(&mut bash, "date +%3q").stdout, "%3q\n");
         }
     }
 
