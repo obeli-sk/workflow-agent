@@ -530,11 +530,10 @@ pub fn agent_loop(
 {shell_help}\n\
 # User input\n\n\
 When you need a user answer before you can continue the current task, run \
-`obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. This \
-special command publishes the question to the UI, blocks, and returns the \
-user's answer so you can continue in the same turn. Use it only when the \
-answer is required to proceed. To end the turn with a response or a question \
-that does not need an immediate answer, reply in Markdown without a command.\n\n{}",
+`obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. It \
+publishes the question to the UI, blocks, and returns the answer so you can \
+continue in the same turn. Use it only when the answer is required to proceed; \
+to end the turn, reply in Markdown without a command.\n\n{}",
         obelisk_pack::SYSTEM_PROMPT
     );
 

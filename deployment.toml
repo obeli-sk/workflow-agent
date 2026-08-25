@@ -11,8 +11,10 @@ params = []
 return_type = "result<record { prompt: string, tools-json: string }, string>"
 location = "packs/obelisk-control/descriptor.js"
 exec.lock_expiry.seconds = 30
-# The descriptor inlines the docs indexes listed in DOCS_URLS_JSON (see the
-# curl-program block below) into the system prompt at session start.
+# The descriptor inlines pointers to the docs indexes listed in DOCS_URLS_JSON
+# (see the curl-program block below) into the system prompt at session start;
+# the model fetches the index bodies itself via the curl program, so the
+# version-pinned docs never drift into a hardcoded prompt.
 env_vars = [
   { key = "DOCS_URLS_JSON", value = "${DOCS_URLS_JSON:-[\"https://obeli.sk/docs/v${OBELISK_VERSION:-latest}/llms.txt/\"]}" },
 ]
@@ -53,10 +55,9 @@ exec.lock_expiry.seconds = 30
 #   * OBELISK_VERSION pins the doc set to the target runtime's version. Empty
 #     falls back to `latest`. Set it from the flake lock when pinning matters
 #     (https://obeli.sk/docs/v${OBELISK_VERSION}/llms.txt/).
-#   * DOCS_URLS_JSON lists llms.txt-style indexes; each entry is fetched once at
-#     session start by the descriptor above and inlined into the system prompt,
-#     so the model always knows the API surface and which URLs to `curl` for
-#     detail pages.
+#   * DOCS_URLS_JSON lists llms.txt-style indexes; the descriptor inlines their
+#     URLs into the system prompt at session start and the model fetches them
+#     (and any detail page they reference) through the curl program.
 #
 # The curl program's obeli.sk allowlist (below) covers both the index and every
 # page URL it references.
@@ -71,7 +72,7 @@ return_type = "result<record { stdout: string, stderr: string, exit-code: u32 },
 location = "activity/curl.js"
 exec.lock_expiry.seconds = 30
 # Docs (llms.txt index + every page URL it references) and obeli.sk release
-# notes; the descriptor inlines the same hosts' indexes into the prompt.
+# notes; the prompt points the model at the same hosts' indexes.
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
