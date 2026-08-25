@@ -90,13 +90,14 @@ const MOUNT_FOOTER: &str = "Avoid tree, find, and recursive grep (grep -r / fgre
 /// model having to open its resource tree.
 fn mount_command(
     mcp_servers: Vec<(String, String)>,
+    webhook_url: String,
     host: Box<dyn ObeliskHost>,
 ) -> just_bash_rs::CustomCommandHandler {
     let mut host = host;
     Box::new(
         move |_: &mut just_bash_rs::interpreter::Interpreter, _: &[String], _: String| {
             just_bash_rs::interpreter::CommandOutput {
-                stdout: render_mount(&mcp_servers, host.as_mut()),
+                stdout: render_mount(&mcp_servers, &webhook_url, host.as_mut()),
                 stderr: String::new(),
                 exit_code: 0,
             }
@@ -105,8 +106,17 @@ fn mount_command(
 }
 
 /// Render the `mount` listing, live-probing each MCP server for reachability.
-fn render_mount(mcp_servers: &[(String, String)], host: &mut dyn ObeliskHost) -> String {
+fn render_mount(
+    mcp_servers: &[(String, String)],
+    webhook_url: &str,
+    host: &mut dyn ObeliskHost,
+) -> String {
     let mut text = String::from(MOUNT_HEADER);
+    if !webhook_url.is_empty() {
+        text.push_str(&format!(
+            "  {webhook_url}  target Obelisk webhooks (GET allowed via curl)\n"
+        ));
+    }
     for (name, ffqn) in mcp_servers {
         let status = match host.call_json(ffqn, "[\"tools/list\",\"{}\"]") {
             Ok(_) => "responding".to_string(),
@@ -139,6 +149,8 @@ struct SessionConfig {
     max_steps: u32,
     programs: Vec<Program>,
     mcp_servers: Vec<(String, String)>,
+    /// Base URL of the target's webhook listener; empty when not configured.
+    webhook_url: String,
 }
 
 /// Load all operator-owned session settings in one activity call so environment
@@ -169,10 +181,16 @@ fn parse_session_config(json: &str) -> Result<SessionConfig, String> {
             .get("mcp_servers")
             .ok_or_else(|| "session config has no mcp_servers".to_string())?,
     )?;
+    let webhook_url = value
+        .get("webhook_url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     Ok(SessionConfig {
         max_steps,
         programs,
         mcp_servers,
+        webhook_url,
     })
 }
 
@@ -477,7 +495,7 @@ pub fn agent_loop(
     }
     bash.register_command(
         "mount",
-        mount_command(mcp_servers.clone(), Box::new(host())),
+        mount_command(mcp_servers.clone(), config.webhook_url.clone(), Box::new(host())),
     );
 
     let shell_help = render_program_help(&programs);
@@ -1087,11 +1105,19 @@ mod tests {
 
     #[test]
     fn parse_session_config_reads_step_limit_and_registries() {
-        let config =
-            parse_session_config(r#"{"max_steps":25,"programs":[],"mcp_servers":[]}"#).unwrap();
+        let config = parse_session_config(
+            r#"{"max_steps":25,"programs":[],"mcp_servers":[],"webhook_url":"http://x:9290"}"#,
+        )
+        .unwrap();
         assert_eq!(config.max_steps, 25);
         assert!(config.programs.is_empty());
         assert!(config.mcp_servers.is_empty());
+        assert_eq!(config.webhook_url, "http://x:9290");
+
+        // webhook_url is optional and defaults to empty.
+        let bare =
+            parse_session_config(r#"{"max_steps":25,"programs":[],"mcp_servers":[]}"#).unwrap();
+        assert_eq!(bare.webhook_url, "");
 
         assert!(parse_session_config(r#"{"max_steps":0,"programs":[],"mcp_servers":[]}"#).is_err());
         assert!(parse_session_config(r#"{"max_steps":10,"programs":[]}"#).is_err());
@@ -1163,10 +1189,17 @@ mod tests {
             ("up".to_string(), "ns:mcp/server.up".to_string()),
             ("down".to_string(), "ns:mcp/server.down".to_string()),
         ];
-        let out = render_mount(&servers, &mut host);
-        // Every entry (header and MCP) is indented two spaces consistently.
+        let out = render_mount(&servers, "http://127.0.0.1:9290", &mut host);
+        // Every entry (header, webhook URL, MCP) is indented two spaces consistently.
         assert!(out.contains("\n  /workspace/deployment/current  "), "{out}");
+        assert!(
+            out.contains("\n  http://127.0.0.1:9290  target Obelisk webhooks"),
+            "{out}"
+        );
         assert!(out.contains("\n  /workspace/mcp/up  "), "{out}");
+        // An empty webhook URL omits the line instead of rendering a blank entry.
+        let bare = render_mount(&servers, "", &mut host);
+        assert!(!bare.contains("webhook"), "{bare}");
         assert!(
             out.contains("/workspace/mcp/up  MCP server, read-only (responding)"),
             "{out}"

@@ -76,9 +76,11 @@ whole tree.
 
 The shell's HTTP access goes through an operator allowlist: commands such as
 curl work only for explicitly granted hosts (GET only), and a policy-denied
-request is the expected result for anything else. Verify deployed webhooks
-through the control plane (`obelisk executions list` / `logs`) rather than by
-probing their HTTP port.";
+request is the expected result for anything else. The target's webhook base URL
+printed by `mount` is granted for GET, so deployed webhook endpoints can be
+smoke-tested directly there; anything not granted is verified through the
+control plane (`obelisk executions list` / `logs`) instead of by probing its
+port.";
 
 /// The one primitive the whole pack needs: dynamically invoke a deployed FFQN
 /// and get back its JSON result. Mirrors Obelisk's real

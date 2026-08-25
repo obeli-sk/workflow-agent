@@ -31,12 +31,13 @@ request_url_regex = "^GET https://obeli\\.sk/docs/latest/llms.txt/"
 name = "config_discover"
 ffqn = "obelisk-agent:config/config.discover"
 params = []
-return_type = "result<record { max-steps: u32, programs: list<record { name: string, ffqn: string, description: string }>, mcp-servers: list<record { name: string, ffqn: string }> }, string>"
+return_type = "result<record { max-steps: u32, programs: list<record { name: string, ffqn: string, description: string }>, mcp-servers: list<record { name: string, ffqn: string }>, webhook-url: string }, string>"
 location = "activity/config-discover.js"
 env_vars = [
   { key = "MAX_STEPS",        value = "${MAX_STEPS:-10}" },
   { key = "PROGRAMS_JSON",    value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"}]}' },
   { key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' },
+  { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
 ]
 
 [[activity_js]]
@@ -50,6 +51,11 @@ return_type = "result<record { stdout: string, stderr: string, exit-code: u32 },
 location = "activity/curl.js"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
+methods = ["GET"]
+# The target's webhook listener, so the shell can smoke-test deployed webhook
+# endpoints directly; the same URL is printed by `mount`.
+[[activity_js.allowed_host]]
+pattern = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}"
 methods = ["GET"]
 
 # Native call: run any deployed Obelisk function chosen at runtime by the model

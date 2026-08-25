@@ -39,6 +39,12 @@ methods = ["GET", "POST", "PUT"]
 secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
+# Target instance webhooks: lets the shell's GET-only curl smoke-test deployed
+# webhook endpoints directly; the same URL is printed by `mount`.
+[[outbound_http.allowed_host]]
+pattern = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}"
+methods = ["GET"]
+
 [[outbound_http.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]

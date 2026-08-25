@@ -65,6 +65,12 @@ There are two Obelisk instances in play:
   export TARGET_OBELISK_TOKEN="$OBELISK__API__TOKEN"
   ```
 
+  A fourth var, `TARGET_OBELISK_WEBHOOK_URL` (default
+  `http://127.0.0.1:9290`, matching `server-target.toml`), is the target's
+  webhook (external) listener. The shell's GET-only curl is granted access to
+  it, so deployed webhook endpoints can be smoke-tested directly, and `mount`
+  prints it for discovery.
+
 Point these at a separate Obelisk to deploy somewhere other than the agent's own
 instance.
 

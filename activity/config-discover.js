@@ -2,7 +2,8 @@
 //   func() -> result<record {
 //     max-steps: u32,
 //     programs: list<record { name: string, ffqn: string, description: string }>,
-//     mcp-servers: list<record { name: string, ffqn: string }>
+//     mcp-servers: list<record { name: string, ffqn: string }>,
+//     webhook-url: string
 //   }, string>
 
 const DEFAULT_MAX_STEPS = 10;
@@ -12,6 +13,7 @@ export default async function discover() {
         max_steps: parseMaxSteps(process.env["MAX_STEPS"]),
         programs: parseRegistry("PROGRAMS_JSON", parseProgram),
         mcp_servers: parseRegistry("MCP_SERVERS_JSON", parseMcpServer),
+        webhook_url: (process.env["TARGET_OBELISK_WEBHOOK_URL"] ?? "").trim(),
     };
 }
 
