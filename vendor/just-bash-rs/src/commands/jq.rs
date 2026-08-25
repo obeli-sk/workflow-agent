@@ -18,7 +18,7 @@
 //! `+ - * / %` with jq's per-type rules (string/array concat, shallow object
 //! merge on `+`, deep merge on `*` of two objects, string split on `/`),
 //! literals, the `@tsv` formatter, and the builtins `length keys keys_unsorted has empty not type
-//! select map add range floor ceil round sqrt abs tostring tonumber split
+//! select map add range floor ceil round sqrt abs tostring tonumber fromjson tojson split
 //! join`. CLI flags: `-r`/`-R`/`-c`/`-n`/`-s`/`-e`/`--tab`/`-S`.
 //!
 //! Explicitly out of scope (skipped, not started): `reduce`/`foreach`,
@@ -1359,6 +1359,16 @@ fn eval_call(name: &str, args: &[Filter], value: &Value) -> EResult {
                 .map_err(|_| format!("Cannot parse '{s}' as number")),
             other => Err(format!("Cannot parse {} as number", type_name(other))),
         },
+        // jq's fromjson: parse the input string as JSON (any value, not just
+        // objects). tojson: serialize the input value to a compact JSON string.
+        "fromjson" => match value {
+            Value::String(s) => serde_json::from_str(s.trim())
+                .map(|v: Value| vec![v])
+                .map_err(|e| format!("{name}: {e}")),
+            other => Err(format!("{name} requires a string, got {}", type_name(other))),
+        },
+        "tojson" if args.is_empty() => Ok(vec![Value::String(serde_json::to_string(value)
+            .unwrap_or_else(|_| "null".to_string()))]),
         "split" => match value {
             Value::String(s) => {
                 let sep = one_arg(args, value)?;
@@ -1635,6 +1645,38 @@ mod tests {
     }
 
     // ---- jq.basic.test.ts ----
+
+    #[test]
+    fn fromjson_and_tojson_round_trip() {
+        let mut bash = fresh();
+        // The motivating case: a JSON-encoded string field decoded in-pipe.
+        assert_eq!(
+            run(
+                &mut bash,
+                r#"echo '{"a":{"b":2}}' | jq -c '.a | tojson | fromjson | .b'"#
+            )
+            .stdout,
+            "2\n"
+        );
+        assert_eq!(
+            run(&mut bash, r#"echo '"[1,2]"' | jq -c 'fromjson'"#).stdout,
+            "[1,2]\n"
+        );
+        assert_eq!(
+            run(&mut bash, r#"echo '"42"' | jq -r 'fromjson'"#).stdout,
+            "42\n"
+        );
+        // Invalid JSON is a runtime error (exit 5), not a parse error.
+        assert_eq!(
+            run(&mut bash, r#"echo '"x"' | jq 'fromjson | fromjson'"#).exit_code,
+            5
+        );
+        // Non-string input is rejected like upstream.
+        assert_eq!(
+            run(&mut bash, "echo 42 | jq 'fromjson'").exit_code,
+            5
+        );
+    }
 
     #[test]
     fn identity_pretty_prints() {
