@@ -495,7 +495,11 @@ pub fn agent_loop(
     }
     bash.register_command(
         "mount",
-        mount_command(mcp_servers.clone(), config.webhook_url.clone(), Box::new(host())),
+        mount_command(
+            mcp_servers.clone(),
+            config.webhook_url.clone(),
+            Box::new(host()),
+        ),
     );
 
     let shell_help = render_program_help(&programs);
