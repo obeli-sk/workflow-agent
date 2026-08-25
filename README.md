@@ -18,9 +18,7 @@ External programs are Obelisk executions the workflow discovers at session start
 from an operator-owned registry (`PROGRAMS_JSON`), so adding one is a
 `deployment.toml` edit with no workflow rebuild; each entry's description is
 surfaced in the system prompt. The one that ships, a GET-only `curl`, is an
-Obelisk activity; it understands the common inspection flags (`-f -i -L -I -v`,
-`-w/--write-out FMT` with a `%{var}` subset, `-m/--max-time SEC`) while keeping
-the method pinned to GET. The per-turn model invocation limit comes out of the same
+Obelisk activity. The per-turn model invocation limit comes out of the same
 registry read: `MAX_STEPS`, defaulting to `20`.
 
 ![workflow-agent web UI](docs/workflow-agent.png)

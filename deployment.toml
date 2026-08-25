@@ -40,7 +40,7 @@ return_type = "result<record { max-steps: u32, programs: list<record { name: str
 location = "activity/config-discover.js"
 env_vars = [
   { key = "MAX_STEPS",        value = "${MAX_STEPS:-20}" },
-  { key = "PROGRAMS_JSON",    value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client; supports -f -i -L -I -v -w/--write-out FMT -m/--max-time SEC"}]}' },
+  { key = "PROGRAMS_JSON",    value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"}]}' },
   { key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' },
   { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
 ]
