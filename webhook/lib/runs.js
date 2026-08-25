@@ -9,7 +9,7 @@ import {
     getExecutionStatus,
     listExecutions,
 } from "./obelisk-api.js";
-import { loadLatestAgentStatus, loadResponses, parseJoinName } from "./responses.js";
+import { loadLatestAgentState, loadResponses, parseJoinName } from "./responses.js";
 
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 function pickRunState(workflowStatus) {
@@ -22,21 +22,25 @@ function pickRunState(workflowStatus) {
 }
 
 export async function listRuns() {
-    const executions = await listExecutions(WORKFLOW_FFQN, "", false, false, 50);
+    // Derived executions are included so child sessions created via
+    // `chat create` appear next to top-level ones (the FFQN prefix filters
+    // out every other derived child kind).
+    const executions = await listExecutions(WORKFLOW_FFQN, "", true, false, 50);
     const runs = await Promise.all(executions.map(async (e) => {
         const id = e.execution_id;
         const prompt_preview = await loadPromptPreview(id);
         const runState = pickRunState(e);
         // The shared user set races input against completion, so its join
         // name alone cannot distinguish "your turn" from "thinking".
+        const latest = await loadLatestAgentState(id);
         const working = runState.status === "blocked_by_join_set" && runState.join_name === "user"
-            ? await loadLatestAgentStatus(id)
-            : false;
+            && latest.working;
         return {
             id,
             created_at: e.created_at || "",
             ...runState,
             working,
+            name: latest.name,
             prompt_preview,
         };
     }));
@@ -64,6 +68,7 @@ export async function detailRun(id, cursorState) {
         prompt: started?.prompt || null,
         backend: started?.backend || null,
         effort: started?.effort || null,
+        name: walk.sessionName ?? null,
         system_prompt: started?.system_prompt || null,
         transcript: {
             reset: resetTranscript,

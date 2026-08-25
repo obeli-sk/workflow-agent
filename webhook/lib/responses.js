@@ -12,6 +12,7 @@ export async function loadResponses(execId, startCursor = 0) {
     let sessionStarted;
     let inputOffer;
     let agentWorking;
+    let sessionName = null;
     let cursor = startCursor;
     let including = startCursor === 0;
     while (true) {
@@ -34,11 +35,13 @@ export async function loadResponses(execId, startCursor = 0) {
                 sessionStarted,
                 inputOffer,
                 agentWorking,
+                sessionName,
             };
             appendSessionEvent(projection, ev.result?.ok?.value ?? ev.result?.ok, r);
             inputOffer = projection.inputOffer;
             agentWorking = projection.agentWorking;
             sessionStarted = projection.sessionStarted;
+            sessionName = projection.sessionName;
         }
         const next = payload.scan_cursor;
         if (typeof next !== "number" || next <= cursor) break;
@@ -56,23 +59,31 @@ export async function loadResponses(execId, startCursor = 0) {
         sessionStarted,
         inputOffer,
         agentWorking,
+        sessionName,
         cursor,
     };
 }
 
-export async function loadLatestAgentStatus(execId) {
+// Newest-first scan for the live status bits the sidebar needs: the working
+// flag and the current slug. A rename older than this window falls back to
+// null and callers show the prompt preview instead.
+export async function loadLatestAgentState(execId) {
     let payload;
-    try { payload = await getLatestExecutionResponses(execId, "session-events", 100); }
-    catch (_) { return false; }
+    try { payload = await getLatestExecutionResponses(execId, "session-events", 200); }
+    catch (_) { return { working: false, name: null }; }
     const responses = payload.responses || [];
+    let name = null;
     for (let i = responses.length - 1; i >= 0; i -= 1) {
         const wrapped = responses[i]?.event?.event;
         const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
+        if (name === null && typeof value?.session_renamed?.name === "string") {
+            name = value.session_renamed.name;
+        }
         if (typeof value?.agent_status?.working === "boolean") {
-            return value.agent_status.working;
+            return { working: value.agent_status.working, name };
         }
     }
-    return false;
+    return { working: false, name };
 }
 
 function appendSessionEvent(target, event, response) {
@@ -95,6 +106,9 @@ function appendSessionEvent(target, event, response) {
         };
     } else if (event.agent_status) {
         target.agentWorking = event.agent_status.working === true;
+    } else if (event.session_renamed) {
+        const renamed = event.session_renamed;
+        target.sessionName = typeof renamed.name === "string" ? renamed.name : null;
     } else if (event.human_input_requested) {
         const requested = event.human_input_requested;
         target.humanInputEvents.push({
