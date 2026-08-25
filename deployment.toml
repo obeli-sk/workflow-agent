@@ -24,7 +24,7 @@ request_url_regex = "^GET https://obeli\\.sk/docs/latest/llms.txt/"
 # to the config activity's PROGRAMS_JSON. The workflow registers a shell
 # command per entry and lists it (with its description) in the system prompt.
 
-# Session configuration is read once at session start. MAX_STEPS defaults to 10;
+# Session configuration is read once at session start. MAX_STEPS defaults to 20;
 # the program and MCP registries default to the deployed entries below. Override
 # any of them from the host environment without rebuilding the workflow.
 [[activity_js]]
@@ -34,7 +34,7 @@ params = []
 return_type = "result<record { max-steps: u32, programs: list<record { name: string, ffqn: string, description: string }>, mcp-servers: list<record { name: string, ffqn: string }>, webhook-url: string }, string>"
 location = "activity/config-discover.js"
 env_vars = [
-  { key = "MAX_STEPS",        value = "${MAX_STEPS:-10}" },
+  { key = "MAX_STEPS",        value = "${MAX_STEPS:-20}" },
   { key = "PROGRAMS_JSON",    value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"}]}' },
   { key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' },
   { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
