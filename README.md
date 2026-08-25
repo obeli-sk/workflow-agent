@@ -103,22 +103,31 @@ that origin. Four catalogs ship:
     -d '{"model":"...","messages":[{"role":"user","content":"hi"}]}'
   ```
 
-- `models.exe-gateway.json` (keyless) : the same models for a deployment
-  running **outside** exe.dev. `llm.int.exe.xyz` resolves to a link-local
-  address only exe infra routes, so tunnel the VM's metadata listener and point
-  `LLM_BASE_URL` at the local end:
+- `models.exe-gateway.json` (keyless) : the **same** integration endpoint and
+  models for a deployment running **outside** exe.dev. `llm.int.exe.xyz`
+  resolves to a link-local address only exe infra routes, and the https endpoint
+  routes on the Host header, so run an nginx reverse proxy on an attached VM
+  ([`examples/exe-llm-proxy.conf`](examples/exe-llm-proxy.conf)) that fixes the
+  header, and tunnel to it:
 
   ```sh
-  ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz
-  export LLM_BASE_URL=http://localhost:7070
+  # on <yourinstance>.exe.xyz:
+  mkdir -p /tmp/exe-llm-proxy/{logs,tmp/body}
+  nginx -c $(pwd)/examples/exe-llm-proxy.conf   # plain HTTP on 127.0.0.1:7071
+
+  # on your machine:
+  ssh -L 7070:127.0.0.1:7071 <yourinstance>.exe.xyz
+  export LLM_BASE_URL=http://localhost:7070     # plain http, no custom CA
   ```
 
 - `models.openrouter.json` (`LLM_API_KEY`) : [OpenRouter](https://openrouter.ai).
   The key is injected into the outbound header at the edge, never seen by the JS.
 
-Regenerate both exe.dev catalogs from its published model list with
-`node scripts/update-exe-gateway-models.mjs`. Leave `LLM_API_KEY` unset for
-either exe.dev catalog.
+Regenerate both catalogs from the published model list with
+`node scripts/update-exe-gateway-models.mjs`. The two files are generated
+identically (one endpoint, one model list); they ship separately only so an
+operator picks in-VM vs tunneled by symlink, not by editing. Leave
+`LLM_API_KEY` unset for either.
 
 Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama) works:
 point `LLM_BASE_URL` at it and add catalog entries.
