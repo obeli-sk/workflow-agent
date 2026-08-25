@@ -103,22 +103,34 @@ that origin. Four catalogs ship:
     -d '{"model":"...","messages":[{"role":"user","content":"hi"}]}'
   ```
 
-- `models.exe-gateway.json` (keyless) : the same models for a deployment
-  running **outside** exe.dev. `llm.int.exe.xyz` resolves to a link-local
-  address only exe infra routes, so tunnel the VM's metadata listener and point
-  `LLM_BASE_URL` at the local end:
+- `models.exe-gateway.json` : the **same** integration endpoint and models for a
+  deployment running **outside** exe.dev. `llm.int.exe.xyz` resolves to a
+  link-local address only exe infra routes, and the endpoint is https-only with
+  Host-based routing, so run the tiny header-fixing proxy
+  [`examples/exe-llm-proxy.py`](examples/exe-llm-proxy.py) on an attached VM and
+  tunnel to it:
 
   ```sh
-  ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz
-  export LLM_BASE_URL=http://localhost:7070
+  # on <yourinstance>.exe.xyz:
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -subj /CN=localhost -keyout exe-llm.key -out exe-llm.crt
+  python3 examples/exe-llm-proxy.py --listen 127.0.0.1:7071 \
+    --tls-cert exe-llm.crt --tls-key exe-llm.key
+
+  # on your machine:
+  ssh -L 7070:127.0.0.1:7071 <yourinstance>.exe.xyz
+  export LLM_BASE_URL=https://localhost:7070   # trust the self-signed cert:
+                                               # NODE_EXTRA_CA_CERTS=exe-llm.crt
+                                               # or SSL_CERT_FILE for curl/python
   ```
 
 - `models.openrouter.json` (`LLM_API_KEY`) : [OpenRouter](https://openrouter.ai).
   The key is injected into the outbound header at the edge, never seen by the JS.
 
-Regenerate both exe.dev catalogs from its published model list with
-`node scripts/update-exe-gateway-models.mjs`. Leave `LLM_API_KEY` unset for
-either exe.dev catalog.
+Regenerate both catalogs from the published model list with
+`node scripts/update-exe-gateway-models.mjs`. The two files are generated
+identically (one endpoint, one model list); the split just pairs each access
+path with its matching route shape. Leave `LLM_API_KEY` unset for either.
 
 Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama) works:
 point `LLM_BASE_URL` at it and add catalog entries.
