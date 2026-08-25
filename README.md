@@ -131,10 +131,10 @@ point `LLM_BASE_URL` at it and add catalog entries.
 ## Documentation
 
 The agent reads the Obelisk docs from the rendered site, not a GitHub mount.
-The `pack.describe` activity fetches each URL in `DOCS_URLS_JSON` once at
-session start and inlines the result (an llms.txt index of every docs page)
-into the system prompt; the model then pulls detail pages itself through the
-GET-only `curl` program, whose allowlist covers `https://obeli.sk`:
+The `pack.describe` activity inlines each URL in `DOCS_URLS_JSON` into the
+system prompt as a pointer (never the index body, so the prompt stays slim);
+the model fetches the indexes and detail pages itself through the GET-only
+`curl` program, whose allowlist covers `https://obeli.sk`:
 
 ```sh
 curl https://obeli.sk/docs/latest/js/js-workflows/
