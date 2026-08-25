@@ -25,7 +25,7 @@ run_detail() {
 echo ">>> checking ask-user lifecycle through the session projection"
 ASK_SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$ASK_SESSION_ID" "$RUN_FFQN" \
-    '["", null, null, null]'
+    '["", null, null, null, null]'
 
 SECONDS=0
 while true; do
@@ -84,7 +84,7 @@ echo ">>> ask-user projection E2E PASS"
 echo ">>> creating an empty session and running one direct shell turn"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
-    '["", null, null, null]'
+    '["", null, null, null, null]'
 
 SECONDS=0
 while true; do
@@ -140,7 +140,7 @@ echo ">>> shell-only E2E PASS: curl was registered and invoked without starting 
 EXEC_ID="$("$OBELISK" generate execution-id)"
 echo ">>> submitting $RUN_FFQN as $EXEC_ID"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$EXEC_ID" "$RUN_FFQN" \
-    '["hello from the e2e test", null, null, null]'
+    '["hello from the e2e test", null, null, null, null]'
 
 EXPECT="AGENT_MODELS must be a non-empty JSON array"
 echo ">>> waiting for the recoverable LLM configuration error"

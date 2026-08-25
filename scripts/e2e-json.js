@@ -243,6 +243,24 @@ switch (command) {
         process.exit(valid ? 0 : 1);
         break;
     }
+    case "check-state-name": {
+        const name = process.argv[3];
+        const state = json();
+        const valid = state?.name === name;
+        if (!valid) console.error(`expected session named ${name}: ${JSON.stringify(state)}`);
+        process.exit(valid ? 0 : 1);
+        break;
+    }
+    case "check-runs-parent": {
+        const [parent, child] = [process.argv[3], process.argv[4]];
+        const row = json()?.runs?.find((run) => run.id === child);
+        const valid = row?.parent_id === parent;
+        if (!valid) {
+            console.error(`expected ${child} nested under ${parent}: ${JSON.stringify(row ?? json()?.runs?.map((run) => run.id))}`);
+        }
+        process.exit(valid ? 0 : 1);
+        break;
+    }
     case "check-user-message": {
         const text = process.argv[3];
         const hit = json()?.transcript?.user_messages?.some((message) => message.text === text);

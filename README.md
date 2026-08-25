@@ -188,6 +188,7 @@ chat state E_...                     # one JSON line: state, working, offer id
 chat send E_... please re-check X    # queue a user prompt for a peer
 chat create --model claude "prompt"  # new session; prints its execution id
 chat create '$ ls -la'               # new session opened straight in bash
+chat create --name research "..."    # slug-labeled child (visible in its id)
 chat current                         # this session's identity (JSON)
 chat rename my-session               # slug-name this session ([a-z0-9-])
 ```
@@ -209,6 +210,16 @@ Notes:
 - A prompt starting with `$` runs directly in that session's shell instead of
   reaching the model, in `chat create` and the composer alike (the space after
   `$` is optional).
+- `create --name SLUG` labels the child at birth (published as its session
+  name) and names its join set, so the child's execution id carries the slug
+  (`E_<parent>.n:<slug>_1`). Child sessions start with empty history: pass all
+  context they need in the prompt; a child can read its creator with
+  `chat read <parent>` (its own system prompt names the parent).
+- `chat state` reports `last_reply` (`{"turn": N}`) when a finished assistant
+  message exists; sessions stay pending on an input offer even after a final
+  answer, so this distinguishes "answered" from "still open". Read exactly that
+  message with `chat read ID --turn N`.
+- In the web UI, child sessions are listed indented below their parent.
 
 ## Stateless MCP sample
 

@@ -142,7 +142,29 @@ test("state emits one JSON line with offer, backend, and name", async () => {
     assert.equal(state.backend, "fake");
     assert.equal(state.name, "renamed-slug");
     assert.equal(state.turn_index, -1);
+    assert.equal(state.last_reply, null);
     assert.ok(!result.stdout.includes("big"), "system prompt must not leak through state");
+});
+
+test("state points at the newest finished assistant message", async () => {
+    const reply = (text, turn, complete) => ({
+        assistant_reply: {
+            content_json: JSON.stringify([{ type: "text", text }]),
+            turn_index: turn,
+            turn_complete: complete,
+        },
+    });
+    const { result } = await run(["state", RUN_ID], [
+        ["GET", "/status", () => jsonResponse(200, { pending_state: { status: "finished" } })],
+        ["GET", "/responses", () => jsonResponse(200, responsesPayload([
+            reply("final answer v1", 1, true),
+            // A mid-step tool-call reply does not hide the newer final answer.
+            reply("working on it", 3, false),
+            reply("final answer v2", 3, true),
+        ]))],
+    ]);
+    const state = JSON.parse(result.stdout);
+    assert.deepEqual(state.last_reply, { turn: 3 });
 });
 
 test("read renders turns and --system gates the system prompt", async () => {
@@ -192,6 +214,35 @@ test("read --tail keeps only the last turns", async () => {
     ]);
     assert.ok(result.stdout.includes("msg 2"));
     assert.ok(!result.stdout.includes("msg 1"));
+});
+
+test("read --turn prints just that turn's events", async () => {
+    const reply = (text, turn, complete) => ({
+        assistant_reply: {
+            content_json: JSON.stringify([{ type: "text", text }]),
+            turn_index: turn,
+            turn_complete: complete,
+        },
+    });
+    const routes = [
+        ["GET", "/status", () => jsonResponse(200, { pending_state: { status: "finished" } })],
+        ["GET", "/responses", () => jsonResponse(200, responsesPayload([
+            reply("the final message", 4, true),
+            { user_message: { id: "u4", text: "question four", turn_index: 4 } },
+            reply("earlier message", 2, true),
+            { user_message: { id: "u2", text: "question two", turn_index: 2 } },
+        ]))],
+    ];
+    const { result } = await run(["read", RUN_ID, "--turn", "4"], routes);
+    assert.equal(result.exit_code, 0);
+    assert.ok(result.stdout.includes("[turn 4] user: question four"));
+    assert.ok(result.stdout.includes("assistant: the final message"));
+    assert.ok(!result.stdout.includes("earlier message"));
+    assert.ok(!result.stdout.includes("question two"));
+
+    const clash = await run(["read", RUN_ID, "--tail", "2", "--turn", "0"]);
+    assert.equal(clash.result.exit_code, 2);
+    assert.match(clash.result.stderr, /mutually exclusive/);
 });
 
 test("send looks up the open offer and stubs a prompt", async () => {
@@ -245,7 +296,7 @@ test("create POSTs params and prints the generated id", async () => {
         ["POST", "/v1/executions", (url, init) => {
             assert.deepEqual(JSON.parse(init.body), {
                 ffqn: "obelisk-agent:workflow/workflow.run-cancellable",
-                params: ["go north", "fake", null, "low"],
+                params: ["go north", "fake", null, "low", null],
             });
             // The server wraps the id when the request accepts JSON.
             return jsonResponse(201, { ok: "E_new000000000000000000000000002" });
@@ -257,12 +308,31 @@ test("create POSTs params and prints the generated id", async () => {
 
     const plain = await run(["create"], [
         ["POST", "/v1/executions", (url, init) => {
-            assert.deepEqual(JSON.parse(init.body).params, ["", null, null, null]);
+            assert.deepEqual(JSON.parse(init.body).params, ["", null, null, null, null]);
             return jsonResponse(201, "E_plain00000000000000000000000003");
         }],
     ]);
     assert.equal(plain.result.exit_code, 0);
     assert.equal(plain.result.stdout, "E_plain00000000000000000000000003\n");
+});
+
+test("create passes a valid --name and rejects bad slugs", async () => {
+    const named = await run(["create", "--name", "research", "$", "ls"], [
+        ["POST", "/v1/executions", (url, init) => {
+            const body = JSON.parse(init.body);
+            assert.deepEqual(body.params, ["$ ls", null, null, null, "research"]);
+            return jsonResponse(201, { ok: "E_named00000000000000000000000004" });
+        }],
+    ]);
+    assert.equal(named.result.exit_code, 0);
+
+    for (const bad of ["Bad_Name", "", "dou--ble"]) {
+        const rejected = await run(bad === ""
+            ? ["create", "--name"]
+            : ["create", "--name", bad]);
+        assert.equal(rejected.result.exit_code, 2, `expected exit 2 for name ${JSON.stringify(bad)}`);
+        assert.match(rejected.result.stderr, /--name/);
+    }
 });
 
 test("create rejects unknown effort levels", async () => {

@@ -85,7 +85,7 @@ chat_direct '["",["--help"]]' | grep -q "Usage: chat COMMAND"
 echo ">>> creating a parent session and running chat current in it"
 PARENT_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$PARENT_ID" "$RUN_FFQN" \
-    '["", null, null, null]'
+    '["", null, null, null, null]'
 CURRENT_OUT="$(shell_turn "$PARENT_ID" "shell-chat-current" 'chat current')"
 node scripts/e2e-json.js check-current-id "$PARENT_ID" <<<"$CURRENT_OUT"
 
@@ -117,10 +117,12 @@ if "$OBELISK" execution list -j -a "$E2E_API_URL" --limit 200 | grep -q "\"$CHIL
 fi
 "$OBELISK" execution list -j -a "$E2E_API_URL" --show-derived --limit 200 | grep -q "$CHILD_ID"
 
-echo ">>> chat create with a \$-prefixed prompt opens the child straight in bash"
-SHELL_OUT="$(shell_turn "$PARENT_ID" "shell-chat-create-bash" 'chat create --model fake $ echo opened-in-bash')"
+echo ">>> chat create --name with a \$-prefixed prompt opens a labeled child in bash"
+SHELL_OUT="$(shell_turn "$PARENT_ID" "shell-chat-create-bash" 'chat create --model fake --name e2e-child $ echo opened-in-bash')"
 BASH_CHILD_ID="$(head -n 1 <<<"$SHELL_OUT")"
 [[ "$BASH_CHILD_ID" == E_* ]] || { echo "unexpected bash-child create output: $SHELL_OUT" >&2; exit 1; }
+grep -q ".n:e2e-child_" <<<"$BASH_CHILD_ID" \
+    || { echo "named child id does not carry the slug: $BASH_CHILD_ID" >&2; exit 1; }
 SECONDS=0
 while true; do
     if BASH_DETAIL="$(run_detail "$BASH_CHILD_ID")" \
@@ -130,6 +132,18 @@ while true; do
     [[ $SECONDS -ge 30 ]] && { echo "bash-first child never ran its script: $BASH_DETAIL" >&2; exit 1; }
     sleep 1
 done
+
+echo ">>> the named child knows its slug and its parent"
+STATE_NAMED="$(chat_direct "[\"\",[\"state\",\"$BASH_CHILD_ID\"]]")"
+node scripts/e2e-json.js check-state-name e2e-child <<<"$STATE_NAMED"
+READ_SYS="$(chat_direct "[\"\",[\"read\",\"$BASH_CHILD_ID\",\"--system\"]]")"
+grep -q "# This session" <<<"$READ_SYS"
+grep -q "child session by $PARENT_ID" <<<"$READ_SYS"
+
+echo ">>> /api/runs nests children under their parent"
+RUNS="$(curl --fail --silent http://127.0.0.1:28093/api/runs)"
+node scripts/e2e-json.js check-runs-parent "$PARENT_ID" "$CHILD_ID" <<<"$RUNS"
+node scripts/e2e-json.js check-runs-parent "$PARENT_ID" "$BASH_CHILD_ID" <<<"$RUNS"
 
 echo ">>> chat list shows both sessions"
 LIST_OUT="$(chat_direct '["",["list","--json"]]')"
