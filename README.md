@@ -103,25 +103,21 @@ that origin. Four catalogs ship:
     -d '{"model":"...","messages":[{"role":"user","content":"hi"}]}'
   ```
 
-- `models.exe-gateway.json` : the **same** integration endpoint and models for a
-  deployment running **outside** exe.dev. `llm.int.exe.xyz` resolves to a
-  link-local address only exe infra routes, and the endpoint is https-only with
-  Host-based routing, so run the tiny header-fixing proxy
-  [`examples/exe-llm-proxy.py`](examples/exe-llm-proxy.py) on an attached VM and
-  tunnel to it:
+- `models.exe-gateway.json` (keyless) : the **same** integration endpoint and
+  models for a deployment running **outside** exe.dev. `llm.int.exe.xyz`
+  resolves to a link-local address only exe infra routes, and the https endpoint
+  routes on the Host header, so run an nginx reverse proxy on an attached VM
+  ([`examples/exe-llm-proxy.conf`](examples/exe-llm-proxy.conf)) that fixes the
+  header, and tunnel to it:
 
   ```sh
   # on <yourinstance>.exe.xyz:
-  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-    -subj /CN=localhost -keyout exe-llm.key -out exe-llm.crt
-  python3 examples/exe-llm-proxy.py --listen 127.0.0.1:7071 \
-    --tls-cert exe-llm.crt --tls-key exe-llm.key
+  mkdir -p /tmp/exe-llm-proxy/{logs,tmp/body}
+  nginx -c $(pwd)/examples/exe-llm-proxy.conf   # plain HTTP on 127.0.0.1:7071
 
   # on your machine:
   ssh -L 7070:127.0.0.1:7071 <yourinstance>.exe.xyz
-  export LLM_BASE_URL=https://localhost:7070   # trust the self-signed cert:
-                                               # NODE_EXTRA_CA_CERTS=exe-llm.crt
-                                               # or SSL_CERT_FILE for curl/python
+  export LLM_BASE_URL=http://localhost:7070     # plain http, no custom CA
   ```
 
 - `models.openrouter.json` (`LLM_API_KEY`) : [OpenRouter](https://openrouter.ai).
