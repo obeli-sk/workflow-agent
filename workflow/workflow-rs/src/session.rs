@@ -268,9 +268,32 @@ fn parse_mcp_servers(value: &Value) -> Result<Vec<(String, String)>, String> {
 fn step_limit_error(turn_index: u64, max_steps: u32) -> AgentErrorEvent {
     AgentErrorEvent {
         id: format!("step-limit-{turn_index}"),
-        text: format!("exceeded MAX_STEPS={max_steps} without yielding an assistant response"),
+        text: format!(
+            "exceeded MAX_STEPS={max_steps} without yielding an assistant response. \
+             State for continuation (next user message should say \"continue\"): the turn \
+             ended mid-task; re-derive position from the transcript and the session VFS, then \
+             finish or report. Budget resets to {max_steps} steps for the next turn.",
+        ),
         turn_index,
     }
+}
+
+/// Fraction of the step budget at which the model gets its one-time warning to
+/// wrap up (75%, rounded down; never fires when the budget is under 4 steps).
+const STEP_WARNING_FRACTION: u32 = 3;
+
+/// The one-time heads-up pushed as a user-role message once `agent_steps`
+/// crosses the warning threshold. Mirrors EMPTY_REPLY_NUDGE in spirit: a
+/// synthetic nudge that steers rather than errors.
+fn step_warning_text(max_steps: u32) -> String {
+    let warn_at = max_steps / 4 * STEP_WARNING_FRACTION;
+    format!(
+        "Step budget warning: you have used about {warn_at} of {max_steps} allowed model \
+         invocations this turn. Stop open-ended exploration now. Finish the current task with \
+         as few further commands as possible, verify the minimum viable result, and end the \
+         turn with a Markdown summary of what was done, what state things are in, and what \
+         remains — so the next turn can continue from your report.",
+    )
 }
 
 fn llm_error_event(turn_index: u64, message: &str) -> AgentErrorEvent {
@@ -538,6 +561,8 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
     let mut turn_index: u64 = 0;
     // Turn index that already consumed its one empty-reply nudge; MAX means none.
     let mut empty_reply_nudged_turn = u64::MAX;
+    // Turn index that already consumed the step-budget warning; MAX means none.
+    let mut step_warned_turn = u64::MAX;
     let mut should_call_llm = !messages.is_empty();
     let mut agent_steps = 0u32;
     let mut session = open_session(turn_index, &notifications)?;
@@ -558,6 +583,16 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
             agent_steps = 0;
             turn_index += 1;
             continue;
+        }
+        // One-time wrap-up nudge as the turn approaches its budget (see
+        // step_warning_text). Pushed after the last tool result block so the
+        // model reads it alongside the freshest observations.
+        if should_call_llm
+            && agent_steps >= max_steps / 4 * STEP_WARNING_FRACTION
+            && step_warned_turn != turn_index
+        {
+            step_warned_turn = turn_index;
+            messages.push(user_text(&step_warning_text(max_steps)));
         }
 
         let mut turn_complete = false;
@@ -1251,9 +1286,27 @@ mod tests {
         assert_eq!(error.id, "step-limit-2");
         assert_eq!(
             error.text,
-            "exceeded MAX_STEPS=25 without yielding an assistant response"
+            "exceeded MAX_STEPS=25 without yielding an assistant response. State for \
+             continuation (next user message should say \"continue\"): the turn ended \
+             mid-task; re-derive position from the transcript and the session VFS, then \
+             finish or report. Budget resets to 25 steps for the next turn."
         );
         assert_eq!(error.turn_index, 2);
+    }
+
+    #[test]
+    fn step_warning_names_the_threshold() {
+        assert_eq!(
+            step_warning_text(20),
+            "Step budget warning: you have used about 15 of 20 allowed model invocations \
+             this turn. Stop open-ended exploration now. Finish the current task with as \
+             few further commands as possible, verify the minimum viable result, and end \
+             the turn with a Markdown summary of what was done, what state things are in, \
+             and what remains — so the next turn can continue from your report."
+        );
+        // Tiny budgets: the threshold floors at zero steps, but the warning text
+        // still names the real numbers.
+        assert!(step_warning_text(3).contains("3"));
     }
 
     #[test]
