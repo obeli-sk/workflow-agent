@@ -43,6 +43,7 @@ const SYSTEM_PROMPT = [
     'A response with no tool call ends the turn and hands control back to the user. Send your final answer, or a non-blocking question, as Markdown with no command attached (use fenced Mermaid blocks only for diagrams). For an answer required before you can continue the current task, use the UI-coordinated ask-user command described in the shell guidance.',
     'Never invent execution IDs, FFQNs, deployment IDs, or command arguments. Discover them first.',
     'If a command returns an error, decide whether to retry, try another command, ask the user, or respond with an explanation.',
+    'Authoring JS workflows (obelisk.* host API): read the `/js/js-workflows/` docs page first — its signatures are exact. Prefer static ES-module imports of child functions over `obelisk.call`. In workflow code never invoke a host function speculatively to probe its signature: a malformed durable call traps the whole execution at commit time and cannot be caught in JS. Validate shapes against the docs instead; validation errors from correct-shaped calls ARE catchable.',
     WIT_JSON_MAPPING,
 ].join(nl + nl);
 
