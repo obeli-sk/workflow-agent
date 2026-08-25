@@ -135,6 +135,24 @@ path with its matching route shape. Leave `LLM_API_KEY` unset for either.
 Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama) works:
 point `LLM_BASE_URL` at it and add catalog entries.
 
+## Documentation
+
+The agent reads the Obelisk docs from the rendered site, not a GitHub mount.
+The `pack.describe` activity fetches each URL in `DOCS_URLS_JSON` once at
+session start and inlines the result (an llms.txt index of every docs page)
+into the system prompt; the model then pulls detail pages itself through the
+GET-only `curl` program, whose allowlist covers `https://obeli.sk`:
+
+```sh
+curl https://obeli.sk/docs/latest/js/js-workflows/
+```
+
+`OBELISK_VERSION` pins the doc set to the target runtime's version
+(`https://obeli.sk/docs/v${OBELISK_VERSION}/llms.txt/`); empty means `latest`.
+Override the whole list with `DOCS_URLS_JSON` (a JSON array of URLs). No GitHub
+credential is involved; the former `/workspace/{docs,components}` mounts and
+their `GITHUB_TOKEN` secret are gone.
+
 ## The shell
 
 The core registers a broad command catalog ported from just-bash (file, path,

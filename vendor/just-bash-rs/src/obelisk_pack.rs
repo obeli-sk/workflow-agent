@@ -59,20 +59,17 @@ them that way. Add a component by writing its source and its
 [[activity_js]]/[[workflow_js]] table (name, location, params, return_type), and
 add a bundled file by writing it and listing its path in `component_files` with
 the value \"auto\", nothing more. Run `obelisk generate deployment` for a
-fully-commented starter deployment.toml when authoring one from scratch. Two
-read-only reference trees are mounted for you: /workspace/docs (the Obelisk
-documentation, obeli-sk/website) and /workspace/components (reusable example
-components, obeli-sk/components); browse them with ls and cat while authoring.
+fully-commented starter deployment.toml when authoring one from scratch. The
+Obelisk documentation index (llms.txt) is inlined at the top of this prompt:
+it lists every docs page URL; fetch pages with the curl program, e.g.
+`curl https://obeli.sk/docs/latest/js/js-workflows/`. Read the relevant JS
+pages (activities, workflows, webhooks) before writing components instead of
+guessing API signatures.
 Run `mount` to see the network-backed mount points; it reports whether each MCP
-server is responding. These mounts
-(/workspace/deployment, /workspace/docs, /workspace/components, /workspace/mcp)
+server is responding. These mounts (/workspace/deployment, /workspace/mcp)
 are lazy: a directory lists and a file's bytes fetch over the network on first
 access, so the first touch of a path may pause briefly. The deployment mount is
-cheap (one request for its whole file index), but the reference trees fetch one
-network request per directory listed, so avoid recursive scans over them: do not
-run tree, find, or a recursive grep (grep -r / fgrep -r) across a mount. Navigate
-with targeted ls and cat, or read a known path directly, instead of walking the
-whole tree.
+cheap (one request for its whole file index).
 
 The shell's HTTP access goes through an operator allowlist: commands such as
 curl work only for explicitly granted hosts (GET only), and a policy-denied
