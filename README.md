@@ -103,10 +103,17 @@ that origin. Four catalogs ship:
     -d '{"model":"...","messages":[{"role":"user","content":"hi"}]}'
   ```
 
-- `models.exe-gateway.json` (keyless) : the legacy exe.dev gateway for a
-  deployment running **outside** exe.dev. Forward it over SSH with
-  `ssh -L 7070:169.254.169.254:80 <yourinstance>.exe.xyz` and set
-  `LLM_BASE_URL=http://localhost:7070`.
+- `models.exe-gateway.json` (keyless) : the same gateway for a deployment
+  running **outside** exe.dev. The hostname resolves to a link-local address
+  that only exe infra routes, so tunnel it from an attached VM and point
+  `LLM_BASE_URL` at the local end:
+
+  ```sh
+  ssh -L 7070:169.254.169.254:443 <yourinstance>.exe.xyz
+  export LLM_BASE_URL=https://localhost:7070   # or http + :80; TLS SNI/Host
+                                               # must stay llm.int.exe.xyz
+  ```
+
 - `models.openrouter.json` (`LLM_API_KEY`) : [OpenRouter](https://openrouter.ai).
   The key is injected into the outbound header at the edge, never seen by the JS.
 
