@@ -11,7 +11,10 @@ const OUTPUTS = [
     },
     {
         path: fileURLToPath(new URL("../models.exe-gateway.json", import.meta.url)),
-        pathPrefix: "/gateway/llm",
+        // Same integration endpoint, reached from outside exe.dev through an
+        // ssh tunnel to the VM (see README). The prefix is unused by the
+        // endpoint today; kept only to distinguish the two catalogs.
+        pathPrefix: "",
     },
 ];
 const API_TYPES = new Map([

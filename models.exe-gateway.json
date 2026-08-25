@@ -3,7 +3,7 @@
     "id": "claude-opus-5",
     "label": "claude-opus-5",
     "api_type": "anthropic-messages",
-    "path": "/gateway/llm/anthropic",
+    "path": "/anthropic",
     "wire_model": "claude-opus-5",
     "max_tokens": 8192
   },
@@ -11,7 +11,7 @@
     "id": "claude-fable-5",
     "label": "claude-fable-5",
     "api_type": "anthropic-messages",
-    "path": "/gateway/llm/anthropic",
+    "path": "/anthropic",
     "wire_model": "claude-fable-5",
     "max_tokens": 8192
   },
@@ -19,7 +19,7 @@
     "id": "claude-opus-4.6",
     "label": "claude-opus-4.6",
     "api_type": "anthropic-messages",
-    "path": "/gateway/llm/anthropic",
+    "path": "/anthropic",
     "wire_model": "claude-opus-4-6",
     "max_tokens": 8192
   },
@@ -27,7 +27,7 @@
     "id": "claude-opus-4.8",
     "label": "claude-opus-4.8",
     "api_type": "anthropic-messages",
-    "path": "/gateway/llm/anthropic",
+    "path": "/anthropic",
     "wire_model": "claude-opus-4-8",
     "max_tokens": 8192
   },
@@ -35,7 +35,7 @@
     "id": "claude-opus-4.7",
     "label": "claude-opus-4.7",
     "api_type": "anthropic-messages",
-    "path": "/gateway/llm/anthropic",
+    "path": "/anthropic",
     "wire_model": "claude-opus-4-7",
     "max_tokens": 8192
   },
@@ -43,7 +43,7 @@
     "id": "claude-opus-4.5",
     "label": "claude-opus-4.5",
     "api_type": "anthropic-messages",
-    "path": "/gateway/llm/anthropic",
+    "path": "/anthropic",
     "wire_model": "claude-opus-4-5",
     "max_tokens": 8192
   },
@@ -51,7 +51,7 @@
     "id": "claude-sonnet-5",
     "label": "claude-sonnet-5",
     "api_type": "anthropic-messages",
-    "path": "/gateway/llm/anthropic",
+    "path": "/anthropic",
     "wire_model": "claude-sonnet-5",
     "max_tokens": 8192
   },
@@ -59,7 +59,7 @@
     "id": "claude-sonnet-4.6",
     "label": "claude-sonnet-4.6",
     "api_type": "anthropic-messages",
-    "path": "/gateway/llm/anthropic",
+    "path": "/anthropic",
     "wire_model": "claude-sonnet-4-6",
     "max_tokens": 8192
   },
@@ -67,7 +67,7 @@
     "id": "claude-sonnet-4.5",
     "label": "claude-sonnet-4.5",
     "api_type": "anthropic-messages",
-    "path": "/gateway/llm/anthropic",
+    "path": "/anthropic",
     "wire_model": "claude-sonnet-4-5",
     "max_tokens": 8192
   },
@@ -75,7 +75,7 @@
     "id": "claude-haiku-4.5",
     "label": "claude-haiku-4.5",
     "api_type": "anthropic-messages",
-    "path": "/gateway/llm/anthropic",
+    "path": "/anthropic",
     "wire_model": "claude-haiku-4-5",
     "max_tokens": 8192
   },
@@ -83,7 +83,7 @@
     "id": "claude-opus-4.1",
     "label": "claude-opus-4.1",
     "api_type": "anthropic-messages",
-    "path": "/gateway/llm/anthropic",
+    "path": "/anthropic",
     "wire_model": "claude-opus-4-1",
     "max_tokens": 8192
   },
@@ -91,336 +91,329 @@
     "id": "gpt-5.6-sol",
     "label": "gpt-5.6-sol",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.6-sol"
   },
   {
     "id": "gpt-5.6-terra",
     "label": "gpt-5.6-terra",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.6-terra"
   },
   {
     "id": "gpt-5.6-luna",
     "label": "gpt-5.6-luna",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.6-luna"
   },
   {
     "id": "gpt-5.5",
     "label": "gpt-5.5",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.5"
   },
   {
     "id": "gpt-5.4",
     "label": "gpt-5.4",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.4"
   },
   {
     "id": "gpt-5.4-mini",
     "label": "gpt-5.4-mini",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.4-mini"
   },
   {
     "id": "gpt-5.4-nano",
     "label": "gpt-5.4-nano",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.4-nano"
   },
   {
     "id": "gpt-5.3-codex",
     "label": "gpt-5.3-codex",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.3-codex"
   },
   {
     "id": "gpt-5.5-pro",
     "label": "gpt-5.5-pro",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.5-pro"
   },
   {
     "id": "gpt-5.4-pro",
     "label": "gpt-5.4-pro",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.4-pro"
   },
   {
     "id": "gpt-5.2",
     "label": "gpt-5.2",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.2"
   },
   {
     "id": "gpt-5.2-pro",
     "label": "gpt-5.2-pro",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.2-pro"
   },
   {
     "id": "gpt-5.1",
     "label": "gpt-5.1",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5.1"
   },
   {
     "id": "gpt-5",
     "label": "gpt-5",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5"
   },
   {
     "id": "gpt-5-mini",
     "label": "gpt-5-mini",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5-mini"
   },
   {
     "id": "gpt-5-nano",
     "label": "gpt-5-nano",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5-nano"
   },
   {
     "id": "gpt-5-pro",
     "label": "gpt-5-pro",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-5-pro"
   },
   {
     "id": "gpt-4.1",
     "label": "gpt-4.1",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-4.1"
   },
   {
     "id": "gpt-4.1-mini",
     "label": "gpt-4.1-mini",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-4.1-mini"
   },
   {
     "id": "gpt-4.1-nano",
     "label": "gpt-4.1-nano",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-4.1-nano"
   },
   {
     "id": "gpt-4o",
     "label": "gpt-4o",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-4o"
   },
   {
     "id": "gpt-4o-mini",
     "label": "gpt-4o-mini",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "gpt-4o-mini"
   },
   {
     "id": "o1",
     "label": "o1",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "o1"
   },
   {
     "id": "o1-pro",
     "label": "o1-pro",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "o1-pro"
   },
   {
     "id": "o3",
     "label": "o3",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "o3"
   },
   {
     "id": "o3-mini",
     "label": "o3-mini",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "o3-mini"
   },
   {
     "id": "o3-pro",
     "label": "o3-pro",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "o3-pro"
   },
   {
     "id": "o4-mini",
     "label": "o4-mini",
     "api_type": "openai-responses",
-    "path": "/gateway/llm/openai",
+    "path": "/openai",
     "wire_model": "o4-mini"
   },
   {
     "id": "qwen3.8-2.4t-a95b-fireworks",
     "label": "qwen3.8-2.4t-a95b-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/qwen3p8-2p4t-a95b"
   },
   {
     "id": "muse-glimmer-30b-fireworks",
     "label": "muse-glimmer-30b-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/muse-glimmer-30b"
   },
   {
     "id": "glm-5.2-fireworks",
     "label": "glm-5.2-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/glm-5p2"
   },
   {
     "id": "kimi-k3-fireworks",
     "label": "kimi-k3-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/kimi-k3"
   },
   {
     "id": "kimi-k2.7-code-fireworks",
     "label": "kimi-k2.7-code-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/kimi-k2p7-code"
   },
   {
     "id": "kimi-k2.6-fireworks",
     "label": "kimi-k2.6-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/kimi-k2p6"
   },
   {
     "id": "deepseek-v4-pro-fireworks",
     "label": "deepseek-v4-pro-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/deepseek-v4-pro"
   },
   {
     "id": "deepseek-v4-pro-0813-fireworks",
     "label": "deepseek-v4-pro-0813-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/deepseek-v4-pro-0813"
   },
   {
     "id": "inkling-fireworks",
     "label": "inkling-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/inkling"
   },
   {
     "id": "nemotron-3-ultra-nvfp4-fireworks",
     "label": "nemotron-3-ultra-nvfp4-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/nemotron-3-ultra-nvfp4"
   },
   {
     "id": "qwen3.7-plus-fireworks",
     "label": "qwen3.7-plus-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/qwen3p7-plus"
   },
   {
     "id": "minimax-m3-fireworks",
     "label": "minimax-m3-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/minimax-m3"
   },
   {
     "id": "minimax-m2.7-fireworks",
     "label": "minimax-m2.7-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/minimax-m2p7"
-  },
-  {
-    "id": "deepseek-v4-flash-fireworks",
-    "label": "deepseek-v4-flash-fireworks",
-    "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
-    "wire_model": "accounts/fireworks/models/deepseek-v4-flash"
   },
   {
     "id": "deepseek-v4-flash-0731-fireworks",
     "label": "deepseek-v4-flash-0731-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/deepseek-v4-flash-0731"
   },
   {
     "id": "nemotron-lightning-3.5-30b-a3b-fireworks",
     "label": "nemotron-lightning-3.5-30b-a3b-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b"
   },
   {
     "id": "gpt-oss-120b-fireworks",
     "label": "gpt-oss-120b-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/gpt-oss-120b"
   },
   {
     "id": "gpt-oss-20b-fireworks",
     "label": "gpt-oss-20b-fireworks",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/fireworks/inference",
+    "path": "/fireworks/inference",
     "wire_model": "accounts/fireworks/models/gpt-oss-20b"
   },
   {
     "id": "grok-4.6",
     "label": "grok-4.6",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/xai",
+    "path": "/xai",
     "wire_model": "grok-4.6"
   },
   {
     "id": "grok-4.5",
     "label": "grok-4.5",
     "api_type": "openai-chat-completions",
-    "path": "/gateway/llm/xai",
+    "path": "/xai",
     "wire_model": "grok-4.5"
   }
 ]
