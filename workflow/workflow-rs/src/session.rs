@@ -30,7 +30,7 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult, Fd, ObeliskHost};
-use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program, obelisk_web};
+use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
 
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
@@ -77,8 +77,6 @@ const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash scrip
 const MOUNT_HEADER: &str = concat!(
     "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n",
     "  /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n",
-    "  /workspace/docs                Obelisk documentation, read-only (obeli-sk/website)\n",
-    "  /workspace/components          example components, read-only (obeli-sk/components)\n",
 );
 const MOUNT_FOOTER: &str = "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
@@ -577,20 +575,6 @@ that does not need an immediate answer, reply in Markdown without a command.\n\n
             bash.fs_mut()
                 .set_blob_loader(obelisk_pack::blob_loader(Box::new(host())));
             obelisk_pack::register_deferred_mount(bash.fs_mut(), Box::new(host()));
-            // Reference trees for authoring: browsable GitHub repos listed and
-            // fetched lazily on first `ls`/`cat` (obelisk_web). Read-only.
-            obelisk_web::mount(
-                bash.fs_mut(),
-                Box::new(host()),
-                "obelisk-agent:mounts/components.request",
-                "/workspace/components",
-            );
-            obelisk_web::mount(
-                bash.fs_mut(),
-                Box::new(host()),
-                "obelisk-agent:mounts/docs.request",
-                "/workspace/docs",
-            );
             // Each MCP server's resources mount lazily too: registering a
             // deferred mount defers its `resources/list` until the session first
             // touches `/workspace/mcp/<name>`.

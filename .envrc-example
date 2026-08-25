@@ -28,4 +28,6 @@ export AGENT_MODELS="$(cat models.json)"        # ln -sf models.local.json model
 export LLM_BASE_URL=http://127.0.0.1:9190
 # export LLM_API_KEY=...
 
-export GITHUB_TOKEN=$(gh auth token)
+# Docs: pin the inlined llms.txt index to the target Obelisk version (empty =
+# latest). See the README "Documentation" section.
+export OBELISK_VERSION=""
