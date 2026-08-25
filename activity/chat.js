@@ -306,11 +306,11 @@ async function walkResponses(executionId) {
     return { events, sessionStarted, inputOffer, working, name };
 }
 
-// The current slug straight off the dedicated rename join set. Read forward
-// from the start and keep the last one: renames are rare, so one small page
-// always covers the set. (direction=older cannot be used here: its
-// newest-window scan misses filtered responses that sit below newer responses
-// of other join sets.)
+// The current slug straight off the dedicated rename join set; renames are
+// rare, so one small forward page always covers it.
+// FIXME(obelisk): direction=older&length=1 should return the newest match but
+// misses filtered responses shadowed by newer responses of other join sets,
+// and the join_set filter rejects the actual id form (n:foo).
 async function latestSessionName(executionId) {
     let name = null;
     try {
