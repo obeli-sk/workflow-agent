@@ -13,6 +13,8 @@
 // documents them in the help output and implements the --top-level create
 // fallback.
 
+import { SESSION_STATE_LABELS, emptyMarkers, projectSessionState, scanMarkers } from "../shared/session-state.js";
+
 const RUN_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 200;
@@ -161,9 +163,25 @@ async function cmdStateBody(id, json) {
     const status = await fetchStatus(id);
     const started = walked.sessionStarted ?? {};
     const replyTurn = lastReplyTurn(walked.events);
+    const pendingStatus = status?.pending_state?.status ?? "unknown";
+    const resultKind = status?.pending_state?.result_kind ?? null;
+    const projected = projectSessionState({
+        status: pendingStatus,
+        resultKind,
+        joinName: joinName(status?.pending_state?.join_set_id),
+        working: walked.working === true,
+        markers: walked.markers,
+    });
+    const lastError = newestAgentError(walked.events);
     const state = {
         id,
-        status: status?.pending_state?.status ?? "unknown",
+        status: pendingStatus,
+        // The centralized session state (shared with the webui sidebar); see
+        // shared/session-state.js. `label` is the human-readable form.
+        state: projected,
+        label: SESSION_STATE_LABELS[projected][0],
+        result_kind: resultKind,
+        last_error: lastError === null ? null : { text: lastError.text, turn_index: lastError.turn_index },
         join_name: joinName(status?.pending_state?.join_set_id),
         working: walked.working === true,
         turn_index: latestTurnIndex(walked.events),
@@ -177,6 +195,14 @@ async function cmdStateBody(id, json) {
         name: walked.name ?? null,
     };
     return ok(json ? JSON.stringify(state, null, 2) + "\n" : JSON.stringify(state) + "\n");
+}
+
+function newestAgentError(events) {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+        const ev = events[i];
+        if (ev.kind === "agent_error") return { text: ev.text, turn_index: ev.turn_index };
+    }
+    return null;
 }
 
 async function cmdSend(stdin, args) {
@@ -267,6 +293,7 @@ async function describeRun(exec) {
 // projects it like webhook/lib/responses.js.
 async function walkResponses(executionId) {
     const events = [];
+    const markers = emptyMarkers();
     let sessionStarted;
     let inputOffer;
     let working = false;
@@ -283,6 +310,7 @@ async function walkResponses(executionId) {
         for (const r of payload.responses ?? []) {
             const value = responseValue(r);
             if (!value) continue;
+            scanMarkers(markers, value);
             if (value.session_started) sessionStarted = projectSessionStarted(value.session_started);
             else if (value.input_offered) {
                 inputOffer = {
@@ -303,7 +331,7 @@ async function walkResponses(executionId) {
     // Renames publish on their own join set now; the in-stream variant only
     // exists on pre-protocol-7 sessions.
     name = (await latestSessionName(executionId)) ?? name;
-    return { events, sessionStarted, inputOffer, working, name };
+    return { events, sessionStarted, inputOffer, working, name, markers };
 }
 
 // The current slug straight off the dedicated rename join set; renames are
