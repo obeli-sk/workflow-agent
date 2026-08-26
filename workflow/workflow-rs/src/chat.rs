@@ -9,10 +9,13 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use just_bash_rs::CustomCommandHandler;
-use just_bash_rs::interpreter::CommandOutput;
+use serde_json::{Value, json};
 
-use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet};
+use just_bash_rs::CustomCommandHandler;
+use just_bash_rs::interpreter::{CommandOutput, Interpreter};
+
+use crate::generated::obelisk::types::time::Duration;
+use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::workflow_obelisk_ext::workflow as workflow_ext;
 use crate::session::Notifications;
 
@@ -21,6 +24,21 @@ pub(crate) const CHAT_PROGRAM_FFQN: &str = "obelisk-agent:programs/program.chat"
 const DEFAULT_PEERS_JOIN_SET: &str = "peers";
 const MAX_SLUG_LEN: usize = 64;
 const EFFORTS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/// States `chat watch` wakes on: the child stopped progressing on its own or
+/// needs its owner. A queued child (`awaiting-user`, nothing done yet) and a
+/// busy one deliberately do not wake.
+const WATCH_WAKE_STATES: [&str; 7] = [
+    "final-response",
+    "step-limit",
+    "awaiting-answer",
+    "shell-only",
+    "finished-ok",
+    "cancelled",
+    "failed",
+];
+const WATCH_DEFAULT_INTERVAL_MS: u64 = 2_000;
+const WATCH_DEFAULT_TIMEOUT_MS: u64 = 15 * 60_000;
 
 /// Live identity of the invoking session, captured where commands are
 /// registered (the activity cannot learn its caller).
@@ -84,7 +102,10 @@ pub(crate) fn command_handler(
                 && !has_help_flag(rest)
                 && !rest.iter().any(|arg| arg == "--top-level") =>
         {
-            create_child(&own, rest)
+            create_child(&own, rest, &mut delegate, interp)
+        }
+        Some((sub, rest)) if sub == "watch" && !has_help_flag(args) => {
+            watch_command(&mut delegate, interp, rest)
         }
         _ => delegate(interp, args, stdin),
     })
@@ -156,7 +177,12 @@ fn rename(args: &[String], own: &ChatSelf, notifications: &Notifications) -> Com
     }
 }
 
-fn create_child(own: &ChatSelf, args: &[String]) -> CommandOutput {
+fn create_child(
+    own: &ChatSelf,
+    args: &[String],
+    delegate: &mut CustomCommandHandler,
+    interp: &mut Interpreter,
+) -> CommandOutput {
     let parsed = match parse_create_args(args) {
         Ok(parsed) => parsed,
         Err(error) => return usage(&error),
@@ -190,11 +216,22 @@ fn create_child(own: &ChatSelf, args: &[String]) -> CommandOutput {
             parsed.name.as_deref(),
         )
     };
-    CommandOutput {
-        stdout: format!("{}\n", execution_id.id),
-        stderr: String::new(),
-        exit_code: 0,
+    if !parsed.watch {
+        return CommandOutput {
+            stdout: format!("{}\n", execution_id.id),
+            stderr: String::new(),
+            exit_code: 0,
+        };
     }
+    watch_loop(
+        delegate,
+        interp,
+        &WatchArgs {
+            id: execution_id.id,
+            timeout_ms: WATCH_DEFAULT_TIMEOUT_MS,
+            interval_ms: WATCH_DEFAULT_INTERVAL_MS,
+        },
+    )
 }
 
 struct CreateArgs {
@@ -202,6 +239,7 @@ struct CreateArgs {
     model: Option<String>,
     effort: Option<String>,
     name: Option<String>,
+    watch: bool,
 }
 
 // Mirrors the activity-side create parser for the flags that matter to child
@@ -211,6 +249,7 @@ fn parse_create_args(args: &[String]) -> Result<CreateArgs, String> {
     let mut model = None;
     let mut effort = None;
     let mut name = None;
+    let mut watch = false;
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
@@ -256,6 +295,7 @@ fn parse_create_args(args: &[String]) -> Result<CreateArgs, String> {
                     }
                 }
             }
+            "--watch" => watch = true,
             _ if arg.starts_with('-') => return Err(format!("unsupported option: {arg}")),
             _ => positional.push(arg.clone()),
         }
@@ -266,7 +306,195 @@ fn parse_create_args(args: &[String]) -> Result<CreateArgs, String> {
         model,
         effort,
         name,
+        watch,
     })
+}
+
+// ----- chat watch ----------------------------------------------------------
+
+struct WatchArgs {
+    id: String,
+    timeout_ms: u64,
+    interval_ms: u64,
+}
+
+fn watch_command(
+    delegate: &mut CustomCommandHandler,
+    interp: &mut Interpreter,
+    args: &[String],
+) -> CommandOutput {
+    let parsed = match parse_watch_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return usage(&error),
+    };
+    watch_loop(delegate, interp, &parsed)
+}
+
+/// Poll `chat state` for one session until it reports a wake state or the
+/// timeout elapses. Each poll is a durable activity call and each wait a
+/// durable sleep, so the whole loop survives restarts and pause.
+fn watch_loop(
+    delegate: &mut CustomCommandHandler,
+    interp: &mut Interpreter,
+    parsed: &WatchArgs,
+) -> CommandOutput {
+    let started_ms = now_ms();
+    let deadline = started_ms.saturating_add(parsed.timeout_ms);
+    let mut stderr_notes = String::new();
+    let mut last_payload: Option<String> = None;
+    loop {
+        let state_args = ["state".to_string(), parsed.id.clone()];
+        let out = delegate(interp, &state_args, String::new());
+        if out.exit_code == 0
+            && let Ok(mut payload) = serde_json::from_str::<Value>(out.stdout.trim())
+        {
+            let state = payload
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if WATCH_WAKE_STATES.contains(&state) {
+                stamp_watch_fields(&mut payload, false, now_ms().saturating_sub(started_ms));
+                return CommandOutput {
+                    stdout: format!("{payload}\n"),
+                    stderr: stderr_notes,
+                    exit_code: 0,
+                };
+            }
+            last_payload = Some(out.stdout.trim().to_string());
+        } else {
+            stderr_notes.push_str(&format!("chat watch: state read failed: {}", out.stderr));
+        }
+        let now = now_ms();
+        if now >= deadline {
+            break;
+        }
+        workflow_support::sleep(
+            ScheduleAt::In(Duration::Milliseconds(
+                parsed.interval_ms.min(deadline - now),
+            )),
+            None,
+        )
+        .map_err(|error| format!("watch sleep: {error:?}"))
+        .expect("durable sleep failed");
+    }
+    let waited = now_ms().saturating_sub(started_ms);
+    let mut payload: Value =
+        serde_json::from_str(last_payload.as_deref().unwrap_or("{}")).unwrap_or_else(|_| json!({}));
+    stamp_watch_fields(&mut payload, true, waited);
+    stderr_notes.push_str(&format!(
+        "chat watch: gave up after {} ms waiting for {}{}\n",
+        waited,
+        parsed.id,
+        payload
+            .get("state")
+            .and_then(Value::as_str)
+            .map(|state| format!(" (state: {state})"))
+            .unwrap_or_default(),
+    ));
+    CommandOutput {
+        stdout: format!("{payload}\n"),
+        stderr: stderr_notes,
+        exit_code: 1,
+    }
+}
+
+fn stamp_watch_fields(payload: &mut Value, timed_out: bool, waited_ms: u64) {
+    if !payload.is_object() {
+        *payload = json!({});
+    }
+    let object = payload.as_object_mut().expect("just checked");
+    object.insert("timed_out".to_string(), json!(timed_out));
+    object.insert("waited_ms".to_string(), json!(waited_ms));
+}
+
+fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
+    let mut id: Option<String> = None;
+    let mut timeout_ms = WATCH_DEFAULT_TIMEOUT_MS;
+    let mut interval_ms = WATCH_DEFAULT_INTERVAL_MS;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        let (flag, inline_value) = match arg.split_once('=') {
+            Some((flag, value)) => (flag.to_string(), Some(value.to_string())),
+            None => (arg.clone(), None),
+        };
+        let take_value = |i: &mut usize| -> Result<String, String> {
+            if let Some(value) = inline_value {
+                return Ok(value);
+            }
+            *i += 1;
+            args.get(*i)
+                .cloned()
+                .filter(|value| !value.is_empty())
+                .ok_or(format!("option requires a value: {flag}"))
+        };
+        match flag.as_str() {
+            "--timeout" => timeout_ms = parse_duration_ms(&take_value(&mut i)?)?,
+            "--interval" => interval_ms = parse_duration_ms(&take_value(&mut i)?)?,
+            _ if arg.starts_with('-') => return Err(format!("unsupported option: {arg}")),
+            _ => {
+                if id.is_some() {
+                    return Err("exactly one session id is required".to_string());
+                }
+                id = Some(arg.clone());
+            }
+        }
+        i += 1;
+    }
+    Ok(WatchArgs {
+        id: id.ok_or("exactly one session id is required")?,
+        timeout_ms,
+        interval_ms,
+    })
+}
+
+/// Sleep-style durations: `90s`, `500ms`, `5m`, `2h`, composites like `1m30s`;
+/// a bare number is seconds.
+fn parse_duration_ms(text: &str) -> Result<u64, String> {
+    let invalid = || format!("invalid duration {text:?} (use forms like 30s, 500ms, 5m, 1h30m)");
+    if text.is_empty() {
+        return Err(invalid());
+    }
+    let mut rest = text;
+    let mut total_ms: u64 = 0;
+    while !rest.is_empty() {
+        let digits = rest
+            .chars()
+            .take_while(|c: &char| c.is_ascii_digit())
+            .count();
+        if digits == 0 {
+            return Err(invalid());
+        }
+        let (number, suffix) = rest.split_at(digits);
+        let value: u64 = number.parse().map_err(|_| invalid())?;
+        let unit_len = suffix
+            .chars()
+            .take_while(|c: &char| c.is_alphabetic())
+            .count();
+        let factor_ms: u64 = match suffix.get(..unit_len) {
+            None | Some("") => 1_000, // bare number: seconds
+            Some("ms") => 1,
+            Some("s") => 1_000,
+            Some("m") => 60_000,
+            Some("h") => 3_600_000,
+            _ => return Err(invalid()),
+        };
+        total_ms = value
+            .checked_mul(factor_ms)
+            .and_then(|ms| total_ms.checked_add(ms))
+            .ok_or_else(invalid)?;
+        rest = &suffix[unit_len..];
+    }
+    Ok(total_ms)
+}
+
+/// Current time as Unix epoch milliseconds from the durable clock (same host
+/// activity session.rs uses for `date`).
+fn now_ms() -> u64 {
+    match workflow_support::sleep(ScheduleAt::Now, None) {
+        Ok(dt) => (dt.seconds as i64 * 1000 + (dt.nanoseconds / 1_000_000) as i64).max(0) as u64,
+        Err(_) => 0,
+    }
 }
 
 /// Slugs label sessions and name their child join sets: lowercase letters,
@@ -392,6 +620,78 @@ mod tests {
             Some("E_01ABC.n:a_1".to_string())
         );
         assert_eq!(parent_of("E_01ABC"), None);
+    }
+
+    #[test]
+    fn parse_watch_args_reads_flags_and_id() {
+        let parsed = parse_watch_args(&[
+            "--timeout=30s".to_string(),
+            "E_child".to_string(),
+            "--interval".to_string(),
+            "500ms".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(parsed.id, "E_child");
+        assert_eq!(parsed.timeout_ms, 30_000);
+        assert_eq!(parsed.interval_ms, 500);
+
+        let bare = parse_watch_args(&["E_x".to_string()]).unwrap();
+        assert_eq!(bare.timeout_ms, WATCH_DEFAULT_TIMEOUT_MS);
+        assert_eq!(bare.interval_ms, WATCH_DEFAULT_INTERVAL_MS);
+
+        assert!(parse_watch_args(&[]).is_err());
+        assert!(parse_watch_args(&["a".to_string(), "b".to_string()]).is_err());
+        assert!(parse_watch_args(&["--wat".to_string(), "E_x".to_string()]).is_err());
+        assert!(
+            parse_watch_args(&["--timeout".to_string(), "E_x".to_string()]).is_err(),
+            "missing option value"
+        );
+    }
+
+    #[test]
+    fn parse_duration_ms_accepts_sleep_style_forms() {
+        assert_eq!(parse_duration_ms("30").unwrap(), 30_000);
+        assert_eq!(parse_duration_ms("500ms").unwrap(), 500);
+        assert_eq!(parse_duration_ms("90s").unwrap(), 90_000);
+        assert_eq!(parse_duration_ms("5m").unwrap(), 300_000);
+        assert_eq!(parse_duration_ms("2h").unwrap(), 7_200_000);
+        assert_eq!(parse_duration_ms("1m30s").unwrap(), 90_000);
+        assert!(parse_duration_ms("").is_err());
+        assert!(parse_duration_ms("s").is_err());
+        assert!(parse_duration_ms("10x").is_err());
+        assert!(parse_duration_ms("10y").is_err());
+    }
+
+    #[test]
+    fn watch_wake_states_cover_progress_stops_and_terminals() {
+        for state in [
+            "final-response",
+            "step-limit",
+            "awaiting-answer",
+            "shell-only",
+            "finished-ok",
+            "cancelled",
+            "failed",
+        ] {
+            assert!(WATCH_WAKE_STATES.contains(&state), "{state} should wake");
+        }
+        for state in ["thinking", "working", "awaiting-user", "paused", "unknown"] {
+            assert!(!WATCH_WAKE_STATES.contains(&state), "{state} must not wake");
+        }
+    }
+
+    #[test]
+    fn stamp_watch_fields_adds_timeout_and_waited() {
+        let mut payload =
+            serde_json::from_str::<Value>(r#"{"id":"E_x","state":"thinking"}"#).unwrap();
+        stamp_watch_fields(&mut payload, false, 1234);
+        assert_eq!(payload["timed_out"], json!(false));
+        assert_eq!(payload["waited_ms"], json!(1234));
+        assert_eq!(payload["state"], json!("thinking"));
+
+        let mut empty = Value::Null;
+        stamp_watch_fields(&mut empty, true, 5);
+        assert_eq!(empty["timed_out"], json!(true));
     }
 
     #[test]

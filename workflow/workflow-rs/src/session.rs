@@ -591,7 +591,15 @@ When you need a user answer before you can continue the current task, run \
 `obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. It \
 publishes the question to the UI, blocks, and returns the answer so you can \
 continue in the same turn. Use it only when the answer is required to proceed; \
-to end the turn, reply in Markdown without a command.\n\n{}\n\n{}",
+to end the turn, reply in Markdown without a command.\n\n\
+# Subagents\n\n\
+Delegate self-contained work with `chat create [--name slug] PROMPT`; pass \
+`--watch` (or call `chat watch ID`) to block until the child stops progressing: \
+it reports final-response when it answers, step-limit when its step budget ran \
+out, awaiting-answer when an ask-user is pending, shell-only when a scripted \
+prompt finished, or a terminal state. Never poll a child with sleep loops. A \
+child parked in step-limit resumes where it left off when you send it \
+`chat send ID continue`; budget resets for the new turn.\n\n{}\n\n{}",
         chat::self_section(&own_session),
         obelisk_pack::SYSTEM_PROMPT
     );

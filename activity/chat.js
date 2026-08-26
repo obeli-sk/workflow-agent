@@ -54,10 +54,13 @@ async function dispatch(stdin, args) {
         case "send": return cmdSend(stdin, rest);
         case "create": return cmdCreate(stdin, rest);
         // Answered by the session workflow wrapper (see session.rs); reaching
-        // this activity means there is no wrapping session to report or rename.
+        // this activity means there is no wrapping session to report, rename,
+        // or durably block for.
         case "current":
         case "rename":
             return fail(2, `chat: '${sub}' is answered by the session workflow and is unavailable here\n`);
+        case "watch":
+            return fail(2, "chat: 'watch' requires a wrapping session (it blocks durably); it is unavailable here\n");
         default: return usage(`unknown command '${sub}'`);
     }
 }
@@ -234,6 +237,11 @@ async function cmdSend(stdin, args) {
 
 async function cmdCreate(stdin, args) {
     const parsed = parseFlags(args);
+    // Only reachable with --top-level (sessions intercept create), and a
+    // top-level creation has no wrapping session to watch from.
+    if (parsed.watch && parsed["top-level"]) {
+        throw new UsageError("--watch requires a wrapping session");
+    }
     const prompt = (parsed.positional.length > 0 ? parsed.positional.join(" ") : stdin).trim();
     let effort = parsed.effort;
     if (effort !== null) {
@@ -652,6 +660,7 @@ function uniqueId() {
 function parseFlags(args) {
     const parsed = {
         positional: [], json: false, system: false, all: false, "top-level": false,
+        watch: false,
         limit: null, tail: null, turn: null, model: null, effort: null, name: null,
     };
     for (let i = 0; i < args.length; i++) {
@@ -667,6 +676,7 @@ function parseFlags(args) {
             case "--system": parsed.system = true; continue;
             case "--all": parsed.all = true; continue;
             case "--top-level": parsed["top-level"] = true; continue;
+            case "--watch": parsed.watch = true; continue;
             case "--limit": {
                 const value = Number(take());
                 if (!Number.isInteger(value) || value <= 0) {
@@ -861,16 +871,25 @@ function help() {
         "  read ID [--tail N | --turn N] [--json] [--system]",
         "                  Print a session transcript (--turn reads just one turn;",
         "                  --system adds the potentially huge system prompt)",
-        "  state ID        Machine-readable state: includes last_reply {turn} when a",
-        "                  finished assistant message exists (read it with --turn)",
+        "  state ID        Machine-readable state: includes the centralized `state`",
+        "                  (see shared/session-state.js), result_kind, and last_error;",
+        "                  last_reply {turn} points at a finished assistant message",
+        "                  (read it with --turn)",
+        "  watch ID [--timeout DUR] [--interval DUR]",
+        "                  Block until the session stops progressing: wakes on",
+        "                  final-response, step-limit, awaiting-answer, shell-only,",
+        "                  or a terminal state; prints the state JSON. Durations",
+        "                  accept 30s / 500ms / 5m / 1h30m. Workflow-served.",
         "  send ID TEXT... Queue a user prompt for a session: delivered while idle,",
         "                  queued while busy. Never guess IDs; find them with list.",
-        "  create [--model M] [--effort E] [--name SLUG] [--top-level] [PROMPT...]",
+        "                  A child parked in step-limit resumes on `send ID continue`.",
+        "  create [--model M] [--effort E] [--name SLUG] [--watch] [--top-level] [PROMPT...]",
         "                  Start a new session and print its id; effort is one of "
             + EFFORTS.join("|") + ". By default the new session is scheduled as a",
         "                  child of this session; --top-level makes it independent.",
         "                  A PROMPT starting with '$' opens it straight in bash;",
-        "                  --name slugs it (and shows in its execution id).",
+        "                  --name slugs it (and shows in its execution id);",
+        "                  --watch blocks until it stops progressing (workflow-served).",
         "  current         This session's identity as JSON (workflow-served)",
         "  rename NAME     Rename this session to a slug ([a-z0-9-]; workflow-served)",
         "",
