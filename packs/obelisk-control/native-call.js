@@ -6,9 +6,8 @@
 //
 // The target may be a different instance than the one the agent runs on, so the
 // call goes over HTTP: a workflow can't fetch, so it delegates to the
-// webapi.call-target activity (POST /v1/executions?follow=true against the
-// target) instead of obelisk.call, which only ever reaches the agent's own
-// instance.
+// webapi.call-target activity instead of obelisk.call, which only ever reaches
+// the agent's own instance.
 //
 // obelisk-control:tools/native.call:
 //   func(ffqn: string, params-json: string) -> result<string, string>
@@ -22,29 +21,44 @@ export default function call(ffqn, paramsJson) {
     catch (e) { throw witHint(ffqn, `params_json must be valid JSON: ${e.message}`); }
     if (!Array.isArray(params)) throw witHint(ffqn, 'params_json must be a JSON array of positional parameters');
 
-    let envelopeText;
-    try { envelopeText = webapi.callTarget(ffqn, JSON.stringify(params)); }
-    catch (e) { throw witHint(ffqn, callErrorMessage(e)); }
+    let callText;
+    try { callText = webapi.callTarget(ffqn, JSON.stringify(params)); }
+    catch (e) { throw callErrorMessage(e); }
+
+    let callResult;
+    try { callResult = JSON.parse(callText); }
+    catch (e) { throw `invalid call-target response: ${e.message}: ${callText}`; }
+    if (typeof callResult?.submission_rejected === 'string') {
+        throw witHint(ffqn, callResult.submission_rejected);
+    }
+    const executionId = callResult?.execution_id;
+    if (typeof executionId !== 'string' || !executionId) {
+        throw `call-target response has no execution id: ${callText}`;
+    }
+    if (typeof callResult.result_error === 'string') {
+        throw `execution ${executionId} was accepted, but fetching its result failed: ${callResult.result_error}`;
+    }
 
     // The target Execution Result envelope: { ok } / { err } / { execution_failed }.
     // Mirror the old obelisk.call contract: return the ok value, throw on the rest.
     let envelope;
-    try { envelope = JSON.parse(envelopeText); }
-    catch (e) { throw witHint(ffqn, `invalid execution result: ${e.message}: ${envelopeText}`); }
+    try { envelope = JSON.parse(callResult.result); }
+    catch (e) { throw `execution ${executionId} returned an invalid result: ${e.message}: ${callResult.result}`; }
     if (envelope && Object.prototype.hasOwnProperty.call(envelope, 'ok')) {
         return JSON.stringify(envelope.ok === undefined ? null : envelope.ok);
     }
     if (envelope && Object.prototype.hasOwnProperty.call(envelope, 'err')) {
-        throw witHint(ffqn, typeof envelope.err === 'string' ? envelope.err : JSON.stringify(envelope.err));
+        const error = typeof envelope.err === 'string' ? envelope.err : JSON.stringify(envelope.err);
+        throw `execution ${executionId} finished with Err: ${error}`;
     }
     if (envelope && envelope.execution_failed) {
         const f = envelope.execution_failed;
-        throw witHint(ffqn, f.reason || f.kind || 'execution failed');
+        throw `execution ${executionId} failed: ${f.reason || f.kind || 'execution failed'}`;
     }
-    throw witHint(ffqn, `unexpected execution result: ${envelopeText}`);
+    throw `execution ${executionId} returned an unexpected result: ${callResult.result}`;
 }
 
-// On error, append the target WIT so the model can correct its parameters.
+// A rejected submission means the call never started, so recap the signature.
 function witHint(ffqn, message) {
     try { return `${message}\n\nWIT for ${ffqn}:\n${webapi.getFunctionWit(ffqn)}`; }
     catch (e) { return `${message}\n\nCould not fetch WIT for ${ffqn}: ${String(e)}`; }

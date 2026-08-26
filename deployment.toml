@@ -165,10 +165,9 @@ secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 # Dynamic call against the target: native.call delegates here so `obelisk call`
-# reaches the target over HTTP (a workflow can't fetch). One POST with
-# follow=true blocks until the target execution finishes, so it needs a long
-# lock; max_retries = 0 because POST auto-generates the execution id and a retry
-# would double-submit.
+# reaches the target over HTTP (a workflow can't fetch). It submits once, then
+# follows the accepted execution by ID, so it needs a long lock; max_retries = 0
+# because retrying the auto-ID POST could double-submit.
 [[activity_js]]
 name = "tool_call_target"
 ffqn = "obelisk-agent:tools/webapi.call-target"
@@ -179,8 +178,8 @@ location = "packs/obelisk-control/tools/call-target.js"
 env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["POST"]
-request_url_regex = "^POST ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions"
+methods = ["GET", "POST"]
+request_url_regex = "^(GET|POST) ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions"
 secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 

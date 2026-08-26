@@ -37,6 +37,7 @@ test-js:
   node --test webhook/ui/shell.test.js
   node --test activity/curl.test.js
   node --test activity/chat.test.js
+  node --test packs/obelisk-control/native-call.test.mjs
   node --test shared/session-state.test.js
 
 # All end-to-end suites, each against its own isolated, throwaway obelisk server.
