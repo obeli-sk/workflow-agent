@@ -98,6 +98,9 @@ pub struct ExecResult {
     /// stdout and stderr interleaved in write order (see `OutputChunk`).
     pub output: Vec<OutputChunk>,
     pub exit_code: i32,
+    /// Set when a script-watch signal cut the run short (see
+    /// `Bash::set_script_watch`); `exit_code` is then the kind's own code.
+    pub interrupted: Option<crate::watch::InterruptKind>,
     /// Environment after the run; the session loop reads `PWD` to persist cwd.
     pub env: BTreeMap<String, String>,
 }

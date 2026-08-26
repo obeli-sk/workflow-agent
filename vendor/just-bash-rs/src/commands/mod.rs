@@ -382,9 +382,22 @@ fn run_custom_or_fail(
         Some(mut handler) => {
             let result = handler(interp, rest, stdin);
             interp.custom_commands.put_back(name.to_string(), handler);
+            poll_script_watch(interp);
             result
         }
         None => fail(format!("bash: {name}: command not found\n"), 127),
+    }
+}
+
+/// Durable boundary: peek the script-watch signal once a host-backed command
+/// finished. When it fired, the remaining statements are skipped but this
+/// command's output and status stand.
+fn poll_script_watch(interp: &mut Interpreter) {
+    let Some(watch) = &interp.watch else { return };
+    if let Some(kind) = watch.borrow_mut().poll()
+        && interp.interrupted.is_none()
+    {
+        interp.interrupted = Some(kind);
     }
 }
 

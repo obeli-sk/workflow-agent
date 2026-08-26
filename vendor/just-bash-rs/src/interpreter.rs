@@ -23,6 +23,9 @@ use crate::expansion::{self, Segment};
 use crate::fs::{FsError, Vfs};
 use crate::glob;
 use crate::types::{Fd, OutputChunk};
+use crate::watch::{InterruptKind, ScriptWatch};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Where an output descriptor points after applying a command's redirections.
 /// Only the terminal streams and file targets are modelled (no external
@@ -70,6 +73,14 @@ pub struct Interpreter {
     /// Set when `errexit`/`nounset` triggers a script-ending failure, so the
     /// statement loops stop running the rest of the script.
     pub exiting: bool,
+    /// Set when the script-watch signal fired (see `Bash::set_script_watch`).
+    /// Like `exiting`, statement and loop bodies short-circuit on it, but the
+    /// final exit code and marker come from the interrupt kind, not
+    /// `last_exit`.
+    pub interrupted: Option<InterruptKind>,
+    /// Host-installed abort watcher, moved in from `Bash` for this run and
+    /// moved back out afterward (the same move-in/move-out pattern as `fs`).
+    pub watch: Option<Rc<RefCell<dyn ScriptWatch>>>,
     /// Pending `break`/`continue` from inside a loop body. Loops consume one
     /// level each; capture contexts (`$(...)`, `sh -c`) isolate it.
     pub loop_control: Option<LoopControl>,
@@ -204,6 +215,8 @@ impl Interpreter {
             out: OutputLog::default(),
             options: ShellOptions::default(),
             exiting: false,
+            interrupted: None,
+            watch: None,
             loop_control: None,
             loop_depth: 0,
             positional: Vec::new(),
@@ -223,9 +236,15 @@ impl Interpreter {
         Ok(normalize_path(&self.cwd, &expanded))
     }
 
+    /// Whether statement execution must stop: a shell-level fatality
+    /// (`exiting`) or a script-watch signal (`interrupted`).
+    fn halted(&self) -> bool {
+        self.exiting || self.interrupted.is_some()
+    }
+
     pub fn run(&mut self, script: &Script) {
         for statement in &script.statements {
-            if self.exiting {
+            if self.halted() {
                 break;
             }
             let eligible = self.run_statement(statement);
@@ -445,7 +464,7 @@ impl Interpreter {
                             }
                         };
                         for value in values {
-                            if self.exiting || matches!(self.poll_loop_control(), Some(true)) {
+                            if self.halted() || matches!(self.poll_loop_control(), Some(true)) {
                                 break 'outer;
                             }
                             self.env.insert(name.clone(), value);
@@ -475,7 +494,7 @@ impl Interpreter {
                     return;
                 }
                 loop {
-                    if self.exiting || matches!(self.poll_loop_control(), Some(true)) {
+                    if self.halted() || matches!(self.poll_loop_control(), Some(true)) {
                         break;
                     }
                     // An absent condition is always true (`for ((;;))`).
@@ -510,7 +529,7 @@ impl Interpreter {
             CompoundCommand::While { cond, body, until } => {
                 self.last_exit = 0;
                 loop {
-                    if self.exiting || matches!(self.poll_loop_control(), Some(true)) {
+                    if self.halted() || matches!(self.poll_loop_control(), Some(true)) {
                         break;
                     }
                     // The condition list counts as inside the loop too, so a
@@ -568,7 +587,7 @@ impl Interpreter {
     /// failing command is being tested, so `-e` is suppressed).
     fn run_block(&mut self, statements: &[Statement], errexit_ctx: bool) -> i32 {
         for statement in statements {
-            if self.exiting || self.loop_control.is_some() {
+            if self.halted() || self.loop_control.is_some() {
                 break;
             }
             let eligible = self.run_statement(statement);

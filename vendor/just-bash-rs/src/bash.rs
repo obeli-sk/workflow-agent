@@ -13,6 +13,9 @@ use crate::fs::Vfs;
 use crate::interpreter::{Interpreter, ShellOptions};
 use crate::parser::parse;
 use crate::types::{BashOptions, ExecOptions, ExecResult, Fd, OutputChunk};
+use crate::watch::{InterruptKind, SharedScriptWatch};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// A virtual bash environment with persistent session state.
 pub struct Bash {
@@ -32,6 +35,9 @@ pub struct Bash {
     /// `FnMut` closure can't derive `Clone`/`Debug` like the rest of that
     /// struct; register via `register_command` after construction instead.
     custom_commands: CustomCommands,
+    /// Per-script abort watcher (see `watch.rs`); same reasoning as
+    /// `custom_commands` for why it lives outside `BashOptions`.
+    watch: Option<Rc<RefCell<dyn crate::watch::ScriptWatch>>>,
 }
 
 impl Bash {
@@ -50,7 +56,15 @@ impl Bash {
             shell_options: ShellOptions::default(),
             positional: Vec::new(),
             custom_commands: CustomCommands::new(),
+            watch: None,
         }
+    }
+
+    /// Install the abort watcher observed at durable boundaries (after custom
+    /// commands and inside `sleep`). The session loop swaps it in before one
+    /// script and takes it back out afterward.
+    pub fn set_script_watch(&mut self, watch: Option<SharedScriptWatch>) {
+        self.watch = watch;
     }
 
     /// Register a command backed by a host closure, checked after the builtin
@@ -96,6 +110,7 @@ impl Bash {
                     stderr,
                     exit_code: 2,
                     env: self.env.clone(),
+                    interrupted: None,
                 };
             }
         };
@@ -112,7 +127,9 @@ impl Bash {
         interp.sleep_ms = self.options.sleep_ms;
         interp.options = self.shell_options;
         interp.positional = std::mem::take(&mut self.positional);
+        interp.watch = self.watch.take();
         interp.run(&ast);
+        self.watch = interp.watch.take();
 
         // Persist session state for the next exec.
         self.env = interp.env.clone();
@@ -122,7 +139,13 @@ impl Bash {
         self.positional = std::mem::take(&mut interp.positional);
         self.custom_commands = interp.custom_commands;
 
-        let exit_code = interp.last_exit;
+        // An interrupt overrides whatever status the last statement left:
+        // 124 (timeout) / 130 (operator) is what callers check.
+        let exit_code = match interp.interrupted {
+            Some(kind) => kind.exit_code(),
+            None => interp.last_exit,
+        };
+        let interrupted: Option<InterruptKind> = interp.interrupted;
         let env = interp.env;
         let stdout = interp.out.stdout_string();
         let stderr = interp.out.stderr_string();
@@ -132,6 +155,7 @@ impl Bash {
             output: interp.out.into_chunks(),
             exit_code,
             env,
+            interrupted,
         }
     }
 }
@@ -920,6 +944,140 @@ mod tests {
         let mut bash = fresh();
         let out = run(&mut bash, "if echo hi; then echo ran; fi");
         assert_eq!(out.stdout, "hi\nran\n");
+    }
+
+    // The script-watch contract from the session loop's perspective: signals land
+    // only at durable boundaries, output already produced stays recorded, and the
+    // final status is the interrupt kind's exit code.
+    mod script_watch {
+        use super::*;
+        use crate::interpreter::CommandOutput;
+        use crate::watch::{InterruptKind, ScriptWatch};
+
+        /// Scripted watcher: fires on the Nth poll (1-based, custom commands only)
+        /// and/or on every watched sleep.
+        struct FakeWatch {
+            interrupt_on_poll: Option<usize>,
+            interrupt_sleeps: bool,
+            polls: usize,
+            slept_ms: Vec<u64>,
+        }
+
+        impl FakeWatch {
+            fn silent() -> Self {
+                Self {
+                    interrupt_on_poll: None,
+                    interrupt_sleeps: false,
+                    polls: 0,
+                    slept_ms: Vec::new(),
+                }
+            }
+        }
+
+        impl ScriptWatch for FakeWatch {
+            fn poll(&mut self) -> Option<InterruptKind> {
+                self.polls += 1;
+                if self.interrupt_on_poll == Some(self.polls) {
+                    Some(InterruptKind::Timeout)
+                } else {
+                    None
+                }
+            }
+
+            fn sleep(&mut self, ms: u64) -> Result<(), InterruptKind> {
+                self.slept_ms.push(ms);
+                if self.interrupt_sleeps {
+                    Err(InterruptKind::Operator)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        fn run_with(script: &str, watch: &Rc<RefCell<FakeWatch>>) -> ExecResult {
+            let mut bash = fresh();
+            let handler: crate::custom_command::CustomCommandHandler =
+                Box::new(|_, _, _| CommandOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                });
+            bash.register_command("step", handler);
+            bash.set_script_watch(Some(watch.clone()));
+            bash.exec(script, ExecOptions::default())
+        }
+
+        #[test]
+        fn poll_at_a_command_boundary_skips_only_what_follows() {
+            let watch = Rc::new(RefCell::new(FakeWatch {
+                interrupt_on_poll: Some(2),
+                interrupt_sleeps: false,
+                polls: 0,
+                slept_ms: Vec::new(),
+            }));
+            let out = run_with("step; echo one; step; echo two; echo three", &watch);
+            // Output collected before the signal stands; everything after the
+            // second boundary is gone.
+            assert_eq!(out.stdout, "one\n");
+            assert_eq!(out.exit_code, 124);
+            assert_eq!(out.interrupted, Some(InterruptKind::Timeout));
+            assert_eq!(out.stderr, "");
+        }
+
+        #[test]
+        fn watched_sleep_wakes_early_and_ends_the_script() {
+            let watch = Rc::new(RefCell::new(FakeWatch {
+                interrupt_on_poll: None,
+                interrupt_sleeps: true,
+                polls: 0,
+                slept_ms: Vec::new(),
+            }));
+            let out = run_with("sleep 5; echo after", &watch);
+            assert_eq!(out.stdout, "");
+            assert_eq!(out.exit_code, 130);
+            assert_eq!(out.interrupted, Some(InterruptKind::Operator));
+            assert!(
+                out.stderr.contains("sleep: interrupted (operator)"),
+                "{}",
+                out.stderr
+            );
+            // The delay reached the watch with its full duration; waking early is
+            // the watch's business.
+            assert_eq!(watch.borrow().slept_ms, vec![5000]);
+        }
+
+        #[test]
+        fn interrupted_run_overrides_the_last_statement_status() {
+            let watch = Rc::new(RefCell::new(FakeWatch {
+                interrupt_on_poll: None,
+                interrupt_sleeps: true,
+                polls: 0,
+                slept_ms: Vec::new(),
+            }));
+            let out = run_with("false; sleep 5", &watch);
+            // Without `set -e` the failed `false` would leave exit 1; the
+            // interrupt code wins.
+            assert_eq!(out.exit_code, 130);
+        }
+
+        #[test]
+        fn natural_completion_records_no_marker() {
+            let watch = Rc::new(RefCell::new(FakeWatch::silent()));
+            let out = run_with("step; echo done; step", &watch);
+            assert_eq!(out.stdout, "done\n");
+            assert_eq!(out.exit_code, 0);
+            assert_eq!(out.interrupted, None);
+            // One peek per host-backed command.
+            assert_eq!(watch.borrow().polls, 2);
+        }
+
+        #[test]
+        fn unset_watch_keeps_plain_sleep_semantics() {
+            let mut bash = fresh();
+            let out = bash.exec("sleep 0; echo fine", ExecOptions::default());
+            assert_eq!(out.stdout, "fine\n");
+            assert_eq!(out.interrupted, None);
+        }
     }
 
     // PORT: vendor/just-bash/src/spec-tests/bash/cases/word-split.test.sh

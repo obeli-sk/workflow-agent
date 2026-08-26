@@ -616,7 +616,11 @@ fn parse_duration_ms(s: &str) -> Option<f64> {
 /// (`BashOptions::sleep_ms`). Under the workflow that seam is the durable
 /// Obelisk `sleep`, so the delay suspends the workflow rather than busy-waiting;
 /// the bare interpreter's default seam is a no-op, so `sleep` returns at once.
-pub fn sleep_cmd(interp: &Interpreter, args: &[String]) -> CommandOutput {
+///
+/// With a script watch installed, the delay joins the watch instead, so a
+/// timeout or operator interrupt ends the sleep early (the script's remaining
+/// statements are then skipped).
+pub fn sleep_cmd(interp: &mut Interpreter, args: &[String]) -> CommandOutput {
     if args.is_empty() {
         return fail("sleep: missing operand\n".to_string(), 1);
     }
@@ -626,6 +630,20 @@ pub fn sleep_cmd(interp: &Interpreter, args: &[String]) -> CommandOutput {
             Some(ms) => total_ms += ms,
             None => return fail(format!("sleep: invalid time interval '{arg}'\n"), 1),
         }
+    }
+    if let Some(watch) = interp.watch.clone() {
+        return match watch.borrow_mut().sleep(total_ms.round().max(0.0) as u64) {
+            Ok(()) => ok(String::new()),
+            Err(kind) => {
+                if interp.interrupted.is_none() {
+                    interp.interrupted = Some(kind);
+                }
+                fail(
+                    format!("sleep: interrupted ({})\n", kind.label()),
+                    kind.exit_code(),
+                )
+            }
+        };
     }
     (interp.sleep_ms)(total_ms.round().max(0.0) as u64);
     ok(String::new())
