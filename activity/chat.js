@@ -307,30 +307,22 @@ async function walkResponses(executionId) {
 }
 
 // The current slug straight off the dedicated rename join set; renames are
-// rare, so one small forward page always covers it.
-// FIXME(obelisk): direction=older&length=1 should return the newest match but
-// misses filtered responses shadowed by newer responses of other join sets,
-// and the join_set filter rejects the actual id form (n:foo).
+// rare, so the newest-first read covers it with one response (pagination
+// applies after the join-set filter).
 async function latestSessionName(executionId) {
-    let name = null;
     try {
         const payload = await apiJson(
             "GET",
             `/v1/executions/${encodeURIComponent(executionId)}/responses`
-            + `?join_set=session-name&cursor=0&including_cursor=true&length=200`,
+            + `?join_set=session-name&direction=older&length=1`,
         );
-        for (const r of payload.responses ?? []) {
-            const value = responseValue(r);
-            if (!value) continue;
-            if (typeof value?.name === "string") name = value.name;
-            else if (typeof value?.session_renamed?.name === "string") {
-                name = value.session_renamed.name;
-            }
+        const value = responseValue(payload.responses?.[0]);
+        if (typeof value?.name === "string") return value.name;
+        if (typeof value?.session_renamed?.name === "string") {
+            return value.session_renamed.name;
         }
-    } catch (_) {
-        return null;
-    }
-    return name;
+    } catch (_) { /* fall through */ }
+    return null;
 }
 
 // Newest-first single window over the tail of the stream.

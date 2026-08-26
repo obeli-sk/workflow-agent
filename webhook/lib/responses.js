@@ -68,25 +68,20 @@ export async function loadResponses(execId, startCursor = 0) {
 }
 
 // The session's current slug, read straight off the dedicated `session-name`
-// join set; renames are rare, so one small forward page always covers it.
-// FIXME(obelisk): direction=older&length=1 should return the newest match but
-// misses filtered responses shadowed by newer responses of other join sets,
-// and the join_set filter rejects the actual id form (n:foo).
+// join set; renames are rare, so the newest-first read covers it with one
+// response (pagination applies after the join-set filter).
 export async function loadLatestSessionName(execId) {
     let payload;
     try {
-        payload = await getExecutionResponses(execId, "session-name", 0, true, 200);
+        payload = await getLatestExecutionResponses(execId, "session-name", 1);
     } catch (_) { return null; }
-    let name = null;
-    for (const r of payload.responses || []) {
-        const wrapped = r?.event?.event;
-        const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
-        // New renames carry their event directly ({name}); pre-protocol-7
-        // streams wrapped the variant ({session_renamed: {name}}).
-        if (typeof value?.name === "string") name = value.name;
-        else if (typeof value?.session_renamed?.name === "string") name = value.session_renamed.name;
-    }
-    return name;
+    const wrapped = payload.responses?.[0]?.event?.event;
+    const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
+    // New renames carry their event directly ({name}); pre-protocol-7
+    // streams wrapped the variant ({session_renamed: {name}}).
+    if (typeof value?.name === "string") return value.name;
+    if (typeof value?.session_renamed?.name === "string") return value.session_renamed.name;
+    return null;
 }
 
 // Newest-first scan for the live working flag. Names are NOT looked for here:

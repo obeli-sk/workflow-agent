@@ -100,6 +100,9 @@ test("models reports an unusable catalog on stderr", async () => {
 
 test("list queries sessions with derived included and renders rows", async () => {
     const { result, calls } = await run(["list"], [
+        ["GET", "join_set=session-name", () => jsonResponse(200, responsesPayload([
+            { name: "my-slug" },
+        ]))],
         ["GET", "/v1/executions?", (url) => {
             assert.ok(url.includes("ffqn_prefix=obelisk-agent%3Aworkflow%2Fworkflow.run-cancellable"));
             assert.ok(url.includes("show_derived=true"));
@@ -112,7 +115,6 @@ test("list queries sessions with derived included and renders rows", async () =>
         }],
         ["GET", `/executions/${RUN_ID}/responses`, () => jsonResponse(200, responsesPayload([
             { agent_status: { working: true, turn_index: 0 } },
-            { session_renamed: { name: "my-slug" } },
         ]))],
         ["GET", `/executions/${RUN_ID}/events`, () => jsonResponse(200, {
             events: [{ event: { created: { params: ["do things", "fake", null, "low"] } } }],
@@ -127,11 +129,11 @@ test("list queries sessions with derived included and renders rows", async () =>
 test("names come off the dedicated session-name join set", async () => {
     const { result } = await run(["list"], [
         ["GET", "join_set=session-name", (url) => {
-            // Read forward from the start; direction=older would miss rows
-            // shadowed by newer responses of other join sets.
-            assert.ok(url.includes("cursor=0"));
-            assert.ok(url.includes("including_cursor=true"));
-            return jsonResponse(200, responsesPayload([{ name: "older-slug" }, { name: "dedicated-slug" }]));
+            // Newest-first filtered page: one response is enough. The page
+            // comes back oldest-to-newest even in the older direction.
+            assert.ok(url.includes("direction=older"));
+            assert.ok(url.includes("length=1"));
+            return jsonResponse(200, responsesPayload([{ name: "dedicated-slug" }]));
         }],
         ["GET", "ffqn_prefix", () => jsonResponse(200, [{
             execution_id: RUN_ID,
@@ -140,9 +142,7 @@ test("names come off the dedicated session-name join set", async () => {
         }])],
     ]);
     assert.equal(result.exit_code, 0);
-    // The newest rename in the page wins.
     assert.match(result.stdout, /dedicated-slug/);
-    assert.ok(!result.stdout.includes("older-slug"));
 });
 
 test("state emits one JSON line with offer, backend, and name", async () => {
