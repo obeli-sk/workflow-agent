@@ -32,7 +32,13 @@ const SHELL_HTML = `<!doctype html>
   body { font: 14px/1.45 -apple-system, system-ui, sans-serif; color: #1d1d1f; background: var(--bg); display: flex; }
   aside { width: 300px; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; }
   main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  #detail { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
+  /* No padding on the scroller: a sticky child cannot leave the scroll
+     container's content box, so top padding would leave a strip above the
+     frozen header where scrolled content shows through. */
+  #detail { flex: 1; overflow-y: auto; }
+  /* Top padding pairs with .detail-head's bottom margin for the pre-existing
+     1.5rem gap between header and transcript. */
+  #detail-body { padding: 0.7rem 2rem 1.5rem; }
   aside header { padding: 1rem; border-bottom: 1px solid var(--line); }
   aside header h1 { margin: 0 0 0.6rem; font-size: 1rem; font-weight: 600; }
   #new-convo { width: 100%; padding: 0.55em 0.9em; font: inherit; font-weight: 600; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: white; border-radius: 4px; }
@@ -69,8 +75,9 @@ const SHELL_HTML = `<!doctype html>
   main h2 { margin: 0 0 0.5rem; font-size: 1.05rem; font-weight: 600; }
   .meta { color: var(--muted); font-size: 0.85em; margin-bottom: 1.5rem; }
   .meta code { font-size: 1em; }
-  /* Frozen session header: full-bleed via negative margins matching #detail padding */
-  .detail-head { position: sticky; top: 0; z-index: 10; background: var(--bg); margin: -1.5rem -2rem 0.8rem; padding: 1.15rem 2rem 0.6rem; border-bottom: 1px solid var(--line); }
+  /* Frozen session header: spans the pane via its own padding (the scroller
+     itself is unpadded, see #detail). */
+  .detail-head { position: sticky; top: 0; z-index: 10; background: var(--bg); margin: 0 0 0.8rem; padding: 1.25rem 2rem 0.6rem; border-bottom: 1px solid var(--line); }
   .detail-head h2 { margin: 0 0 0.4rem; }
   .detail-head .meta { margin-bottom: 0; }
   .bubble { padding: 0.8em 1em; border-radius: 8px; margin: 0.6em 0; max-width: 720px; }
@@ -160,7 +167,7 @@ const SHELL_HTML = `<!doctype html>
 </aside>
 <main>
   <div id="detail" class="transcript">
-    <p class="empty">Start a new conversation below, or pick a run from the sidebar.</p>
+    <div id="detail-body"><p class="empty">Start a new conversation below, or pick a run from the sidebar.</p></div>
   </div>
   <div id="composer">
     <div id="working" class="working" hidden><span class="dot"></span><span id="working-label">Agent is working…</span></div>
@@ -353,7 +360,7 @@ function scheduleDetailRefresh() {
 function refreshDetail() {
   const main = document.getElementById('detail');
   if (!state.selected) {
-    main.innerHTML = '<p class="empty">Start a new conversation below, or pick a run from the sidebar.</p>';
+    main.innerHTML = '<div id="detail-body"><p class="empty">Start a new conversation below, or pick a run from the sidebar.</p></div>';
     state.detail = null;
     renderComposer();
     return Promise.resolve();
@@ -380,7 +387,7 @@ function refreshDetail() {
       });
       if (selected !== state.selected) return;
       if (!r.ok) {
-        main.innerHTML = '<div class="err-box">Failed to load run: HTTP ' + r.status + '</div>';
+        main.innerHTML = '<div id="detail-body"><div class="err-box">Failed to load run: HTTP ' + r.status + '</div></div>';
         return;
       }
       const detail = await r.json();
@@ -409,7 +416,7 @@ function refreshDetail() {
       }
     } catch (e) {
       if (e.name !== 'AbortError' && selected === state.selected) {
-        main.innerHTML = '<div class="err-box">' + esc(String(e)) + '</div>';
+        main.innerHTML = '<div id="detail-body"><div class="err-box">' + esc(String(e)) + '</div></div>';
       }
     } finally {
       if (detailRequest?.promise === promise) {
@@ -843,12 +850,14 @@ function renderDetail(forceScroll = false) {
     +   cancelBtn
     + '</div>'
     + '</div>'
+    + '<div id="detail-body">'
     + '<div id="sysprompt-slot">' + renderSysprompt() + '</div>'
     + '<div id="logs-slot">' + renderLogs() + '</div>'
     + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div>' + preBlock(d.prompt) + '</div>' : '')
     + turnsHtml
     + finalHtml
-    + asksHtml;
+    + asksHtml
+    + '</div>';
 
   hydrateDisplayBlocks(main, 0, forceScroll);
 
