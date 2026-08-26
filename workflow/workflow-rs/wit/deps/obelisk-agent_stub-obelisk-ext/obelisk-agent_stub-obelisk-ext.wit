@@ -13,7 +13,7 @@ interface stub {
 
   injection-get: func(execution-id: execution-id) -> result<result<session-input, string>, get-extension-error>;
 
-  record-output-submit: func(join-set: borrow<join-set>, event-id: string) -> execution-id;
+  record-output-submit: func(join-set: borrow<join-set>) -> execution-id;
 
   record-output-await-next: func(join-set: borrow<join-set>) -> result<result<session-event, string>, await-next-extension-error>;
 

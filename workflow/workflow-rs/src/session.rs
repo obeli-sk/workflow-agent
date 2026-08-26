@@ -401,23 +401,7 @@ impl Notifications {
             .join_sets
             .get(join_set_name)
             .expect("notification join set must exist");
-        let event_id = match event {
-            SessionEvent::SessionStarted(_) => "session-started".to_string(),
-            SessionEvent::InputOffered(event) => event.execution_id.clone(),
-            SessionEvent::AgentStatus(event) => format!("agent-status-{}", event.turn_index),
-            SessionEvent::HumanInputRequested(event) => event.execution_id.clone(),
-            SessionEvent::HumanInputResolved(event) => event.execution_id.clone(),
-            SessionEvent::UserMessage(event) => event.id.clone(),
-            SessionEvent::AssistantReply(event) => format!("turn-{}", event.turn_index),
-            SessionEvent::AgentError(event) => event.id.clone(),
-            // Renames never ride the shared stream; see `session_renamed`.
-            SessionEvent::SessionRenamed(_) => {
-                unreachable!("renames publish on their own join set")
-            }
-            SessionEvent::ToolResult(event) => event.id.clone(),
-            SessionEvent::ShellOutput(event) => event.id.clone(),
-        };
-        let execution_id = session_ext::record_output_submit(join_set, &event_id);
+        let execution_id = session_ext::record_output_submit(join_set);
         session_stub::record_output_stub(&execution_id, Ok(event)).map_err(|e| format!("{e:?}"))?;
         let published = session_ext::record_output_await_next(join_set)
             .map_err(|e| format!("{e:?}"))?
