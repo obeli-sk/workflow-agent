@@ -69,6 +69,10 @@ const SHELL_HTML = `<!doctype html>
   main h2 { margin: 0 0 0.5rem; font-size: 1.05rem; font-weight: 600; }
   .meta { color: var(--muted); font-size: 0.85em; margin-bottom: 1.5rem; }
   .meta code { font-size: 1em; }
+  /* Frozen session header: full-bleed via negative margins matching #detail padding */
+  .detail-head { position: sticky; top: 0; z-index: 10; background: var(--bg); margin: -1.5rem -2rem 0.8rem; padding: 1.15rem 2rem 0.6rem; border-bottom: 1px solid var(--line); }
+  .detail-head h2 { margin: 0 0 0.4rem; }
+  .detail-head .meta { margin-bottom: 0; }
   .bubble { padding: 0.8em 1em; border-radius: 8px; margin: 0.6em 0; max-width: 720px; }
   .bubble-head, .response-head { display: flex; align-items: baseline; gap: 0.7em; margin-bottom: 0.25em; }
   .bubble-head .label, .response-head .key { margin-bottom: 0; }
@@ -556,7 +560,6 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
   const sentResultsById = new Map(
     (cached.sent_results || []).filter((result) => result?.id).map((result) => [result.id, result]),
   );
-  let sequence = 0;
   for (const item of cached.replies) {
     const reply = item && item.reply;
     if (!reply || typeof reply !== 'object') continue;
@@ -576,7 +579,6 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         created_at: item.created_at,
         turn_index: item.turn_index,
         turn_complete: item.turn_complete === true,
-        sequence: sequence++,
       });
     } else if (typeof reply.error === 'string') {
       turns.push({
@@ -588,7 +590,6 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         created_at: item.created_at,
         turn_index: item.turn_index,
         turn_complete: item.turn_complete === true,
-        sequence: sequence++,
       });
     } else if (Array.isArray(reply.tool_calls)) {
       const calls = reply.tool_calls.map((call) => {
@@ -613,21 +614,12 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         created_at: item.created_at,
         turn_index: item.turn_index,
         turn_complete: item.turn_complete === true,
-        sequence: sequence++,
       });
     }
   }
-  for (const msg of cached.user_messages || []) {
-    if (!msg || typeof msg.text !== 'string') continue;
-    turns.push({
-      kind: 'user_message',
-      id: msg.id || '',
-      text: msg.text,
-      created_at: startsById.get(msg.id)?.created_at || msg.created_at,
-      turn_index: msg.turn_index,
-      sequence: sequence++,
-    });
-  }
+  // Shell commands are positioned like prompts (see below), so they are kept
+  // out of the step timeline here and merged in by sent time afterwards.
+  const shellInputs = [];
   // The optimistic shell command and durable shell output merge by input id.
   const shellTurns = new Map();
   for (const event of cached.shell_events || []) {
@@ -650,10 +642,9 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         blocks: [],
         created_at: startsById.get(event.id)?.created_at || event.created_at,
         turn_index: event.turn_index,
-        sequence: sequence++,
       };
       if (event.id) shellTurns.set(event.id, turn);
-      turns.push(turn);
+      shellInputs.push(turn);
     }
     const call = turn.calls[0];
     if (event.kind === 'shell_command') {
@@ -673,13 +664,62 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       ? elapsedTimestampMilliseconds(startsById.get(event.id)?.created_at, event.created_at)
       : null;
   }
-  turns.sort((a, b) => {
-    if (a.created_at && b.created_at && a.created_at !== b.created_at) {
-      return a.created_at.localeCompare(b.created_at);
-    }
-    return a.sequence - b.sequence;
+  // Prompts and shell commands render where the model actually consumed them,
+  // not where they were typed: an input injected while an LLM call was in
+  // flight only reaches the request snapshotted for the following call, so it
+  // belongs right before the first step that started after the input was sent
+  // (start = created_at minus its duration). A shell command's turn carries
+  // its computed start time already. Steps and shell outputs arrive in stream
+  // order, which is the consumption order, so no re-sort by timestamp.
+  const userMessageTurn = (msg) => ({
+    kind: 'user_message',
+    id: msg.id || '',
+    text: msg.text,
+    created_at: startsById.get(msg.id)?.created_at || msg.created_at,
+    turn_index: msg.turn_index,
   });
-  return turns;
+  const pending = [];
+  for (const msg of cached.user_messages || []) {
+    if (!msg || typeof msg.text !== 'string') continue;
+    const sent = Date.parse(startsById.get(msg.id)?.created_at || msg.created_at || '');
+    pending.push({ sent, turn: userMessageTurn(msg) });
+  }
+  for (const turn of shellInputs) {
+    // Prefer the recorded start (output time minus run duration); an optimistic
+    // command that has no output yet carries its send time in created_at.
+    const latency = Math.max(0, (turn.calls?.[0] || {}).latency_ms || 0);
+    const endedAt = Date.parse(turn.output_created_at || turn.created_at || '');
+    const sent = Number.isFinite(endedAt)
+      ? endedAt - latency
+      : Date.parse(turn.created_at || '');
+    pending.push({ sent, turn });
+  }
+  pending.sort((a, b) => (Number.isFinite(a.sent) ? a.sent : Infinity)
+    - (Number.isFinite(b.sent) ? b.sent : Infinity));
+  const itemStartMs = (item) => {
+    const at = Date.parse(item?.created_at || '');
+    if (!Number.isFinite(at)) return null;
+    return at - Math.max(0, item.llm_latency_ms || 0);
+  };
+  const ordered = [];
+  let next = 0;
+  const flushBefore = (startMs) => {
+    while (next < pending.length) {
+      const sentAt = pending[next].sent;
+      if (!Number.isFinite(sentAt) || startMs === null || !(startMs > sentAt)) break;
+      ordered.push(pending[next].turn);
+      next += 1;
+    }
+  };
+  for (const item of turns) {
+    flushBefore(itemStartMs(item));
+    ordered.push(item);
+  }
+  // Inputs trailing the last step (idle session, or a command still running)
+  // keep their places at the end of the transcript.
+  for (; next < pending.length; next += 1) ordered.push(pending[next].turn);
+  ordered.forEach((item, i) => { item.sequence = i; });
+  return ordered;
 }
 
 function elapsedTimestampMilliseconds(start, end) {
@@ -724,6 +764,7 @@ function renderDetail(forceScroll = false) {
   // <details> the user opened.
   const sig = JSON.stringify({
     id: d.id, status: d.status, result_kind: d.result_kind, join_name: d.join_name,
+    name: d.name,
     prompt: d.prompt, backend: d.backend, effort: d.effort, system_prompt: d.system_prompt,
     turns: d.turns, final_result: d.final_result,
     pending_asks: d.pending_asks,
@@ -783,10 +824,15 @@ function renderDetail(forceScroll = false) {
     ? ''
     : ' &middot; <button type="button" id="cancel-btn">cancel</button>';
 
+  // The header sticks below the top edge of the scroll pane. The execution id
+  // links to the web UI; it is shown here only when the title above is a name,
+  // so an unnamed session does not print the id twice.
+  const execIdHtml = d.name ? '<code>' + esc(d.id) + '</code>' : 'web UI';
   main.innerHTML = ''
+    + '<div class="detail-head">'
     + '<h2>' + esc(d.name || d.id) + '</h2>'
     + '<div class="meta">'
-    +   '<a href="' + esc(execLink(d.id)) + '" target="_blank" rel="noopener"><code>' + esc(d.id) + '</code></a>'
+    +   '<a href="' + esc(execLink(d.id)) + '" target="_blank" rel="noopener" title="open in obelisk web UI">' + execIdHtml + '</a>'
     +   ' &middot; <span class="status ' + esc(statusCls) + '">' + esc(label) + '</span>'
     +   ' &middot; ' + esc(ago(d.created_at))
     +   (d.backend ? ' &middot; <code>' + esc(d.backend) + '</code>' : '')
@@ -795,6 +841,7 @@ function renderDetail(forceScroll = false) {
     +   ' &middot; <button type="button" id="logs-toggle">logs</button>'
     +   pauseBtn
     +   cancelBtn
+    + '</div>'
     + '</div>'
     + '<div id="sysprompt-slot">' + renderSysprompt() + '</div>'
     + '<div id="logs-slot">' + renderLogs() + '</div>'
