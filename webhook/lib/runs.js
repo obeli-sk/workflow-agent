@@ -151,6 +151,7 @@ export async function detailRun(id, cursorState) {
             user_messages: walk.userMessages,
             shell_events: walk.shellEvents,
             turn_starts: walk.turnStarts,
+            shell_starts: walk.shellStarts,
             human_input_events: walk.humanInputEvents,
             agent_errors: walk.agentErrors,
             session_started: walk.sessionStarted,

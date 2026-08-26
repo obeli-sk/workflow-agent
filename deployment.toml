@@ -487,6 +487,14 @@ name = "session_renamed"
 ffqn = "obelisk-agent:stub/stub.session-renamed"
 wit = "wit"
 
+# Per-script interrupt offer: the workflow submits one child per running bash
+# script and announces its id via shell-started events; writing it stops that
+# script (exit 130) without touching the session itself.
+[[activity_stub]]
+name = "session_interrupt"
+ffqn = "obelisk-agent:stub/stub.interrupt"
+wit = "wit"
+
 # --- Workflow -----------------------------------------------------------------
 # Native Rust workflow (workflow/workflow-rs). The public run-cancellable
 # export resolves the descriptor and runs the session loop in one execution.
@@ -552,6 +560,7 @@ routes = [
   { methods = ["POST"], route = "/api/submit" },
   { methods = ["POST"], route = "/api/sessions" },
   { methods = ["POST"], route = "/api/answer/:child-id" },
+  { methods = ["POST"], route = "/api/interrupt/:execution-id" },
   { methods = ["POST"], route = "/api/pause/:execution-id" },
   { methods = ["POST"], route = "/api/unpause/:execution-id" },
   { methods = ["POST"], route = "/api/cancel/:execution-id" },

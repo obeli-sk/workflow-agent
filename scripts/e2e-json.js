@@ -158,6 +158,43 @@ switch (command) {
         process.exit(valid ? 0 : 1);
         break;
     }
+    case "interrupt-offer": {
+        // Offer id published for a still-running script (shell-started event).
+        const id = process.argv[3];
+        const start = json()?.transcript?.shell_starts?.find((candidate) => candidate.id === id);
+        process.stdout.write(start?.offer_id ?? "");
+        break;
+    }
+    case "check-shell-interrupted": {
+        const [id, exitCode, kind] = [process.argv[3], Number(process.argv[4]), process.argv[5]];
+        const event = json()?.transcript?.shell_events?.find((candidate) => candidate.id === id);
+        const valid = event?.turn_complete === true
+            && event?.result?.exit_code === exitCode
+            && event?.result?.interrupted === kind
+            && shellStream(event.result, "stdout").length > 0;
+        if (!valid) {
+            console.error(`unexpected interrupt outcome: ${JSON.stringify(json()?.transcript?.shell_events)}`);
+        }
+        process.exit(valid ? 0 : 1);
+        break;
+    }
+    case "check-tool-result-interrupted": {
+        const [id, exitCode, kind] = [process.argv[3], Number(process.argv[4]), process.argv[5]];
+        const result = json()?.transcript?.sent_results?.find((candidate) => candidate.id === id);
+        const valid = result && "ok" in result
+            && result.ok?.exit_code === exitCode
+            && result.ok?.interrupted === kind;
+        if (!valid) console.error(`unexpected tool result: ${JSON.stringify(result)}`);
+        process.exit(valid ? 0 : 1);
+        break;
+    }
+    case "check-final-reply": {
+        const needle = process.argv[3];
+        const hit = (json()?.transcript?.replies ?? []).some((reply) =>
+            typeof reply?.reply?.response === "string" && reply.reply.response.includes(needle));
+        process.exit(hit ? 0 : 1);
+        break;
+    }
     case "redeploy-params": {
         const manifest = fs.readFileSync(process.argv[3], "utf8");
         process.stdout.write(JSON.stringify([manifest, [], "e2e no-op redeploy", false, ""]));

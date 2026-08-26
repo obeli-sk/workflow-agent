@@ -398,6 +398,53 @@ test("send retries once when the offer went stale mid-send", async () => {
     assert.equal(calls.filter((c) => c.method === "PUT").length, 2);
 });
 
+test("interrupt arms the live script offer", async () => {
+    const OFFER = RUN_ID + ".o:7_1";
+    const { result, calls } = await run(["interrupt", RUN_ID], [
+        ["GET", `/executions/${RUN_ID}/responses`, () => jsonResponse(200, responsesPayload([
+            // Oldest first; the started event outranks any older completion.
+            { shell_output: { id: "shell-0", script: "ls", result: { output: [], exit_code: 0 } } },
+            { agent_status: { working: true, turn_index: 1 } },
+            { shell_started: { id: "shell-live", offer_id: OFFER, turn_index: 1 } },
+        ]))],
+        ["PUT", "/stub", (url, init) => {
+            assert.equal(JSON.parse(init.body).ok, "peer-interrupt");
+            return jsonResponse(200, {});
+        }],
+    ]);
+    assert.equal(result.exit_code, 0);
+    assert.match(result.stdout, new RegExp(`interrupt sent to ${RUN_ID} \\(offer ${OFFER}\\)`));
+    const put = calls.find((c) => c.method === "PUT");
+    assert.ok(put.url.includes(`/executions/${encodeURIComponent(OFFER)}/stub`));
+});
+
+test("interrupt refuses when the newest script already finished or none ran", async () => {
+    // Newest event is a completion: nothing is running.
+    let { result, calls } = await run(["interrupt", RUN_ID], [
+        ["GET", `/executions/${RUN_ID}/responses`, () => jsonResponse(200, responsesPayload([
+            { shell_started: { id: "shell-1", offer_id: RUN_ID + ".o:7_1", turn_index: 0 } },
+            { tool_result: { id: "bash_x", output: { ok: { output: [], exit_code: 0 } }, turn_index: 0, duration_milliseconds: 5 } },
+        ]))],
+    ]);
+    assert.equal(result.exit_code, 1);
+    assert.match(result.stderr, /no running script found/);
+    assert.equal(calls.filter((c) => c.method === "PUT").length, 0);
+
+    // A stale offer (the script finished between lookup and write) reads clearly.
+    ({ result } = await run(["interrupt", RUN_ID], [
+        ["GET", `/executions/${RUN_ID}/responses`, () => jsonResponse(200, responsesPayload([
+            { shell_started: { id: "shell-2", offer_id: RUN_ID + ".o:8_1", turn_index: 0 } },
+        ]))],
+        ["PUT", "/stub", () => jsonResponse(409, "conflict")],
+    ]));
+    assert.equal(result.exit_code, 1);
+    assert.match(result.stderr, /already finished/);
+
+    // Usage: exactly one session id.
+    ({ result } = await run(["interrupt"], []));
+    assert.equal(result.exit_code, 2);
+});
+
 test("create POSTs params and prints the generated id", async () => {
     const { result, calls } = await run(["create", "--model", "fake", "--effort", "low", "go", "north"], [
         ["POST", "/v1/executions", (url, init) => {

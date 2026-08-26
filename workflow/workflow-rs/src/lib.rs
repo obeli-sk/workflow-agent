@@ -9,6 +9,7 @@
 mod agent;
 mod chat;
 mod host;
+mod script_watch;
 mod session;
 mod support;
 

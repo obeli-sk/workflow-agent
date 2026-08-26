@@ -13,6 +13,7 @@ export async function loadResponses(execId, startCursor = 0) {
     const userMessages = [];
     const shellEvents = [];
     const turnStarts = [];
+    const shellStarts = [];
     const humanInputEvents = [];
     const agentErrors = [];
     let sessionStarted;
@@ -36,6 +37,7 @@ export async function loadResponses(execId, startCursor = 0) {
                 userMessages,
                 shellEvents,
                 turnStarts,
+                shellStarts,
                 humanInputEvents,
                 agentErrors,
                 sessionStarted,
@@ -64,6 +66,7 @@ export async function loadResponses(execId, startCursor = 0) {
         userMessages,
         shellEvents,
         turnStarts,
+        shellStarts,
         humanInputEvents,
         agentErrors,
         sessionStarted,
@@ -129,6 +132,15 @@ function appendSessionEvent(target, event, response) {
         };
     } else if (event.agent_status) {
         target.agentWorking = event.agent_status.working === true;
+    } else if (event.shell_started) {
+        // A bash script just started; its interrupt offer is live until the
+        // matching shell_output / tool_result lands.
+        const started = event.shell_started;
+        target.shellStarts.push({
+            id: typeof started.id === "string" ? started.id : "",
+            offer_id: typeof started.offer_id === "string" ? started.offer_id : "",
+            turn_index: Number.isInteger(started.turn_index) ? started.turn_index : null,
+        });
     } else if (event.session_renamed) {
         // Legacy only: renames publish on their own join set now, so this
         // just covers pre-protocol-7 streams.

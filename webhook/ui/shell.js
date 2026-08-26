@@ -121,6 +121,9 @@ const SHELL_HTML = `<!doctype html>
   .call summary .status-pill.ok { background: var(--ok-bg); color: var(--ok); }
   .call summary .status-pill.err { background: var(--err-bg); color: var(--err); }
   .call summary .status-pill.pending { background: #f0f0f0; color: var(--muted); }
+  .call summary .call-interrupt { border: 1px solid #e5b8b8; background: none; color: var(--err); cursor: pointer; padding: 0.1em 0.5em; border-radius: 3px; font-size: 0.85em; }
+  .call summary .call-interrupt:hover { background: var(--err-bg); }
+  .call summary .call-interrupt:disabled { opacity: 0.5; cursor: default; }
   .call .args, .call .result { padding: 0 0.8em 0.6em; }
   .call pre { margin: 0; padding: 0.5em 0.8em; background: #f7f7f7; border-radius: 4px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; max-height: 14em; overflow-y: auto; }
   .call pre.stderr { color: var(--err); background: var(--err-bg); }
@@ -415,6 +418,7 @@ function mergeTranscript(delta) {
       shell_events: [],
       turn_starts: [],
       sent_results: [],
+      shell_starts: [],
       pending_asks: [],
       session_started: null,
       input_offer: null,
@@ -428,6 +432,7 @@ function mergeTranscript(delta) {
     || (delta.shell_events || []).length > 0
     || (delta.turn_starts || []).length > 0
     || (delta.sent_results || []).length > 0
+    || (delta.shell_starts || []).length > 0
     || (delta.human_input_events || []).length > 0
     || (Object.prototype.hasOwnProperty.call(delta, 'session_started')
       && delta.session_started !== null)
@@ -440,6 +445,7 @@ function mergeTranscript(delta) {
   mergeShellEvents(state.transcript.shell_events, delta.shell_events || []);
   mergeTurnStarts(state.transcript.turn_starts, delta.turn_starts || []);
   mergeToolResults(state.transcript.sent_results, delta.sent_results || []);
+  mergeShellStarts(state.transcript.shell_starts, delta.shell_starts || []);
   mergeHumanInputEvents(state.transcript.pending_asks, delta.human_input_events || []);
   if (delta.session_started) state.transcript.session_started = delta.session_started;
   if (Object.prototype.hasOwnProperty.call(delta, 'input_offer')) {
@@ -493,6 +499,15 @@ function mergeShellEvents(target, incoming) {
   }
 }
 
+function mergeShellStarts(target, incoming) {
+  const byId = new Set(target.map((item) => item?.id).filter(Boolean));
+  for (const item of incoming) {
+    if (!item || !item.id || byId.has(item.id)) continue;
+    byId.add(item.id);
+    target.push(item);
+  }
+}
+
 function mergeTurnStarts(target, incoming) {
   const byId = new Set(target.map((item) => item?.id).filter(Boolean));
   for (const item of incoming) {
@@ -540,6 +555,10 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
   const sentResultsById = new Map(
     (cached.sent_results || []).filter((result) => result?.id).map((result) => [result.id, result]),
   );
+  const interruptOffersById = new Map(
+    (cached.shell_starts || []).filter((start) => start?.id && start.offer_id)
+      .map((start) => [start.id, start.offer_id]),
+  );
   for (const item of cached.replies) {
     const reply = item && item.reply;
     if (!reply || typeof reply !== 'object') continue;
@@ -579,6 +598,8 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
           name: call?.name,
           args: call?.args || {},
         };
+        const interruptOffer = call?.id ? interruptOffersById.get(call.id) : null;
+        if (interruptOffer) rendered.offer_id = interruptOffer;
         const result = sent;
         rendered.latency_ms = sent?.duration_milliseconds;
         if (result && 'ok' in result) rendered.ok = result.ok;
@@ -627,6 +648,8 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
       shellInputs.push(turn);
     }
     const call = turn.calls[0];
+    const interruptOffer = event.id ? interruptOffersById.get(event.id) : null;
+    if (interruptOffer) call.offer_id = interruptOffer;
     if (event.kind === 'shell_command') {
       call.args.script = event.script || call.args.script;
       if (event.stdin) call.args.stdin = event.stdin;
@@ -835,6 +858,12 @@ function renderDetail(forceScroll = false) {
     f.addEventListener('submit', (ev) => {
       ev.preventDefault();
       submitAnswer(f.dataset.child, f.querySelector('textarea').value);
+    });
+  }
+
+  for (const btn of main.querySelectorAll('.call-interrupt')) {
+    btn.addEventListener('click', () => {
+      interruptScript(state.selected, btn.dataset.offer, btn);
     });
   }
 
@@ -1289,9 +1318,16 @@ function renderCall(call, keyBase) {
     resultBlock = '';
   }
 
+  // A bash script still running exposes its own stop control next to the
+  // thing being interrupted (the offer id arrives via shell-started events).
+  const interruptButton = (!('ok' in call) && !('err' in call) && name === 'bash' && call.offer_id)
+    ? '<button type="button" class="call-interrupt" data-offer="' + esc(call.offer_id)
+      + '" title="stop this script at its next command boundary or sleep">stop</button>'
+    : '';
+
   return '<details class="call" data-key="' + esc(key) + '"' + (call.open ? ' open' : '') + '>'
     + '<summary><code>' + esc(name) + '</code>' + childLink
-    + '<span class="call-meta">' + pill + summaryLatency + '</span></summary>'
+    + '<span class="call-meta">' + pill + summaryLatency + interruptButton + '</span></summary>'
     + argsBlock
     + resultBlock
     + '</details>';
@@ -1414,6 +1450,29 @@ async function submitAnswer(childId, answer) {
     await refreshDetail();
   } catch (e) {
     alert('Answer failed: ' + String(e));
+  }
+}
+
+// Arm a running script's interrupt offer: the script unwinds at its next
+// durable boundary with exit 130 while the session itself stays alive.
+async function interruptScript(runId, offerId, btn) {
+  if (!runId || !offerId) return;
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'stopping'; }
+  try {
+    const r = await fetch('/api/interrupt/' + encodeURIComponent(runId), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ offer_id: offerId }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    await refreshDetail();
+  } catch (e) {
+    alert('Interrupt failed: ' + String(e));
+    if (btn) { btn.disabled = false; btn.textContent = label; }
   }
 }
 

@@ -383,6 +383,64 @@ test("preserves a leading newline in command output (pre-tag guard)", async () =
     assert.match(turn0, /<pre>\n\n\[\[webhook_endpoint_js\]\]/);
 });
 
+test("shows the interrupt control on a running bash card only", async () => {
+    const renderer = await loadRenderer();
+    const fixture = {
+        transcript: {
+            replies: [toolStep(0, "2026-08-18T10:00:01.000Z", 100,
+                [bashCall("bash_live"), bashCall("bash_done")], "working")],
+            user_messages: [],
+            shell_events: [],
+            turn_starts: [],
+            sent_results: [bashResult("bash_done", 0, 5)],
+            shell_starts: [{ id: "bash_live", offer_id: "E_run.o:9_1", turn_index: 0 }],
+        },
+        created: "2026-08-18T10:00:00.000Z",
+        prompt: "run things",
+    };
+    const [turn0] = render(renderer, fixture);
+    // The running script carries its offer id on a stop button; the finished
+    // one does not.
+    assert.match(turn0,
+        /<button type="button" class="call-interrupt" data-offer="E_run\.o:9_1"[^>]*>stop<\/button>/);
+    assert.equal((turn0.match(/call-interrupt/g) || []).length, 1);
+    // The completed call keeps its plain ok pill.
+    assert.match(turn0, /status-pill ok/);
+
+    // Once the result lands the button disappears (offer id alone is not enough).
+    fixture.transcript.sent_results.push(bashResult("bash_live", 0, 900));
+    const [resolved] = render(renderer, fixture);
+    assert.doesNotMatch(resolved, /call-interrupt/);
+});
+
+test("a user-typed running shell command exposes its interrupt offer too", async () => {
+    const renderer = await loadRenderer();
+    const fixture = {
+        transcript: {
+            replies: [],
+            user_messages: [],
+            shell_events: [{
+                kind: "shell_output",
+                id: "shell-opened-0",
+                script: "sleep 30",
+                result: { output: [], exit_code: 130, interrupted: "operator" },
+                created_at: "2026-08-26T10:00:05.000Z",
+                turn_index: 0,
+                duration_milliseconds: 4000,
+                turn_complete: true,
+            }],
+            turn_starts: [],
+            sent_results: [],
+            shell_starts: [{ id: "shell-opened-0", offer_id: "E_run.o:3_1", turn_index: 0 }],
+        },
+        created: "2026-08-26T10:00:00.000Z",
+        prompt: "$ sleep 30",
+    };
+    renderer.state.transcript = fixture.transcript;
+    const turns = renderer.buildCachedTurns(fixture.created, fixture.prompt);
+    assert.equal(turns[0].calls[0].offer_id, "E_run.o:3_1");
+});
+
 function detailFixture(overrides) {
     return Object.assign({
         id: "E_run",

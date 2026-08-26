@@ -46,4 +46,5 @@ test-e2e:
   ./scripts/test-e2e-agent-workflow.sh
   ./scripts/test-e2e-chat.sh
   ./scripts/test-e2e-redeploy.sh
+  ./scripts/test-e2e-interrupt.sh
   ./scripts/test-e2e-mcp.sh

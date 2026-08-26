@@ -24,6 +24,7 @@ pub mod obelisk_program;
 pub mod obelisk_web;
 pub mod parser;
 pub mod types;
+pub mod watch;
 
 pub use bash::Bash;
 pub use commands::command_names;
@@ -32,3 +33,4 @@ pub use fs::{BlobLoader, DirProvider, FsError, Vfs, WebEntry, WebEntryKind};
 pub use obelisk_pack::{MountResult, ObeliskHost, SYSTEM_PROMPT, blob_loader};
 pub use parser::parse;
 pub use types::{BashOptions, ExecOptions, ExecResult, ExecutionLimits, Fd, OutputChunk};
+pub use watch::{InterruptKind, ScriptWatch, SharedScriptWatch};

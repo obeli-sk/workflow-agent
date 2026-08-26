@@ -128,6 +128,23 @@ export async function submitSessionInput(request, runId) {
     });
 }
 
+// Arm a running script's interrupt offer (advertised by shell-started
+// events): the script unwinds at its next durable boundary with exit 130
+// while the session stays alive.
+export async function interruptOffer(request, runId) {
+    if (!runId) return jsonError(400, "missing run id");
+    let payload;
+    try { payload = JSON.parse(await request.text()); }
+    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
+    const offerId = payload?.offer_id;
+    if (typeof offerId !== "string" || !offerId.startsWith(runId + ".")) {
+        return jsonError(400, "offer_id must identify an interrupt offer for this run");
+    }
+    try { stubObeliskExecution(offerId, { ok: "operator-interrupt" }); }
+    catch (e) { return jsonError(502, `interrupt failed: ${String(e)}`); }
+    return jsonResponse({ child_execution_id: offerId });
+}
+
 function normalizeSessionInput(input) {
     if (!input || typeof input !== "object") return null;
     if (input.prompt) {
