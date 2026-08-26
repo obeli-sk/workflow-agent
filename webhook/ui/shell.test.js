@@ -205,6 +205,133 @@ test("shows the user message and final response inside the turn", async () => {
     assert.match(turn1, /data-source="Done\./);
 });
 
+// Mirrors run E_01M0YQJ2PKF7PYDGXDMBEK7675: "and a diagram" was typed while
+// the markdown reply's LLM call was still in flight (its start predates the
+// message), so the model only saw it on the follow-up call that produced the
+// diagram. The transcript must render it between the two responses, even
+// though both prompts carry the same turn_index and stream adjacency puts the
+// durable user_message event before the markdown reply.
+function queuedPromptTranscript() {
+    return {
+        transcript: {
+            replies: [
+                {
+                    reply: { response: "Here is a markdown document." },
+                    narration: "",
+                    created_at: "2026-08-26T09:50:36.819Z",
+                    turn_index: 1,
+                    duration_milliseconds: 16638,
+                    turn_complete: false,
+                },
+                {
+                    reply: { response: "Here is a diagram." },
+                    narration: "",
+                    created_at: "2026-08-26T09:50:55.993Z",
+                    turn_index: 1,
+                    duration_milliseconds: 19136,
+                    turn_complete: true,
+                },
+            ],
+            user_messages: [
+                { id: "p1", text: "render a markdown", created_at: "2026-08-26T09:50:20.141Z", turn_index: 1 },
+                { id: "p2", text: "and a diagram", created_at: "2026-08-26T09:50:35.485Z", turn_index: 1 },
+            ],
+            shell_events: [],
+            turn_starts: [
+                { id: "p1", kind: "prompt", created_at: "2026-08-26T09:50:20.141Z" },
+                { id: "p2", kind: "prompt", created_at: "2026-08-26T09:50:35.485Z" },
+            ],
+            sent_results: [],
+        },
+        created: "2026-08-26T09:48:57.000Z",
+        prompt: "test",
+    };
+}
+
+test("renders a prompt queued mid-call after the response it raced", async () => {
+    const renderer = await loadRenderer();
+    const fixture = queuedPromptTranscript();
+    renderer.state.transcript = fixture.transcript;
+    const turns = renderer.buildCachedTurns(fixture.created, fixture.prompt);
+    // The turns array originates inside the vm realm; compare primitives.
+    assert.equal(turns.map((t) => t.kind).join(","),
+        "user_message,assistant_response,user_message,assistant_response");
+    assert.equal(turns[0].text, "render a markdown");
+    assert.equal(turns[1].text, "Here is a markdown document.");
+    assert.equal(turns[2].text, "and a diagram");
+    assert.equal(turns[3].text, "Here is a diagram.");
+    // Both prompts belong to the same workflow turn, so they stay in one group.
+    const groups = renderer.groupTurns(turns);
+    assert.equal(groups.length, 1);
+    assert.match(renderTurnGroupHtml(renderer, turns), /final response/);
+});
+
+function renderTurnGroupHtml(renderer, turns) {
+    return renderer.groupTurns(turns)
+        .map((g, i) => renderer.renderTurnGroup(g, i))
+        .join("");
+}
+
+test("renders a shell command raced mid-call after the response it raced", async () => {
+    const renderer = await loadRenderer();
+    const fixture = queuedPromptTranscript();
+    // Typed just after "and a diagram" while the markdown call was still in
+    // flight: output landed at :37.100 after a 1.5s run, so it was sent at
+    // :35.600, past the markdown call's snapshot (:20.181).
+    fixture.transcript.shell_events = [{
+        kind: "shell_output",
+        id: "shell-1",
+        script: "rm foo",
+        result: { output: [], exit_code: 0 },
+        created_at: "2026-08-26T09:50:37.100Z",
+        turn_index: 1,
+        duration_milliseconds: 1500,
+        turn_complete: false,
+    }];
+    renderer.state.transcript = fixture.transcript;
+    const turns = renderer.buildCachedTurns(fixture.created, fixture.prompt);
+    const labels = turns.map((t) => t.kind === "tool_calls" && t.source === "shell"
+        ? "shell:" + t.calls[0].args.script
+        : t.kind + ":" + (t.text || "")).join("|");
+    assert.equal(labels,
+        "user_message:render a markdown"
+        + "|assistant_response:Here is a markdown document."
+        + "|user_message:and a diagram"
+        + "|shell:rm foo"
+        + "|assistant_response:Here is a diagram.");
+    // The command renders as a shell step inside the same single turn group.
+    const html = renderTurnGroupHtml(renderer, turns);
+    assert.match(html, /shell command/);
+    assert.match(html, /rm foo/);
+});
+
+test("keeps an input that trails the last step visible at the end", async () => {
+    const renderer = await loadRenderer();
+    const fixture = queuedPromptTranscript();
+    // Turn still open, no follow-up step yet: "and a diagram" has no anchor to
+    // precede, so it must remain in view under the markdown response.
+    fixture.transcript.replies = fixture.transcript.replies.slice(0, 1);
+    renderer.state.transcript = fixture.transcript;
+    const turns = renderer.buildCachedTurns(fixture.created, fixture.prompt);
+    assert.equal(turns.map((t) => t.kind).join(","),
+        "user_message,assistant_response,user_message");
+});
+
+test("prints the execution id once and freezes the header block", async () => {
+    const renderer = await loadRenderer();
+    renderer.state.detail = detailFixture({});
+    const unnamed = renderDetailHtml(renderer);
+    // Unnamed session: the id is the h2 title; the meta link must not repeat it.
+    assert.match(unnamed, /<div class="detail-head"><h2>E_run<\/h2>/);
+    assert.match(unnamed, /rel="noopener" title="open in obelisk web UI">web UI<\/a>/);
+    assert.doesNotMatch(unnamed, /<code>E_run<\/code><\/a>/);
+
+    renderer.state.detail = detailFixture({ name: "frozen-header" });
+    const named = renderDetailHtml(renderer);
+    assert.match(named, /<h2>frozen-header<\/h2>/);
+    assert.match(named, /rel="noopener" title="open in obelisk web UI"><code>E_run<\/code><\/a>/);
+});
+
 test("keeps individual tool-call latencies visible", async () => {
     const renderer = await loadRenderer();
     const [turn0, turn1] = render(renderer, twoTurnTranscript());
