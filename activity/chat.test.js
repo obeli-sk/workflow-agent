@@ -126,6 +126,24 @@ test("list queries sessions with derived included and renders rows", async () =>
     assert.equal(calls.length, 4);
 });
 
+test("list ignores a stale working flag from an older turn", async () => {
+    const { result } = await run(["list"], [
+        ["GET", "join_set=session-name", () => jsonResponse(200, responsesPayload([]))],
+        ["GET", "ffqn_prefix", () => jsonResponse(200, [{
+            execution_id: RUN_ID,
+            created_at: "2026-08-25T01:02:03Z",
+            pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
+        }])],
+        ["GET", `/executions/${RUN_ID}/responses`, () => jsonResponse(200, responsesPayload([
+            // Oldest-first: the model worked during turn 0, then parked.
+            { agent_status: { working: true, turn_index: 0 } },
+            { agent_status: { working: false, turn_index: 0 } },
+        ]))],
+    ]);
+    assert.equal(result.exit_code, 0);
+    assert.ok(!result.stdout.includes("/working"), result.stdout);
+});
+
 test("names come off the dedicated session-name join set", async () => {
     const { result } = await run(["list"], [
         ["GET", "join_set=session-name", (url) => {
@@ -162,9 +180,77 @@ test("state emits one JSON line with offer, backend, and name", async () => {
     assert.equal(state.pending_offer_id, OFFER_ID);
     assert.equal(state.backend, "fake");
     assert.equal(state.name, "renamed-slug");
-    assert.equal(state.turn_index, -1);
+    // Parked with the newest offer armed for turn 1: the counter sits at 2.
+    assert.equal(state.turn_index, 2);
     assert.equal(state.last_reply, null);
     assert.ok(!result.stdout.includes("big"), "system prompt must not leak through state");
+});
+
+test("state counts a mid-flight model turn as its own index", async () => {
+    const { result } = await run(["state", RUN_ID], [
+        ["GET", "/status", () => jsonResponse(200, {
+            pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
+        })],
+        ["GET", "/responses", () => jsonResponse(200, responsesPayload([
+            { agent_status: { working: true, turn_index: 3 } },
+            { assistant_reply: { content_json: JSON.stringify([
+                { type: "text", text: "running..." }, { type: "tool_use", id: "t", name: "bash", input: {} },
+            ]), turn_index: 3, turn_complete: false } },
+            { tool_result: { id: "t", output: { ok: { output: [{ stdout: "" }], exit_code: 0 } }, turn_index: 3 } },
+            { input_offered: { execution_id: OFFER_ID, turn_index: 3 } },
+        ]))],
+    ]);
+    const state = JSON.parse(result.stdout);
+    assert.equal(state.working, true);
+    assert.equal(state.state, "thinking");
+    assert.equal(state.turn_index, 3);
+});
+
+test("state reports the next turn after shell-only exchanges", async () => {
+    // Mirrors a session driven purely by `$ composer` commands: no working
+    // flag since startup, two completed shell turns, offer armed for turn 1.
+    const { result } = await run(["state", RUN_ID], [
+        ["GET", "/status", () => jsonResponse(200, {
+            pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
+        })],
+        ["GET", "/responses", () => jsonResponse(200, responsesPayload([
+            { agent_status: { working: false, turn_index: 0 } },
+            { shell_output: { id: "s1", script: "pwd", result: { output: [{ stdout: "/w\n" }], exit_code: 0 }, turn_index: 0, turn_complete: true } },
+            { shell_output: { id: "s2", script: "ls", result: { output: [], exit_code: 0 }, turn_index: 1, turn_complete: true } },
+            { input_offered: { execution_id: OFFER_ID, turn_index: 1 } },
+        ]))],
+    ]);
+    const state = JSON.parse(result.stdout);
+    assert.equal(state.state, "shell-only");
+    assert.equal(state.turn_index, 2);
+});
+
+test("a composer command after the reply supersedes final response", async () => {
+    // Mirrors E_01M0YQJ2PKF: answered at turns 0 and 1, then `$ pwd` ran at
+    // turn 2; the stale reply must not keep the final-response label.
+    const reply = (turn) => ({
+        assistant_reply: {
+            content_json: JSON.stringify([{ type: "text", text: "answer " + turn }]),
+            turn_index: turn,
+            turn_complete: true,
+        },
+    });
+    const { result } = await run(["state", RUN_ID], [
+        ["GET", "/status", () => jsonResponse(200, {
+            pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
+        })],
+        ["GET", "/responses", () => jsonResponse(200, responsesPayload([
+            { agent_status: { working: false, turn_index: 1 } },
+            reply(1),
+            { input_offered: { execution_id: OFFER_ID, turn_index: 2 } },
+            { shell_output: { id: "s3", script: "pwd", result: { output: [], exit_code: 0 }, turn_index: 2, turn_complete: true } },
+        ]))],
+    ]);
+    const state = JSON.parse(result.stdout);
+    assert.equal(state.state, "shell-only");
+    assert.equal(state.label, "shell");
+    assert.deepEqual(state.last_reply, { turn: 1 });
+    assert.equal(state.turn_index, 3);
 });
 
 test("state points at the newest finished assistant message", async () => {

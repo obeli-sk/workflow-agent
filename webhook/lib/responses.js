@@ -1,7 +1,11 @@
 // Walk the session notification stream into the transcript and live UI state.
 
 import { getExecutionResponses, getLatestExecutionResponses } from "./obelisk-api.js";
-import { emptyMarkers, scanMarkers } from "../../shared/session-state.js";
+import {
+    emptyMarkers,
+    projectLatestWindow,
+    sessionEventValue,
+} from "../../shared/session-state.js";
 
 export async function loadResponses(execId, startCursor = 0) {
     const replies = [];
@@ -24,9 +28,8 @@ export async function loadResponses(execId, startCursor = 0) {
         } catch (_) { break; }
         const responses = payload.responses || [];
         for (const r of responses) {
-            const wrapped = r.event?.event;
-            const ev = wrapped?.event;
-            if (!ev || ev.type !== "child_execution_finished") continue;
+            const value = sessionEventValue(r);
+            if (!value) continue;
             const projection = {
                 replies,
                 toolResults,
@@ -40,7 +43,7 @@ export async function loadResponses(execId, startCursor = 0) {
                 agentWorking,
                 sessionName,
             };
-            appendSessionEvent(projection, ev.result?.ok?.value ?? ev.result?.ok, r);
+            appendSessionEvent(projection, value, r);
             inputOffer = projection.inputOffer;
             agentWorking = projection.agentWorking;
             sessionStarted = projection.sessionStarted;
@@ -72,15 +75,15 @@ export async function loadResponses(execId, startCursor = 0) {
 }
 
 // The session's current slug, read straight off the dedicated `session-name`
-// join set; renames are rare, so the newest-first read covers it with one
-// response (pagination applies after the join-set filter).
+// join set; renames are rare, so the latest-window read covers it with one
+// response (the window is the newest entry, delivered oldest-first like every
+// /responses page).
 export async function loadLatestSessionName(execId) {
     let payload;
     try {
         payload = await getLatestExecutionResponses(execId, "session-name", 1);
     } catch (_) { return null; }
-    const wrapped = payload.responses?.[0]?.event?.event;
-    const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
+    const value = sessionEventValue(payload.responses?.[0]);
     // New renames carry their event directly ({name}); pre-protocol-7
     // streams wrapped the variant ({session_renamed: {name}}).
     if (typeof value?.name === "string") return value.name;
@@ -88,31 +91,22 @@ export async function loadLatestSessionName(execId) {
     return null;
 }
 
-// Newest-first scan for the live working flag plus the terminal markers the
-// state projection needs. The window is bounded, so markers reflect recent
-// history only; that is exact for parked sessions (a parked session's last
-// turn-ending event is always near the stream head) and good enough for the
-// sidebar otherwise. Names are NOT looked for here: an agent-status event
-// newer than the rename would win the race and hide it (startup-named
+// Bounded latest-window scan for the live working flag plus the terminal
+// markers the state projection needs. The window covers recent history only:
+// exact for parked sessions (a parked session's last turn-ending event is
+// always near the stream head) and good enough for the sidebar otherwise.
+// projectLatestWindow's forward walk ends on the newest facts, so a session
+// parked after a `$` command reads its closing working=false instead of an
+// older model turn's stale true. Names are NOT looked for here: an agent-status
+// event newer than the rename would win the race and hide it (startup-named
 // sessions publish renamed before their first agent-status); they come from
 // loadLatestSessionName instead.
 export async function loadLatestAgentState(execId) {
     let payload;
     try { payload = await getLatestExecutionResponses(execId, "session-events", 50); }
     catch (_) { return { working: false, name: null, markers: emptyMarkers() }; }
-    const responses = payload.responses || [];
-    const markers = emptyMarkers();
-    let working = false;
-    for (let i = responses.length - 1; i >= 0; i -= 1) {
-        const wrapped = responses[i]?.event?.event;
-        const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
-        if (!value || typeof value !== "object") continue;
-        scanMarkers(markers, value);
-        if (typeof value.agent_status?.working === "boolean") {
-            working = value.agent_status.working;
-        }
-    }
-    return { working, name: null, markers };
+    const scan = projectLatestWindow(payload.responses || []);
+    return { working: scan.working === true, name: null, markers: scan.markers };
 }
 
 function appendSessionEvent(target, event, response) {
