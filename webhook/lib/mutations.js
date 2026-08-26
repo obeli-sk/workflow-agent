@@ -29,7 +29,7 @@ export async function submit(request) {
     // effort is the reasoning level (option<string>): null => provider default.
     const effort = (typeof payload?.effort === "string" && payload.effort) ? payload.effort : null;
     let execId;
-    try { execId = runCancellableSchedule(null, prompt, backend, null, effort); }
+    try { execId = runCancellableSchedule(null, prompt, backend, null, effort, null); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }
@@ -45,7 +45,7 @@ export async function createSession(request) {
     const backend = typeof payload.backend === "string" && payload.backend ? payload.backend : null;
     const effort = typeof payload.effort === "string" && payload.effort ? payload.effort : null;
     let execId;
-    try { execId = runCancellableSchedule(null, "", backend, null, effort); }
+    try { execId = runCancellableSchedule(null, "", backend, null, effort, null); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }

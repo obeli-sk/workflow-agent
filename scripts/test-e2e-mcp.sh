@@ -119,7 +119,7 @@ RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 echo ">>> creating an empty session as $SESSION_ID"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
-    '["", null, null, null]'
+    '["", null, null, null, null]'
 
 echo ">>> waiting for the session input offer"
 SECONDS=0

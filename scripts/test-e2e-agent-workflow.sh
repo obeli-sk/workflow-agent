@@ -8,6 +8,8 @@ source "$ROOT/scripts/e2e-lib.sh"
 e2e_init "agent-workflow-e2e" 28016 28091 "e2e-agent-workflow-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28016"
+# server.toml's [secrets] requires every named var to exist; empty is fine.
+export MCP_SERVER_TOKEN=""
 export AGENT_MODELS="[]"
 
 e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"
@@ -23,7 +25,7 @@ run_detail() {
 echo ">>> checking ask-user lifecycle through the session projection"
 ASK_SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$ASK_SESSION_ID" "$RUN_FFQN" \
-    '["", null, null, null]'
+    '["", null, null, null, null]'
 
 SECONDS=0
 while true; do
@@ -82,7 +84,7 @@ echo ">>> ask-user projection E2E PASS"
 echo ">>> creating an empty session and running one direct shell turn"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
-    '["", null, null, null]'
+    '["", null, null, null, null]'
 
 SECONDS=0
 while true; do
@@ -138,7 +140,7 @@ echo ">>> shell-only E2E PASS: curl was registered and invoked without starting 
 EXEC_ID="$("$OBELISK" generate execution-id)"
 echo ">>> submitting $RUN_FFQN as $EXEC_ID"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$EXEC_ID" "$RUN_FFQN" \
-    '["hello from the e2e test", null, null, null]'
+    '["hello from the e2e test", null, null, null, null]'
 
 EXPECT="AGENT_MODELS must be a non-empty JSON array"
 echo ">>> waiting for the recoverable LLM configuration error"

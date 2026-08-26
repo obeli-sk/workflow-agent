@@ -32,6 +32,8 @@ use serde_json::{Value, json};
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult, Fd, ObeliskHost};
 use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
 
+use crate::chat;
+
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::llm::chat::CompletionResult;
@@ -39,8 +41,8 @@ use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
 use crate::generated::obelisk_agent::stub::stub::{
     AgentErrorEvent, AgentStatusEvent, AssistantReplyEvent, HumanInputRequestedEvent,
     HumanInputResolvedEvent, InputOfferedEvent, OutputChunk, PromptInput, SessionEvent,
-    SessionInput, SessionStartedEvent, ShellInput, ShellOutputEvent, ShellResult, ToolOutput,
-    ToolResultEvent, UserMessageEvent,
+    SessionInput, SessionRenamedEvent, SessionStartedEvent, ShellInput, ShellOutputEvent,
+    ShellResult, ToolOutput, ToolResultEvent, UserMessageEvent,
 };
 use crate::generated::obelisk_agent::stub_obelisk_ext::stub as session_ext;
 use crate::generated::obelisk_agent::stub_obelisk_stub::stub as session_stub;
@@ -68,6 +70,8 @@ fn host_sleep_ms(ms: u64) {
 
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const SESSION_EVENTS_JOIN_SET: &str = "session-events";
+/// Renames ride here alone, never on `session-events`.
+const SESSION_NAME_JOIN_SET: &str = "session-name";
 const CONFIG_DISCOVER_FFQN: &str = "obelisk-agent:config/config.discover";
 // Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
@@ -397,19 +401,7 @@ impl Notifications {
             .join_sets
             .get(join_set_name)
             .expect("notification join set must exist");
-        let event_id = match event {
-            SessionEvent::SessionStarted(_) => "session-started".to_string(),
-            SessionEvent::InputOffered(event) => event.execution_id.clone(),
-            SessionEvent::AgentStatus(event) => format!("agent-status-{}", event.turn_index),
-            SessionEvent::HumanInputRequested(event) => event.execution_id.clone(),
-            SessionEvent::HumanInputResolved(event) => event.execution_id.clone(),
-            SessionEvent::UserMessage(event) => event.id.clone(),
-            SessionEvent::AssistantReply(event) => format!("turn-{}", event.turn_index),
-            SessionEvent::AgentError(event) => event.id.clone(),
-            SessionEvent::ToolResult(event) => event.id.clone(),
-            SessionEvent::ShellOutput(event) => event.id.clone(),
-        };
-        let execution_id = session_ext::record_output_submit(join_set, &event_id);
+        let execution_id = session_ext::record_output_submit(join_set);
         session_stub::record_output_stub(&execution_id, Ok(event)).map_err(|e| format!("{e:?}"))?;
         let published = session_ext::record_output_await_next(join_set)
             .map_err(|e| format!("{e:?}"))?
@@ -451,6 +443,39 @@ impl Notifications {
             }),
         )
     }
+
+    /// Publish a rename through the dedicated `session-renamed` stub on its
+    /// own join set, so consumers read the current name with one bounded
+    /// request (`/responses?join_set=session-name&direction=older`) instead of
+    /// racing agent-status events in the mixed stream.
+    pub(crate) fn session_renamed(&self, name: String) -> Result<(), String> {
+        let mut state = self.state.borrow_mut();
+        if !state.join_sets.contains_key(SESSION_NAME_JOIN_SET) {
+            let join_set = workflow_support::join_set_create_named(SESSION_NAME_JOIN_SET)
+                .map_err(|e| format!("{SESSION_NAME_JOIN_SET} join set: {e:?}"))?;
+            state
+                .join_sets
+                .insert(SESSION_NAME_JOIN_SET.to_string(), join_set);
+        }
+        let join_set = state
+            .join_sets
+            .get(SESSION_NAME_JOIN_SET)
+            .expect("session-name join set must exist");
+        let execution_id = session_ext::session_renamed_submit(join_set, &name);
+        session_stub::session_renamed_stub(
+            &execution_id,
+            Ok(&SessionRenamedEvent { name: name.clone() }),
+        )
+        .map_err(|e| format!("{e:?}"))?;
+        let published = session_ext::session_renamed_await_next(join_set)
+            .map_err(|e| format!("{e:?}"))?
+            .map_err(|e| format!("session rename failed: {e}"))?;
+        let last_id = last_response_execution_id(join_set);
+        if last_id.as_deref() != Some(execution_id.id.as_str()) || published.name != name {
+            return Err(format!("unexpected session rename response: {last_id:?}"));
+        }
+        Ok(())
+    }
 }
 
 fn elapsed_milliseconds(start: i64, end: i64) -> u64 {
@@ -474,6 +499,7 @@ pub fn agent_loop(
     model: String,
     effort: String,
     descriptor_warnings: Vec<String>,
+    name: String,
 ) -> Result<(), String> {
     if system_prompt.is_empty() {
         return Err("system prompt is required".to_string());
@@ -500,11 +526,32 @@ pub fn agent_loop(
     let programs = config.programs;
     let mcp_servers = config.mcp_servers;
 
+    // A session created with a slug label (`chat create --name`) starts
+    // already renamed; anything else arrives unnamed.
+    let initial_name = if name.is_empty() {
+        None
+    } else {
+        chat::validate_slug(&name)
+            .map_err(|error| format!("invalid session name {name:?}: {error}"))?;
+        Some(name.clone())
+    };
+    let own_session = chat::ChatSelf::new(
+        workflow_support::execution_id_current().id,
+        model.clone(),
+        effort.clone(),
+        initial_name.clone(),
+    );
     for program in &programs {
-        bash.register_command(
-            &program.name,
-            obelisk_program::command_handler(&program.name, &program.ffqn, Box::new(host())),
-        );
+        let handler =
+            obelisk_program::command_handler(&program.name, &program.ffqn, Box::new(host()));
+        // `chat` is wrapped so caller-aware subcommands (current/rename and
+        // child-scheduling create) are answered by this session itself.
+        let handler = if program.ffqn == chat::CHAT_PROGRAM_FFQN {
+            chat::command_handler(handler, own_session.clone(), notifications.clone())
+        } else {
+            handler
+        };
+        bash.register_command(&program.name, handler);
     }
 
     let mcp_registry: obelisk_mcp::ServerRegistry = Rc::new(RefCell::new(
@@ -545,11 +592,16 @@ When you need a user answer before you can continue the current task, run \
 `obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. It \
 publishes the question to the UI, blocks, and returns the answer so you can \
 continue in the same turn. Use it only when the answer is required to proceed; \
-to end the turn, reply in Markdown without a command.\n\n{}",
+to end the turn, reply in Markdown without a command.\n\n{}\n\n{}",
+        chat::self_section(&own_session),
         obelisk_pack::SYSTEM_PROMPT
     );
 
-    let mut messages: Vec<Value> = if !prompt.trim().is_empty() {
+    // Like the webui composer, an opening prompt starting with `$` is a shell
+    // command: it runs directly in this session's bash and never reaches the
+    // model (see `opening_shell_script`).
+    let mut pending_shell = opening_shell_script(&prompt);
+    let mut messages: Vec<Value> = if pending_shell.is_none() && !prompt.trim().is_empty() {
         vec![user_text(prompt.trim())]
     } else {
         Vec::new()
@@ -558,7 +610,9 @@ to end the turn, reply in Markdown without a command.\n\n{}",
     notifications.notify(
         SESSION_EVENTS_JOIN_SET,
         &SessionEvent::SessionStarted(SessionStartedEvent {
-            protocol_version: 6,
+            // 7: session renames moved off this stream onto their own
+            // `session-name` join set (via the dedicated session-renamed stub).
+            protocol_version: 7,
             prompt: prompt.clone(),
             backend: model.clone(),
             effort: effort.clone(),
@@ -567,6 +621,9 @@ to end the turn, reply in Markdown without a command.\n\n{}",
             system_prompt: system.clone(),
         }),
     )?;
+    if let Some(name) = &initial_name {
+        notifications.session_renamed(name.clone())?;
+    }
 
     // Degraded session-start fetches (e.g. docs indexes) are not fatal, but
     // they silently reduce the model's quality unless made visible. Emit each
@@ -650,7 +707,17 @@ to end the turn, reply in Markdown without a command.\n\n{}",
             pack_mounted = true;
         }
         if !should_call_llm {
-            let event = take_user_event(&mut session, &notifications)?;
+            // A `$`-prefixed opening prompt is consumed here instead of the
+            // input offer, after the deferred mounts registered above so the
+            // script sees the same filesystem as any composer shell command.
+            let event = match pending_shell.take() {
+                Some(script) => SessionInput::Shell(ShellInput {
+                    id: format!("shell-opened-{turn_index}"),
+                    script,
+                    stdin: String::new(),
+                }),
+                None => take_user_event(&mut session, &notifications)?,
+            };
             should_call_llm = apply_session_input(
                 event,
                 turn_index,
@@ -808,6 +875,15 @@ fn dispatch_bash(call: &ToolCall, bash: &mut Bash) -> ToolResultBlock {
         .unwrap_or("");
     let result = exec_shell(bash, script, stdin);
     tool_ok(&call.id, shell_result(result))
+}
+
+/// Script carried by an opening prompt that starts with `$`: such a prompt is
+/// a shell command for the new session, mirroring the webui composer's
+/// `$`-prefix rule (which also does not allow leading whitespace). Returns
+/// None when the prompt should reach the model instead.
+fn opening_shell_script(prompt: &str) -> Option<String> {
+    let script = prompt.strip_prefix('$')?.trim();
+    (!script.is_empty()).then(|| script.to_string())
 }
 
 fn apply_session_input(
@@ -1110,6 +1186,20 @@ fn take_user_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_prompt_dollar_prefix_runs_in_shell() {
+        assert_eq!(opening_shell_script("$ ls -la"), Some("ls -la".to_string()));
+        assert_eq!(opening_shell_script("$pwd"), Some("pwd".to_string()));
+        // No script after the prefix: an ordinary prompt for the model.
+        assert_eq!(opening_shell_script("$"), None);
+        assert_eq!(opening_shell_script("$ "), None);
+        assert_eq!(opening_shell_script("hello"), None);
+        assert_eq!(opening_shell_script("costs $5"), None);
+        // Leading whitespace means it is not a shell command (same rule as
+        // the composer's raw startsWith check).
+        assert_eq!(opening_shell_script("\n$ pwd"), None);
+    }
 
     #[test]
     fn parse_mcp_servers_reads_name_and_ffqn() {

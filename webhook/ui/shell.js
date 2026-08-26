@@ -53,6 +53,9 @@ const SHELL_HTML = `<!doctype html>
   .run-item { display: block; padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); cursor: pointer; text-decoration: none; color: inherit; }
   .run-item:hover { background: #f4f4f4; }
   .run-item.active { background: var(--accent-bg); border-left: 3px solid var(--accent); padding-left: calc(1rem - 3px); }
+  .run-item.child { padding-left: 2.2rem; }
+  .run-item.child.active { padding-left: calc(2.2rem - 3px); }
+  .run-item.child .run-prompt { font-size: 0.82rem; color: var(--muted); }
   .run-prompt { font-weight: 500; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .run-meta { color: var(--muted); font-size: 0.8em; margin-top: 0.2em; display: flex; justify-content: space-between; }
   .run-meta .status { font-weight: 600; }
@@ -322,8 +325,10 @@ function renderSidebar() {
   box.innerHTML = state.runs.map((r) => {
     let { label, cls } = describeStatus(r.status, r.result_kind, r.join_name);
     if (r.join_name === 'user' && r.working) { label = 'thinking'; cls = 'working'; }
-    return '<a class="run-item' + (r.id === state.selected ? ' active' : '') + '" href="?run=' + encodeURIComponent(r.id) + '" data-id="' + esc(r.id) + '">'
-      + '<div class="run-prompt">' + esc(r.prompt_preview || '(no prompt)') + '</div>'
+    const child = r.parent_id ? ' child' : '';
+    const title = (child ? '+ ' : '') + esc(r.name || r.id);
+    return '<a class="run-item' + child + (r.id === state.selected ? ' active' : '') + '" href="?run=' + encodeURIComponent(r.id) + '" data-id="' + esc(r.id) + '">'
+      + '<div class="run-prompt">' + title + '</div>'
       + '<div class="run-meta"><span class="status ' + esc(cls) + '">' + esc(label) + '</span><span class="ago">' + esc(ago(r.created_at)) + '</span></div>'
       + '</a>';
   }).join('');
@@ -779,7 +784,7 @@ function renderDetail(forceScroll = false) {
     : ' &middot; <button type="button" id="cancel-btn">cancel</button>';
 
   main.innerHTML = ''
-    + '<h2>' + esc(d.prompt ? truncate(d.prompt, 80) : 'Run') + '</h2>'
+    + '<h2>' + esc(d.name || d.id) + '</h2>'
     + '<div class="meta">'
     +   '<a href="' + esc(execLink(d.id)) + '" target="_blank" rel="noopener"><code>' + esc(d.id) + '</code></a>'
     +   ' &middot; <span class="status ' + esc(statusCls) + '">' + esc(label) + '</span>'
@@ -1521,9 +1526,9 @@ function sendComposer() {
   const raw = input.value;
   const text = raw.trim();
   if (!text) return;
-  const shell = raw.startsWith('$ ');
+  const shell = raw.startsWith('$');
   if (shell) {
-    const script = raw.slice(2).trim();
+    const script = raw.slice(1).trim();
     if (script && composerMode() === 'say') sendShell(state.selected, script);
     else if (script) createSessionForShell(script);
   } else if (composerMode() === 'say') sendToAgent(state.selected, text);

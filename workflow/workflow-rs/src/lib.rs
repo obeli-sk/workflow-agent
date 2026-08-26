@@ -7,6 +7,7 @@
 //! `just-bash` package.
 
 mod agent;
+mod chat;
 mod host;
 mod session;
 mod support;
@@ -28,7 +29,8 @@ impl Guest for Component {
         model: Option<String>,
         descriptor_ffqn: Option<String>,
         effort: Option<String>,
+        name: Option<String>,
     ) -> Result<(), String> {
-        agent::run(prompt, model, descriptor_ffqn, effort)
+        agent::run(prompt, model, descriptor_ffqn, effort, name)
     }
 }

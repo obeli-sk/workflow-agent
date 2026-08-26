@@ -864,6 +864,17 @@ mod tests {
         }
 
         #[test]
+        fn lone_dollar_is_a_literal_dollar_sign() {
+            // A `$` that starts no expansion stays literal (matching bash), so
+            // commands like `chat create $ ls` receive it as an argument.
+            let mut bash = fresh();
+            let out = run(&mut bash, r#"printf '[%s]' $ hello"#);
+            assert_eq!(out.stdout, "[$][hello]");
+            let out = run(&mut bash, "x=$; echo $x");
+            assert_eq!(out.stdout, "$\n");
+        }
+
+        #[test]
         fn quoted_empty_variable_is_one_empty_argument() {
             let mut bash = fresh();
             let out = run(&mut bash, r#"unset x; if [ -z "$x" ]; then echo empty; fi"#);

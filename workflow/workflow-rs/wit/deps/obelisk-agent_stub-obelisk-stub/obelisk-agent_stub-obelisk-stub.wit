@@ -2,12 +2,14 @@
 package obelisk-agent:stub-obelisk-stub;
 
 interface stub {
-  use obelisk-agent:stub/stub.{prompt-input, shell-input, session-input, session-started-event, input-offered-event, agent-status-event, human-input-requested-event, human-input-resolved-event, user-message-event, agent-error-event, assistant-reply-event, output-chunk, shell-result, tool-output, tool-result-event, shell-output-event, session-event};
+  use obelisk-agent:stub/stub.{prompt-input, shell-input, session-input, session-started-event, input-offered-event, agent-status-event, human-input-requested-event, human-input-resolved-event, user-message-event, agent-error-event, session-renamed-event, assistant-reply-event, output-chunk, shell-result, tool-output, tool-result-event, shell-output-event, session-event};
   use obelisk:types/execution@5.0.0.{execution-id, stub-error};
 
   injection-stub: func(execution-id: execution-id, execution-result: result<session-input, string>) -> result<_, stub-error>;
 
   record-output-stub: func(execution-id: execution-id, execution-result: result<session-event, string>) -> result<_, stub-error>;
+
+  session-renamed-stub: func(execution-id: execution-id, execution-result: result<session-renamed-event, string>) -> result<_, stub-error>;
 
   ask-user-stub: func(execution-id: execution-id, execution-result: result<string, string>) -> result<_, stub-error>;
 }

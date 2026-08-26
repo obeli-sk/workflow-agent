@@ -163,6 +163,110 @@ switch (command) {
         process.stdout.write(JSON.stringify([manifest, [], "e2e no-op redeploy", false, ""]));
         break;
     }
+    // --- chat suite -----------------------------------------------------------
+    case "program-stdout": {
+        // Print the stdout of a direct chat-program invocation ({ok: {stdout,
+        // stderr, exit_code}}); a nonzero exit or err side fails loudly.
+        const result = json();
+        if (result?.err !== undefined) {
+            console.error(`program errored: ${JSON.stringify(result.err)}`);
+            process.exit(1);
+        }
+        const output = result?.ok;
+        if (!output || typeof output.stdout !== "string") {
+            console.error(`unexpected program result: ${JSON.stringify(result)}`);
+            process.exit(1);
+        }
+        if (output.exit_code !== 0) {
+            console.error(`program exited ${output.exit_code}: ${output.stderr}`);
+            process.exit(1);
+        }
+        process.stdout.write(output.stdout);
+        break;
+    }
+    case "program-stderr": {
+        // Stderr of a finished-but-failing program invocation (for logs).
+        const result = json();
+        process.stderr.write(result?.ok?.stderr ?? JSON.stringify(result?.err ?? result));
+        break;
+    }
+    case "shell-event-stdout": {
+        const event = json()?.transcript?.shell_events?.find((candidate) => candidate.id === process.argv[3]);
+        if (!event) process.exit(1);
+        process.stdout.write(shellStream(event.result, "stdout"));
+        break;
+    }
+    case "check-current-id": {
+        // `chat current` output: identity JSON of the invoking session.
+        const current = json();
+        const id = process.argv[3];
+        const expectedName = process.argv[4] === "--name" ? (process.argv[5] ?? "") : null;
+        const valid = current?.execution_id === id
+            && (expectedName === null || current?.name === expectedName);
+        if (!valid) console.error(`unexpected chat current: ${JSON.stringify(current)}`);
+        process.exit(valid ? 0 : 1);
+        break;
+    }
+    case "check-shell-event-done": {
+        const event = json()?.transcript?.shell_events?.find((candidate) => candidate.id === process.argv[3]);
+        process.exit(event?.turn_complete === true ? 0 : 1);
+        break;
+    }
+    case "check-shell-script": {
+        // A completed shell event matched by its script (the id is generated
+        // inside the workflow), optionally asserting its stdout contains the
+        // fourth argument.
+        const script = process.argv[3];
+        const event = json()?.transcript?.shell_events?.find((candidate) => candidate.script === script);
+        const valid = event?.turn_complete === true && event?.result?.exit_code === 0
+            && (process.argv.length < 5 || shellStream(event.result, "stdout").includes(process.argv[4]));
+        if (!valid) {
+            console.error(`no completed shell event for ${JSON.stringify(script)}: ${JSON.stringify(json()?.transcript?.shell_events)}`);
+        }
+        process.exit(valid ? 0 : 1);
+        break;
+    }
+    case "check-runs-name": {
+        const name = process.argv[3];
+        const hit = json()?.runs?.some((run) => run.name === name);
+        if (!hit) console.error(`no run named ${name} in ${JSON.stringify(json())}`);
+        process.exit(hit ? 0 : 1);
+        break;
+    }
+    case "check-pending-offer": {
+        const runId = process.argv[3];
+        const state = json();
+        const valid = typeof state?.pending_offer_id === "string"
+            && state.pending_offer_id.startsWith(runId + ".")
+            && state.working === false;
+        if (!valid) console.error(`unexpected chat state: ${JSON.stringify(state)}`);
+        process.exit(valid ? 0 : 1);
+        break;
+    }
+    case "check-state-name": {
+        const name = process.argv[3];
+        const state = json();
+        const valid = state?.name === name;
+        if (!valid) console.error(`expected session named ${name}: ${JSON.stringify(state)}`);
+        process.exit(valid ? 0 : 1);
+        break;
+    }
+    case "check-runs-parent": {
+        const [parent, child] = [process.argv[3], process.argv[4]];
+        const row = json()?.runs?.find((run) => run.id === child);
+        const valid = row?.parent_id === parent;
+        if (!valid) {
+            console.error(`expected ${child} nested under ${parent}: ${JSON.stringify(row ?? json()?.runs?.map((run) => run.id))}`);
+        }
+        process.exit(valid ? 0 : 1);
+        break;
+    }
+    case "check-user-message": {
+        const text = process.argv[3];
+        const hit = json()?.transcript?.user_messages?.some((message) => message.text === text);
+        process.exit(hit ? 0 : 1);
+        break;
+    }
     case "deployment-id": {
         const result = json();
         // deployment-submit's ok side is the deployment id string.

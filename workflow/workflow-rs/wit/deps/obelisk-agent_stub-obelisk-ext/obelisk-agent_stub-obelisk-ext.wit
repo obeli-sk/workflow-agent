@@ -2,7 +2,7 @@
 package obelisk-agent:stub-obelisk-ext;
 
 interface stub {
-  use obelisk-agent:stub/stub.{prompt-input, shell-input, session-input, session-started-event, input-offered-event, agent-status-event, human-input-requested-event, human-input-resolved-event, user-message-event, agent-error-event, assistant-reply-event, output-chunk, shell-result, tool-output, tool-result-event, shell-output-event, session-event};
+  use obelisk-agent:stub/stub.{prompt-input, shell-input, session-input, session-started-event, input-offered-event, agent-status-event, human-input-requested-event, human-input-resolved-event, user-message-event, agent-error-event, session-renamed-event, assistant-reply-event, output-chunk, shell-result, tool-output, tool-result-event, shell-output-event, session-event};
   use obelisk:types/execution@5.0.0.{execution-id};
   use obelisk:types/join-set@5.0.0.{join-set};
   use obelisk:types/execution@5.0.0.{await-next-extension-error, get-extension-error};
@@ -13,11 +13,17 @@ interface stub {
 
   injection-get: func(execution-id: execution-id) -> result<result<session-input, string>, get-extension-error>;
 
-  record-output-submit: func(join-set: borrow<join-set>, event-id: string) -> execution-id;
+  record-output-submit: func(join-set: borrow<join-set>) -> execution-id;
 
   record-output-await-next: func(join-set: borrow<join-set>) -> result<result<session-event, string>, await-next-extension-error>;
 
   record-output-get: func(execution-id: execution-id) -> result<result<session-event, string>, get-extension-error>;
+
+  session-renamed-submit: func(join-set: borrow<join-set>, name: string) -> execution-id;
+
+  session-renamed-await-next: func(join-set: borrow<join-set>) -> result<result<session-renamed-event, string>, await-next-extension-error>;
+
+  session-renamed-get: func(execution-id: execution-id) -> result<result<session-renamed-event, string>, get-extension-error>;
 
   ask-user-submit: func(join-set: borrow<join-set>, question: string) -> execution-id;
 

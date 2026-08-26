@@ -12,6 +12,7 @@ export async function loadResponses(execId, startCursor = 0) {
     let sessionStarted;
     let inputOffer;
     let agentWorking;
+    let sessionName = null;
     let cursor = startCursor;
     let including = startCursor === 0;
     while (true) {
@@ -34,11 +35,13 @@ export async function loadResponses(execId, startCursor = 0) {
                 sessionStarted,
                 inputOffer,
                 agentWorking,
+                sessionName,
             };
             appendSessionEvent(projection, ev.result?.ok?.value ?? ev.result?.ok, r);
             inputOffer = projection.inputOffer;
             agentWorking = projection.agentWorking;
             sessionStarted = projection.sessionStarted;
+            sessionName = projection.sessionName;
         }
         const next = payload.scan_cursor;
         if (typeof next !== "number" || next <= cursor) break;
@@ -46,6 +49,9 @@ export async function loadResponses(execId, startCursor = 0) {
         including = false;
         if (typeof payload.max_cursor === "number" && cursor >= payload.max_cursor) break;
     }
+    // Renames live on their own join set now; the stream scan only catches
+    // pre-protocol-7 sessions.
+    sessionName = (await loadLatestSessionName(execId)) ?? sessionName;
     return {
         replies,
         toolResults,
@@ -56,23 +62,50 @@ export async function loadResponses(execId, startCursor = 0) {
         sessionStarted,
         inputOffer,
         agentWorking,
+        sessionName,
         cursor,
     };
 }
 
-export async function loadLatestAgentStatus(execId) {
+// The session's current slug, read straight off the dedicated `session-name`
+// join set; renames are rare, so one small forward page always covers it.
+// FIXME(obelisk): direction=older&length=1 should return the newest match but
+// misses filtered responses shadowed by newer responses of other join sets,
+// and the join_set filter rejects the actual id form (n:foo).
+export async function loadLatestSessionName(execId) {
     let payload;
-    try { payload = await getLatestExecutionResponses(execId, "session-events", 100); }
-    catch (_) { return false; }
+    try {
+        payload = await getExecutionResponses(execId, "session-name", 0, true, 200);
+    } catch (_) { return null; }
+    let name = null;
+    for (const r of payload.responses || []) {
+        const wrapped = r?.event?.event;
+        const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
+        // New renames carry their event directly ({name}); pre-protocol-7
+        // streams wrapped the variant ({session_renamed: {name}}).
+        if (typeof value?.name === "string") name = value.name;
+        else if (typeof value?.session_renamed?.name === "string") name = value.session_renamed.name;
+    }
+    return name;
+}
+
+// Newest-first scan for the live working flag. Names are NOT looked for here:
+// an agent-status event newer than the rename would win the race and hide it
+// (startup-named sessions publish renamed before their first agent-status);
+// they come from loadLatestSessionName instead.
+export async function loadLatestAgentState(execId) {
+    let payload;
+    try { payload = await getLatestExecutionResponses(execId, "session-events", 50); }
+    catch (_) { return { working: false, name: null }; }
     const responses = payload.responses || [];
     for (let i = responses.length - 1; i >= 0; i -= 1) {
         const wrapped = responses[i]?.event?.event;
         const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
         if (typeof value?.agent_status?.working === "boolean") {
-            return value.agent_status.working;
+            return { working: value.agent_status.working, name: null };
         }
     }
-    return false;
+    return { working: false, name: null };
 }
 
 function appendSessionEvent(target, event, response) {
@@ -95,6 +128,11 @@ function appendSessionEvent(target, event, response) {
         };
     } else if (event.agent_status) {
         target.agentWorking = event.agent_status.working === true;
+    } else if (event.session_renamed) {
+        // Legacy only: renames publish on their own join set now, so this
+        // just covers pre-protocol-7 streams.
+        const renamed = event.session_renamed;
+        target.sessionName = typeof renamed.name === "string" ? renamed.name : null;
     } else if (event.human_input_requested) {
         const requested = event.human_input_requested;
         target.humanInputEvents.push({

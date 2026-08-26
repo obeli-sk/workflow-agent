@@ -3,13 +3,17 @@
 // the UI renders.
 
 import {
-    getExecutionEvents,
     getExecutionLogs,
     getExecutionRecord,
     getExecutionStatus,
     listExecutions,
 } from "./obelisk-api.js";
-import { loadLatestAgentStatus, loadResponses, parseJoinName } from "./responses.js";
+import {
+    loadLatestAgentState,
+    loadLatestSessionName,
+    loadResponses,
+    parseJoinName,
+} from "./responses.js";
 
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 function pickRunState(workflowStatus) {
@@ -22,30 +26,60 @@ function pickRunState(workflowStatus) {
 }
 
 export async function listRuns() {
-    const executions = await listExecutions(WORKFLOW_FFQN, "", false, false, 50);
+    // Derived executions are included so child sessions created via
+    // `chat create` appear nested under their parent (the FFQN prefix filters
+    // out every other derived child kind).
+    const executions = await listExecutions(WORKFLOW_FFQN, "", true, false, 100);
     const runs = await Promise.all(executions.map(async (e) => {
         const id = e.execution_id;
-        const prompt_preview = await loadPromptPreview(id);
         const runState = pickRunState(e);
         // The shared user set races input against completion, so its join
         // name alone cannot distinguish "your turn" from "thinking".
-        const working = runState.status === "blocked_by_join_set" && runState.join_name === "user"
-            ? await loadLatestAgentStatus(id)
-            : false;
+        const [latest, name] = await Promise.all([
+            loadLatestAgentState(id),
+            loadLatestSessionName(id),
+        ]);
         return {
             id,
             created_at: e.created_at || "",
             ...runState,
-            working,
-            prompt_preview,
+            working: runState.status === "blocked_by_join_set" && runState.join_name === "user"
+                && latest.working,
+            name,
         };
     }));
-    return { runs };
+    return { runs: nestChildren(runs) };
 }
 
-async function loadPromptPreview(execId) {
-    const p = (await loadPrompt(execId)) || "";
-    return p.length > 120 ? p.substring(0, 120) + "..." : p;
+// Child sessions (derived executions: `<parent-id>.<join-set-ref>`) render
+// indented below their parent when the parent row is on the same page;
+// orphans whose parent fell out of the listing window stay top-level.
+function nestChildren(runs) {
+    const byId = new Map(runs.map((run) => [run.id, run]));
+    for (const run of runs) {
+        const dot = run.id.lastIndexOf(".");
+        const parent = dot > 0 ? byId.get(run.id.slice(0, dot)) : undefined;
+        run.parent_id = parent ? parent.id : null;
+    }
+    const childrenOf = new Map();
+    const roots = [];
+    for (const run of runs) {
+        if (run.parent_id) {
+            if (!childrenOf.has(run.parent_id)) childrenOf.set(run.parent_id, []);
+            childrenOf.get(run.parent_id).push(run);
+        } else {
+            roots.push(run);
+        }
+    }
+    for (const children of childrenOf.values()) {
+        children.sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+    }
+    const nested = [];
+    for (const root of roots) {
+        nested.push(root);
+        nested.push(...(childrenOf.get(root.id) ?? []));
+    }
+    return nested;
 }
 
 export async function detailRun(id, cursorState) {
@@ -64,6 +98,7 @@ export async function detailRun(id, cursorState) {
         prompt: started?.prompt || null,
         backend: started?.backend || null,
         effort: started?.effort || null,
+        name: walk.sessionName ?? null,
         system_prompt: started?.system_prompt || null,
         transcript: {
             reset: resetTranscript,
@@ -86,26 +121,6 @@ export async function detailRun(id, cursorState) {
 async function loadStatus(id) {
     try { return await getExecutionStatus(id); }
     catch (_) { return null; }
-}
-
-// The workflow.run-cancellable creation params are [prompt, model, descriptor-ffqn, effort].
-// version 0 is the `created` event; without including_cursor=true the server
-// skips it and returns the `locked` event at version 1, which has no params.
-async function loadCreated(id) {
-    try {
-        const payload = await getExecutionEvents(id, "version_from", 0, true, 1);
-        const params = payload.events?.[0]?.event?.created?.params;
-        if (!Array.isArray(params)) return null;
-        return {
-            prompt: typeof params[0] === "string" ? params[0] : null,
-            backend: typeof params[1] === "string" ? params[1] : null,
-            effort: typeof params[3] === "string" ? params[3] : null,
-        };
-    } catch (_) { return null; }
-}
-
-async function loadPrompt(id) {
-    return (await loadCreated(id))?.prompt ?? null;
 }
 
 async function loadFinalResult(id) {

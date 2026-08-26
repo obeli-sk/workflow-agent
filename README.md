@@ -174,6 +174,55 @@ and durable background execution with `&` are unsupported (a trailing `&` is
 rejected rather than run in the foreground). Packs use Obelisk child executions
 for durable external work instead.
 
+## Peer sessions: the `chat` command
+
+Sessions on the same Obelisk instance can talk to each other. The `chat`
+program (available to the agent as a shell command and to you with the `$ `
+prefix) discovers, inspects, messages, and creates peer sessions:
+
+```sh
+chat models                          # LLM catalog: id, label, api type
+chat list                            # sessions, newest first
+chat read E_...                      # normalized transcript (--tail N, --json)
+chat state E_...                     # one JSON line: state, working, offer id
+chat send E_... please re-check X    # queue a user prompt for a peer
+chat create --model claude "prompt"  # new session; prints its execution id
+chat create '$ ls -la'               # new session opened straight in bash
+chat create --name research "..."    # slug-labeled child (visible in its id)
+chat current                         # this session's identity (JSON)
+chat rename my-session               # slug-name this session ([a-z0-9-])
+```
+
+Notes:
+
+- `chat` talks to the agent's **own** instance (`OBELISK_API_URL`), unlike the
+  obelisk-control tools which target `TARGET_OBELISK_API_URL`.
+- `send` looks up the peer's open input offer on every call (offers rotate each
+  turn); while the peer is thinking the message queues for its next turn, when
+  idle it is delivered immediately. Never invent or reuse offer ids.
+- `current`, `rename`, and `create` are answered by the session workflow
+  itself, not the HTTP activity: only a session knows its own identity, and by
+  default `create` schedules the new session durably as a child of the caller
+  (it is cancelled together with its parent). Use `create --top-level` for an
+  independent session.
+- A rename is recorded on its own `session-name` join set (via the dedicated
+  `stub.session-renamed` stub), so readers fetch a session's current slug with
+  one small request; the UI sidebar shows the name, falling back to the
+  execution id.
+- A prompt starting with `$` runs directly in that session's shell instead of
+  reaching the model, in `chat create` and the composer alike (the space after
+  `$` is optional).
+- `create --name SLUG` labels the child at birth (published as its session
+  name) and names its join set, so the child's execution id carries the slug
+  (`E_<parent>.n:<slug>_1`). Child sessions start with empty history: pass all
+  context they need in the prompt; a child can read its creator with
+  `chat read <parent>` (its own system prompt names the parent).
+- `chat state` reports `last_reply` (`{"turn": N}`) when a finished assistant
+  message exists; sessions stay pending on an input offer even after a final
+  answer, so this distinguishes "answered" from "still open". Read exactly that
+  message with `chat read ID --turn N`.
+- In the web UI, child sessions are listed indented below their parent.
+
 ## Stateless MCP sample
 
 A dependency-free sample server exposes tools, a prompt, and two resources.

@@ -15,12 +15,15 @@ pub fn run(
     model: Option<String>,
     descriptor_ffqn: Option<String>,
     effort: Option<String>,
+    name: Option<String>,
 ) -> Result<(), String> {
     // `model` selects an entry in the LLM catalog (AGENT_MODELS); empty =>
     // the catalog default. `effort` is a reasoning level (off/minimal/low/
-    // medium/high/xhigh); empty => the provider default.
+    // medium/high/xhigh); empty => the provider default. `name` is a slug
+    // label for the session (set by `chat create --name`); empty => unnamed.
     let model_id = model.unwrap_or_default();
     let effort_level = effort.unwrap_or_default();
+    let session_name = name.unwrap_or_default();
     let descriptor = descriptor_ffqn
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_DESCRIPTOR_FFQN.to_string());
@@ -59,5 +62,6 @@ pub fn run(
         model_id,
         effort_level,
         descriptor_warnings,
+        session_name,
     )
 }
