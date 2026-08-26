@@ -67,6 +67,25 @@ test("parked sessions distinguish final response, step limit, shell-only, queued
     assert.equal(project(), SESSION_STATES.AWAITING_USER);
 });
 
+test("a later turn's terminal event supersedes an earlier final response", () => {
+    // The model answered turn 1, then a composer command ran at turn 2:
+    // the reply no longer is the latest word.
+    const continued = { ...emptyMarkers(), lastReplyTurn: 1, lastShellTurn: 2, hasShellEvents: true };
+    assert.equal(project({ markers: continued }), SESSION_STATES.SHELL_ONLY);
+
+    // And the other order: a command first, a fresh answer after.
+    const answered = { ...emptyMarkers(), lastReplyTurn: 3, lastShellTurn: 2, hasShellEvents: true };
+    assert.equal(project({ markers: answered }), SESSION_STATES.FINAL_RESPONSE);
+
+    // A step limit newer than both still wins.
+    const limited = { ...emptyMarkers(), lastReplyTurn: 1, lastShellTurn: 2, stepLimitTurn: 3 };
+    assert.equal(project({ markers: limited }), SESSION_STATES.STEP_LIMIT);
+
+    // A queued (turn-incomplete) shell inside a model turn never counts.
+    const queuedShellOnly = { ...emptyMarkers(), lastReplyTurn: null, hasShellEvents: true };
+    assert.equal(project({ markers: queuedShellOnly }), SESSION_STATES.SHELL_ONLY);
+});
+
 test("paused, running, and unknown statuses map directly", () => {
     assert.equal(project({ status: "paused" }), SESSION_STATES.PAUSED);
     assert.equal(project({ status: "running" }), SESSION_STATES.WORKING);
@@ -104,11 +123,19 @@ test("scanMarkers reads raw session-event values", () => {
         agent_error: { id: "step-limit-6", text: "exceeded MAX_STEPS=25...", turn_index: 6 },
     });
     scanMarkers(markers, { shell_output: { id: "s1", script: "ls" } });
+    scanMarkers(markers, {
+        // A queued shell (turn incomplete) never ends a turn.
+        shell_output: { id: "s2", script: "pwd", turn_index: 5, turn_complete: false },
+    });
+    scanMarkers(markers, {
+        shell_output: { id: "s3", script: "cat f", turn_index: 6, turn_complete: true },
+    });
     scanMarkers(markers, { input_offered: { execution_id: "E_x.n:user_7", turn_index: 7 } });
 
     assert.deepEqual(markers, {
         lastReplyTurn: 4,
         stepLimitTurn: 6,
+        lastShellTurn: 6,
         hasShellEvents: true,
     });
 });

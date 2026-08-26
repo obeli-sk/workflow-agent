@@ -225,6 +225,34 @@ test("state reports the next turn after shell-only exchanges", async () => {
     assert.equal(state.turn_index, 2);
 });
 
+test("a composer command after the reply supersedes final response", async () => {
+    // Mirrors E_01M0YQJ2PKF: answered at turns 0 and 1, then `$ pwd` ran at
+    // turn 2; the stale reply must not keep the final-response label.
+    const reply = (turn) => ({
+        assistant_reply: {
+            content_json: JSON.stringify([{ type: "text", text: "answer " + turn }]),
+            turn_index: turn,
+            turn_complete: true,
+        },
+    });
+    const { result } = await run(["state", RUN_ID], [
+        ["GET", "/status", () => jsonResponse(200, {
+            pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
+        })],
+        ["GET", "/responses", () => jsonResponse(200, responsesPayload([
+            { agent_status: { working: false, turn_index: 1 } },
+            reply(1),
+            { input_offered: { execution_id: OFFER_ID, turn_index: 2 } },
+            { shell_output: { id: "s3", script: "pwd", result: { output: [], exit_code: 0 }, turn_index: 2, turn_complete: true } },
+        ]))],
+    ]);
+    const state = JSON.parse(result.stdout);
+    assert.equal(state.state, "shell-only");
+    assert.equal(state.label, "shell");
+    assert.deepEqual(state.last_reply, { turn: 1 });
+    assert.equal(state.turn_index, 3);
+});
+
 test("state points at the newest finished assistant message", async () => {
     const reply = (text, turn, complete) => ({
         assistant_reply: {

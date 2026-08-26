@@ -111,6 +111,7 @@ export async function detailRun(id, cursorState) {
     const markers = {
         lastReplyTurn: null,
         stepLimitTurn: null,
+        lastShellTurn: null,
         hasShellEvents: walk.shellEvents.length > 0,
     };
     for (const reply of walk.replies) {
@@ -119,6 +120,11 @@ export async function detailRun(id, cursorState) {
         if (typeof reply.reply?.response === "string" && reply.reply.response) {
             markers.lastReplyTurn = Math.max(markers.lastReplyTurn ?? -1, turn);
         }
+    }
+    for (const shell of walk.shellEvents) {
+        if (!shell.turn_complete) continue;
+        const turn = Number.isInteger(shell.turn_index) ? shell.turn_index : -1;
+        if (turn >= 0) markers.lastShellTurn = Math.max(markers.lastShellTurn ?? -1, turn);
     }
     for (const error of walk.agentErrors) {
         if (error.id.startsWith("step-limit-")) {

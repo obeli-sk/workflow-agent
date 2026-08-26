@@ -31,6 +31,7 @@ export const SESSION_STATES = {
 //   {
 //     lastReplyTurn: number | null,
 //     stepLimitTurn: number | null,
+//     lastShellTurn: number | null,
 //     hasShellEvents: boolean,
 //   }
 
@@ -79,15 +80,24 @@ function blockedState(join, working, markers) {
     // the model call there), so `user + working` means thinking, not parked.
     if (join === "completion") return SESSION_STATES.THINKING;
     if (working) return join === "user" ? SESSION_STATES.THINKING : SESSION_STATES.WORKING;
-    // Parked on the user offer: whatever ended the last turn decides the label.
+    // Parked on the user offer: whatever terminal event closed the most recent
+    // turn decides the label. Every marker carries the turn it ended, so a
+    // later turn's event supersedes an earlier one: a composer command run
+    // after the model answered means the reply is no longer the latest word.
     if (join === "user") {
         const stepLimitTurn = markers.stepLimitTurn ?? null;
         const lastReplyTurn = markers.lastReplyTurn ?? null;
-        if (stepLimitTurn !== null && (lastReplyTurn === null || stepLimitTurn > lastReplyTurn)) {
+        const lastShellTurn = markers.lastShellTurn ?? null;
+        if (stepLimitTurn !== null
+            && (lastReplyTurn === null || stepLimitTurn > lastReplyTurn)
+            && (lastShellTurn === null || stepLimitTurn > lastShellTurn)) {
             return SESSION_STATES.STEP_LIMIT;
         }
-        if (lastReplyTurn !== null) return SESSION_STATES.FINAL_RESPONSE;
-        if (markers.hasShellEvents) return SESSION_STATES.SHELL_ONLY;
+        if (lastReplyTurn !== null
+            && (lastShellTurn === null || lastReplyTurn > lastShellTurn)) {
+            return SESSION_STATES.FINAL_RESPONSE;
+        }
+        if (lastShellTurn !== null || markers.hasShellEvents) return SESSION_STATES.SHELL_ONLY;
         return SESSION_STATES.AWAITING_USER;
     }
     // Blocked elsewhere without a working flag is a transient tool wait.
@@ -142,7 +152,15 @@ export function scanMarkers(markers, value) {
         }
         return;
     }
-    if (value.shell_output) markers.hasShellEvents = true;
+    if (value.shell_output) {
+        markers.hasShellEvents = true;
+        // Only a composer command that completed its own turn ends a turn; a
+        // queued shell inside a model turn is followed by the turn's real end.
+        if (value.shell_output.turn_complete === true) {
+            const turn = intOr(value.shell_output.turn_index, -1);
+            if (turn >= 0) markers.lastShellTurn = Math.max(markers.lastShellTurn ?? -1, turn);
+        }
+    }
 }
 
 function intOr(value, fallback) {
@@ -150,7 +168,7 @@ function intOr(value, fallback) {
 }
 
 export function emptyMarkers() {
-    return { lastReplyTurn: null, stepLimitTurn: null, hasShellEvents: false };
+    return { lastReplyTurn: null, stepLimitTurn: null, lastShellTurn: null, hasShellEvents: false };
 }
 
 // Unwraps one recorded-notification row into its SessionEvent payload: the
