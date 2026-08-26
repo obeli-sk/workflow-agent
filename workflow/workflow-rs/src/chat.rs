@@ -450,7 +450,7 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
 
 /// Sleep-style durations: `90s`, `500ms`, `5m`, `2h`, composites like `1m30s`;
 /// a bare number is seconds.
-fn parse_duration_ms(text: &str) -> Result<u64, String> {
+pub(crate) fn parse_duration_ms(text: &str) -> Result<u64, String> {
     let invalid = || format!("invalid duration {text:?} (use forms like 30s, 500ms, 5m, 1h30m)");
     if text.is_empty() {
         return Err(invalid());

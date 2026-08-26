@@ -35,6 +35,15 @@ interface stub {
     turn-index: u64,
   }
 
+  // Published when a bash script starts, carrying the interrupt offer's
+  // execution id so the UI (on that script's transcript card) and peer
+  // sessions (`chat interrupt`) can arm it while the script runs.
+  record shell-started-event {
+    id: string,
+    offer-id: string,
+    turn-index: u64,
+  }
+
   record human-input-requested-event {
     execution-id: string,
     question: string,
@@ -79,6 +88,10 @@ interface stub {
     // stderr line landed between which stdout lines (two flat strings cannot).
     output: list<output-chunk>,
     exit-code: s32,
+    // Set when the script was cut short at a durable boundary before its
+    // natural end: "timeout" (the tool's watchdog fired) or "operator"
+    // (someone wrote the interrupt offer). Exit codes follow: 124 and 130.
+    interrupted: option<string>,
   }
 
   variant tool-output {
@@ -106,6 +119,7 @@ interface stub {
     session-started(session-started-event),
     input-offered(input-offered-event),
     agent-status(agent-status-event),
+    shell-started(shell-started-event),
     human-input-requested(human-input-requested-event),
     human-input-resolved(human-input-resolved-event),
     user-message(user-message-event),
@@ -123,6 +137,11 @@ interface stub {
   // of racing the mixed event stream.
   session-renamed: func(name: string) -> result<session-renamed-event, string>;
   ask-user: func(question: string) -> result<string, string>;
+  // Per-script interrupt offer: the session submits one child per bash script;
+  // writing its result aborts that script at the next durable boundary (exit
+  // 130) while the session itself stays alive. The ok payload is a short free
+  // text reason ("operator", "peer:<session-id>", ...).
+  interrupt: func() -> result<string, string>;
 }
 
 world exports {

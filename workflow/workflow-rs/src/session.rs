@@ -42,11 +42,12 @@ use crate::generated::obelisk_agent::stub::stub::{
     AgentErrorEvent, AgentStatusEvent, AssistantReplyEvent, HumanInputRequestedEvent,
     HumanInputResolvedEvent, InputOfferedEvent, OutputChunk, PromptInput, SessionEvent,
     SessionInput, SessionRenamedEvent, SessionStartedEvent, ShellInput, ShellOutputEvent,
-    ShellResult, ToolOutput, ToolResultEvent, UserMessageEvent,
+    ShellResult, ShellStartedEvent, ToolOutput, ToolResultEvent, UserMessageEvent,
 };
 use crate::generated::obelisk_agent::stub_obelisk_ext::stub as session_ext;
 use crate::generated::obelisk_agent::stub_obelisk_stub::stub as session_stub;
 use crate::host::RealHost;
+use crate::script_watch::ScriptWatchGuard;
 use crate::support::last_response_execution_id;
 
 /// `date`'s clock: the current time from the durable Obelisk `sleep(now)` host
@@ -73,7 +74,7 @@ const SESSION_EVENTS_JOIN_SET: &str = "session-events";
 /// Renames ride here alone, never on `session-events`.
 const SESSION_NAME_JOIN_SET: &str = "session-name";
 const CONFIG_DISCOVER_FFQN: &str = "obelisk-agent:config/config.discover";
-const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace. Control flow: if/elif/else, for, while, until, case, break, continue. Not supported: [[ ]], function definitions, arrays, background jobs.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
+const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace. Control flow: if/elif/else, for, while, until, case, break, continue. Not supported: [[ ]], function definitions, arrays, background jobs.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"},"timeout":{"type":"string","description":"Optional wall-clock cap for this script (forms like 30s, 500ms, 5m, 1h30m). When it elapses the script stops at its next command boundary or sleep with exit code 124 and interrupted=\"timeout\"."}},"required":["script"]}}]"#;
 
 // `concat!` (not `\`-continuation) so each entry keeps its leading two-space
 // indent; a `\` line-continuation would strip the continued line's whitespace.
@@ -229,7 +230,9 @@ fn parse_programs(value: &Value) -> Result<Vec<Program>, String> {
 fn render_program_help(programs: &[Program]) -> String {
     let mut text = String::from(
         "The only model-facing tool is bash. Its filesystem persists for this session. \
-Run `help` to list every command available in the shell.",
+Run `help` to list every command available in the shell. A script can be cut short by an \
+operator or peer interrupt (exit 130) or by its own timeout argument (exit 124); whatever \
+it printed before that stays recorded.",
     );
     if programs.is_empty() {
         text.push('\n');
@@ -617,9 +620,9 @@ child parked in step-limit resumes where it left off when you send it \
     notifications.notify(
         SESSION_EVENTS_JOIN_SET,
         &SessionEvent::SessionStarted(SessionStartedEvent {
-            // 7: session renames moved off this stream onto their own
-            // `session-name` join set (via the dedicated session-renamed stub).
-            protocol_version: 7,
+            // 8: shell-started events now carry each running script's
+            // interrupt-offer id.
+            protocol_version: 8,
             prompt: prompt.clone(),
             backend: model.clone(),
             effort: effort.clone(),
@@ -811,7 +814,7 @@ child parked in step-limit resumes where it left off when you send it \
                 let mut result_blocks = Vec::with_capacity(calls.len());
                 for call in &calls {
                     let started_at = host_now_ms();
-                    let block = dispatch_bash(call, &mut bash);
+                    let block = dispatch_bash(call, &mut bash, &notifications, turn_index);
                     let duration_milliseconds = elapsed_milliseconds(started_at, host_now_ms());
                     notifications.notify(
                         SESSION_EVENTS_JOIN_SET,
@@ -863,7 +866,12 @@ struct ToolCall {
     input: Value,
 }
 
-fn dispatch_bash(call: &ToolCall, bash: &mut Bash) -> ToolResultBlock {
+fn dispatch_bash(
+    call: &ToolCall,
+    bash: &mut Bash,
+    notifications: &Notifications,
+    turn_index: u64,
+) -> ToolResultBlock {
     if call.name != "bash" {
         return tool_error(&call.id, &format!("unknown tool: {}", call.name));
     }
@@ -880,8 +888,42 @@ fn dispatch_bash(call: &ToolCall, bash: &mut Bash) -> ToolResultBlock {
         .get("stdin")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let result = exec_shell(bash, script, stdin);
+    let timeout_ms = match parse_tool_timeout(call.input.get("timeout")) {
+        Ok(timeout_ms) => timeout_ms,
+        Err(message) => return tool_error(&call.id, &message),
+    };
+    let result = match exec_shell(
+        notifications,
+        turn_index,
+        &call.id,
+        bash,
+        script,
+        stdin,
+        timeout_ms,
+    ) {
+        Ok(result) => result,
+        Err(message) => return tool_error(&call.id, &message),
+    };
     tool_ok(&call.id, shell_result(result))
+}
+
+/// The bash tool's optional `timeout`: sleep-style duration text. An absent or
+/// empty value means no watchdog.
+fn parse_tool_timeout(value: Option<&Value>) -> Result<Option<u64>, String> {
+    let Some(text) = value.and_then(Value::as_str) else {
+        if value.is_none() {
+            return Ok(None);
+        }
+        return Err("timeout must be a string like \"5m\"".to_string());
+    };
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    let ms = chat::parse_duration_ms(text)?;
+    if ms == 0 {
+        return Err("timeout must be greater than zero".to_string());
+    }
+    Ok(Some(ms))
 }
 
 /// Script carried by an opening prompt that starts with `$`: such a prompt is
@@ -907,7 +949,7 @@ fn apply_session_input(
             // `shell-output` carries the script and result, so the webui echoes
             // the command and shows its output from this single event.
             let started_at = host_now_ms();
-            let result = exec_shell(bash, &script, &stdin);
+            let result = exec_shell(notifications, turn_index, &id, bash, &script, &stdin, None)?;
             let duration_milliseconds = elapsed_milliseconds(started_at, host_now_ms());
             let record = ShellOutputEvent {
                 id,
@@ -954,10 +996,24 @@ fn append_shell_exchange(messages: &mut Vec<Value>, record: &ShellOutputEvent, s
     }));
 }
 
-fn exec_shell(bash: &mut Bash, script: &str, stdin: &str) -> ExecResult {
+/// Run one script under its per-script watch: a fresh join set holding the
+/// interrupt offer (plus the watchdog when `timeout_ms` is set), announced via
+/// a `shell-started` event so the UI and peer sessions can arm it while the
+/// script runs. The guard's drop after `exec` cancels whatever is left
+/// outstanding.
+#[allow(clippy::too_many_arguments)]
+fn exec_shell(
+    notifications: &Notifications,
+    turn_index: u64,
+    id: &str,
+    bash: &mut Bash,
+    script: &str,
+    stdin: &str,
+    timeout_ms: Option<u64>,
+) -> Result<ExecResult, String> {
     if contains_background_statement(script) {
         let message = "bash: background jobs with `&` are not supported in durable sessions\n";
-        return ExecResult {
+        return Ok(ExecResult {
             output: vec![just_bash_rs::OutputChunk {
                 fd: Fd::Stderr,
                 text: message.to_string(),
@@ -966,15 +1022,29 @@ fn exec_shell(bash: &mut Bash, script: &str, stdin: &str) -> ExecResult {
             stdout: String::new(),
             exit_code: 2,
             env: Default::default(),
-        };
+            interrupted: None,
+        });
     }
-    bash.exec(
+    let guard = ScriptWatchGuard::arm(timeout_ms);
+    notifications.notify(
+        SESSION_EVENTS_JOIN_SET,
+        &SessionEvent::ShellStarted(ShellStartedEvent {
+            id: id.to_string(),
+            offer_id: guard.offer_execution_id(),
+            turn_index,
+        }),
+    )?;
+    bash.set_script_watch(Some(guard.watcher()));
+    let result = bash.exec(
         script,
         ExecOptions {
             stdin: stdin.to_string(),
             cwd: None,
         },
-    )
+    );
+    bash.set_script_watch(None);
+    drop(guard);
+    Ok(result)
 }
 
 /// The exact predicate the session loop uses to reject detached jobs
@@ -997,6 +1067,7 @@ fn shell_result(result: ExecResult) -> ShellResult {
             })
             .collect(),
         exit_code: result.exit_code,
+        interrupted: result.interrupted.map(|kind| kind.label().to_string()),
     }
 }
 
@@ -1371,6 +1442,7 @@ mod tests {
             result: ShellResult {
                 output: vec![OutputChunk::Stdout("hello\n".to_string())],
                 exit_code: 0,
+                interrupted: None,
             },
             turn_index: 3,
             duration_milliseconds: 12,
@@ -1438,6 +1510,7 @@ mod tests {
             output: ToolOutput::Ok(ShellResult {
                 output: vec![OutputChunk::Stdout("ok".to_string())],
                 exit_code: 0,
+                interrupted: None,
             }),
             turn_index: 4,
             duration_milliseconds: 25,
@@ -1452,6 +1525,7 @@ mod tests {
                         "ok": {
                             "output": [{"stdout": "ok"}],
                             "exit_code": 0,
+                            "interrupted": null,
                         },
                     },
                     "turn_index": 4,
@@ -1514,6 +1588,72 @@ mod tests {
                 "human_input_resolved": {
                     "execution_id": "E_session.ask",
                     "turn_index": 5,
+                },
+            })
+        );
+    }
+    #[test]
+    fn tool_timeout_parses_duration_forms() {
+        let none = || None;
+        assert_eq!(parse_tool_timeout(none()).unwrap(), None);
+        assert_eq!(
+            parse_tool_timeout(Some(&json!("5m"))).unwrap(),
+            Some(300_000)
+        );
+        assert_eq!(
+            parse_tool_timeout(Some(&json!("500ms"))).unwrap(),
+            Some(500)
+        );
+        // Empty means no cap, mirroring an omitted field; a bare number is
+        // seconds.
+        assert_eq!(parse_tool_timeout(Some(&json!(""))).unwrap(), None);
+        assert_eq!(parse_tool_timeout(Some(&json!("5"))).unwrap(), Some(5000));
+        assert!(parse_tool_timeout(Some(&json!("soon"))).is_err());
+        assert!(parse_tool_timeout(Some(&json!("0s"))).is_err());
+        assert!(parse_tool_timeout(Some(&json!(true))).is_err());
+    }
+
+    #[test]
+    fn shell_result_carries_the_interrupt_marker() {
+        // bash.exec already replaced the status with the interrupt's exit
+        // code before this mapping runs.
+        let natural = shell_result(ExecResult {
+            interrupted: None,
+            ..Default::default()
+        });
+        assert_eq!(natural.interrupted, None);
+
+        let timed_out = shell_result(ExecResult {
+            exit_code: 124,
+            interrupted: Some(just_bash_rs::InterruptKind::Timeout),
+            ..Default::default()
+        });
+        assert_eq!(timed_out.exit_code, 124);
+        assert_eq!(timed_out.interrupted.as_deref(), Some("timeout"));
+
+        let stopped = shell_result(ExecResult {
+            exit_code: 130,
+            interrupted: Some(just_bash_rs::InterruptKind::Operator),
+            ..Default::default()
+        });
+        assert_eq!(stopped.exit_code, 130);
+        assert_eq!(stopped.interrupted.as_deref(), Some("operator"));
+    }
+
+    #[test]
+    fn shell_started_event_serializes_with_snake_case_fields() {
+        let event = SessionEvent::ShellStarted(ShellStartedEvent {
+            id: "shell-e2e-interrupt".to_string(),
+            offer_id: "E_session.o:3_1".to_string(),
+            turn_index: 2,
+        });
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            json!({
+                "shell_started": {
+                    "id": "shell-e2e-interrupt",
+                    "offer_id": "E_session.o:3_1",
+                    "turn_index": 2,
                 },
             })
         );

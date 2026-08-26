@@ -2,7 +2,7 @@
 package obelisk-agent:stub-obelisk-ext;
 
 interface stub {
-  use obelisk-agent:stub/stub.{prompt-input, shell-input, session-input, session-started-event, input-offered-event, agent-status-event, human-input-requested-event, human-input-resolved-event, user-message-event, agent-error-event, session-renamed-event, assistant-reply-event, output-chunk, shell-result, tool-output, tool-result-event, shell-output-event, session-event};
+  use obelisk-agent:stub/stub.{prompt-input, shell-input, session-input, session-started-event, input-offered-event, agent-status-event, shell-started-event, human-input-requested-event, human-input-resolved-event, user-message-event, agent-error-event, session-renamed-event, assistant-reply-event, output-chunk, shell-result, tool-output, tool-result-event, shell-output-event, session-event};
   use obelisk:types/execution@5.0.0.{execution-id};
   use obelisk:types/join-set@5.0.0.{join-set};
   use obelisk:types/execution@5.0.0.{await-next-extension-error, get-extension-error};
@@ -30,5 +30,11 @@ interface stub {
   ask-user-await-next: func(join-set: borrow<join-set>) -> result<result<string, string>, await-next-extension-error>;
 
   ask-user-get: func(execution-id: execution-id) -> result<result<string, string>, get-extension-error>;
+
+  interrupt-submit: func(join-set: borrow<join-set>) -> execution-id;
+
+  interrupt-await-next: func(join-set: borrow<join-set>) -> result<result<string, string>, await-next-extension-error>;
+
+  interrupt-get: func(execution-id: execution-id) -> result<result<string, string>, get-extension-error>;
 }
 

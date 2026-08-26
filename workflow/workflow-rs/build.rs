@@ -10,6 +10,7 @@ fn main() -> Result<()> {
         "obelisk-agent:stub/stub/session-event",
         "obelisk-agent:llm/chat/completion-result",
         "obelisk-agent:stub/stub/output-chunk",
+        "obelisk-agent:stub/stub/shell-started-event",
     ];
 
     Opts {
