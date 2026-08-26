@@ -560,6 +560,7 @@ routes = [
   { methods = ["POST"], route = "/api/submit" },
   { methods = ["POST"], route = "/api/sessions" },
   { methods = ["POST"], route = "/api/answer/:child-id" },
+  { methods = ["POST"], route = "/api/interrupt/:execution-id" },
   { methods = ["POST"], route = "/api/pause/:execution-id" },
   { methods = ["POST"], route = "/api/unpause/:execution-id" },
   { methods = ["POST"], route = "/api/cancel/:execution-id" },

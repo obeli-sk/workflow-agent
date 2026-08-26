@@ -26,6 +26,7 @@ import {
     answerStub,
     cancelRun,
     createSession,
+    interruptOffer,
     pauseExecution,
     submitSessionInput,
     submit,
@@ -68,6 +69,9 @@ export default async function handle(request) {
         }
         if (method === "POST" && path.startsWith("/api/input/")) {
             return await submitSessionInput(request, decodeURIComponent(path.substring("/api/input/".length)));
+        }
+        if (method === "POST" && path.startsWith("/api/interrupt/")) {
+            return await interruptOffer(request, decodeURIComponent(path.substring("/api/interrupt/".length)));
         }
         if (method === "POST" && path.startsWith("/api/answer/")) {
             const childId = decodeURIComponent(path.substring("/api/answer/".length));
