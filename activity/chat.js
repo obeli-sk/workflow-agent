@@ -59,6 +59,7 @@ async function dispatch(stdin, args) {
         case "read": return cmdRead(rest);
         case "state": return cmdState(rest);
         case "send": return cmdSend(stdin, rest);
+        case "interrupt": return cmdInterrupt(rest);
         case "create": return cmdCreate(stdin, rest);
         // Answered by the session workflow wrapper (see session.rs); reaching
         // this activity means there is no wrapping session to report, rename,
@@ -369,6 +370,44 @@ async function latestResponses(executionId) {
         `/v1/executions/${encodeURIComponent(executionId)}/responses`
         + `?join_set=session-events&direction=older&length=${LATEST_WINDOW}`,
     );
+}
+
+// `chat interrupt ID`: stop whatever script ID is running right now by
+// writing its interrupt offer. The recent window decides liveness: a
+// shell_started more recent than any shell_output / tool_result means a
+// script is still executing; anything else means there is nothing to stop.
+async function cmdInterrupt(args) {
+    const parsed = parseFlags(args);
+    if (parsed.positional.length !== 1) throw new UsageError("exactly one session id is required");
+    const id = parsed.positional[0];
+    let offerId = null;
+    try {
+        const payload = await latestResponses(id);
+        // The listing is oldest-first; liveness scans newest-first.
+        offerId = pickLiveInterruptOffer((payload.responses ?? []).map(sessionEventValue).reverse());
+    } catch (_) { offerId = null; }
+    if (!offerId) {
+        return fail(1, `chat: no running script found in ${id}; `
+            + "only a script that is executing right now can be interrupted\n");
+    }
+    const outcome = await putStub(offerId, { ok: "peer-interrupt" });
+    if (outcome === "ok") return ok(`interrupt sent to ${id} (offer ${offerId})\n`);
+    if (outcome === "stale") {
+        return fail(1, `chat: the script in ${id} already finished; nothing to interrupt\n`);
+    }
+    return fail(1, `chat: ${outcome}\n`);
+}
+
+function pickLiveInterruptOffer(valuesNewestFirst) {
+    for (const value of valuesNewestFirst) {
+        if (!value || typeof value !== "object") continue;
+        if (value.shell_started) {
+            const offerId = strOr(value.shell_started.offer_id);
+            return offerId || null;
+        }
+        if (value.shell_output || value.tool_result) return null;
+    }
+    return null;
 }
 
 async function findOpenOffer(runId) {
@@ -806,6 +845,15 @@ function commandHelp(sub) {
                 "looked up fresh here; never invent offer ids.",
                 "",
             ].join("\n");
+        case "interrupt":
+            return [
+                "Usage: chat interrupt ID",
+                "",
+                "Stop the bash script that ID is currently executing: it unwinds",
+                "at its next command boundary or sleep (exit 130) and the session",
+                "itself stays alive. Fails when no script is running.",
+                "",
+            ].join("\n");
         case "create":
             return [
                 "Usage: chat create [--model M] [--effort E] [--name SLUG]",
@@ -871,6 +919,8 @@ function help() {
         "  send ID TEXT... Queue a user prompt for a session: delivered while idle,",
         "                  queued while busy. Never guess IDs; find them with list.",
         "                  A child parked in step-limit resumes on `send ID continue`.",
+        "  interrupt ID    Stop the script ID is running right now (exit 130);",
+        "                  the session itself stays alive.",
         "  create [--model M] [--effort E] [--name SLUG] [--watch] [--top-level] [PROMPT...]",
         "                  Start a new session and print its id; effort is one of "
             + EFFORTS.join("|") + ". By default the new session is scheduled as a",
