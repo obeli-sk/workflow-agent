@@ -152,3 +152,39 @@ function intOr(value, fallback) {
 export function emptyMarkers() {
     return { lastReplyTurn: null, stepLimitTurn: null, hasShellEvents: false };
 }
+
+// Unwraps one recorded-notification row into its SessionEvent payload: the
+// record-output stub's result hides three levels deep. Shared by every
+// /responses reader (webhook/lib/responses.js, activity/chat.js).
+export function sessionEventValue(response) {
+    const event = response?.event?.event?.event;
+    if (!event || event.type !== "child_execution_finished") return null;
+    return event.result?.ok?.value ?? event.result?.ok ?? null;
+}
+
+// Newest-facts scan over one bounded page of GET /responses. Pages always
+// arrive oldest-first regardless of direction (direction only picks the
+// window), so a forward walk makes the newest fact win each overwrite:
+//   working: newest agent_status.working flag, null when none is in the window
+//   offerId: newest input_offered.execution_id
+//   markers: terminal-marker turns accumulated across the whole window
+// A backward walk with overwrite semantics would end on the OLDEST fact and
+// resurrect stale flags (a session parked after `$ cmd` looked stuck on
+// thinking because of exactly that).
+export function projectLatestWindow(responses, valueOf = sessionEventValue) {
+    const markers = emptyMarkers();
+    let working = null;
+    let offerId = null;
+    for (const response of responses ?? []) {
+        const value = valueOf(response);
+        if (!value || typeof value !== "object") continue;
+        scanMarkers(markers, value);
+        if (typeof value.agent_status?.working === "boolean") {
+            working = value.agent_status.working;
+        }
+        if (typeof value.input_offered?.execution_id === "string") {
+            offerId = value.input_offered.execution_id;
+        }
+    }
+    return { working, offerId, markers };
+}

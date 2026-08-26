@@ -13,7 +13,14 @@
 // documents them in the help output and implements the --top-level create
 // fallback.
 
-import { SESSION_STATE_LABELS, emptyMarkers, projectSessionState, scanMarkers } from "../shared/session-state.js";
+import {
+    SESSION_STATE_LABELS,
+    emptyMarkers,
+    projectLatestWindow,
+    projectSessionState,
+    scanMarkers,
+    sessionEventValue,
+} from "../shared/session-state.js";
 
 const RUN_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 const DEFAULT_LIST_LIMIT = 20;
@@ -187,7 +194,7 @@ async function cmdStateBody(id, json) {
         last_error: lastError === null ? null : { text: lastError.text, turn_index: lastError.turn_index },
         join_name: joinName(status?.pending_state?.join_set_id),
         working: walked.working === true,
-        turn_index: latestTurnIndex(walked.events),
+        turn_index: currentTurnIndex(walked),
         // Sessions stay parked on an input offer after their final answer, so
         // this says whether a finished assistant message was actually written
         // and where; `chat read ID --turn N` prints just that message.
@@ -277,14 +284,8 @@ async function describeRun(exec) {
     try {
         const latest = await latestResponses(id);
         const created = await createdParams(id);
-        let needWorking = true;
-        scanBackward(latest, (value) => {
-            if (needWorking && typeof value.agent_status?.working === "boolean") {
-                working = value.agent_status.working;
-                needWorking = false;
-            }
-            return !needWorking;
-        });
+        // Forward walk over the oldest-first page: the newest agent_status wins.
+        working = projectLatestWindow(latest.responses ?? []).working === true;
         const prompt = created?.prompt ?? "";
         prompt_preview = prompt.length > 120 ? prompt.substring(0, 120) + "..." : prompt;
     } catch (_) {
@@ -316,7 +317,7 @@ async function walkResponses(executionId) {
             + `&length=${RESPONSE_PAGE}`,
         );
         for (const r of payload.responses ?? []) {
-            const value = responseValue(r);
+            const value = sessionEventValue(r);
             if (!value) continue;
             scanMarkers(markers, value);
             if (value.session_started) sessionStarted = projectSessionStarted(value.session_started);
@@ -343,8 +344,8 @@ async function walkResponses(executionId) {
 }
 
 // The current slug straight off the dedicated rename join set; renames are
-// rare, so the newest-first read covers it with one response (pagination
-// applies after the join-set filter).
+// rare, so the newest-entry read covers it with one response (the length-1
+// window is the newest entry; pages arrive oldest-first).
 async function latestSessionName(executionId) {
     try {
         const payload = await apiJson(
@@ -352,7 +353,7 @@ async function latestSessionName(executionId) {
             `/v1/executions/${encodeURIComponent(executionId)}/responses`
             + `?join_set=session-name&direction=older&length=1`,
         );
-        const value = responseValue(payload.responses?.[0]);
+        const value = sessionEventValue(payload.responses?.[0]);
         if (typeof value?.name === "string") return value.name;
         if (typeof value?.session_renamed?.name === "string") {
             return value.session_renamed.name;
@@ -361,7 +362,7 @@ async function latestSessionName(executionId) {
     return null;
 }
 
-// Newest-first single window over the tail of the stream.
+// Newest single window over the tail of the stream; delivered oldest-first.
 async function latestResponses(executionId) {
     return apiJson(
         "GET",
@@ -370,26 +371,10 @@ async function latestResponses(executionId) {
     );
 }
 
-// Invokes onValue for each event payload newest-first until it returns true.
-function scanBackward(payload, onValue) {
-    const responses = payload.responses ?? [];
-    for (let i = responses.length - 1; i >= 0; i--) {
-        const value = responseValue(responses[i]);
-        if (value && onValue(value)) break;
-    }
-}
-
 async function findOpenOffer(runId) {
     try {
         const payload = await latestResponses(runId);
-        let offer = null;
-        scanBackward(payload, (value) => {
-            if (value.input_offered) {
-                offer = strOr(value.input_offered.execution_id);
-                return true;
-            }
-            return false;
-        });
+        const offer = projectLatestWindow(payload.responses ?? []).offerId;
         if (!offer || !offer.startsWith(runId + ".")) return null;
         return offer;
     } catch (_) {
@@ -467,14 +452,6 @@ function loadCatalog() {
 }
 
 // ----- response-stream plumbing ----------------------------------------------
-
-// Payload of one recorded notification: the record-output stub's SessionEvent
-// variant, found at .event.event.result.ok(.value)? per webhook/lib/responses.js.
-function responseValue(response) {
-    const ev = response?.event?.event?.event;
-    if (!ev || ev.type !== "child_execution_finished") return null;
-    return ev.result?.ok?.value ?? ev.result?.ok ?? null;
-}
 
 function createdAtOf(response) {
     return response?.event?.created_at ?? "";
@@ -585,8 +562,18 @@ function renderEvent(ev) {
     }
 }
 
-function latestTurnIndex(events) {
-    return events.reduce((acc, ev) => Math.max(acc, ev.turn_index ?? -1), -1);
+// The session's own turn counter as of the walk: what the next input will be
+// numbered. Input offers are armed before any of their turn's content events
+// and carry that turn's index, so the newest offer bounds every recorded turn.
+// Mid-turn (working) the counter still sits on that newest turn; parked, it
+// has already advanced past the last completed one.
+function currentTurnIndex(walked) {
+    let max = intOrNull(walked.inputOffer?.turn_index) ?? -1;
+    for (const ev of walked.events) {
+        const turn = intOrNull(ev.turn_index);
+        if (turn !== null && turn > max) max = turn;
+    }
+    return walked.working === true ? max : max + 1;
 }
 
 // The newest assistant message that actually finished a turn with visible
@@ -802,7 +789,8 @@ function commandHelp(sub) {
                 "Usage: chat state ID [--json]",
                 "",
                 "One JSON object describing a session: run state, working yes/no,",
-                "current turn index, last_reply ({turn} when a finished assistant",
+                "turn_index (the counter the next input will be numbered with),",
+                "last_reply ({turn} when a finished assistant",
                 "message exists; sessions stay pending for follow-ups even after",
                 "one), pending input-offer id when parked on user input, backend,",
                 "effort, and slug name.",

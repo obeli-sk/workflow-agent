@@ -9,8 +9,10 @@ import {
     SESSION_STATES,
     SESSION_STATE_LABELS,
     emptyMarkers,
+    projectLatestWindow,
     projectSessionState,
     scanMarkers,
+    sessionEventValue,
 } from "./session-state.js";
 
 function project(overrides = {}) {
@@ -117,4 +119,47 @@ test("scanMarkers accepts the pre-id MAX_STEPS text fallback", () => {
         agent_error: { text: "exceeded MAX_STEPS=25 without yielding an assistant response.", turn_index: 1 },
     });
     assert.equal(markers.stepLimitTurn, 1);
+});
+
+// One GET /responses row as served (the record-output stub's result hides
+// three levels deep).
+function row(value) {
+    return {
+        event: {
+            created_at: "2026-08-25T00:00:00Z",
+            event: {
+                join_set_id: "n:session-events",
+                event: { type: "child_execution_finished", result: { ok: { value } } },
+            },
+        },
+    };
+}
+
+test("sessionEventValue unwraps the recorded stub payload", () => {
+    const value = { agent_status: { working: false, turn_index: 1 } };
+    assert.deepEqual(sessionEventValue(row(value)), value);
+    assert.equal(sessionEventValue({ event: { event: { event: { type: "other" } } } }), null);
+    assert.equal(sessionEventValue(undefined), null);
+});
+
+test("latest-window scan lets the newest status win over older turns", () => {
+    // Pages arrive oldest-first even in the older direction; a session parked
+    // after its final answer must not read the earlier model turn's true.
+    const scan = projectLatestWindow([
+        row({ agent_status: { working: true, turn_index: 0 } }),
+        row({ assistant_reply: { content_json: JSON.stringify([{ type: "text", text: "done" }]), turn_complete: true, turn_index: 0 } }),
+        row({ input_offered: { execution_id: "E_s.n:user_3", turn_index: 0 } }),
+        row({ agent_status: { working: false, turn_index: 0 } }),
+    ]);
+    assert.equal(scan.working, false);
+    assert.equal(scan.offerId, "E_s.n:user_3");
+    assert.equal(scan.markers.lastReplyTurn, 0);
+});
+
+test("latest-window scan reports null flags when nothing matches", () => {
+    const scan = projectLatestWindow([row({ session_started: { prompt: "p" } })]);
+    assert.equal(scan.working, null);
+    assert.equal(scan.offerId, null);
+    assert.deepEqual(scan.markers, emptyMarkers());
+    assert.equal(projectLatestWindow([]).working, null);
 });
