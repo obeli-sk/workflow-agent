@@ -2,8 +2,8 @@
 //!
 //! AST covering the subset the parser and interpreter currently support:
 //! statements joined by `&&`/`||`/`;`, pipelines, simple commands with prefix
-//! assignments and redirections, compound commands (if/for/while), and words
-//! built from literal, variable, and command-substitution parts. Functions and
+//! assignments and redirections, compound commands (if/for/while/case), and
+//! words built from literal, variable, and command-substitution parts. Functions and
 //! arithmetic are added in later phases (see
 //! meta/designs/workflow-agent-rust-port.md).
 
@@ -77,6 +77,16 @@ pub enum CompoundCommand {
         body: Vec<Statement>,
         until: bool,
     },
+    /// `case subject in pat|pat) body;; ... esac`. First matching arm wins;
+    /// no fallthrough (`;&` / `;;&` are not modelled).
+    Case { subject: Word, arms: Vec<CaseArm> },
+}
+
+/// One `case` arm: any-of patterns plus the body run on the first match.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaseArm {
+    pub patterns: Vec<Word>,
+    pub body: Vec<Statement>,
 }
 
 /// `NAME=value ... name arg arg [redirects]`.
@@ -199,6 +209,9 @@ fn command_has_background(command: &Command) -> bool {
                 cond.iter().any(statement_has_background)
                     || body.iter().any(statement_has_background)
             }
+            CompoundCommand::Case { arms, .. } => arms
+                .iter()
+                .any(|arm| arm.body.iter().any(statement_has_background)),
         },
     }
 }

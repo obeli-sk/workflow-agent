@@ -13,6 +13,8 @@
 // documents them in the help output and implements the --top-level create
 // fallback.
 
+import { SESSION_STATE_LABELS, emptyMarkers, projectSessionState, scanMarkers } from "../shared/session-state.js";
+
 const RUN_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 200;
@@ -52,10 +54,13 @@ async function dispatch(stdin, args) {
         case "send": return cmdSend(stdin, rest);
         case "create": return cmdCreate(stdin, rest);
         // Answered by the session workflow wrapper (see session.rs); reaching
-        // this activity means there is no wrapping session to report or rename.
+        // this activity means there is no wrapping session to report, rename,
+        // or durably block for.
         case "current":
         case "rename":
             return fail(2, `chat: '${sub}' is answered by the session workflow and is unavailable here\n`);
+        case "watch":
+            return fail(2, "chat: 'watch' requires a wrapping session (it blocks durably); it is unavailable here\n");
         default: return usage(`unknown command '${sub}'`);
     }
 }
@@ -161,9 +166,25 @@ async function cmdStateBody(id, json) {
     const status = await fetchStatus(id);
     const started = walked.sessionStarted ?? {};
     const replyTurn = lastReplyTurn(walked.events);
+    const pendingStatus = status?.pending_state?.status ?? "unknown";
+    const resultKind = status?.pending_state?.result_kind ?? null;
+    const projected = projectSessionState({
+        status: pendingStatus,
+        resultKind,
+        joinName: joinName(status?.pending_state?.join_set_id),
+        working: walked.working === true,
+        markers: walked.markers,
+    });
+    const lastError = newestAgentError(walked.events);
     const state = {
         id,
-        status: status?.pending_state?.status ?? "unknown",
+        status: pendingStatus,
+        // The centralized session state (shared with the webui sidebar); see
+        // shared/session-state.js. `label` is the human-readable form.
+        state: projected,
+        label: SESSION_STATE_LABELS[projected][0],
+        result_kind: resultKind,
+        last_error: lastError === null ? null : { text: lastError.text, turn_index: lastError.turn_index },
         join_name: joinName(status?.pending_state?.join_set_id),
         working: walked.working === true,
         turn_index: latestTurnIndex(walked.events),
@@ -177,6 +198,14 @@ async function cmdStateBody(id, json) {
         name: walked.name ?? null,
     };
     return ok(json ? JSON.stringify(state, null, 2) + "\n" : JSON.stringify(state) + "\n");
+}
+
+function newestAgentError(events) {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+        const ev = events[i];
+        if (ev.kind === "agent_error") return { text: ev.text, turn_index: ev.turn_index };
+    }
+    return null;
 }
 
 async function cmdSend(stdin, args) {
@@ -208,6 +237,11 @@ async function cmdSend(stdin, args) {
 
 async function cmdCreate(stdin, args) {
     const parsed = parseFlags(args);
+    // Only reachable with --top-level (sessions intercept create), and a
+    // top-level creation has no wrapping session to watch from.
+    if (parsed.watch && parsed["top-level"]) {
+        throw new UsageError("--watch requires a wrapping session");
+    }
     const prompt = (parsed.positional.length > 0 ? parsed.positional.join(" ") : stdin).trim();
     let effort = parsed.effort;
     if (effort !== null) {
@@ -267,6 +301,7 @@ async function describeRun(exec) {
 // projects it like webhook/lib/responses.js.
 async function walkResponses(executionId) {
     const events = [];
+    const markers = emptyMarkers();
     let sessionStarted;
     let inputOffer;
     let working = false;
@@ -283,6 +318,7 @@ async function walkResponses(executionId) {
         for (const r of payload.responses ?? []) {
             const value = responseValue(r);
             if (!value) continue;
+            scanMarkers(markers, value);
             if (value.session_started) sessionStarted = projectSessionStarted(value.session_started);
             else if (value.input_offered) {
                 inputOffer = {
@@ -303,7 +339,7 @@ async function walkResponses(executionId) {
     // Renames publish on their own join set now; the in-stream variant only
     // exists on pre-protocol-7 sessions.
     name = (await latestSessionName(executionId)) ?? name;
-    return { events, sessionStarted, inputOffer, working, name };
+    return { events, sessionStarted, inputOffer, working, name, markers };
 }
 
 // The current slug straight off the dedicated rename join set; renames are
@@ -624,6 +660,7 @@ function uniqueId() {
 function parseFlags(args) {
     const parsed = {
         positional: [], json: false, system: false, all: false, "top-level": false,
+        watch: false,
         limit: null, tail: null, turn: null, model: null, effort: null, name: null,
     };
     for (let i = 0; i < args.length; i++) {
@@ -639,6 +676,7 @@ function parseFlags(args) {
             case "--system": parsed.system = true; continue;
             case "--all": parsed.all = true; continue;
             case "--top-level": parsed["top-level"] = true; continue;
+            case "--watch": parsed.watch = true; continue;
             case "--limit": {
                 const value = Number(take());
                 if (!Number.isInteger(value) || value <= 0) {
@@ -833,16 +871,25 @@ function help() {
         "  read ID [--tail N | --turn N] [--json] [--system]",
         "                  Print a session transcript (--turn reads just one turn;",
         "                  --system adds the potentially huge system prompt)",
-        "  state ID        Machine-readable state: includes last_reply {turn} when a",
-        "                  finished assistant message exists (read it with --turn)",
+        "  state ID        Machine-readable state: includes the centralized `state`",
+        "                  (see shared/session-state.js), result_kind, and last_error;",
+        "                  last_reply {turn} points at a finished assistant message",
+        "                  (read it with --turn)",
+        "  watch ID [--timeout DUR] [--interval DUR]",
+        "                  Block until the session stops progressing: wakes on",
+        "                  final-response, step-limit, awaiting-answer, shell-only,",
+        "                  or a terminal state; prints the state JSON. Durations",
+        "                  accept 30s / 500ms / 5m / 1h30m. Workflow-served.",
         "  send ID TEXT... Queue a user prompt for a session: delivered while idle,",
         "                  queued while busy. Never guess IDs; find them with list.",
-        "  create [--model M] [--effort E] [--name SLUG] [--top-level] [PROMPT...]",
+        "                  A child parked in step-limit resumes on `send ID continue`.",
+        "  create [--model M] [--effort E] [--name SLUG] [--watch] [--top-level] [PROMPT...]",
         "                  Start a new session and print its id; effort is one of "
             + EFFORTS.join("|") + ". By default the new session is scheduled as a",
         "                  child of this session; --top-level makes it independent.",
         "                  A PROMPT starting with '$' opens it straight in bash;",
-        "                  --name slugs it (and shows in its execution id).",
+        "                  --name slugs it (and shows in its execution id);",
+        "                  --watch blocks until it stops progressing (workflow-served).",
         "  current         This session's identity as JSON (workflow-served)",
         "  rename NAME     Rename this session to a slug ([a-z0-9-]; workflow-served)",
         "",

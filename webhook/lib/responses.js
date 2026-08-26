@@ -1,6 +1,7 @@
 // Walk the session notification stream into the transcript and live UI state.
 
 import { getExecutionResponses, getLatestExecutionResponses } from "./obelisk-api.js";
+import { emptyMarkers, scanMarkers } from "../../shared/session-state.js";
 
 export async function loadResponses(execId, startCursor = 0) {
     const replies = [];
@@ -9,6 +10,7 @@ export async function loadResponses(execId, startCursor = 0) {
     const shellEvents = [];
     const turnStarts = [];
     const humanInputEvents = [];
+    const agentErrors = [];
     let sessionStarted;
     let inputOffer;
     let agentWorking;
@@ -32,6 +34,7 @@ export async function loadResponses(execId, startCursor = 0) {
                 shellEvents,
                 turnStarts,
                 humanInputEvents,
+                agentErrors,
                 sessionStarted,
                 inputOffer,
                 agentWorking,
@@ -59,6 +62,7 @@ export async function loadResponses(execId, startCursor = 0) {
         shellEvents,
         turnStarts,
         humanInputEvents,
+        agentErrors,
         sessionStarted,
         inputOffer,
         agentWorking,
@@ -84,23 +88,31 @@ export async function loadLatestSessionName(execId) {
     return null;
 }
 
-// Newest-first scan for the live working flag. Names are NOT looked for here:
-// an agent-status event newer than the rename would win the race and hide it
-// (startup-named sessions publish renamed before their first agent-status);
-// they come from loadLatestSessionName instead.
+// Newest-first scan for the live working flag plus the terminal markers the
+// state projection needs. The window is bounded, so markers reflect recent
+// history only; that is exact for parked sessions (a parked session's last
+// turn-ending event is always near the stream head) and good enough for the
+// sidebar otherwise. Names are NOT looked for here: an agent-status event
+// newer than the rename would win the race and hide it (startup-named
+// sessions publish renamed before their first agent-status); they come from
+// loadLatestSessionName instead.
 export async function loadLatestAgentState(execId) {
     let payload;
     try { payload = await getLatestExecutionResponses(execId, "session-events", 50); }
-    catch (_) { return { working: false, name: null }; }
+    catch (_) { return { working: false, name: null, markers: emptyMarkers() }; }
     const responses = payload.responses || [];
+    const markers = emptyMarkers();
+    let working = false;
     for (let i = responses.length - 1; i >= 0; i -= 1) {
         const wrapped = responses[i]?.event?.event;
         const value = wrapped?.event?.result?.ok?.value ?? wrapped?.event?.result?.ok;
-        if (typeof value?.agent_status?.working === "boolean") {
-            return { working: value.agent_status.working, name: null };
+        if (!value || typeof value !== "object") continue;
+        scanMarkers(markers, value);
+        if (typeof value.agent_status?.working === "boolean") {
+            working = value.agent_status.working;
         }
     }
-    return { working: false, name: null };
+    return { working, name: null, markers };
 }
 
 function appendSessionEvent(target, event, response) {
@@ -161,6 +173,12 @@ function appendSessionEvent(target, event, response) {
         appendAssistantReply(target.replies, reply, createdAt);
     } else if (event.agent_error) {
         const error = event.agent_error;
+        target.agentErrors.push({
+            id: typeof error.id === "string" ? error.id : "",
+            text: typeof error.text === "string" ? error.text : "",
+            created_at: createdAt,
+            turn_index: Number.isInteger(error.turn_index) ? error.turn_index : null,
+        });
         target.replies.push({
             reply: { error: error.text },
             created_at: createdAt,

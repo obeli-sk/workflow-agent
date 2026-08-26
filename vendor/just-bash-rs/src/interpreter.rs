@@ -70,6 +70,12 @@ pub struct Interpreter {
     /// Set when `errexit`/`nounset` triggers a script-ending failure, so the
     /// statement loops stop running the rest of the script.
     pub exiting: bool,
+    /// Pending `break`/`continue` from inside a loop body. Loops consume one
+    /// level each; capture contexts (`$(...)`, `sh -c`) isolate it.
+    pub loop_control: Option<LoopControl>,
+    /// Dynamically enclosing `for`/`while`/`until` bodies, so `break` outside
+    /// any loop can be rejected like bash does.
+    pub loop_depth: u32,
     /// Positional parameters: `positional[0]` is `$1`. Set when a script runs
     /// via `sh`/`bash`/`./x.sh`/`source ... args`, cleared otherwise.
     pub positional: Vec<String>,
@@ -85,6 +91,13 @@ pub struct Interpreter {
     /// Host-registered commands (see `custom_command.rs`), moved in from
     /// `Bash` for this run and moved back out afterward.
     pub custom_commands: CustomCommands,
+}
+
+/// A pending `break N` / `continue N`: how many enclosing loops to unwind.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LoopControl {
+    Break(u32),
+    Continue(u32),
 }
 
 /// The output of one command in a pipeline.
@@ -191,6 +204,8 @@ impl Interpreter {
             out: OutputLog::default(),
             options: ShellOptions::default(),
             exiting: false,
+            loop_control: None,
+            loop_depth: 0,
             positional: Vec::new(),
             arg0: "bash".to_string(),
             fs,
@@ -261,11 +276,16 @@ impl Interpreter {
         let saved_cwd = self.cwd.clone();
         let saved_positional = std::mem::replace(&mut self.positional, args.to_vec());
         let saved_arg0 = std::mem::replace(&mut self.arg0, arg0.to_string());
+        let saved_control = self.loop_control.take();
+        let saved_depth = self.loop_depth;
+        self.loop_depth = 0;
         let out = self.run_source_captured(src);
         self.env = saved_env;
         self.cwd = saved_cwd;
         self.positional = saved_positional;
         self.arg0 = saved_arg0;
+        self.loop_control = saved_control;
+        self.loop_depth = saved_depth;
         out
     }
 
@@ -295,7 +315,7 @@ impl Interpreter {
                 LogicalOp::And => code == 0,
                 LogicalOp::Or => code != 0,
             };
-            if run_next {
+            if run_next && self.loop_control.is_none() {
                 code = self.run_pipeline(pipeline);
                 last_negated = pipeline.negated;
             } else {
@@ -393,10 +413,16 @@ impl Interpreter {
                     return;
                 }
                 for (elif_cond, elif_body) in elifs {
+                    if self.loop_control.is_some() {
+                        return;
+                    }
                     if self.run_block(elif_cond, false) == 0 {
                         self.run_block(elif_body, true);
                         return;
                     }
+                }
+                if self.loop_control.is_some() {
+                    return;
                 }
                 match else_body {
                     Some(block) => {
@@ -419,11 +445,16 @@ impl Interpreter {
                             }
                         };
                         for value in values {
-                            if self.exiting {
+                            if self.exiting || matches!(self.poll_loop_control(), Some(true)) {
                                 break 'outer;
                             }
                             self.env.insert(name.clone(), value);
+                            self.loop_depth += 1;
                             self.run_block(body, true);
+                            self.loop_depth -= 1;
+                            if matches!(self.poll_loop_control(), Some(true)) {
+                                break 'outer;
+                            }
                         }
                     }
                 }
@@ -444,7 +475,7 @@ impl Interpreter {
                     return;
                 }
                 loop {
-                    if self.exiting {
+                    if self.exiting || matches!(self.poll_loop_control(), Some(true)) {
                         break;
                     }
                     // An absent condition is always true (`for ((;;))`).
@@ -459,10 +490,14 @@ impl Interpreter {
                             }
                         }
                     }
+                    self.loop_depth += 1;
                     self.run_block(body, true);
-                    if self.exiting {
+                    self.loop_depth -= 1;
+                    if matches!(self.poll_loop_control(), Some(true)) {
                         break;
                     }
+                    // A depth-1 `continue` falls through so the update clause
+                    // still runs (matching bash).
                     if let Some(update) = update
                         && let Err(msg) = arithmetic::eval(update, &mut self.env)
                     {
@@ -475,19 +510,54 @@ impl Interpreter {
             CompoundCommand::While { cond, body, until } => {
                 self.last_exit = 0;
                 loop {
-                    if self.exiting {
+                    if self.exiting || matches!(self.poll_loop_control(), Some(true)) {
                         break;
                     }
+                    // The condition list counts as inside the loop too, so a
+                    // `break` there targets this loop (matching bash).
+                    self.loop_depth += 1;
                     let cond_code = self.run_block(cond, false);
                     let enter = if *until {
                         cond_code != 0
                     } else {
                         cond_code == 0
                     };
-                    if !enter {
+                    if enter && self.loop_control.is_none() {
+                        self.run_block(body, true);
+                    }
+                    self.loop_depth -= 1;
+                    if !enter || matches!(self.poll_loop_control(), Some(true)) {
                         break;
                     }
-                    self.run_block(body, true);
+                }
+            }
+            CompoundCommand::Case { subject, arms } => {
+                self.last_exit = 0;
+                let value = match self.expand_word(subject) {
+                    Ok(value) => value,
+                    Err(msg) => {
+                        self.out.push_err(&format!("bash: {msg}\n"));
+                        self.last_exit = 1;
+                        return;
+                    }
+                };
+                'arms: for arm in arms {
+                    for pattern in &arm.patterns {
+                        let pat = match self.expand_word(pattern) {
+                            Ok(pat) => pat,
+                            Err(msg) => {
+                                self.out.push_err(&format!("bash: {msg}\n"));
+                                self.last_exit = 1;
+                                return;
+                            }
+                        };
+                        // Both words are single fields here (no IFS split), so
+                        // the pattern matches the subject whole.
+                        if glob::match_segment(&pat, &value) {
+                            self.run_block(&arm.body, true);
+                            break 'arms;
+                        }
+                    }
                 }
             }
         }
@@ -498,7 +568,7 @@ impl Interpreter {
     /// failing command is being tested, so `-e` is suppressed).
     fn run_block(&mut self, statements: &[Statement], errexit_ctx: bool) -> i32 {
         for statement in statements {
-            if self.exiting {
+            if self.exiting || self.loop_control.is_some() {
                 break;
             }
             let eligible = self.run_statement(statement);
@@ -507,6 +577,29 @@ impl Interpreter {
             }
         }
         self.last_exit
+    }
+
+    /// Consume one level of a pending `break`/`continue` after a loop body or
+    /// condition ran. `None`: nothing pending. `Some(true)`: this loop stops
+    /// (a break landed here, or a deeper control unwound past this level).
+    /// `Some(false)`: a depth-1 `continue` was consumed; the next iteration
+    /// proceeds.
+    fn poll_loop_control(&mut self) -> Option<bool> {
+        let control = self.loop_control?;
+        match control {
+            LoopControl::Break(1) | LoopControl::Continue(1) => {
+                self.loop_control = None;
+                Some(matches!(control, LoopControl::Break(1)))
+            }
+            LoopControl::Break(depth) => {
+                self.loop_control = Some(LoopControl::Break(depth - 1));
+                Some(true)
+            }
+            LoopControl::Continue(depth) => {
+                self.loop_control = Some(LoopControl::Continue(depth - 1));
+                Some(true)
+            }
+        }
     }
 
     /// Run a simple command, turning a word-expansion failure (e.g. `$((1/0))`
@@ -802,11 +895,19 @@ impl Interpreter {
     /// Run a nested statement list and return its captured stdout, leaving the
     /// shell's own stdout untouched. Used by command substitution.
     fn run_captured(&mut self, statements: &[Statement]) -> String {
+        // A `$(...)` is its own shell: a `break`/`continue` inside must not
+        // reach the caller's loops.
+        let saved_control = self.loop_control.take();
+        let saved_depth = self.loop_depth;
+        self.loop_depth = 0;
         let mark = self.out.mark();
         for statement in statements {
             self.run_statement(statement);
         }
-        self.out.take_stdout_since(mark)
+        let captured = self.out.take_stdout_since(mark);
+        self.loop_control = saved_control;
+        self.loop_depth = saved_depth;
+        captured
     }
 
     fn lookup(&self, name: &str) -> String {

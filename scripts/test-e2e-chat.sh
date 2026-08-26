@@ -196,6 +196,27 @@ if BOGUS="$(chat_direct '["",["send","E_bogus000000000000000000000000001","hi"]]
     exit 1
 fi
 
+echo ">>> chat create --watch blocks until the scripted child stops progressing"
+WATCH_OUT="$(shell_turn "$PARENT_ID" "shell-chat-create-watch" \
+    'chat create --model fake --name watched $ echo hi --watch')"
+grep -q '"state":"shell-only"' <<<"$WATCH_OUT" \
+    || { echo "create --watch did not report shell-only: $WATCH_OUT" >&2; exit 1; }
+grep -q '"timed_out":false' <<<"$WATCH_OUT" \
+    || { echo "create --watch woke as a timeout: $WATCH_OUT" >&2; exit 1; }
+
+echo ">>> chat watch wakes immediately on a cancelled session"
+"$OBELISK" execution cancel -a "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true
+WATCH_OUT="$(shell_turn "$PARENT_ID" "shell-chat-watch-cancelled" \
+    "chat watch $TOPLEVEL_ID --timeout 60s")"
+grep -q '"state":"cancelled"' <<<"$WATCH_OUT" \
+    || { echo "watch did not report cancelled: $WATCH_OUT" >&2; exit 1; }
+
+echo ">>> chat watch times out on an idle parked child"
+WATCH_OUT="$(shell_turn "$PARENT_ID" "shell-chat-watch-timeout" \
+    "chat watch $CHILD_ID --timeout 5s --interval 1s")"
+grep -q '"timed_out":true' <<<"$WATCH_OUT" \
+    || { echo "watch did not time out: $WATCH_OUT" >&2; exit 1; }
+
 echo ">>> cleaning up sessions"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$PARENT_ID" >/dev/null || true
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true

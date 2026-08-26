@@ -32,10 +32,12 @@ test-rs:
 
 # Web UI: unit tests for the served transcript renderer (turn/step grouping).
 # Activities: unit tests for the curl and chat programs' flag handling.
+# Shared session-state projection (sidebar + chat state).
 test-js:
   node --test webhook/ui/shell.test.js
   node --test activity/curl.test.js
   node --test activity/chat.test.js
+  node --test shared/session-state.test.js
 
 # All end-to-end suites, each against its own isolated, throwaway obelisk server.
 # See scripts/test-e2e-*.sh; the mcp suite SKIPs when no docker/podman is on PATH.

@@ -14,6 +14,7 @@ import {
     loadResponses,
     parseJoinName,
 } from "./responses.js";
+import { SESSION_STATE_LABELS, emptyMarkers, projectSessionState } from "../../shared/session-state.js";
 
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 function pickRunState(workflowStatus) {
@@ -25,6 +26,20 @@ function pickRunState(workflowStatus) {
     };
 }
 
+// The one place raw execution facts become a session state; consumers render
+// label/cls straight from SESSION_STATE_LABELS.
+function projectRun(runState, working, markers) {
+    const state = projectSessionState({
+        status: runState.status,
+        resultKind: runState.result_kind,
+        joinName: runState.join_name,
+        working,
+        markers,
+    });
+    const [label, cls] = SESSION_STATE_LABELS[state];
+    return { state, label, cls };
+}
+
 export async function listRuns() {
     // Derived executions are included so child sessions created via
     // `chat create` appear nested under their parent (the FFQN prefix filters
@@ -33,18 +48,18 @@ export async function listRuns() {
     const runs = await Promise.all(executions.map(async (e) => {
         const id = e.execution_id;
         const runState = pickRunState(e);
-        // The shared user set races input against completion, so its join
-        // name alone cannot distinguish "your turn" from "thinking".
         const [latest, name] = await Promise.all([
             loadLatestAgentState(id),
             loadLatestSessionName(id),
         ]);
+        const working = runState.status === "blocked_by_join_set" && runState.join_name === "user"
+            && latest.working;
         return {
             id,
             created_at: e.created_at || "",
             ...runState,
-            working: runState.status === "blocked_by_join_set" && runState.join_name === "user"
-                && latest.working,
+            working,
+            ...projectRun(runState, latest.working, latest.markers || emptyMarkers()),
             name,
         };
     }));
@@ -91,9 +106,32 @@ export async function detailRun(id, cursorState) {
         loadFinalResult(id),
     ]);
     const started = walk.sessionStarted;
+    const runState = pickRunState(status);
+    // Exact markers from the full event walk (the sidebar scan is bounded).
+    const markers = {
+        lastReplyTurn: null,
+        stepLimitTurn: null,
+        hasShellEvents: walk.shellEvents.length > 0,
+    };
+    for (const reply of walk.replies) {
+        if (!reply.turn_complete) continue;
+        const turn = Number.isInteger(reply.turn_index) ? reply.turn_index : -1;
+        if (typeof reply.reply?.response === "string" && reply.reply.response) {
+            markers.lastReplyTurn = Math.max(markers.lastReplyTurn ?? -1, turn);
+        }
+    }
+    for (const error of walk.agentErrors) {
+        if (error.id.startsWith("step-limit-")) {
+            markers.stepLimitTurn = Math.max(
+                markers.stepLimitTurn ?? -1,
+                Number.isInteger(error.turn_index) ? error.turn_index : -1,
+            );
+        }
+    }
     return {
         id,
-        ...pickRunState(status),
+        ...runState,
+        ...projectRun(runState, walk.agentWorking === true, markers),
         created_at: status?.created_at || "",
         prompt: started?.prompt || null,
         backend: started?.backend || null,
@@ -108,6 +146,7 @@ export async function detailRun(id, cursorState) {
             shell_events: walk.shellEvents,
             turn_starts: walk.turnStarts,
             human_input_events: walk.humanInputEvents,
+            agent_errors: walk.agentErrors,
             session_started: walk.sessionStarted,
             sent_results: walk.toolResults,
             input_offer: walk.inputOffer,

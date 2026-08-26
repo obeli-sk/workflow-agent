@@ -49,6 +49,8 @@ enum Token {
     OrOr,
     Pipe,
     Semi,
+    /// `;;`, the `case` arm terminator.
+    DSemi,
     Amp,
     Newline,
     Bang,
@@ -128,7 +130,12 @@ impl Lexer {
                 }
                 Some(';') => {
                     self.bump();
-                    tokens.push(Token::Semi);
+                    if self.peek() == Some(';') {
+                        self.bump();
+                        tokens.push(Token::DSemi);
+                    } else {
+                        tokens.push(Token::Semi);
+                    }
                 }
                 Some('&') => {
                     self.bump();
@@ -750,6 +757,7 @@ impl Parser {
                 "for" => self.parse_for(),
                 "while" => self.parse_while(false),
                 "until" => self.parse_while(true),
+                "case" => self.parse_case(),
                 // A terminator keyword here has no opening construct.
                 _ => err(format!("syntax error near unexpected token `{kw}`")),
             };
@@ -954,6 +962,109 @@ impl Parser {
             until,
         }))
     }
+
+    /// `case WORD in (pat|pat) list;; ... esac`. A clause closes at the first
+    /// unquoted `)` ending a pattern word; the final `;;` before `esac` is
+    /// optional.
+    fn parse_case(&mut self) -> Result<Command, ParseError> {
+        self.expect_keyword("case")?;
+        let subject = match self.bump() {
+            Some(Token::Word(w)) => w,
+            _ => return err("expected a word after `case`"),
+        };
+        if !matches!(self.peek(), Some(Token::Word(w)) if word_literal(w) == Some("in")) {
+            return err("expected `in` after `case` subject");
+        }
+        self.bump();
+        let mut arms = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.at_keyword(&["esac"]) {
+                self.bump();
+                break;
+            }
+            if self.peek().is_none() {
+                return err("expected `esac` to close `case`");
+            }
+            let patterns = self.parse_case_patterns()?;
+            let body = self.parse_case_body()?;
+            arms.push(crate::ast::CaseArm { patterns, body });
+            if matches!(self.peek(), Some(Token::DSemi)) {
+                self.bump();
+            } // otherwise: `esac`, or a separator the next iteration skips
+        }
+        Ok(Command::Compound(CompoundCommand::Case { subject, arms }))
+    }
+
+    /// Pattern list up to the clause-opening `)`. The `)` may ride on the last
+    /// pattern's word (`*finished*)`) or stand alone. Only an *unquoted* `)`
+    /// terminates: quoted parens are literal pattern text.
+    fn parse_case_patterns(&mut self) -> Result<Vec<Word>, ParseError> {
+        let mut patterns = Vec::new();
+        loop {
+            // Optional leading `(` around the first pattern.
+            if patterns.is_empty()
+                && matches!(self.peek(), Some(Token::Word(w)) if word_literal(w) == Some("("))
+            {
+                self.bump();
+                continue;
+            }
+            match self.peek() {
+                Some(Token::Word(_)) => {
+                    let Some(Token::Word(mut word)) = self.bump() else {
+                        unreachable!()
+                    };
+                    // `pat)` or a bare `)`: this closes the pattern list.
+                    if split_trailing_rparen(&mut word) {
+                        if !word_is_empty_text(&word) {
+                            patterns.push(word);
+                        }
+                        if patterns.is_empty() {
+                            return err("expected a pattern in `case` clause");
+                        }
+                        return Ok(patterns);
+                    }
+                    patterns.push(word);
+                }
+                // Pattern alternation.
+                Some(Token::Pipe) => {
+                    self.bump();
+                }
+                _ => return err("expected a pattern in `case` clause"),
+            }
+        }
+    }
+
+    /// Arm body: statements until `;;` or `esac`, mirroring
+    /// `parse_statement_list` with an extra terminator token.
+    fn parse_case_body(&mut self) -> Result<Vec<Statement>, ParseError> {
+        let mut statements = Vec::new();
+        loop {
+            self.skip_separators();
+            if self.peek().is_none()
+                || matches!(self.peek(), Some(Token::DSemi))
+                || self.at_keyword(&["esac"])
+            {
+                break;
+            }
+            let mut statement = self.parse_statement()?;
+            if matches!(self.peek(), Some(Token::Amp)) {
+                self.bump();
+                statement.background = true;
+            }
+            statements.push(statement);
+            match self.peek() {
+                Some(Token::Semi | Token::Newline) => {
+                    self.bump();
+                }
+                Some(Token::Amp | Token::DSemi) => {}
+                None => {}
+                _ if self.at_keyword(&["esac"]) => {}
+                _ => return err("expected `;;` or `esac` in `case` clause"),
+            }
+        }
+        Ok(statements)
+    }
 }
 
 /// Split a C-style `for` header body on `;` that sit outside any parentheses,
@@ -1005,8 +1116,41 @@ fn compound_keyword(word: &Word) -> Option<&'static str> {
         "fi" => Some("fi"),
         "do" => Some("do"),
         "done" => Some("done"),
+        "case" => Some("case"),
+        "esac" => Some("esac"),
         _ => None,
     }
+}
+
+/// Strip one unquoted trailing `)` from `word`'s final literal part, the
+/// `case` clause opener riding on a pattern (`*finished*)`). Returns false
+/// when the word does not end in an unquoted `)`, leaving it untouched. A
+/// quoted `)` (`QuotedLiteral`) is pattern text, not a terminator.
+fn split_trailing_rparen(word: &mut Word) -> bool {
+    let ends = matches!(word.last(), Some(WordPart::Literal(s)) if s.ends_with(')'));
+    if !ends {
+        return false;
+    }
+    match word.last_mut() {
+        Some(WordPart::Literal(s)) => {
+            s.pop();
+            // Drop the part once it empties and earlier parts remain
+            // (`"a)b")` -> `[QuotedLiteral("a)b")]`); a lone `)` keeps its
+            // empty literal so `word_is_empty_text` can recognize it.
+            if s.is_empty() && word.len() > 1 {
+                word.pop();
+            }
+        }
+        _ => unreachable!(),
+    }
+    true
+}
+
+/// True when every part of `word` is provably empty literal text, i.e. the
+/// word can never expand to any pattern content (the bare `)` terminator).
+fn word_is_empty_text(word: &Word) -> bool {
+    word.iter()
+        .all(|p| matches!(p, WordPart::Literal(s) | WordPart::QuotedLiteral(s) if s.is_empty()))
 }
 
 fn is_valid_name(name: &str) -> bool {
@@ -1373,6 +1517,15 @@ fn replace_here_docs_in_command(command: &mut Command, here_docs: &[HereDoc]) {
             replace_here_docs_in_statements(cond, here_docs);
             replace_here_docs_in_statements(body, here_docs);
         }
+        Command::Compound(CompoundCommand::Case { subject, arms }) => {
+            replace_here_docs_in_word(subject, here_docs);
+            for arm in arms {
+                for pattern in &mut arm.patterns {
+                    replace_here_docs_in_word(pattern, here_docs);
+                }
+                replace_here_docs_in_statements(&mut arm.body, here_docs);
+            }
+        }
         Command::Arith(_) => {}
     }
 }
@@ -1398,6 +1551,7 @@ fn replace_here_docs_in_word(word: &mut Word, here_docs: &[HereDoc]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::CaseArm;
 
     fn lit(s: &str) -> WordPart {
         WordPart::Literal(s.to_string())
@@ -1430,6 +1584,43 @@ mod tests {
             cmd.words,
             vec![vec![lit("echo")], vec![lit("hello")], vec![lit("world")]]
         );
+    }
+
+    fn compound(command: &Command) -> &CompoundCommand {
+        match command {
+            Command::Compound(cmd) => cmd,
+            other => panic!("expected a compound command, got {other:?}"),
+        }
+    }
+
+    fn case_parts(script: &Script) -> (&Word, &Vec<CaseArm>) {
+        match compound(&script.statements[0].pipelines[0].commands[0]) {
+            CompoundCommand::Case { subject, arms } => (subject, arms),
+            other => panic!("expected a case command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn case_parses_alternation_globs_and_optional_trailing_terminator() {
+        let script = parse("case $x in\n  a|b) echo one ;;\n  *fin*) echo two\nesac").unwrap();
+        let (subject, arms) = case_parts(&script);
+        assert_eq!(*subject, vec![var("x", false)]);
+        assert_eq!(arms.len(), 2);
+        assert_eq!(arms[0].patterns, vec![vec![lit("a")], vec![lit("b")]]);
+        assert_eq!(arms[1].patterns, vec![vec![lit("*fin*")]]);
+    }
+
+    #[test]
+    fn case_quoted_paren_is_pattern_text_not_a_terminator() {
+        // `"a)b"` stays one pattern; the unquoted `)` after it closes.
+        let script = parse("case v in \"a)b\") echo q ;; esac").unwrap();
+        let (_, arms) = case_parts(&script);
+        assert_eq!(arms[0].patterns, vec![vec![qlit("a)b")]]);
+
+        // Optional leading paren around the patterns.
+        let script = parse("case v in ( \"a)b\" ) echo q ;; esac").unwrap();
+        let (_, arms) = case_parts(&script);
+        assert_eq!(arms[0].patterns, vec![vec![qlit("a)b")]]);
     }
 
     #[test]

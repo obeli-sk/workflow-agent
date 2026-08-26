@@ -249,35 +249,6 @@ function ago(iso) {
   return Math.round(s / 86400) + 'd ago';
 }
 
-function statusLabel(status, result_kind) {
-  if (status !== 'finished') return status.replaceAll('_', ' ');
-  if (typeof result_kind === 'string') return result_kind;
-  if (result_kind && typeof result_kind === 'object') {
-    if (result_kind.ok !== undefined || result_kind.Ok !== undefined) return 'ok';
-    if (result_kind.err !== undefined || result_kind.Err !== undefined) return 'err';
-  }
-  return 'finished';
-}
-
-// A blocked run is waiting on a join set whose name suffix is the function it
-// dispatched (e.g. "o:20-ask-user"). Translate that into a specific label + a
-// css class so the sidebar/detail say what the run is actually doing.
-const JOIN_LABELS = {
-  'ask-user': ['awaiting reply', 'awaiting'],
-  'completion': ['thinking', 'working'],
-  'user': ['your turn', 'awaiting'],
-};
-function describeStatus(status, result_kind, joinName) {
-  if (status === 'blocked_by_join_set') {
-    const hit = JOIN_LABELS[joinName];
-    if (hit) return { label: hit[0], cls: hit[1] };
-    if (joinName) return { label: joinName.replaceAll('-', ' '), cls: 'working' };
-    return { label: 'blocked', cls: 'working' };
-  }
-  const label = statusLabel(status, result_kind);
-  return { label, cls: label.replaceAll(' ', '_') };
-}
-
 function readSelectedFromUrl() {
   const m = window.location.search.match(/[?&]run=([^&]+)/);
   state.selected = m ? decodeURIComponent(m[1]) : null;
@@ -334,8 +305,10 @@ function renderSidebar() {
     return;
   }
   box.innerHTML = state.runs.map((r) => {
-    let { label, cls } = describeStatus(r.status, r.result_kind, r.join_name);
-    if (r.join_name === 'user' && r.working) { label = 'thinking'; cls = 'working'; }
+    // label/cls arrive precomputed from the shared session-state projection
+    // (webhook/lib/runs.js + shared/session-state.js).
+    const label = r.label || r.status;
+    const cls = r.cls || '';
     const child = r.parent_id ? ' child' : '';
     const title = (child ? '+ ' : '') + esc(r.name || r.id);
     return '<a class="run-item' + child + (r.id === state.selected ? ' active' : '') + '" href="?run=' + encodeURIComponent(r.id) + '" data-id="' + esc(r.id) + '">'
@@ -795,15 +768,8 @@ function renderDetail(forceScroll = false) {
   state.lastSig = sig;
 
   const phase = runPhase(d.status);
-  let { label, cls: statusCls } = describeStatus(d.status, d.result_kind, d.join_name);
-  // The completion child shares the per-turn user join set (so user input
-  // can race the model), so a run mid-completion still reports blocked on
-  // 'user' -> "your turn". Keep the chip in step with the "Agent is working…"
-  // banner while the model is actually thinking.
-  if (d.join_name === 'user' && agentIsWorking(d)) {
-    label = 'thinking';
-    statusCls = 'working';
-  }
+  const label = d.label || d.status;
+  const statusCls = d.cls || '';
   let turnsHtml;
   if (d.turns.length > 0) {
     turnsHtml = groupTurns(d.turns).map((g, i) => renderTurnGroup(g, i)).join('');
