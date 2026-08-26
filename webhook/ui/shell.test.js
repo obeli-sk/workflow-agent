@@ -45,6 +45,7 @@ function sandbox() {
 
 // Load the served browser script, evaluate it, and expose the transcript
 // renderer's internals (the `state` lexical and the top-level functions).
+// fetchCalls records every URL the evaluated script fetches after load.
 async function loadRenderer() {
     const html = await htmlShell().text();
     const marker = "<script>\nconst OBELISK_UI_URL";
@@ -53,9 +54,17 @@ async function loadRenderer() {
     const open = html.indexOf(">", start) + 1;
     const end = html.indexOf("</script>", open);
     const code = html.slice(open, end)
-        + "\n;globalThis.__render = { state, buildCachedTurns, groupTurns, renderTurnGroup, renderDetail, toggleSysprompt, document };";
-    const ctx = vm.createContext(sandbox());
+        + "\n;globalThis.__render = { state, buildCachedTurns, groupTurns, renderTurnGroup, renderDetail, renderComposer, composerMode, sendComposer, toggleSysprompt, document };";
+    const sandboxObj = sandbox();
+    const ctx = vm.createContext(sandboxObj);
     vm.runInContext(code, ctx);
+    ctx.__render.fetchCalls = [];
+    // Reassigning on the contextified sandbox swaps the global the already-
+    // evaluated functions resolve `fetch` through at call time.
+    sandboxObj.fetch = async (href) => {
+        ctx.__render.fetchCalls.push(String(href));
+        return { ok: false, status: 0, json: async () => ({}) };
+    };
     return ctx.__render;
 }
 
@@ -315,4 +324,29 @@ test("omits the system-prompt link for runs recorded before it existed", async (
     renderer.state.detail = detailFixture({});
     const html = renderDetailHtml(renderer);
     assert.doesNotMatch(html, /sysprompt-toggle/);
+});
+
+test("a finished session disables the composer instead of offering a new conversation", async () => {
+    const renderer = await loadRenderer();
+    renderer.state.selected = "E_done";
+    renderer.state.detail = detailFixture({ status: "finished", result_kind: { err: "cancelled" } });
+    const elements = {};
+    withCachedElements(renderer, elements, () => { renderer.renderComposer(); });
+    assert.equal(renderer.composerMode(), "closed");
+    assert.equal(elements["composer-input"].disabled, true);
+    assert.equal(elements["composer-send"].disabled, true);
+    assert.equal(elements["composer-selects"].style.display, "none");
+    assert.match(elements["composer-input"].placeholder, /ended/);
+    // Sending must not fall through to creating a fresh session.
+    elements["composer-input"].value = "one more try";
+    renderer.sendComposer();
+    assert.equal(renderer.fetchCalls.length, 0);
+
+    // With no run selected the composer stays in the create-new mode.
+    delete renderer.state.detail;
+    renderer.state.selected = null;
+    withCachedElements(renderer, elements, () => { renderer.renderComposer(); });
+    assert.equal(renderer.composerMode(), "new");
+    assert.equal(elements["composer-input"].disabled, false);
+    assert.equal(elements["composer-selects"].style.display, "flex");
 });

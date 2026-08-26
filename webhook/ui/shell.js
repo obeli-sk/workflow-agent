@@ -844,8 +844,9 @@ function runPhase(status) {
 }
 
 // The persistent composer at the bottom of the right pane is context-sensitive:
-//   - no run / terminal run  -> "new conversation": create a run (model+effort).
-//   - active or paused run   -> "say": steer/reply to the running agent.
+//   - no run            -> "new": create a run (model+effort pickers).
+//   - terminal run      -> "closed": a finished workflow cannot take messages.
+//   - active/paused run -> "say": steer/reply to the running agent.
 // A pending ask gate owns its own inline input, so the composer defers.
 function hasHumanGate(d) {
   return Boolean(d && d.pending_asks && d.pending_asks.length);
@@ -878,7 +879,8 @@ function agentIsWorking(d) {
 }
 function composerMode() {
   const d = state.detail;
-  if (!state.selected || !d || runPhase(d.status) === 'terminal') return 'new';
+  if (!state.selected || !d) return 'new';
+  if (runPhase(d.status) === 'terminal') return 'closed';
   return 'say';
 }
 function renderComposer() {
@@ -900,7 +902,11 @@ function renderComposer() {
     ? 'Shell command is running…'
     : 'Agent is working…';
   selects.style.display = mode === 'new' ? 'flex' : 'none';
-  if (gate || !sessionReady) {
+  if (mode === 'closed') {
+    input.placeholder = 'This session has ended; use + New conversation to start another.';
+    input.disabled = true;
+    send.disabled = true;
+  } else if (gate || !sessionReady) {
     input.placeholder = 'Respond to the request above...';
     if (!gate) input.placeholder = 'Preparing the session...';
     input.disabled = true;
@@ -1526,12 +1532,14 @@ function sendComposer() {
   const raw = input.value;
   const text = raw.trim();
   if (!text) return;
+  const mode = composerMode();
+  if (mode === 'closed') return;
   const shell = raw.startsWith('$');
   if (shell) {
     const script = raw.slice(1).trim();
-    if (script && composerMode() === 'say') sendShell(state.selected, script);
+    if (script && mode === 'say') sendShell(state.selected, script);
     else if (script) createSessionForShell(script);
-  } else if (composerMode() === 'say') sendToAgent(state.selected, text);
+  } else if (mode === 'say') sendToAgent(state.selected, text);
   else submitPrompt(text);
 }
 
