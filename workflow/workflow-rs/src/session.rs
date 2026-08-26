@@ -73,8 +73,7 @@ const SESSION_EVENTS_JOIN_SET: &str = "session-events";
 /// Renames ride here alone, never on `session-events`.
 const SESSION_NAME_JOIN_SET: &str = "session-name";
 const CONFIG_DISCOVER_FFQN: &str = "obelisk-agent:config/config.discover";
-// Keep in lockstep with `BASH_TOOLS_JSON` in agent-loop-src.js.
-const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
+const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace. Control flow: if/elif/else, for, while, until, case, break, continue. Not supported: [[ ]], function definitions, arrays, background jobs.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"}},"required":["script"]}}]"#;
 
 // `concat!` (not `\`-continuation) so each entry keeps its leading two-space
 // indent; a `\` line-continuation would strip the continued line's whitespace.

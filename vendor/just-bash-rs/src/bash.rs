@@ -301,6 +301,103 @@ mod tests {
     }
 
     #[test]
+    fn case_selects_the_first_matching_arm_only() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "case b in a) echo A;; b) echo B;; *) echo OTHER;; esac");
+        assert_eq!(out.stdout, "B\n");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn case_without_a_matching_arm_succeeds_silently() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "case z in a) echo A;; esac; echo after-$?");
+        assert_eq!(out.stdout, "after-0\n");
+    }
+
+    #[test]
+    fn case_glob_quoted_and_paren_patterns() {
+        let mut bash = fresh();
+        // Glob match with alternation, the shape models write for state guards.
+        let out = run(
+            &mut bash,
+            "ST=cancelled\ncase \"$ST\" in *fail*|*cancel*|*finished*) echo DONE;; *) echo OTHER;; esac",
+        );
+        assert_eq!(out.stdout, "DONE\n");
+        // A quoted `)` is pattern text; the terminator rides on the next
+        // unquoted paren.
+        let out = run(&mut bash, "case 'a)b' in \"a)b\") echo Q;; esac");
+        assert_eq!(out.stdout, "Q\n");
+        // Optional leading paren around the pattern list.
+        let out = run(&mut bash, "case foo in ( foo|bar ) echo P;; esac");
+        assert_eq!(out.stdout, "P\n");
+    }
+
+    #[test]
+    fn case_break_exits_the_enclosing_loop_early() {
+        let mut bash = fresh();
+        // Regression from E_01M0YMJ0ZDEKJ4QSMDMJWEHFNN: this guard used to run
+        // every iteration as unknown commands (`case`, `break`, `esac`).
+        let out = run(
+            &mut bash,
+            "for i in 1 2 3 4 5; do\ncase \"$i\" in 2) echo two; break;; esac\necho seen-$i\ndone",
+        );
+        assert_eq!(out.stdout, "seen-1\ntwo\n");
+        assert_eq!(out.stderr, "");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn continue_skips_to_the_next_iteration() {
+        let mut bash = fresh();
+        let out = run(
+            &mut bash,
+            "for i in 1 2 3; do if [ $i = 2 ]; then continue; fi; echo go-$i; done",
+        );
+        assert_eq!(out.stdout, "go-1\ngo-3\n");
+    }
+
+    #[test]
+    fn cstyle_for_continue_still_runs_the_update_clause() {
+        let mut bash = fresh();
+        let out = run(
+            &mut bash,
+            "for ((i=0; i<5; i++)); do if [ $((i % 2)) = 1 ]; then continue; fi; echo even-$i; done",
+        );
+        assert_eq!(out.stdout, "even-0\neven-2\neven-4\n");
+    }
+
+    #[test]
+    fn break_n_unwinds_n_levels() {
+        let mut bash = fresh();
+        let out = run(
+            &mut bash,
+            "for a in 1 2; do for b in x y z; do if [ $b = y ]; then break 2; fi; echo $a$b; done; echo inner-done-$a; done",
+        );
+        assert_eq!(out.stdout, "1x\n");
+    }
+
+    #[test]
+    fn break_outside_a_loop_warns_and_succeeds() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "echo pre; break; echo post");
+        assert_eq!(out.exit_code, 0);
+        assert!(
+            out.stderr.contains("only meaningful in a `for`"),
+            "unexpected stderr: {}",
+            out.stderr
+        );
+        assert_eq!(out.stdout, "pre\npost\n");
+    }
+
+    #[test]
+    fn break_inside_command_substitution_does_not_escape() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "for i in 1 2; do v=$(break); echo got-$i; done");
+        assert_eq!(out.stdout, "got-1\ngot-2\n");
+    }
+
+    #[test]
     fn custom_commands_are_discoverable_with_help_and_which() {
         let mut bash = fresh();
         bash.register_command(

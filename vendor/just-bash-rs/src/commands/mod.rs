@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use crate::fs::{FileReadError, FsError};
-use crate::interpreter::{CommandOutput, Interpreter};
+use crate::interpreter::{CommandOutput, Interpreter, LoopControl};
 
 mod awk;
 mod diff;
@@ -39,7 +39,7 @@ const BUILTINS: &[&str] = &[
     "hostname", "alias", "unalias", "help", "clear", "base64", "md5sum", "sha256sum", "diff", "cp", "mv",
     "rmdir", "chmod", "readlink", "ln", "file", "du", "tree", "comm", "join", "nl", "od", "rev",
     "fold", "expand", "unexpand", "column", "paste", "strings", "split", "sh", "bash", "source",
-    ".", "set", "shift",
+    ".", "set", "shift", "break", "continue",
 ];
 
 /// Names of the available commands. The workflow filters this list.
@@ -162,6 +162,7 @@ pub fn dispatch(
         "split" => textutil2::split(interp, rest, &stdin),
         "sh" | "bash" => builtin_sh(interp, name, rest),
         "source" | "." => builtin_source(interp, name, rest),
+        "break" | "continue" => builtin_loop_control(interp, name, rest),
         "set" => builtin_set(interp, rest),
         "shift" => builtin_shift(interp, rest),
         // A path-like name (`./x.sh`, `/workspace/x.sh`) runs a VFS file;
@@ -230,6 +231,40 @@ fn builtin_source(interp: &mut Interpreter, name: &str, args: &[String]) -> Comm
         }
         None => fail(format!("{name}: {file}: No such file or directory\n"), 1),
     }
+}
+
+/// `break [N]` / `continue [N]`: unwind N enclosing loops via
+/// `Interpreter::loop_control`, which the loop executors consume. A count past
+/// the available depth clamps to it (bash behaviour); outside any loop bash
+/// warns and exits 0.
+fn builtin_loop_control(interp: &mut Interpreter, name: &str, args: &[String]) -> CommandOutput {
+    if interp.loop_depth == 0 {
+        return fail(
+            format!("bash: {name}: only meaningful in a `for`, `while`, or `until` loop\n"),
+            0,
+        );
+    }
+    let depth = match args.first() {
+        None => 1,
+        Some(raw) => match raw.parse::<u32>() {
+            Ok(0) => {
+                return fail(format!("bash: {name}: 0: loop count out of range\n"), 1);
+            }
+            Ok(n) => n.min(interp.loop_depth),
+            Err(_) => {
+                return fail(
+                    format!("bash: {name}: {raw}: numeric argument required\n"),
+                    1,
+                );
+            }
+        },
+    };
+    interp.loop_control = Some(if name == "break" {
+        LoopControl::Break(depth)
+    } else {
+        LoopControl::Continue(depth)
+    });
+    ok(String::new())
 }
 
 /// `set [-/+][eux] [-o name] ... [-- args...]`: toggle the shell options this
