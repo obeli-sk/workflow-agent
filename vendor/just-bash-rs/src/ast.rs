@@ -79,10 +79,7 @@ pub enum CompoundCommand {
     },
     /// `case subject in pat|pat) body;; ... esac`. First matching arm wins;
     /// no fallthrough (`;&` / `;;&` are not modelled).
-    Case {
-        subject: Word,
-        arms: Vec<CaseArm>,
-    },
+    Case { subject: Word, arms: Vec<CaseArm> },
 }
 
 /// One `case` arm: any-of patterns plus the body run on the first match.

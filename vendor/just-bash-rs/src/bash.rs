@@ -303,7 +303,10 @@ mod tests {
     #[test]
     fn case_selects_the_first_matching_arm_only() {
         let mut bash = fresh();
-        let out = run(&mut bash, "case b in a) echo A;; b) echo B;; *) echo OTHER;; esac");
+        let out = run(
+            &mut bash,
+            "case b in a) echo A;; b) echo B;; *) echo OTHER;; esac",
+        );
         assert_eq!(out.stdout, "B\n");
         assert_eq!(out.exit_code, 0);
     }

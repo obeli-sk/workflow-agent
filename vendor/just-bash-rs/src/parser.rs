@@ -1602,8 +1602,7 @@ mod tests {
 
     #[test]
     fn case_parses_alternation_globs_and_optional_trailing_terminator() {
-        let script =
-            parse("case $x in\n  a|b) echo one ;;\n  *fin*) echo two\nesac").unwrap();
+        let script = parse("case $x in\n  a|b) echo one ;;\n  *fin*) echo two\nesac").unwrap();
         let (subject, arms) = case_parts(&script);
         assert_eq!(*subject, vec![var("x", false)]);
         assert_eq!(arms.len(), 2);
