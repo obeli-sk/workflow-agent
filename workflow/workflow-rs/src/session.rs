@@ -796,7 +796,8 @@ turn.\n\n{}\n\n{}",
                         "role": "assistant",
                         "content": [{"type": "text", "text": error.text.clone()}],
                     }));
-                    notifications.notify(SESSION_EVENTS_JOIN_SET, &SessionEvent::AgentError(error))?;
+                    notifications
+                        .notify(SESSION_EVENTS_JOIN_SET, &SessionEvent::AgentError(error))?;
                     should_call_llm = false;
                     agent_steps = 0;
                     publish_agent_status(&notifications, false, turn_index)?;
