@@ -178,6 +178,14 @@ switch (command) {
         process.exit(valid ? 0 : 1);
         break;
     }
+    case "check-tool-result-ok": {
+        const id = process.argv[3];
+        const result = json()?.transcript?.sent_results?.find((candidate) => candidate.id === id);
+        const valid = Boolean(result) && "ok" in result && result.ok?.exit_code === 0;
+        if (!valid) console.error(`no completed tool result for ${id}: ${JSON.stringify(result)}`);
+        process.exit(valid ? 0 : 1);
+        break;
+    }
     case "check-tool-result-interrupted": {
         const [id, exitCode, kind] = [process.argv[3], Number(process.argv[4]), process.argv[5]];
         const result = json()?.transcript?.sent_results?.find((candidate) => candidate.id === id);

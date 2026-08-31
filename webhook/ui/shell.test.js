@@ -54,7 +54,7 @@ async function loadRenderer() {
     const open = html.indexOf(">", start) + 1;
     const end = html.indexOf("</script>", open);
     const code = html.slice(open, end)
-        + "\n;globalThis.__render = { state, buildCachedTurns, groupTurns, renderTurnGroup, renderDetail, renderComposer, composerMode, sendComposer, toggleSysprompt, document };";
+        + "\n;globalThis.__render = { state, buildCachedTurns, groupTurns, renderTurnGroup, renderDetail, renderComposer, composerMode, sendComposer, stopAgent, toggleSysprompt, document };";
     const sandboxObj = sandbox();
     const ctx = vm.createContext(sandboxObj);
     vm.runInContext(code, ctx);
@@ -534,4 +534,29 @@ test("a finished session disables the composer instead of offering a new convers
     assert.equal(renderer.composerMode(), "new");
     assert.equal(elements["composer-input"].disabled, false);
     assert.equal(elements["composer-selects"].style.display, "flex");
+});
+
+test("the stop control only appears while the agent is iterating, and posts an interrupt", async () => {
+    const renderer = await loadRenderer();
+    renderer.state.selected = "E_run";
+    renderer.state.detail = detailFixture({
+        status: "running",
+        prompt: "",
+        input_offer: { id: "E_run.o:3_1" },
+        agent_working: true,
+    });
+    const elements = {};
+    withCachedElements(renderer, elements, () => { renderer.renderComposer(); });
+    assert.equal(elements["composer-stop"].hidden, false);
+    assert.equal(elements["composer-stop"].disabled, false);
+
+    // Idle between turns: nothing to stop, so the control disappears again.
+    renderer.state.detail.agent_working = false;
+    withCachedElements(renderer, elements, () => { renderer.renderComposer(); });
+    assert.equal(elements["composer-stop"].hidden, true);
+
+    renderer.state.detail.agent_working = true;
+    await renderer.stopAgent(renderer.state.selected);
+    assert.equal(renderer.fetchCalls.length, 1);
+    assert.match(renderer.fetchCalls[0], /\/api\/input\/E_run$/);
 });

@@ -119,12 +119,12 @@ export async function submitSessionInput(request, runId) {
         return jsonError(400, "offer_id must identify an input offer for this run");
     }
     const event = normalizeSessionInput(payload?.input);
-    if (!event) return jsonError(400, "input must contain a valid prompt or shell command");
+    if (!event) return jsonError(400, "input must contain a valid prompt, shell command, or interrupt");
     try { stubObeliskExecution(offerId, { ok: event }); }
     catch (e) { return jsonError(502, `input fulfil failed: ${String(e)}`); }
     return jsonResponse({
         child_execution_id: offerId,
-        event_id: (event.prompt || event.shell).id,
+        event_id: (event.prompt || event.shell || event.interrupt).id,
     });
 }
 
@@ -160,6 +160,11 @@ function normalizeSessionInput(input) {
             script,
             stdin: typeof input.shell.stdin === "string" ? input.shell.stdin : "",
         } };
+    }
+    if (input.interrupt) {
+        const { id } = input.interrupt;
+        if (typeof id !== "string" || !id) return null;
+        return { interrupt: { id } };
     }
     return null;
 }

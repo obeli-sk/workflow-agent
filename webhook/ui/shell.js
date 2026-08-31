@@ -51,6 +51,10 @@ const SHELL_HTML = `<!doctype html>
   #composer select { padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--panel); max-width: 100%; }
   #composer-send { margin-left: auto; padding: 0.5em 1.3em; font: inherit; font-weight: 600; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: white; border-radius: 6px; }
   #composer-send:disabled { opacity: 0.5; cursor: not-allowed; }
+  #composer-stop { margin-left: auto; padding: 0.5em 1.3em; font: inherit; font-weight: 600; cursor: pointer; border: 1px solid var(--err); background: none; color: var(--err); border-radius: 6px; }
+  #composer-stop:hover { background: var(--err-bg); }
+  #composer-stop:disabled { opacity: 0.5; cursor: not-allowed; }
+  #composer-stop[hidden] { display: none; }
   .working { display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.5em; color: var(--warn); font-size: 0.85em; font-weight: 600; }
   .working[hidden] { display: none; }
   .working .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); animation: workpulse 1s ease-in-out infinite; }
@@ -189,6 +193,7 @@ const SHELL_HTML = `<!doctype html>
             <option value="xhigh">xhigh</option>
           </select>
         </div>
+        <button type="button" id="composer-stop" hidden>Stop</button>
         <button type="submit" id="composer-send">Send</button>
       </div>
     </form>
@@ -958,6 +963,7 @@ function renderComposer() {
   const sessionReady = mode !== 'say' || Boolean(d?.input_offer);
   const input = document.getElementById('composer-input');
   const send = document.getElementById('composer-send');
+  const stop = document.getElementById('composer-stop');
   const selects = document.getElementById('composer-selects');
   const workingEl = document.getElementById('working');
   if (!input) return;
@@ -968,18 +974,25 @@ function renderComposer() {
     ? 'Shell command is running…'
     : 'Agent is working…';
   selects.style.display = mode === 'new' ? 'flex' : 'none';
+  // The stop control only makes sense mid-turn: it races the composer's own
+  // outstanding input offer against the in-flight LLM call, so it needs the
+  // same offer send/shell already depend on.
+  stop.hidden = !(mode === 'say' && agentWorking);
   if (mode === 'closed') {
     input.placeholder = 'This session has ended; use + New conversation to start another.';
     input.disabled = true;
     send.disabled = true;
+    stop.disabled = true;
   } else if (gate || !sessionReady) {
     input.placeholder = 'Respond to the request above...';
     if (!gate) input.placeholder = 'Preparing the session...';
     input.disabled = true;
     send.disabled = true;
+    stop.disabled = true;
   } else {
     input.disabled = false;
     send.disabled = false;
+    stop.disabled = false;
     input.placeholder = 'Message the agent, or type $ ls to run a shell command...';
   }
   if (wasDisabled && !input.disabled) setTimeout(focusComposer, 0);
@@ -1535,6 +1548,35 @@ async function interruptScript(runId, offerId, btn) {
   }
 }
 
+// Stop the agent's current turn: fulfils the same live input offer send/shell
+// already use, with an interrupt payload instead. The workflow drains whatever
+// LLM call is already in flight and discards its reply, so this takes effect
+// at most one model step later, deterministically, rather than depending on
+// the model noticing a "stop" message.
+async function stopAgent(runId) {
+  const offer = state.detail?.input_offer || state.transcript?.input_offer;
+  if (!runId || !offer?.id) return;
+  const id = 'interrupt-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+  const btn = document.getElementById('composer-stop');
+  if (btn) { btn.disabled = true; btn.textContent = 'stopping'; }
+  try {
+    const r = await fetch('/api/input/' + encodeURIComponent(runId), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ offer_id: offer.id, input: { interrupt: { id } } }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    await refreshDetail();
+  } catch (e) {
+    alert('Stop failed: ' + String(e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Stop'; }
+  }
+}
+
 async function setPaused(runId, unpause) {
   try {
     const r = await fetch('/api/' + (unpause ? 'unpause' : 'pause') + '/' + encodeURIComponent(runId), { method: 'POST' });
@@ -1688,6 +1730,10 @@ function sendComposer() {
 document.getElementById('composer-form').addEventListener('submit', (ev) => {
   ev.preventDefault();
   sendComposer();
+});
+
+document.getElementById('composer-stop').addEventListener('click', () => {
+  stopAgent(state.selected);
 });
 
 // Enter sends; Shift+Enter inserts a newline (chat-composer convention).

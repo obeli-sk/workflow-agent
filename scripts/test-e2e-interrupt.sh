@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 
-# End-to-end coverage for per-script interrupts:
+# End-to-end coverage for per-script interrupts and the composer's turn stop:
 #   1. an operator stop through the webhook API on a direct-shell script
 #      (exit 130, interrupted=operator), with the session taking further
 #      input afterward;
 #   2. a model-supplied timeout unwound by the watchdog through a canned LLM
 #      endpoint (exit 124, interrupted=timeout), with the model reacting in a
-#      final response.
+#      final response;
+#   3. an operator stop of the agent loop itself (composer's stop control)
+#      while the model is mid-turn against a canned LLM that never ends the
+#      turn on its own, verifying the turn ends deterministically and the
+#      session takes further input afterward.
 # Each suite runs against its own isolated, throwaway obelisk server.
 
 set -euo pipefail
@@ -19,7 +23,7 @@ export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28019"
 # server.toml's [secrets] requires every named var to exist; empty is fine.
 export MCP_SERVER_TOKEN=""
-export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"}]'
+export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"},{"id":"fake-loop","label":"Fake Loop","api_type":"openai-chat-completions"}]'
 export LLM_BASE_URL="http://127.0.0.1:28095"
 
 node scripts/e2e-llm-server.mjs 28095 >"$E2E_TMP/llm.log" 2>&1 &
@@ -138,5 +142,40 @@ wait_for "model reaction after the timeout" \
     check-final-reply "timeout scenario complete"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$TIMEOUT_SESSION" >/dev/null || true
 echo ">>> watchdog timeout E2E PASS: exit 124 surfaced to the model, turn ended cleanly"
+
+echo ">>> scenario 3: composer stop of the agent loop mid-turn"
+LOOP_SESSION="$("$OBELISK" generate execution-id)"
+"$OBELISK" execution submit -a "$E2E_API_URL" -e "$LOOP_SESSION" "$RUN_FFQN" \
+    '["please loop", "fake-loop", null, null, null]'
+LOOP_OFFER="$(wait_for_offer "$LOOP_SESSION")"
+SUBJECT_ID="$LOOP_SESSION"
+wait_for "first loop tool result" check-tool-result-ok call-loop
+
+# The fake-loop model never ends the turn on its own and holds each response
+# back briefly, so this lands while a completion is genuinely in flight: the
+# same live offer send/shell use, fulfilled with an interrupt instead.
+curl --fail --silent --show-error \
+    -H 'content-type: application/json' \
+    -d "{\"offer_id\":\"$LOOP_OFFER\",\"input\":{\"interrupt\":{\"id\":\"interrupt-e2e-1\"}}}" \
+    "$UI_BASE/api/input/$LOOP_SESSION" >/dev/null
+
+wait_for "operator turn stop outcome" \
+    check-agent-error "Turn stopped by user request"
+echo ">>> composer stop E2E PASS: the agent-loop turn stopped mid-iteration"
+
+# The session survived: it takes and completes another command afterward.
+FOLLOWUP_OFFER="$(wait_for_offer "$LOOP_SESSION")"
+curl --fail --silent --show-error \
+    -H 'content-type: application/json' \
+    -d "$(node scripts/e2e-json.js shell-input "$FOLLOWUP_OFFER" shell-loop-followup 'echo still-alive-loop')" \
+    "$UI_BASE/api/input/$LOOP_SESSION" >/dev/null
+wait_for "follow-up command completion after stop" check-shell-event-done shell-loop-followup
+FOLLOWUP_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-loop-followup <<<"$(run_detail "$LOOP_SESSION")")"
+[[ "$FOLLOWUP_OUT" == "still-alive-loop" ]] || {
+    echo "follow-up output wrong after composer stop: $FOLLOWUP_OUT" >&2
+    exit 1
+}
+"$OBELISK" execution cancel -a "$E2E_API_URL" "$LOOP_SESSION" >/dev/null || true
+echo ">>> session survival after composer stop E2E PASS"
 
 echo ">>> interrupt E2E SUITE PASS"

@@ -12,9 +12,18 @@ interface stub {
     stdin: string,
   }
 
+  // Stop the current turn: delivered through the same live input offer as
+  // prompt/shell, so it races the in-flight LLM completion instead of
+  // needing its own channel. Applied at the next safe boundary (the
+  // outstanding completion is still drained, its reply just discarded).
+  record interrupt-input {
+    id: string,
+  }
+
   variant session-input {
     prompt(prompt-input),
     shell(shell-input),
+    interrupt(interrupt-input),
   }
 
   record session-started-event {

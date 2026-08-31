@@ -310,6 +310,21 @@ fn llm_error_event(turn_index: u64, message: &str) -> AgentErrorEvent {
     }
 }
 
+/// Reported when the operator stops the turn mid-iteration (the composer's
+/// stop control). Mirrors `step_limit_error`'s continuation guidance: the
+/// history up to this point is kept, so a follow-up "continue" picks up where
+/// the model left off.
+fn interrupted_error(turn_index: u64) -> AgentErrorEvent {
+    AgentErrorEvent {
+        id: format!("interrupted-{turn_index}"),
+        text: "Turn stopped by user request. State for continuation (next user message \
+               should say \"continue\"): the turn ended mid-task; re-derive position from \
+               the transcript and the session VFS, then finish or report."
+            .to_string(),
+        turn_index,
+    }
+}
+
 const EMPTY_REPLY_NUDGE: &str = "Your previous reply had no message content. Reply to the \
 user in Markdown, or call the bash tool to keep working.";
 
@@ -353,10 +368,13 @@ struct LlmReply {
 }
 
 /// `Failed` is a recoverable LLM provider error (e.g. HTTP 529); a fatal
-/// protocol violation is still an `Err` from `call_llm_with_user`.
+/// protocol violation is still an `Err` from `call_llm_with_user`. `Interrupted`
+/// is an operator stop: the in-flight completion was still drained (its reply
+/// discarded) so the join set stays clean, but the turn ends without acting on it.
 enum LlmOutcome {
     Reply(LlmReply),
     Failed(String),
+    Interrupted,
 }
 
 #[derive(Clone)]
@@ -625,9 +643,9 @@ turn.\n\n{}\n\n{}",
     notifications.notify(
         SESSION_EVENTS_JOIN_SET,
         &SessionEvent::SessionStarted(SessionStartedEvent {
-            // 8: shell-started events now carry each running script's
-            // interrupt-offer id.
-            protocol_version: 8,
+            // 9: session-input now has an interrupt variant, delivered through
+            // the same live input offer as prompt/shell, to stop a turn.
+            protocol_version: 9,
             prompt: prompt.clone(),
             backend: model.clone(),
             effort: effort.clone(),
@@ -763,6 +781,22 @@ turn.\n\n{}\n\n{}",
                         SESSION_EVENTS_JOIN_SET,
                         &SessionEvent::AgentError(llm_error_event(turn_index, &message)),
                     )?;
+                    should_call_llm = false;
+                    agent_steps = 0;
+                    publish_agent_status(&notifications, false, turn_index)?;
+                    turn_index += 1;
+                    continue;
+                }
+                LlmOutcome::Interrupted => {
+                    // Same shape as the step-limit branch above: the guidance is
+                    // for the model (so a later "continue" has something to act
+                    // on), not just a UI notice, so it goes into the history too.
+                    let error = interrupted_error(turn_index);
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": error.text.clone()}],
+                    }));
+                    notifications.notify(SESSION_EVENTS_JOIN_SET, &SessionEvent::AgentError(error))?;
                     should_call_llm = false;
                     agent_steps = 0;
                     publish_agent_status(&notifications, false, turn_index)?;
@@ -983,6 +1017,9 @@ fn apply_session_input(
             messages.push(user_text(&text));
             Ok(true)
         }
+        // Nothing is iterating while the session is idle; the composer only
+        // shows the stop control during a turn, so this is a stale click.
+        SessionInput::Interrupt(_) => Ok(false),
     }
 }
 
@@ -1103,6 +1140,11 @@ fn call_llm_with_user(
             effort,
         );
 
+        // Set once an operator stop lands: the completion is still drained
+        // below (its response would otherwise strand on `session.join_set` and
+        // trip the "unexpected session response" guard for a later turn), but
+        // its content is discarded rather than acted on.
+        let mut interrupted = false;
         let res = loop {
             // The `user` join set is heterogeneous (completion child + injection
             // offer), so await generically and dispatch on the completed id read
@@ -1113,10 +1155,13 @@ fn call_llm_with_user(
             let completed_id = last_response_execution_id(&session.join_set)
                 .expect("user join set has only child executions, never delays");
             if completed_id == completion_execution_id.id {
+                if interrupted {
+                    break None;
+                }
                 match llm_ext::completion_get(&completion_execution_id)
                     .map_err(|e| format!("{e:?}"))?
                 {
-                    Ok(completion) => break completion,
+                    Ok(completion) => break Some(completion),
                     Err(e) => return Ok(LlmOutcome::Failed(format!("llm.completion failed: {e}"))),
                 }
             } else if completed_id == session.injection_execution_id.id {
@@ -1124,19 +1169,27 @@ fn call_llm_with_user(
                     .map_err(|e| format!("{e:?}"))?
                     .map_err(|e| format!("session injection failed: {e}"))?;
                 rearm_user_input(session, notifications)?;
-                prompt_queued |= apply_session_input(
-                    event,
-                    session.turn_index,
-                    false,
-                    notifications,
-                    bash,
-                    messages,
-                )?;
+                match event {
+                    SessionInput::Interrupt(_) => interrupted = true,
+                    other => {
+                        prompt_queued |= apply_session_input(
+                            other,
+                            session.turn_index,
+                            false,
+                            notifications,
+                            bash,
+                            messages,
+                        )?;
+                    }
+                }
             } else {
                 return Err(format!("unexpected session response: {completed_id}"));
             }
         };
 
+        let Some(res) = res else {
+            return Ok(LlmOutcome::Interrupted);
+        };
         match res {
             CompletionResult::RateLimited(rate_limited) => {
                 let seconds = u64::from(rate_limited.retry_after_seconds.max(1));
