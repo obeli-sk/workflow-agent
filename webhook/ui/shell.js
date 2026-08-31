@@ -1059,10 +1059,26 @@ function decodeStream(payload) {
   } catch (_) { return String(payload || ''); }
 }
 
+// The toggle buttons live in the sticky .detail-head, always visible, but the
+// slots they reveal sit right below it at the very top of the scrollable
+// transcript. In a long conversation that top is scrolled out of view, so
+// opening either slot silently did nothing until the user scrolled up
+// manually. Bring the slot up to just under the sticky header instead.
+function scrollSlotIntoView(slot) {
+  if (!slot) return;
+  const main = document.getElementById('detail');
+  const head = main?.querySelector('.detail-head');
+  if (!main) return;
+  main.scrollTop = slot.offsetTop - (head ? head.offsetHeight : 0);
+}
+
 async function toggleLogs() {
   state.logsOpen = !state.logsOpen;
   updateLogsSlot();
-  if (state.logsOpen) await refreshLogs();
+  if (state.logsOpen) {
+    scrollSlotIntoView(document.getElementById('logs-slot'));
+    await refreshLogs();
+  }
 }
 
 // The system prompt (assembled at session start) hides behind a meta-row link
@@ -1080,6 +1096,7 @@ function toggleSysprompt() {
   if (!slot) return;
   slot.innerHTML = renderSysprompt();
   hydrateDisplayBlocks(slot);
+  if (state.syspromptOpen) scrollSlotIntoView(slot);
 }
 
 function updateLogsSlot() {
