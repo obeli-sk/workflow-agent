@@ -31,12 +31,14 @@ test-rs:
   cargo test -p just-bash-rs -p workflow-agent-rs
 
 # Web UI: unit tests for the served transcript renderer (turn/step grouping).
-# Activities: unit tests for the curl and chat programs' flag handling.
+# Activities: unit tests for the curl and chat programs' flag handling, plus
+# the GitHub contents mount transport (symlink resolution).
 # Shared session-state projection (sidebar + chat state).
 test-js:
   node --test webhook/ui/shell.test.js
   node --test activity/curl.test.js
   node --test activity/chat.test.js
+  node --test activity/github-contents.test.js
   node --test packs/obelisk-control/native-call.test.mjs
   node --test shared/session-state.test.js
 

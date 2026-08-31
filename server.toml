@@ -10,6 +10,10 @@ OBELISK__API__TOKEN = { env = "OBELISK__API__TOKEN" }
 TARGET_OBELISK_TOKEN = { env = "TARGET_OBELISK_TOKEN" }
 # Set to empty value for the testing mcp server
 MCP_SERVER_TOKEN = { env = "MCP_SERVER_TOKEN" }
+# Optional: raises the GitHub API rate limit for the /workspace/components
+# mount from the shared 60 req/h anonymous IP pool to 5000 req/h. Leave unset
+# for occasional use.
+GITHUB_TOKEN = { env = "GITHUB_TOKEN" }
 
 # Agent's own instance: webhook UI reads of the agent's own sessions plus the
 # pause/unpause/cancel/stub control of them.
@@ -31,6 +35,16 @@ replace_in = ["headers"]
 [[outbound_http.allowed_host]]
 pattern = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}"
 methods = ["GET"]
+
+# Reference mount: GitHub contents API for /workspace/components. The
+# per-repo path scope is enforced by the activity's own allowed_host regex;
+# this coarse operator grant is host-wide (like the OBELISK/TARGET grants
+# above).
+[[outbound_http.allowed_host]]
+pattern = "https://api.github.com"
+methods = ["GET"]
+secrets = ["GITHUB_TOKEN"]
+replace_in = ["headers"]
 
 [[outbound_http.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"

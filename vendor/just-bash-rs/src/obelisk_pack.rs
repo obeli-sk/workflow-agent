@@ -56,11 +56,15 @@ a bundled file by writing it and listing its path in `component_files` with the 
 scratch. `obelisk executions list` hides webhook-spawned child executions unless `--show-derived` \
 is passed. The Obelisk documentation index is at https://obeli.sk/docs/latest/llms.txt/ - fetch it \
 with the curl program, then fetch any page it lists before writing components instead of guessing \
-API signatures.
+API signatures. A read-only reference tree of example components is mounted at /workspace/components \
+(obeli-sk/components); browse it with ls and cat while authoring.
 Run `mount` to see the network-backed mount points; it reports whether each MCP \
-server is responding. These mounts (/workspace/deployment, /workspace/mcp) are lazy: a directory \
-lists and a file's bytes fetch over the network on first access, so the first touch of a path may \
-pause briefly. The deployment mount is cheap (one request for its whole file index).
+server is responding. These mounts (/workspace/deployment, /workspace/components, /workspace/mcp) \
+are lazy: a directory lists and a file's bytes fetch over the network on first access, so the first \
+touch of a path may pause briefly. The deployment mount is cheap (one request for its whole file \
+index), but /workspace/components fetches one network request per directory listed, so avoid \
+recursive scans over it: do not run tree, find, or a recursive grep (grep -r / fgrep -r) across it. \
+Navigate with targeted ls and cat, or read a known path directly, instead of walking the whole tree.
 
 The shell's HTTP access goes through an operator allowlist: commands such as curl work only for \
 explicitly granted hosts (GET only), and a policy-denied request is the expected result for anything \

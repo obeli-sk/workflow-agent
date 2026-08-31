@@ -30,7 +30,7 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 
 use just_bash_rs::{Bash, BashOptions, ExecOptions, ExecResult, Fd, ObeliskHost};
-use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program};
+use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program, obelisk_web};
 
 use crate::chat;
 
@@ -81,6 +81,7 @@ const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash scrip
 const MOUNT_HEADER: &str = concat!(
     "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n",
     "  /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n",
+    "  /workspace/components          example components, read-only (obeli-sk/components)\n",
 );
 const MOUNT_FOOTER: &str = "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
@@ -725,6 +726,15 @@ turn.\n\n{}\n\n{}",
             bash.fs_mut()
                 .set_blob_loader(obelisk_pack::blob_loader(Box::new(host())));
             obelisk_pack::register_deferred_mount(bash.fs_mut(), Box::new(host()));
+            // Reference tree for authoring: a browsable GitHub repo listed and
+            // fetched lazily on first `ls`/`cat` (obelisk_web). Read-only;
+            // registration itself makes no network call.
+            obelisk_web::mount(
+                bash.fs_mut(),
+                Box::new(host()),
+                "obelisk-agent:mounts/components.request",
+                "/workspace/components",
+            );
             // Each MCP server's resources mount lazily too: registering a
             // deferred mount defers its `resources/list` until the session first
             // touches `/workspace/mcp/<name>`.
