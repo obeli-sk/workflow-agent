@@ -352,6 +352,97 @@ test("read --turn prints just that turn's events", async () => {
     assert.match(clash.result.stderr, /mutually exclusive/);
 });
 
+test("read --final prints just the finished reply, not the transcript", async () => {
+    const routes = [
+        ["GET", "/status", () => jsonResponse(200, {
+            pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
+        })],
+        ["GET", "/responses", () => jsonResponse(200, responsesPayload([
+            { agent_status: { working: false, turn_index: 1 } },
+            { user_message: { id: "u1", text: "how do I deploy?", turn_index: 1 } },
+            { assistant_reply: {
+                content_json: JSON.stringify([{ type: "text", text: "run just deploy" }]),
+                turn_index: 1, turn_complete: true,
+            } },
+            { input_offered: { execution_id: OFFER_ID, turn_index: 2 } },
+        ]))],
+    ];
+    const plain = await run(["read", RUN_ID, "--final"], routes);
+    assert.equal(plain.result.exit_code, 0);
+    assert.equal(plain.result.stdout, "run just deploy\n");
+    assert.ok(!plain.result.stdout.includes("how do I deploy"), "no transcript, just the outcome");
+
+    const asJson = await run(["read", RUN_ID, "--final", "--json"], routes);
+    const outcome = JSON.parse(asJson.result.stdout);
+    assert.equal(outcome.state, "final-response");
+    assert.equal(outcome.kind, "reply");
+    assert.equal(outcome.text, "run just deploy");
+});
+
+test("read --final reports the step-limit reason as an error", async () => {
+    const { result } = await run(["read", RUN_ID, "--final"], [
+        ["GET", "/status", () => jsonResponse(200, {
+            pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
+        })],
+        ["GET", "/responses", () => jsonResponse(200, responsesPayload([
+            { agent_status: { working: false, turn_index: 6 } },
+            { agent_error: { id: "step-limit-6", text: "exceeded MAX_STEPS=25", turn_index: 6 } },
+            { input_offered: { execution_id: OFFER_ID, turn_index: 6 } },
+        ]))],
+    ]);
+    assert.equal(result.exit_code, 0);
+    assert.equal(result.stdout, "exceeded MAX_STEPS=25\n");
+});
+
+test("read --final reports an execution failure with its kind", async () => {
+    const { result } = await run(["read", RUN_ID, "--final", "--json"], [
+        ["GET", "/status", () => jsonResponse(200, {
+            pending_state: { status: "finished", result_kind: { err: { execution_failure: "timed_out" } } },
+        })],
+        ["GET", "/responses", () => jsonResponse(200, responsesPayload([]))],
+    ]);
+    const outcome = JSON.parse(result.stdout);
+    assert.equal(outcome.state, "failed");
+    assert.equal(outcome.kind, "error");
+    assert.equal(outcome.text, "execution failure: timed_out");
+});
+
+test("read --final reports the pending ask-user question", async () => {
+    const { result } = await run(["read", RUN_ID, "--final"], [
+        ["GET", "/status", () => jsonResponse(200, {
+            pending_state: { status: "blocked_by_join_set", join_set_id: "o:1-ask-user" },
+        })],
+        ["GET", "/responses", () => jsonResponse(200, responsesPayload([
+            { human_input_requested: { question: "which region?", turn_index: 2 } },
+        ]))],
+    ]);
+    assert.equal(result.exit_code, 0);
+    assert.equal(result.stdout, "which region?\n");
+});
+
+test("read --final says so when nothing final has happened yet", async () => {
+    const { result } = await run(["read", RUN_ID, "--final"], [
+        ["GET", "/status", () => jsonResponse(200, {
+            pending_state: { status: "running" },
+        })],
+        ["GET", "/responses", () => jsonResponse(200, responsesPayload([]))],
+    ]);
+    assert.equal(result.exit_code, 0);
+    assert.match(result.stdout, /no final result yet.*working/);
+});
+
+test("read --final rejects combination with --tail/--turn/--system", async () => {
+    const withTail = await run(["read", RUN_ID, "--final", "--tail", "1"]);
+    assert.equal(withTail.result.exit_code, 2);
+    assert.match(withTail.result.stderr, /--final cannot be combined/);
+
+    const withTurn = await run(["read", RUN_ID, "--final", "--turn", "0"]);
+    assert.equal(withTurn.result.exit_code, 2);
+
+    const withSystem = await run(["read", RUN_ID, "--final", "--system"]);
+    assert.equal(withSystem.result.exit_code, 2);
+});
+
 test("send looks up the open offer and stubs a prompt", async () => {
     const { result, calls } = await run(["send", RUN_ID, "please", "check"], [
         ["GET", `/executions/${RUN_ID}/responses`, () => jsonResponse(200, responsesPayload([

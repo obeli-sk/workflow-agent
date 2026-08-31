@@ -354,6 +354,7 @@ fn watch_loop(
                 .unwrap_or("unknown");
             if WATCH_WAKE_STATES.contains(&state) {
                 stamp_watch_fields(&mut payload, false, now_ms().saturating_sub(started_ms));
+                attach_final(delegate, interp, &parsed.id, &mut payload);
                 return CommandOutput {
                     stdout: format!("{payload}\n"),
                     stderr: stderr_notes,
@@ -381,6 +382,7 @@ fn watch_loop(
     let mut payload: Value =
         serde_json::from_str(last_payload.as_deref().unwrap_or("{}")).unwrap_or_else(|_| json!({}));
     stamp_watch_fields(&mut payload, true, waited);
+    attach_final(delegate, interp, &parsed.id, &mut payload);
     stderr_notes.push_str(&format!(
         "chat watch: gave up after {} ms waiting for {}{}\n",
         waited,
@@ -395,6 +397,28 @@ fn watch_loop(
         stdout: format!("{payload}\n"),
         stderr: stderr_notes,
         exit_code: 1,
+    }
+}
+
+/// Adds the `final` field: the same outcome text `chat read ID --final`
+/// prints (finished reply, error/failure reason, or pending question), so a
+/// caller does not need a second round trip after `watch` wakes. Best effort:
+/// a failed read leaves `final` absent rather than failing the whole watch.
+fn attach_final(
+    delegate: &mut CustomCommandHandler,
+    interp: &mut Interpreter,
+    id: &str,
+    payload: &mut Value,
+) {
+    let out = delegate(
+        interp,
+        &["read".to_string(), id.to_string(), "--final".to_string()],
+        String::new(),
+    );
+    if out.exit_code == 0
+        && let Some(object) = payload.as_object_mut()
+    {
+        object.insert("final".to_string(), json!(out.stdout.trim()));
     }
 }
 
@@ -538,6 +562,48 @@ fn failure(message: &str) -> CommandOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use just_bash_rs::{CustomCommands, Vfs};
+    use std::collections::BTreeMap;
+
+    fn interp() -> Interpreter {
+        Interpreter::new(
+            BTreeMap::new(),
+            "/workspace".to_string(),
+            Vfs::new(),
+            || 0,
+            CustomCommands::new(),
+        )
+    }
+
+    #[test]
+    fn attach_final_embeds_the_read_final_text() {
+        let mut delegate: CustomCommandHandler = Box::new(|_interp, args, _stdin| {
+            assert_eq!(
+                args,
+                &["read".to_string(), "E_x".to_string(), "--final".to_string()]
+            );
+            CommandOutput {
+                stdout: "run just deploy\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+            }
+        });
+        let mut payload = json!({"id": "E_x", "state": "final-response"});
+        attach_final(&mut delegate, &mut interp(), "E_x", &mut payload);
+        assert_eq!(payload["final"], json!("run just deploy"));
+    }
+
+    #[test]
+    fn attach_final_leaves_the_field_absent_on_a_failed_read() {
+        let mut delegate: CustomCommandHandler = Box::new(|_interp, _args, _stdin| CommandOutput {
+            stdout: String::new(),
+            stderr: "chat: unknown session\n".to_string(),
+            exit_code: 1,
+        });
+        let mut payload = json!({"id": "E_x", "state": "unknown"});
+        attach_final(&mut delegate, &mut interp(), "E_x", &mut payload);
+        assert!(payload.get("final").is_none());
+    }
 
     #[test]
     fn validate_slug_enforces_kebab_shape() {

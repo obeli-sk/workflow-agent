@@ -114,10 +114,88 @@ function cmdRead(args) {
     const parsed = parseFlags(args);
     if (parsed.positional.length < 1) throw new UsageError("session id is required");
     if (parsed.positional.length > 1) throw new UsageError("exactly one session id is expected");
+    if (parsed.final) {
+        if (Number.isInteger(parsed.tail) || Number.isInteger(parsed.turn) || parsed.system) {
+            throw new UsageError("--final cannot be combined with --tail, --turn, or --system");
+        }
+        return cmdReadFinal(parsed.positional[0], parsed.json);
+    }
     if (Number.isInteger(parsed.tail) && Number.isInteger(parsed.turn)) {
         throw new UsageError("--tail and --turn are mutually exclusive");
     }
     return cmdReadBody(parsed.positional[0], parsed.tail, parsed.turn, parsed.json, parsed.system);
+}
+
+// The cheap way to check on a peer: just its outcome, not the whole
+// transcript. One line of text (or a `{kind, text}` object with --json):
+// the finished reply, the error/failure reason, or the pending ask-user
+// question - whichever explains why the session stopped progressing. Empty
+// when it is still working, so callers can tell "no final result yet" apart
+// from "it finished with an empty message".
+async function cmdReadFinal(id, json) {
+    const { walked, resultKind, projected } = await computeProjection(id);
+    const outcome = finalOutcome(projected, walked, resultKind);
+    if (json) {
+        return ok(JSON.stringify({ id, state: projected, ...outcome }, null, 2) + "\n");
+    }
+    if (outcome.kind === "none") return ok(`(no final result yet; state: ${projected})\n`);
+    return ok(outcome.text.endsWith("\n") ? outcome.text : outcome.text + "\n");
+}
+
+// One text field explaining why a session stopped progressing, keyed off the
+// same centralized state `chat state` reports (shared/session-state.js).
+function finalOutcome(state, walked, resultKind) {
+    switch (state) {
+        case "final-response":
+        case "finished-ok": {
+            const turn = lastReplyTurn(walked.events);
+            if (turn === null) return { kind: "none", text: "" };
+            return { kind: "reply", text: replyText(walked.events, turn) };
+        }
+        case "step-limit": {
+            const err = newestAgentError(walked.events);
+            return { kind: "error", text: err?.text || "step limit reached" };
+        }
+        case "failed":
+        case "cancelled": {
+            const text = [executionFailureText(resultKind), newestAgentError(walked.events)?.text]
+                .filter(Boolean).join(": ");
+            return { kind: "error", text: text || state };
+        }
+        case "awaiting-answer": {
+            const question = lastAskUserQuestion(walked.events);
+            return { kind: "question", text: question ?? "" };
+        }
+        default:
+            return { kind: "none", text: "" };
+    }
+}
+
+// The execution-level failure kind (timed_out, cancelled, out_of_fuel, ...);
+// distinct from an in-session agent_error, which explains itself already.
+function executionFailureText(resultKind) {
+    const err = resultKind?.err;
+    if (err == null) return "";
+    if (typeof err === "string") return err;
+    if (typeof err === "object" && typeof err.execution_failure === "string") {
+        return `execution failure: ${err.execution_failure}`;
+    }
+    return JSON.stringify(err);
+}
+
+function replyText(events, turn) {
+    for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i];
+        if (ev.kind === "assistant_reply" && ev.turn_index === turn && ev.text) return ev.text;
+    }
+    return "";
+}
+
+function lastAskUserQuestion(events) {
+    for (let i = events.length - 1; i >= 0; i--) {
+        if (events[i].kind === "ask_user") return events[i].question;
+    }
+    return null;
 }
 
 async function cmdReadBody(id, tail, turn, json, system) {
@@ -169,20 +247,28 @@ function cmdState(args) {
     return cmdStateBody(parsed.positional[0], parsed.json);
 }
 
-async function cmdStateBody(id, json) {
+// Shared by `chat state` and `chat read --final`: one round of the
+// events-and-status walk plus the centralized state projection
+// (shared/session-state.js) both build on.
+async function computeProjection(id) {
     const walked = await walkResponses(id);
     const status = await fetchStatus(id);
-    const started = walked.sessionStarted ?? {};
-    const replyTurn = lastReplyTurn(walked.events);
-    const pendingStatus = status?.pending_state?.status ?? "unknown";
     const resultKind = status?.pending_state?.result_kind ?? null;
     const projected = projectSessionState({
-        status: pendingStatus,
+        status: status?.pending_state?.status ?? "unknown",
         resultKind,
         joinName: joinName(status?.pending_state?.join_set_id),
         working: walked.working === true,
         markers: walked.markers,
     });
+    return { walked, status, resultKind, projected };
+}
+
+async function cmdStateBody(id, json) {
+    const { walked, status, resultKind, projected } = await computeProjection(id);
+    const started = walked.sessionStarted ?? {};
+    const replyTurn = lastReplyTurn(walked.events);
+    const pendingStatus = status?.pending_state?.status ?? "unknown";
     const lastError = newestAgentError(walked.events);
     const state = {
         id,
@@ -680,13 +766,13 @@ function uniqueId() {
 
 // ----- arg/format helpers -----------------------------------------------------
 
-// Shared option parser: booleans --json/--system/--all/--top-level, valued
-// --limit/--tail/--model/--effort (both "--x v" and "--x=v"); everything else
-// is positional. Unknown options throw.
+// Shared option parser: booleans --json/--system/--all/--top-level/--final,
+// valued --limit/--tail/--model/--effort (both "--x v" and "--x=v");
+// everything else is positional. Unknown options throw.
 function parseFlags(args) {
     const parsed = {
         positional: [], json: false, system: false, all: false, "top-level": false,
-        watch: false,
+        watch: false, final: false,
         limit: null, tail: null, turn: null, model: null, effort: null, name: null,
     };
     for (let i = 0; i < args.length; i++) {
@@ -703,6 +789,7 @@ function parseFlags(args) {
             case "--all": parsed.all = true; continue;
             case "--top-level": parsed["top-level"] = true; continue;
             case "--watch": parsed.watch = true; continue;
+            case "--final": parsed.final = true; continue;
             case "--limit": {
                 const value = Number(take());
                 if (!Number.isInteger(value) || value <= 0) {
@@ -814,6 +901,7 @@ function commandHelp(sub) {
         case "read":
             return [
                 "Usage: chat read ID [--tail N | --turn N] [--json] [--system]",
+                "       chat read ID --final [--json]",
                 "",
                 "Print a normalized transcript: session metadata, then turns with",
                 "user messages, assistant replies, narration, tool calls, shell",
@@ -821,6 +909,13 @@ function commandHelp(sub) {
                 "prints only turn N (the way to read just a finished message that",
                 "'chat state' points at). --system includes the system prompt (it",
                 "is huge).",
+                "",
+                "--final prints just the outcome instead of a transcript: the",
+                "finished reply text, the error/failure reason, or the pending",
+                "ask-user question, whichever explains why the session stopped",
+                "progressing (empty if it is still working). Far cheaper than a",
+                "full read; check a peer's outcome with this before reading its",
+                "whole transcript. Cannot combine with --tail, --turn, or --system.",
                 "",
             ].join("\n");
         case "state":
@@ -852,6 +947,20 @@ function commandHelp(sub) {
                 "Stop the bash script that ID is currently executing: it unwinds",
                 "at its next command boundary or sleep (exit 130) and the session",
                 "itself stays alive. Fails when no script is running.",
+                "",
+            ].join("\n");
+        case "watch":
+            return [
+                "Usage: chat watch ID [--timeout DUR] [--interval DUR]",
+                "",
+                "Block until ID stops progressing on its own: wakes on",
+                "final-response, step-limit, awaiting-answer, shell-only, or a",
+                "terminal state. Prints the state JSON (see 'chat state --help')",
+                "plus a `final` field: the same text `chat read ID --final` gives",
+                "(finished reply, error/failure reason, or pending question), so",
+                "a follow-up read is rarely needed. --timeout defaults to 15m,",
+                "--interval to 2s; durations accept 30s / 500ms / 5m / 1h30m.",
+                "Answered by the session workflow itself.",
                 "",
             ].join("\n");
         case "create":
@@ -907,6 +1016,10 @@ function help() {
         "  read ID [--tail N | --turn N] [--json] [--system]",
         "                  Print a session transcript (--turn reads just one turn;",
         "                  --system adds the potentially huge system prompt)",
+        "  read ID --final [--json]",
+        "                  Cheap outcome check: just the finished reply, error, or",
+        "                  pending question, not the transcript. Check this before",
+        "                  reading a peer's full transcript.",
         "  state ID        Machine-readable state: includes the centralized `state`",
         "                  (see shared/session-state.js), result_kind, and last_error;",
         "                  last_reply {turn} points at a finished assistant message",
@@ -914,8 +1027,10 @@ function help() {
         "  watch ID [--timeout DUR] [--interval DUR]",
         "                  Block until the session stops progressing: wakes on",
         "                  final-response, step-limit, awaiting-answer, shell-only,",
-        "                  or a terminal state; prints the state JSON. Durations",
-        "                  accept 30s / 500ms / 5m / 1h30m. Workflow-served.",
+        "                  or a terminal state; prints the state JSON with a `final`",
+        "                  field (the same text `read ID --final` gives) so you rarely",
+        "                  need a follow-up read. Durations accept 30s / 500ms / 5m /",
+        "                  1h30m. Workflow-served.",
         "  send ID TEXT... Queue a user prompt for a session: delivered while idle,",
         "                  queued while busy. Never guess IDs; find them with list.",
         "                  A child parked in step-limit resumes on `send ID continue`.",

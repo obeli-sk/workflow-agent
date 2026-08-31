@@ -600,9 +600,14 @@ Delegate self-contained work with `chat create [--name slug] PROMPT`; pass \
 `--watch` (or call `chat watch ID`) to block until the child stops progressing: \
 it reports final-response when it answers, step-limit when its step budget ran \
 out, awaiting-answer when an ask-user is pending, shell-only when a scripted \
-prompt finished, or a terminal state. Never poll a child with sleep loops. A \
-child parked in step-limit resumes where it left off when you send it \
-`chat send ID continue`; budget resets for the new turn.\n\n{}\n\n{}",
+prompt finished, or a terminal state; the reported JSON already includes a \
+`final` field with the child's finished reply, error, or pending question, so \
+you rarely need a follow-up read. When you do, use `chat read ID --final` \
+(just that outcome) rather than a full `chat read ID` (the whole transcript, \
+far more tokens) unless you actually need the reasoning trail. Never poll a \
+child with sleep loops. A child parked in step-limit resumes where it left \
+off when you send it `chat send ID continue`; budget resets for the new \
+turn.\n\n{}\n\n{}",
         chat::self_section(&own_session),
         obelisk_pack::SYSTEM_PROMPT
     );
