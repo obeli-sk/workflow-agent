@@ -208,6 +208,11 @@ const state = {
   logsOpen: false,
   syspromptOpen: false,
   pendingShell: null,
+  // Whether a poll-driven update should auto-scroll the transcript to its new
+  // bottom. True by default and whenever the user is scrolled near the
+  // bottom already; false once they scroll up to read something (e.g. the
+  // expanded system prompt), so a background poll cannot yank them back down.
+  stickToBottom: true,
 };
 const SIDEBAR_POLL_MS = 10000;
 const DETAIL_POLL_MS = 3000;
@@ -268,6 +273,7 @@ function setSelected(id) {
   state.logsOpen = false;
   state.syspromptOpen = false;
   state.pendingShell = null;
+  state.stickToBottom = true;
   clearTimeout(detailTimer);
   const u = new URL(window.location.href);
   if (id) u.searchParams.set('run', id); else u.searchParams.delete('run');
@@ -757,6 +763,11 @@ function renderDetail(forceScroll = false) {
   const d = state.detail;
   if (!d) return;
   const main = document.getElementById('detail');
+  // A poll-driven update (forceScroll from contentChanged) only follows the
+  // transcript down if the user hasn't scrolled away from the bottom; an
+  // explicit user action still scrolls unconditionally via its own direct
+  // scrollTranscriptToBottom() call after renderDetail(true) returns.
+  const stick = forceScroll && state.stickToBottom;
 
   // The composer (new-prompt / steer box) + working indicator live outside the
   // transcript and reflect the live status every poll, even when the transcript
@@ -775,18 +786,20 @@ function renderDetail(forceScroll = false) {
     agent_working: d.agent_working,
   });
   if (sig === state.lastSig) {
-    if (forceScroll) {
+    if (stick) {
       scrollTranscriptToBottom();
       focusComposer();
     }
     return;
   }
 
-  // Capture which call cards are currently open so we can restore them.
+  // Capture which call cards are currently open, and the logs pane's scroll
+  // position, so we can restore both across the innerHTML rebuild below.
   const openKeys = new Set();
   for (const el of main.querySelectorAll('details.call[open]')) {
     if (el.dataset.key) openKeys.add(el.dataset.key);
   }
+  const savedLogsScroll = captureLogsScroll();
 
   state.lastSig = sig;
 
@@ -848,7 +861,9 @@ function renderDetail(forceScroll = false) {
     + asksHtml
     + '</div>';
 
-  hydrateDisplayBlocks(main, 0, forceScroll);
+  restoreLogsScroll(savedLogsScroll);
+
+  hydrateDisplayBlocks(main, 0, stick);
 
   for (const el of main.querySelectorAll('details.call')) {
     if (el.dataset.key && openKeys.has(el.dataset.key)) el.open = true;
@@ -881,7 +896,7 @@ function renderDetail(forceScroll = false) {
     link.addEventListener('click', (e) => { e.preventDefault(); cancelRun(state.selected); });
     ev.currentTarget.replaceWith(link);
   });
-  if (forceScroll) {
+  if (stick) {
     scrollTranscriptToBottom();
     focusComposer();
   }
@@ -983,6 +998,31 @@ function scrollTranscriptToBottom() {
   setTimeout(scroll, 1000);
 }
 
+// True once el is scrolled within threshold px of its own bottom (or has
+// no overflow at all). Missing scroll metrics (e.g. the test harness' DOM
+// stub) resolve to false rather than throwing.
+function isNearBottom(el, threshold = 48) {
+  if (!el) return true;
+  const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+  return Number.isFinite(gap) && gap <= threshold;
+}
+
+// The logs <pre> is recreated (fresh scrollTop 0) every time #logs-slot
+// is re-rendered, either by its own refresh or by a transcript poll rebuilding
+// the whole detail pane. Capture/restore keeps it tailing new entries when the
+// user was already at the bottom, and otherwise keeps them where they were.
+function captureLogsScroll() {
+  const pre = document.getElementById('logs-slot')?.querySelector('pre');
+  if (!pre) return null;
+  return { scrollTop: pre.scrollTop, atBottom: isNearBottom(pre, 24) };
+}
+function restoreLogsScroll(saved) {
+  if (!saved) return;
+  const pre = document.getElementById('logs-slot')?.querySelector('pre');
+  if (!pre) return;
+  pre.scrollTop = saved.atBottom ? pre.scrollHeight : saved.scrollTop;
+}
+
 function focusComposer() {
   const input = document.getElementById('composer-input');
   if (!input || input.disabled) return;
@@ -1045,8 +1085,10 @@ function toggleSysprompt() {
 function updateLogsSlot() {
   const slot = document.getElementById('logs-slot');
   if (!slot) return;
+  const saved = captureLogsScroll();
   slot.innerHTML = renderLogs();
   slot.querySelector('#logs-refresh')?.addEventListener('click', refreshLogs);
+  restoreLogsScroll(saved);
 }
 
 async function refreshLogs() {
@@ -1519,6 +1561,7 @@ async function sendToAgent(runId, text) {
     created_at: new Date().toISOString(),
   };
   if (state.transcript) mergeUserMessages(state.transcript.user_messages, [optimisticMessage]);
+  state.stickToBottom = true;
   if (state.detail) {
     state.detail.turns = buildCachedTurns(state.detail.created_at, state.detail.prompt);
     state.detail.input_offer = null;
@@ -1569,6 +1612,7 @@ async function sendShell(runId, script) {
   };
   state.pendingShell = { id, runId };
   if (state.transcript) mergeShellEvents(state.transcript.shell_events, [optimisticEvent]);
+  state.stickToBottom = true;
   if (state.detail) {
     state.detail.turns = buildCachedTurns(state.detail.created_at, state.detail.prompt);
     state.detail.input_offer = null;
@@ -1636,6 +1680,14 @@ document.getElementById('composer-input').addEventListener('keydown', (ev) => {
     sendComposer();
     scrollTranscriptToBottom();
   }
+});
+
+// Tracks whether poll-driven updates should keep following the transcript
+// down (see state.stickToBottom): true while the user is scrolled near the
+// bottom, false once they scroll up (e.g. to read the expanded system
+// prompt), true again if they scroll back down themselves.
+document.getElementById('detail').addEventListener('scroll', () => {
+  state.stickToBottom = isNearBottom(document.getElementById('detail'));
 });
 
 document.getElementById('new-convo').addEventListener('click', () => {
