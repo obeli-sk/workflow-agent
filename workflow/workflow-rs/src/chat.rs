@@ -139,9 +139,11 @@ pub(crate) fn self_section(own: &ChatSelf) -> String {
         "# This session\n\n\
 `chat current` output for the session you are running in:\n{payload}\n\n\
 Peers discover sessions by slug via `chat list`; read your own transcript \
-with `chat read {}`. When your task settles into something nameable, rename \
-this session once to a short kebab slug summarizing that task \
-(`chat rename <slug>`); do not rename repeatedly or preemptively.\n",
+with `chat read {}`. If your starting prompt already makes the task clear, \
+rename yourself first, before anything else (`chat rename <slug>`); \
+otherwise wait until the task settles into something nameable. Rename once \
+to a short kebab slug summarizing the task; do not rename repeatedly or \
+preemptively while it is still unclear.\n",
         own.execution_id
     );
     if let Some(parent) = own.parent_id() {
