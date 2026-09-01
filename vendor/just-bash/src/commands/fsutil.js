@@ -171,31 +171,6 @@ export const fsutil = {
         return ok(body.slice(start).join("\n") + (body.length ? "\n" : ""));
     },
 
-    sort(interp, args, stdin) {
-        const { flags, rest } = flagsOf(args.slice(1));
-        const text = rest.length ? interp.vfs.readFile(interp.resolvePath(rest[0])) : stdin;
-        let lines = text.split("\n");
-        if (lines.length && lines[lines.length - 1] === "") lines.pop();
-        const cmp = flags.has("n") ? (a, b) => Number(a) - Number(b) : (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-        lines.sort(cmp);
-        if (flags.has("u")) lines = lines.filter((l, i) => i === 0 || l !== lines[i - 1]);
-        if (flags.has("r")) lines.reverse();
-        return ok(lines.join("\n") + (lines.length ? "\n" : ""));
-    },
-
-    uniq(interp, args, stdin) {
-        const { flags, rest } = flagsOf(args.slice(1));
-        const text = rest.length ? interp.vfs.readFile(interp.resolvePath(rest[0])) : stdin;
-        let lines = text.split("\n");
-        if (lines.length && lines[lines.length - 1] === "") lines.pop();
-        const out = [];
-        for (const line of lines) {
-            if (out.length === 0 || out[out.length - 1] !== line) out.push(line);
-            else if (flags.has("c")) { /* counted below */ }
-        }
-        return ok(out.join("\n") + (out.length ? "\n" : ""));
-    },
-
     tee(interp, args, stdin) {
         const { flags, rest } = flagsOf(args.slice(1));
         for (const t of rest) {

@@ -11,6 +11,7 @@ import { xargsCommand } from "./xargs.js";
 import { diffCommand } from "./diff.js";
 import { sedCommand } from "./sed.js";
 import { grepCommand, egrepCommand, fgrepCommand } from "./grep.js";
+import { sortCommand, uniqCommand } from "./sort_uniq.js";
 
 export const BUILTIN_NAMES = [
     "echo", "printf", "pwd", "cd", "true", "false", ":",
@@ -39,6 +40,8 @@ const handlers = {
     xargs: xargsCommand,
     diff: diffCommand,
     sed: sedCommand,
+    sort: sortCommand,
+    uniq: uniqCommand,
 };
 
 export function dispatch(interp, args, stdin) {
