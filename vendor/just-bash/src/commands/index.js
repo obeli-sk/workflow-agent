@@ -9,6 +9,7 @@ import { base64Command, md5sumCommand, sha256sumCommand } from "./hash.js";
 import { cutCommand, trCommand } from "./text.js";
 import { findCommand } from "./find.js";
 import { xargsCommand } from "./xargs.js";
+import { diffCommand } from "./diff.js";
 
 export const BUILTIN_NAMES = [
     "echo", "printf", "pwd", "cd", "true", "false", ":",
@@ -18,7 +19,7 @@ export const BUILTIN_NAMES = [
     "help", "clear", "basename", "dirname", "source", ".",
     "ls", "cat", "mkdir", "touch", "rm", "rmdir", "cp", "mv",
     "wc", "head", "tail", "sort", "uniq", "tee", "stat", "grep",
-    "base64", "md5sum", "sha256sum", "cut", "tr", "find", "xargs",
+    "base64", "md5sum", "sha256sum", "cut", "tr", "find", "xargs", "diff",
 ];
 
 const handlers = {
@@ -32,6 +33,7 @@ const handlers = {
     tr: trCommand,
     find: findCommand,
     xargs: xargsCommand,
+    diff: diffCommand,
 };
 
 export function dispatch(interp, args, stdin) {
