@@ -4,6 +4,8 @@
 import { BreakSignal, ContinueSignal, ExitSignal } from "../interpreter.js";
 import { parseScript } from "../parser.js";
 
+const ALIAS_PREFIX = "BASH_ALIAS_";
+
 export function ok(stdout = "") {
     return { stdout, stderr: "", exitCode: 0 };
 }
@@ -206,6 +208,49 @@ export const core = {
     },
 
     clear: () => ok("\x1bc"),
+
+    alias(interp, args) {
+        const rest = args.slice(1);
+        if (rest.length === 0) {
+            let stdout = "";
+            for (const [key, value] of interp.vars) {
+                if (key.startsWith(ALIAS_PREFIX)) stdout += `alias ${key.slice(ALIAS_PREFIX.length)}='${value}'\n`;
+            }
+            return ok(stdout);
+        }
+        const processArgs = rest[0] === "--" ? rest.slice(1) : rest;
+        for (const arg of processArgs) {
+            const eq = arg.indexOf("=");
+            if (eq === -1) {
+                const key = ALIAS_PREFIX + arg;
+                return interp.vars.has(key) ? ok(`alias ${arg}='${interp.vars.get(key)}'\n`) : fail(`alias: ${arg}: not found\n`, 1);
+            }
+            const name = arg.slice(0, eq);
+            let value = arg.slice(eq + 1);
+            if (value.length >= 2 && ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"')))) {
+                value = value.slice(1, -1);
+            }
+            interp.vars.set(ALIAS_PREFIX + name, value);
+        }
+        return ok();
+    },
+
+    unalias(interp, args) {
+        const rest = args.slice(1);
+        if (rest.length === 0) return fail("unalias: usage: unalias [-a] name [name ...]\n", 1);
+        if (rest[0] === "-a") {
+            for (const key of [...interp.vars.keys()]) if (key.startsWith(ALIAS_PREFIX)) interp.vars.delete(key);
+            return ok();
+        }
+        const processArgs = rest[0] === "--" ? rest.slice(1) : rest;
+        let stderr = "", anyError = false;
+        for (const name of processArgs) {
+            const key = ALIAS_PREFIX + name;
+            if (interp.vars.has(key)) interp.vars.delete(key);
+            else { stderr += `unalias: ${name}: not found\n`; anyError = true; }
+        }
+        return { stdout: "", stderr, exitCode: anyError ? 1 : 0 };
+    },
 
     basename(interp, args) {
         const path = args[1] ?? "";

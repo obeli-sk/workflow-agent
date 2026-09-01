@@ -1,6 +1,38 @@
 // PORT: vendor/just-bash-rs/src/commands/text.rs (cut, tr slice)
 
-import { ok, fail } from "./core.js";
+import { ok, fail, unknownOption } from "./core.js";
+
+function revLine(line) {
+    return [...line].reverse().join("");
+}
+function revProcess(text) {
+    const hadTrailingNl = text.endsWith("\n");
+    const lines = text.split("\n");
+    if (hadTrailingNl) lines.pop();
+    const out = lines.map(revLine).join("\n");
+    return hadTrailingNl ? `${out}\n` : out;
+}
+
+export function revCommand(interp, args, stdin) {
+    const files = [];
+    for (let i = 1; i < args.length; i++) {
+        const arg = args[i];
+        if (arg.startsWith("-") && arg !== "-") return unknownOption("rev", arg);
+        files.push(arg);
+    }
+    let output = "";
+    if (files.length === 0) {
+        output = revProcess(stdin);
+    } else {
+        for (const file of files) {
+            if (file === "-") { output += revProcess(stdin); continue; }
+            const path = interp.resolvePath(file);
+            if (!interp.vfs.isFile(path)) return { stdout: output, stderr: `rev: ${file}: No such file or directory\n`, exitCode: 1 };
+            output += revProcess(interp.vfs.readFile(path));
+        }
+    }
+    return ok(output);
+}
 
 function parseCutRanges(spec) {
     const ranges = [];

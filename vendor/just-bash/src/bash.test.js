@@ -180,6 +180,22 @@ test("registered custom command", () => {
     assert.equal(r.stdout, "hi world\n");
 });
 
+test("alias stores and lists name/value pairs", () => {
+    const r = run("alias ll='ls -la'; alias");
+    assert.equal(r.stdout, "alias ll='ls -la'\n");
+});
+
+test("unalias removes a stored alias", () => {
+    const r = run("alias ll='ls -la'; unalias ll; alias ll");
+    assert.match(r.stderr, /not found/);
+    assert.equal(r.exitCode, 1);
+});
+
+test("rev reverses each line", () => {
+    const r = run("printf 'abc\\ndef\\n' | rev");
+    assert.equal(r.stdout, "cba\nfed\n");
+});
+
 test("parse error is reported, not thrown", () => {
     const r = run("if true; then echo hi");
     assert.equal(r.exitCode, 2);

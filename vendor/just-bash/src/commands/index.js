@@ -5,7 +5,7 @@
 import { core, ok, fail, unknownOption } from "./core.js";
 import { fsutil } from "./fsutil.js";
 import { base64Command, md5sumCommand, sha256sumCommand } from "./hash.js";
-import { cutCommand, trCommand } from "./text.js";
+import { cutCommand, trCommand, revCommand } from "./text.js";
 import { findCommand } from "./find.js";
 import { xargsCommand } from "./xargs.js";
 import { diffCommand } from "./diff.js";
@@ -18,11 +18,11 @@ export const BUILTIN_NAMES = [
     "export", "unset", "read", "test", "[", "exit",
     "set", "shift", "break", "continue",
     "date", "sleep", "seq", "which", "env", "printenv", "whoami", "hostname",
-    "help", "clear", "basename", "dirname", "source", ".",
+    "help", "clear", "alias", "unalias", "basename", "dirname", "source", ".",
     "ls", "cat", "mkdir", "touch", "rm", "rmdir", "cp", "mv",
     "wc", "head", "tail", "sort", "uniq", "tee", "stat",
     "grep", "egrep", "fgrep",
-    "base64", "md5sum", "sha256sum", "cut", "tr", "find", "xargs", "diff", "sed",
+    "base64", "md5sum", "sha256sum", "cut", "tr", "rev", "find", "xargs", "diff", "sed",
 ];
 
 const handlers = {
@@ -36,6 +36,7 @@ const handlers = {
     sha256sum: sha256sumCommand,
     cut: cutCommand,
     tr: trCommand,
+    rev: revCommand,
     find: findCommand,
     xargs: xargsCommand,
     diff: diffCommand,
