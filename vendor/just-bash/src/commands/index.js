@@ -1,6 +1,7 @@
-// Builtin command registry + dispatch. Full parity with
-// vendor/just-bash-rs/src/commands/*.rs (awk, jq, hash/timeutil/textutil2
-// grab-bags) is still landing — see docs/js-backend-migration.md.
+// Builtin command registry + dispatch. Full command-set parity with
+// vendor/just-bash-rs/src/commands/*.rs is landed — see
+// docs/js-backend-migration.md for the tracker and any noted scope gaps
+// (jq/awk are deliberately-scoped subsets, not full implementations).
 
 import { core, ok, fail, unknownOption } from "./core.js";
 import { fsutil } from "./fsutil.js";
@@ -12,6 +13,22 @@ import { diffCommand } from "./diff.js";
 import { sedCommand } from "./sed.js";
 import { grepCommand, egrepCommand, fgrepCommand } from "./grep.js";
 import { sortCommand, uniqCommand } from "./sort_uniq.js";
+import { jqCommand } from "./jq.js";
+import { awkCommand } from "./awk.js";
+import { dateCommand, exprCommand, sleepCommand, timeoutCommand, timeCommand } from "./timeutil.js";
+import {
+    commCommand,
+    joinCommand,
+    nlCommand,
+    odCommand,
+    foldCommand,
+    expandCommand,
+    unexpandCommand,
+    columnCommand,
+    pasteCommand,
+    stringsCommand,
+    splitCommand,
+} from "./textutil2.js";
 
 export const BUILTIN_NAMES = [
     "echo", "printf", "pwd", "cd", "true", "false", ":",
@@ -24,6 +41,8 @@ export const BUILTIN_NAMES = [
     "chmod", "readlink", "ln", "file", "du", "tree",
     "grep", "egrep", "fgrep",
     "base64", "md5sum", "sha256sum", "cut", "tr", "rev", "find", "xargs", "diff", "sed",
+    "jq", "awk", "expr", "timeout", "time",
+    "comm", "join", "nl", "od", "fold", "expand", "unexpand", "column", "paste", "strings", "split",
 ];
 
 const handlers = {
@@ -44,6 +63,24 @@ const handlers = {
     sed: sedCommand,
     sort: sortCommand,
     uniq: uniqCommand,
+    jq: jqCommand,
+    awk: awkCommand,
+    date: dateCommand,
+    sleep: sleepCommand,
+    expr: exprCommand,
+    timeout: timeoutCommand,
+    time: timeCommand,
+    comm: commCommand,
+    join: joinCommand,
+    nl: nlCommand,
+    od: odCommand,
+    fold: foldCommand,
+    expand: expandCommand,
+    unexpand: unexpandCommand,
+    column: columnCommand,
+    paste: pasteCommand,
+    strings: stringsCommand,
+    split: splitCommand,
 };
 
 export function dispatch(interp, args, stdin) {

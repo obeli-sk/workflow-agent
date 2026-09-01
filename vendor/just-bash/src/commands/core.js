@@ -158,20 +158,6 @@ export const core = {
         return ok();
     },
 
-    date(interp, args) {
-        const ms = interp.now();
-        const d = new Date(ms);
-        const fmtArg = args.find((a) => a.startsWith("+"));
-        if (fmtArg) return ok(`${strftime(fmtArg.slice(1), d)}\n`);
-        return ok(`${d.toUTCString()}\n`);
-    },
-
-    sleep(interp, args) {
-        const ms = parseDuration(args[1] ?? "0");
-        interp.sleepFn(ms);
-        return ok();
-    },
-
     seq(interp, args) {
         const nums = args.slice(1).map(Number);
         let first = 1, step = 1, last;
@@ -395,28 +381,3 @@ function formatOne(spec, value) {
     return value;
 }
 
-function parseDuration(text) {
-    const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(text.trim());
-    if (!m) return 0;
-    const value = parseFloat(m[1]);
-    const unit = m[2] ?? "s";
-    const mult = { ms: 1, s: 1000, m: 60000, h: 3600000 }[unit];
-    return Math.round(value * mult);
-}
-
-function strftime(fmt, d) {
-    const pad = (n, w = 2) => String(n).padStart(w, "0");
-    return fmt.replace(/%[A-Za-z%]/g, (token) => {
-        switch (token) {
-            case "%Y": return String(d.getUTCFullYear());
-            case "%m": return pad(d.getUTCMonth() + 1);
-            case "%d": return pad(d.getUTCDate());
-            case "%H": return pad(d.getUTCHours());
-            case "%M": return pad(d.getUTCMinutes());
-            case "%S": return pad(d.getUTCSeconds());
-            case "%s": return String(Math.floor(d.getTime() / 1000));
-            case "%%": return "%";
-            default: return token;
-        }
-    });
-}
