@@ -229,20 +229,27 @@ Fill in as commands land; source of truth for scope is
 
 | Command family | just-bash-rs file | JS status |
 |---|---|---|
-| awk | `commands/awk.rs` | not started |
-| sed | `commands/sed.rs` | not started |
-| grep | `commands/grep.rs` | not started |
-| jq | `commands/jq.rs` | not started |
-| diff | `commands/diff.rs` | not started |
-| find | `commands/find.rs` | not started |
-| fsutil (ls/cp/mv/rm/mkdir/...) | `commands/fsutil.rs` | not started |
-| sort/uniq | `commands/sort_uniq.rs` | not started |
-| hash | `commands/hash.rs` | not started |
-| timeutil | `commands/timeutil.rs` | not started |
-| xargs | `commands/xargs.rs` | not started |
-| misc | `commands/misc.rs` | not started |
-| text | `commands/text.rs` | not started |
-| textutil2 | `commands/textutil2.rs` | not started |
+| awk | `commands/awk.rs` | not started (largest remaining file, 2886 lines) |
+| sed | `commands/sed.rs` | **done** (`commands/sed.js`) — s///, addressing, d/p/q/r |
+| grep/egrep/fgrep | `commands/grep.rs` | **done** (`commands/grep.js`) — full flag set incl. -A/-B/-C/-r/-f/-o |
+| jq | `commands/jq.rs` | not started (2351 lines; likely a deliberately-scoped subset, not full jq) |
+| diff | `commands/diff.rs` | **done** (`commands/diff.js`) |
+| find | `commands/find.rs` | **done** (`commands/find.js`) |
+| fsutil (ls/cp/mv/rm/mkdir/...) | `commands/fsutil.rs` | **done** in Phase 1 (`commands/fsutil.js`) |
+| sort/uniq | `commands/sort_uniq.rs` | **done** (`commands/sort_uniq.js`) — -k/-t/-c, uniq -c/-d/-u/-i |
+| hash (base64/md5sum/sha256sum) | `commands/hash.rs` | **done** (`commands/hash.js` + `utf8.js`) |
+| timeutil (date/time/timeout formatting) | `commands/timeutil.rs` | not started — `date`/`sleep` have a minimal version in `commands/core.js` (epoch/strftime-lite only, no full GNU date parsing/arithmetic) |
+| xargs | `commands/xargs.rs` | **done** (`commands/xargs.js`) |
+| misc (chmod/readlink/ln/file/du/tree/alias/comm/join/...) | `commands/misc.rs` | partial — seq/tee/which/env/printenv/whoami/hostname/help/clear done in Phase 1 (`commands/core.js`/`fsutil.js`); alias/unalias and the rest not started |
+| text (cut/tr/wc/head/tail/printf/basename/dirname) | `commands/text.rs` | **done** — cut/tr in `commands/text.js`, wc/head/tail/basename/dirname/printf in Phase 1's `core.js`/`fsutil.js` |
+| textutil2 (comm/join/nl/od/rev/fold/expand/unexpand/column/paste/strings/split) | `commands/textutil2.rs` | not started |
+
+Also fixed along the way (both grep and sed depend on it):
+`vendor/just-bash/src/regex-bre.js` translates POSIX BRE to JS RegExp syntax
+and expands `[:class:]` POSIX bracket classes (JS RegExp has neither
+natively); its bracket-expression scanner correctly skips nested
+`[:class:]`/`[.collating.]`/`[=equiv=]` sub-forms so `[[:alpha:]]`-style
+patterns parse right (a bug caught by grep's own POSIX-class test).
 
 ## De-typing recipe (Phase 1/2 prep)
 
