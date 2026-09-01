@@ -162,6 +162,12 @@ jobs:
           GITHUB_TOKEN: ""
           MCP_SERVER_TOKEN: ""
 
+      - name: agent workflow (JS backend) e2e
+        run: nix develop --command ./scripts/test-e2e-agent-workflow-js.sh
+        env:
+          GITHUB_TOKEN: ""
+          MCP_SERVER_TOKEN: ""
+
       - name: redeploy e2e
         run: nix develop --command ./scripts/test-e2e-redeploy.sh
         env:

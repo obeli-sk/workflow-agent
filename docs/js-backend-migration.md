@@ -1,8 +1,9 @@
 # JS-only workflow backend: migration notes
 
-Status: **in progress** (Phase 0). This doc tracks design decisions and
-progress for the JS-alternative workflow backend so another agent can resume
-without re-deriving the research. Update it after every phase.
+Status: **in progress** (Phase 1 done, e2e-verified). This doc tracks design
+decisions and progress for the JS-alternative workflow backend so another
+agent can resume without re-deriving the research. Update it after every
+phase.
 
 ## Why
 
@@ -65,6 +66,50 @@ core subset session.rs exercises day to day.
   or `crypto.subtle.digest`** (only webhook's runtime got HMAC-only
   `crypto.subtle`). The old `boa-polyfills.js` hand-rolled shims (UTF-8
   codec, base64, SHA-256/SHA-1) are still required, essentially unchanged.
+- **WIT record/variant field and case names cross into JS as snake_case, not
+  camelCase.** Only function/interface names get kebab-to-camelCase (per the
+  docs). Confirmed from two independent, already-working code paths in this
+  repo: `activity/config-discover.js` (a deployed activity) returns
+  `{max_steps, mcp_servers, webhook_url}` for the WIT record
+  `{max-steps, mcp-servers, webhook-url}`; and `scripts/e2e-json.js` reads
+  `json()?.ok?.shell_output` / `record.turn_index` / `record.duration_milliseconds`
+  off raw `obelisk execution result -j` output. session.js's session-event
+  construction (`{shell_output: {...turn_index...}}` etc.) follows this and
+  is now e2e-verified end to end (see Phase 1 checklist entry below).
+- **JS workflow join sets are ergonomic, not the raw WIT resource API.**
+  `obelisk.createJoinSet({name})` returns a plain object with `.submit()`,
+  `.joinNext()` (blocks, returns the *decoded* ok value directly and sets
+  `.lastId`, throws `obelisk.ChildError` on any failure), `.joinNextTry()`,
+  `.close()`. Generated `-obelisk-ext` imports (`xSubmit(joinSet, ...args)`,
+  `xAwaitNext(joinSet)`) exist for statically-known FFQNs; for a
+  **heterogeneous** join set (session.js's "user" set holds both an
+  `injection` child and each turn's `completion` child) use the typed
+  `xSubmit` to submit but the low-level `joinSet.joinNext()` to await and
+  `joinSet.lastId` to dispatch — the runtime decodes the value according to
+  whichever function actually produced it, so (unlike the Rust port) there is
+  no need for a separate typed `-get` call after the generic await.
+- **`Date.now()` is already the deterministic Obelisk clock inside a
+  workflow** (no `sleep(now)` trick needed, unlike the Rust port).
+  `obelisk.sleep({milliseconds})` is the durable delay; it throws on
+  cancellation, which session.js swallows the same way session.rs's
+  `host_sleep_ms` does.
+- **`result<T, E>` JS exports signal Err by `throw`ing the err value** (a
+  plain string for `result<_, string>`), not by returning `{err: ...}` —
+  confirmed against `activity/config-discover.js`'s `throw` sites and
+  `obelisk/crates/wasm-workers/src/activity/activity_js_worker.rs`'s
+  typecheck tests. `obelisk.call(ffqn, args)` (dynamic FFQN) and generated
+  static imports both throw `obelisk.ChildError` on a child failure, with the
+  **already-decoded** value on `e.value` — no manual JSON-parsing needed the
+  way `support.rs`'s `decode_string_or_raw` needs in Rust.
+- A pre-existing `[[workflow_js]]` block already lived in this deployment.toml
+  before this project (`obelisk-control:tools/native.call`,
+  `packs/obelisk-control/native-call.js`) — real proof-in-production of static
+  imports (`import * as webapi from 'obelisk-agent:tools/webapi'`) and
+  `obelisk.ChildError` usage, and confirms **no `wit = "..."` field is needed**
+  on a `[[workflow_js]]` block for its static imports to resolve (resolution
+  is dynamic against the deployment's function registry, not a WIT-file
+  lookup) — the earlier plan's assumption that `wit = "wit"` might be needed
+  for `session.js`'s stub/llm imports was wrong; it isn't required.
 - FFQN naming chosen: JS workflow exports
   `obelisk-agent:workflow-js/workflow.run-cancellable` (same params/return
   type as the Rust `obelisk-agent:workflow/workflow.run-cancellable`),
@@ -77,24 +122,37 @@ core subset session.rs exercises day to day.
   sessions* honors the single active value. A session's own `chat create`
   always schedules its own kind (self-referential, no env needed).
 
-## Directory layout (target)
+## Directory layout (actual)
 
-- `apps/workflow-agent/vendor/just-bash/` — hand-written plain-JS interpreter
-  (lexer/parser/AST/interpreter/VFS/commands), ESM, relative imports only, no
-  `package.json`/build step. Mirrors `vendor/just-bash-rs`'s module
-  breakdown where sensible (same command coverage target) rather than mapping
-  file-for-file to the TS reference.
-- `apps/workflow-agent/workflow/workflow-js/` — the session/agent-loop source
-  (mirrors `workflow/workflow-rs/src/{lib,agent,host,session,support,chat}.rs`
-  → `.js` siblings), plus resurrected `boa-polyfills.js` (no `node-zlib-shim.js`
-  needed since we no longer bundle — just don't import `node:zlib` at all: no
-  gzip/gunzip/zcat command, matching `WORKFLOW_UNAVAILABLE_COMMANDS` from the
-  old JS version and `just-bash-rs`'s command set never including them
-  either).
+- `apps/workflow-agent/vendor/just-bash/src/` — hand-written plain-JS
+  interpreter, ESM, relative imports only, no `package.json`/build step:
+  `fs.js` (VFS), `arithmetic.js`, `brace.js`, `glob.js`, `parser.js`
+  (scanner-integrated recursive-descent parser producing a plain-object AST),
+  `expansion.js` (parameter/command-sub/arithmetic expansion, IFS field
+  splitting, glob application), `interpreter.js` (tree-walking executor, I/O
+  binding/redirection/dup routing, control flow), `commands/{core,fsutil,
+  index}.js` (builtins), `bash.js` (public `Bash` class, mirrors
+  `just-bash-rs::Bash`), `index.js` (barrel). `bash.test.js` covers it
+  end-to-end via `node --test` (29 cases).
+- `apps/workflow-agent/workflow/workflow-js/src/` — `session.js` (host-facing
+  orchestration: WIT imports, `Notifications` self-stub class, the
+  `agentLoop`/`callLlmWithUser` port of `session.rs`/`agent.rs`) and
+  `session-logic.js` (every pure helper with no `obelisk` global and no WIT
+  imports — event/error-text builders, `containsBackgroundStatement`,
+  `shellResultOf`, tool-result encoding — pulled out so it's unit-testable;
+  see `session-logic.test.js`, matching this repo's existing
+  `shared/session-state.js` split).
 - No root `package.json`/`pnpm-workspace.yaml`/`Justfile` `install`/`build-js`
-  targets — there is nothing to build. `just verify` (already present) is the
-  only check needed pre-deploy; add a `test-js-workflow` Justfile target once
-  unit tests exist (plain `node --test`, matching the rest of the repo).
+  targets — there is nothing to build. `just verify` compiles/links/verifies
+  both backends together; `just test-js` runs the new `node --test` suites;
+  `scripts/test-e2e-agent-workflow-js.sh` (wired into `just test-e2e` and
+  `.github/workflows/check.yml`) is a real end-to-end smoke test against an
+  isolated live `obelisk server`.
+- No `boa-polyfills.js`/`node-zlib-shim.js` needed: Phase 1's interpreter has
+  no `TextEncoder`/`crypto.subtle.digest`/gzip dependency yet (those land, if
+  at all, with `hash`/`textutil2` command parity in Phase 2 — `just-bash-rs`
+  doesn't implement gzip/gunzip/zcat either, so those are simply out of
+  scope, matching the old JS version's `WORKFLOW_UNAVAILABLE_COMMANDS`).
 
 ## Phase checklist
 
@@ -108,12 +166,46 @@ core subset session.rs exercises day to day.
       configuration was verified`) — confirms two workflow components under
       distinct FFQN packages coexist cleanly in one deployment.toml. Branch:
       `js-backend`.
-- [ ] Phase 0c: one-time TS→JS type-stripping of `/workspace/just-bash` as
-      reference material for Phase 1/2 (see "De-typing recipe" below) — not
-      committed, regenerate on demand.
-- [ ] Phase 1: interpreter core (lexer/parser/AST/interpreter/VFS) + core
-      session loop (bash-per-session, turn loop, injection racing, llm/chat,
-      session-events). No programs/MCP/mounts/interrupt/step-budget/chat yet.
+- [x] Phase 0c: one-time TS→JS type-stripping of `/workspace/just-bash` as
+      reference material — recipe below; ended up **not needed** in practice.
+      The hand-written interpreter was written directly against
+      `vendor/just-bash-rs`'s behavior/structure instead (closer to the
+      actual command-parity target, and Rust reads more directly as a porting
+      source than detyped TS with a different module layout). The recipe is
+      kept below in case Phase 2's command porting finds it useful for a
+      specific tricky command (e.g. `printf`/`sed` edge cases).
+- [x] Phase 1: interpreter core (lexer/parser/AST/interpreter/VFS, hand-written
+      dependency-free, `vendor/just-bash/`) + core session loop
+      (`workflow/workflow-js/src/session.js` + `session-logic.js`):
+      bash-per-session, turn loop, step-budget nudge/limit (kept in scope,
+      cheap), injection racing on a heterogeneous "user" join set, `llm/chat`
+      completion via `-obelisk-ext`, session-events via self-stub on a
+      "session-events" join set. Deliberately **not yet ported**: programs/
+      MCP/mounts (no `obelisk`/`mcp`/program commands registered — no
+      `[a-zA-Z0-9_-]*` external commands beyond the interpreter's own
+      builtins), `chat` peer sessions, session rename, `ask-user`,
+      per-script watch/timeout (`shell-started` events are not emitted;
+      `dispatch_bash`/direct-shell-input run straight through `bash.exec`
+      with no watchdog or interrupt-offer arming).
+      **Command coverage**: a working core subset (see table below), not yet
+      full `just-bash-rs` parity — that's Phase 2.
+      **Verification**: `node --test` (29 interpreter cases + 9 session-logic
+      cases, all passing) plus a **real e2e run against an isolated live
+      `obelisk server`**
+      (`scripts/test-e2e-agent-workflow-js.sh`, wired into `just test-e2e`
+      and CI): a direct shell turn through the idle input offer runs a real
+      script (`sleep`/`which`/`echo`) and its `shell_output` event projects
+      correctly through the existing `webhook/lib/responses.js`/`runs.js`
+      (proving the snake_case event-shape assumption end to end), and a
+      prompt-driven turn reaches `obelisk-agent:llm/chat.completion`, races
+      it against the injection join-set entry, and surfaces the recoverable
+      `AGENT_MODELS must be a non-empty JSON array` config error as an
+      `agent_error`, returning to idle — this is the single highest-risk part
+      of the whole design (heterogeneous join-set racing in JS) and it now
+      has a real passing regression test, not just a `just verify` compile
+      check. This pulls a slice of Phase 6 ("test parity") forward
+      deliberately, since a live e2e run was the only way to actually
+      retire the snake_case-field-naming and join-set-decoding assumptions.
 - [ ] Phase 2: full command-set parity with `vendor/just-bash-rs/src/commands/`
       (awk, sed, grep, jq, diff, sort/uniq, hash, timeutil, find, fsutil,
       xargs, misc, text/textutil2). Track per-command status in a table below

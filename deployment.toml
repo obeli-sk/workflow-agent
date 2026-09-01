@@ -579,8 +579,10 @@ exec.lock_expiry.seconds = 30
 # JS alternative workflow backend (workflow/workflow-js), same run-cancellable
 # shape as workflow_agent_rs above under the obelisk-agent:workflow-js package
 # so both coexist and callers pick one via the WORKFLOW_FFQN env var (see
-# docs/js-backend-migration.md). Phase 0 scaffold only: replies immediately
-# without running a session; full parity lands in later phases.
+# docs/js-backend-migration.md). Phase 1: a real session loop (hand-written
+# vendor/just-bash interpreter as the bash tool, LLM completion raced against
+# user injection, session-events self-stub notifications). Programs/MCP/
+# mounts/chat/rename/ask-user/per-script watch are later phases.
 [[workflow_js]]
 name = "workflow_agent_js"
 ffqn = "obelisk-agent:workflow-js/workflow.run-cancellable"

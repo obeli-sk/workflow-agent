@@ -46,9 +46,12 @@ test-js:
 
 # All end-to-end suites, each against its own isolated, throwaway obelisk server.
 # See scripts/test-e2e-*.sh; the mcp suite SKIPs when no docker/podman is on PATH.
+# agent-workflow-js covers the JS backend's Phase 1 subset (see
+# docs/js-backend-migration.md); it is not yet full parity with agent-workflow.
 test-e2e:
   ./scripts/test-e2e-bash-workflow.sh
   ./scripts/test-e2e-agent-workflow.sh
+  ./scripts/test-e2e-agent-workflow-js.sh
   ./scripts/test-e2e-chat.sh
   ./scripts/test-e2e-redeploy.sh
   ./scripts/test-e2e-interrupt.sh
