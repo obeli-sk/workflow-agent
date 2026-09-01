@@ -1,10 +1,10 @@
 # JS-only workflow backend: migration notes
 
-Status: **in progress** (Phase 1 done and e2e-verified; Phase 2 command
-parity partially landed — see the tracker below for exactly which commands).
-This doc tracks design decisions and progress for the JS-alternative
-workflow backend so another agent can resume without re-deriving the
-research. Update it after every phase.
+Status: **in progress** (Phases 0-2 done and verified — see the checklist and
+command tracker below; Phase 3 — programs/MCP/mounts — is next). This doc
+tracks design decisions and progress for the JS-alternative workflow backend
+so another agent can resume without re-deriving the research. Update it
+after every phase.
 
 ## Why
 
@@ -207,10 +207,15 @@ core subset session.rs exercises day to day.
       check. This pulls a slice of Phase 6 ("test parity") forward
       deliberately, since a live e2e run was the only way to actually
       retire the snake_case-field-naming and join-set-decoding assumptions.
-- [ ] Phase 2: full command-set parity with `vendor/just-bash-rs/src/commands/`
-      (awk, sed, grep, jq, diff, sort/uniq, hash, timeutil, find, fsutil,
-      xargs, misc, text/textutil2). Track per-command status in a table below
-      as they land.
+- [x] Phase 2: full command-set parity with `vendor/just-bash-rs/src/commands/`
+      landed. The last five families (jq, awk, timeutil, textutil2's
+      remainder, fsutil's chmod/readlink/ln/file/du/tree) were ported by five
+      parallel subagents (each in an isolated `git worktree`, so they
+      couldn't clobber each other's edits) and merged/cherry-picked back in
+      one at a time, then wired into `commands/index.js` centrally to avoid
+      merge conflicts on that shared file. See the tracker below for the
+      per-family detail and the couple of scope notes worth knowing
+      (jq/awk are deliberately-scoped subsets, not full implementations).
 - [ ] Phase 3: `obelisk` pack command + deferred mounts (port of
       `obelisk_pack.rs`), programs registry (`obelisk_program.rs`), MCP
       (`obelisk_mcp.rs`), GitHub components mount (`obelisk_web.rs`), `mount`
@@ -230,29 +235,46 @@ Fill in as commands land; source of truth for scope is
 
 | Command family | just-bash-rs file | JS status |
 |---|---|---|
-| awk | `commands/awk.rs` | not started (largest remaining file, 2886 lines) |
+| awk | `commands/awk.rs` | **done, deliberately scoped** (`commands/awk.js`) — see note below |
 | sed | `commands/sed.rs` | **done** (`commands/sed.js`) — s///, addressing, d/p/q/r |
 | grep/egrep/fgrep | `commands/grep.rs` | **done** (`commands/grep.js`) — full flag set incl. -A/-B/-C/-r/-f/-o |
-| jq | `commands/jq.rs` | not started (2351 lines; likely a deliberately-scoped subset, not full jq) |
+| jq | `commands/jq.rs` | **done, deliberately scoped** (`commands/jq.js`) — see note below |
 | diff | `commands/diff.rs` | **done** (`commands/diff.js`) |
 | find | `commands/find.rs` | **done** (`commands/find.js`) |
-| fsutil (ls/cp/mv/rm/mkdir/...) | `commands/fsutil.rs` | **done** in Phase 1 (`commands/fsutil.js`) |
+| fsutil (ls/cp/mv/rm/mkdir/stat/...) | `commands/fsutil.rs` | **done** — Phase 1 basics plus chmod/readlink/ln/file/du/tree (all in `commands/fsutil.js`) |
 | sort/uniq | `commands/sort_uniq.rs` | **done** (`commands/sort_uniq.js`) — -k/-t/-c, uniq -c/-d/-u/-i |
 | hash (base64/md5sum/sha256sum) | `commands/hash.rs` | **done** (`commands/hash.js` + `utf8.js`) |
-| timeutil (date/time/timeout formatting) | `commands/timeutil.rs` | not started — `date`/`sleep` have a minimal version in `commands/core.js` (epoch/strftime-lite only, no full GNU date parsing/arithmetic) |
+| timeutil (date/expr/sleep/timeout/time) | `commands/timeutil.rs` | **done** (`commands/timeutil.js`) — supersedes Phase 1's minimal `date`/`sleep` in `core.js` (removed) |
 | xargs | `commands/xargs.rs` | **done** (`commands/xargs.js`) |
-| misc (chmod/readlink/ln/file/du/tree/comm/join/...) | `commands/misc.rs` | partial — seq/tee/which/env/printenv/whoami/hostname/help/clear/alias/unalias done (`commands/core.js`/`fsutil.js`); chmod/readlink/ln/file/du/tree not started |
-| text (cut/tr/wc/head/tail/printf/basename/dirname) | `commands/text.rs` | **done** — cut/tr/rev in `commands/text.js`, wc/head/tail/basename/dirname/printf in Phase 1's `core.js`/`fsutil.js` |
-| textutil2 (comm/join/nl/od/fold/expand/unexpand/column/paste/strings/split) | `commands/textutil2.rs` | `rev` done (moved into `commands/text.js` for symmetry with the Rust `text.rs` grouping); comm/join/nl/od/fold/expand/unexpand/column/paste/strings/split not started — `fold`'s tab-width/break-at-space column tracking is the fiddliest of the batch |
+| misc (seq/tee/which/env/alias/help/...) | `commands/misc.rs` | **done** — entirely covered by Phase 1's `core.js`/`fsutil.js`; `misc.rs` itself has no other commands (chmod/readlink/ln/file/du/tree and comm/join actually live in `fsutil.rs`/`textutil2.rs`, not `misc.rs` — the table used to mislabel them here) |
+| text (cut/tr/rev/wc/head/tail/printf/basename/dirname) | `commands/text.rs` | **done** — cut/tr/rev in `commands/text.js`, wc/head/tail/basename/dirname/printf in Phase 1's `core.js`/`fsutil.js` |
+| textutil2 (comm/join/nl/od/fold/expand/unexpand/column/paste/strings/split) | `commands/textutil2.rs` | **done** (`commands/textutil2.js`) — `rev` lives in `text.js` instead, for symmetry with the Rust `text.rs` grouping |
 
-Remaining for a future session, roughly in priority order for an agent shell:
-`jq` (subset, not full jq language), `awk` (subset), `timeutil`'s fuller
-`date`/`time`/`timeout` (today's `date`/`sleep` in `core.js` are minimal:
-UTC-only strftime subset, no relative/`-d`/arithmetic parsing), then the
-remaining `textutil2`/`misc` grab-bag commands (lower value, rarely reached
-for by an agent). 137 `node --test` cases (128 in `vendor/just-bash`, 9 in
-`workflow/workflow-js`) and the live e2e smoke test
+**Scope notes for jq and awk** (both intentionally match the Rust port's own
+already-bounded scope, not full jq/full awk):
+- `jq`: identity/field/index/slice access, `.[]`, `|`, `,`, object/array
+  construction incl. string interpolation, `if/then/elif/else/end`, `//`,
+  `and`/`or`, typed comparisons, arithmetic with jq's per-type rules,
+  `length keys keys_unsorted has empty not type select map add range floor
+  ceil round sqrt abs tostring tonumber fromjson tojson split join`, `@tsv`,
+  `-r/-R/-c/-n/-s/-e/-S`, `--arg`/`--argjson`/etc. Not implemented:
+  `reduce`/`foreach`, `def`, `try/catch` beyond bare `?`, `path()`, `as $x |`
+  binding, most `@format` strings, regex builtins, `input`/`inputs`.
+- `awk`: `BEGIN`/`END`, pattern-action pairs (bare pattern, bare action,
+  `/regex/`, expression), fields `$0..$NF` (read+assign+NF-truncate),
+  `FS`/`-F`, `print`/`printf`, full arithmetic/comparison/logical operators,
+  `if/else while do-while for break continue next exit`, the common builtin
+  functions (`length substr index split sub gsub gensub match toupper
+  tolower sprintf` + math), minimal single-dim arrays. Not implemented:
+  user-defined functions, `getline`, `nextfile`, `for (k in arr)`/`delete`,
+  multi-dim `SUBSEP` arrays, range patterns, output redirection, `-f
+  progfile` (`getline`/`function` are rejected with a clear parse error
+  rather than silently mishandled).
+
+291 `node --test` cases and the live e2e smoke test
 (`scripts/test-e2e-agent-workflow-js.sh`) are green as of this checkpoint.
+Phase 2 is considered complete; any further command-fidelity gaps found
+later are bugs to fix in the relevant file, not missing phases.
 
 Also fixed along the way (both grep and sed depend on it):
 `vendor/just-bash/src/regex-bre.js` translates POSIX BRE to JS RegExp syntax
