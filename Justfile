@@ -42,7 +42,8 @@ test-js:
   node --test activity/github-contents.test.js
   node --test packs/obelisk-control/native-call.test.mjs
   node --test shared/session-state.test.js
-  node --test vendor/just-bash/src/bash.test.js
+  node --test $(find vendor/just-bash/src -name '*.test.js')
+  node --test $(find workflow/workflow-js/src -name '*.test.js')
 
 # All end-to-end suites, each against its own isolated, throwaway obelisk server.
 # See scripts/test-e2e-*.sh; the mcp suite SKIPs when no docker/podman is on PATH.

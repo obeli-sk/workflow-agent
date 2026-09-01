@@ -7,6 +7,8 @@ import { core, ok, fail, unknownOption } from "./core.js";
 import { fsutil } from "./fsutil.js";
 import { base64Command, md5sumCommand, sha256sumCommand } from "./hash.js";
 import { cutCommand, trCommand } from "./text.js";
+import { findCommand } from "./find.js";
+import { xargsCommand } from "./xargs.js";
 
 export const BUILTIN_NAMES = [
     "echo", "printf", "pwd", "cd", "true", "false", ":",
@@ -16,7 +18,7 @@ export const BUILTIN_NAMES = [
     "help", "clear", "basename", "dirname", "source", ".",
     "ls", "cat", "mkdir", "touch", "rm", "rmdir", "cp", "mv",
     "wc", "head", "tail", "sort", "uniq", "tee", "stat", "grep",
-    "base64", "md5sum", "sha256sum", "cut", "tr",
+    "base64", "md5sum", "sha256sum", "cut", "tr", "find", "xargs",
 ];
 
 const handlers = {
@@ -28,6 +30,8 @@ const handlers = {
     sha256sum: sha256sumCommand,
     cut: cutCommand,
     tr: trCommand,
+    find: findCommand,
+    xargs: xargsCommand,
 };
 
 export function dispatch(interp, args, stdin) {

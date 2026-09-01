@@ -311,8 +311,14 @@ function renderPrintf(format, values) {
             const ch = format[i];
             if (ch === "\\") {
                 const c = format[i + 1];
-                const map = { n: "\n", t: "\t", r: "\r", "\\": "\\", "%": "%" };
-                if (c in map) { out += map[c]; i++; } else out += ch;
+                const map = { n: "\n", t: "\t", r: "\r", "\\": "\\", "%": "%", a: "\x07", b: "\b", f: "\f", v: "\v", e: "\x1b" };
+                if (c in map) { out += map[c]; i++; }
+                else if (c >= "0" && c <= "7") {
+                    let j = i + 1, octal = "";
+                    while (j < format.length && j < i + 4 && format[j] >= "0" && format[j] <= "7") { octal += format[j]; j++; }
+                    out += String.fromCharCode(parseInt(octal, 8) & 0xff);
+                    i = j - 1;
+                } else out += ch;
                 continue;
             }
             if (ch === "%" && format[i + 1] === "%") { out += "%"; i++; continue; }
