@@ -576,6 +576,25 @@ exec.lock_expiry.seconds = 30
 ".../vendor/just-bash-rs/src/commands/timeutil.rs" = "vendor/just-bash-rs/src/commands/timeutil.rs"
 ".../vendor/just-bash-rs/src/commands/xargs.rs" = "vendor/just-bash-rs/src/commands/xargs.rs"
 
+# JS alternative workflow backend (workflow/workflow-js), same run-cancellable
+# shape as workflow_agent_rs above under the obelisk-agent:workflow-js package
+# so both coexist and callers pick one via the WORKFLOW_FFQN env var (see
+# docs/js-backend-migration.md). Phase 0 scaffold only: replies immediately
+# without running a session; full parity lands in later phases.
+[[workflow_js]]
+name = "workflow_agent_js"
+ffqn = "obelisk-agent:workflow-js/workflow.run-cancellable"
+location = "workflow/workflow-js/src/session.js"
+params = [
+  { name = "prompt",          type = "string" },
+  { name = "model",           type = "option<string>" },
+  { name = "descriptor-ffqn", type = "option<string>" },
+  { name = "effort",          type = "option<string>" },
+  { name = "name",            type = "option<string>" },
+]
+return_type = "result<_, string>"
+exec.lock_expiry.seconds = 30
+
 [[webhook_endpoint_js]]
 name = "ui-api"
 location = "webhook/ui-api.js"
