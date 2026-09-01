@@ -24,6 +24,50 @@ function expandPosixClasses(bracketContent) {
     return bracketContent.replace(/\[:([a-z]+):\]/g, (m, name) => POSIX_CLASSES[name] ?? m);
 }
 
+// Index one past the `]` that closes the bracket expression starting at
+// `chars[start]` (`[`). Skips over nested `[:class:]`/`[.collating.]`/
+// `[=equiv=]` sub-forms, whose own `]` does not close the outer bracket, and
+// treats a `]` as literal when it is the first character (or right after a
+// leading `^`), matching POSIX bracket-expression syntax.
+function findBracketEnd(chars, start) {
+    let j = start + 1;
+    if (chars[j] === "^") j++;
+    if (chars[j] === "]") j++;
+    while (j < chars.length && chars[j] !== "]") {
+        if (chars[j] === "[" && (chars[j + 1] === ":" || chars[j + 1] === "." || chars[j + 1] === "=")) {
+            const closer = chars[j + 1] + "]";
+            const rest = chars.slice(j + 2).join("");
+            const closeAt = rest.indexOf(closer);
+            j = closeAt === -1 ? j + 2 : j + 2 + closeAt + 2;
+            continue;
+        }
+        j++;
+    }
+    return Math.min(j + 1, chars.length);
+}
+
+// Expand `[:class:]` POSIX classes inside `[...]` bracket expressions,
+// leaving everything else untouched. Needed even in ERE/extended mode since
+// (unlike Rust's `regex` crate) JS RegExp has no native POSIX-class support.
+export function expandPosixBracketClasses(pattern) {
+    const chars = [...pattern];
+    let out = "";
+    let i = 0;
+    while (i < chars.length) {
+        if (chars[i] === "\\" && i + 1 < chars.length) { out += chars[i] + chars[i + 1]; i += 2; continue; }
+        if (chars[i] === "[") {
+            const end = findBracketEnd(chars, i);
+            const raw = chars.slice(i, end).join("");
+            out += `[${expandPosixClasses(raw.slice(1, -1))}]`;
+            i = end;
+            continue;
+        }
+        out += chars[i];
+        i += 1;
+    }
+    return out;
+}
+
 export function translateBre(pattern) {
     const chars = [...pattern];
     let out = "";
@@ -64,11 +108,7 @@ export function translateBre(pattern) {
             continue;
         }
         if (c === "[") {
-            let j = i + 1;
-            if (chars[j] === "^") j++;
-            if (chars[j] === "]") j++;
-            while (j < chars.length && chars[j] !== "]") j++;
-            const end = Math.min(j + 1, chars.length);
+            const end = findBracketEnd(chars, i);
             const raw = chars.slice(i, end).join("");
             out += `[${expandPosixClasses(raw.slice(1, -1))}]`;
             i = end;
