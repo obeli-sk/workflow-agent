@@ -117,7 +117,7 @@ pub fn dispatch(
         "find" => find::find(interp, rest),
         "basename" => text::basename(rest),
         "dirname" => text::dirname(rest),
-        "jq" => jq::jq(rest, stdin),
+        "jq" => jq::jq(interp, rest, stdin),
         "awk" => awk::awk(interp, rest, stdin),
         "date" => timeutil::date(interp, rest),
         "expr" => timeutil::expr(rest),

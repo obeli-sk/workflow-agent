@@ -102,6 +102,18 @@ pub struct Interpreter {
     /// Host-registered commands (see `custom_command.rs`), moved in from
     /// `Bash` for this run and moved back out afterward.
     pub custom_commands: CustomCommands,
+    /// Counter backing each process substitution's anonymous placeholder
+    /// path (`/__just_bash_procsub_N__`).
+    proc_sub_counter: u32,
+    /// `>(script)` substitutions expanded while building the current simple
+    /// command, queued here so `try_run_simple` can run each `script` (with
+    /// its placeholder file's final content as stdin) once the command that
+    /// wrote to it has finished. See `run_pending_process_subs`.
+    pending_output_subs: Vec<(String, Script)>,
+    /// stdin queued for the very next pipeline's first stage, consumed once.
+    /// The only producer today is `run_pending_process_subs` feeding a
+    /// `>(script)`'s captured content to `script`.
+    injected_stdin: Option<String>,
 }
 
 /// A pending `break N` / `continue N`: how many enclosing loops to unwind.
@@ -225,6 +237,67 @@ impl Interpreter {
             now_ms,
             sleep_ms: no_sleep,
             custom_commands,
+            proc_sub_counter: 0,
+            pending_output_subs: Vec::new(),
+            injected_stdin: None,
+        }
+    }
+
+    /// A fresh anonymous path to back one process substitution.
+    fn alloc_proc_sub_path(&mut self) -> String {
+        self.proc_sub_counter += 1;
+        format!("/__just_bash_procsub_{}__", self.proc_sub_counter)
+    }
+
+    /// Expand a `<(script)` / `>(script)` process substitution to the path
+    /// standing in for it. This interpreter runs everything synchronously
+    /// in-process (no real concurrent subprocesses or pipes), so both
+    /// directions are approximated rather than genuinely concurrent:
+    ///
+    /// - `<(script)` runs `script` immediately and seeds the placeholder file
+    ///   with its captured stdout, so whatever reads the path next (almost
+    ///   always the very next command) sees it already populated.
+    /// - `>(script)` seeds an empty placeholder and queues `(path, script)`;
+    ///   the command using the substitution is expected to write to that path
+    ///   itself (typically via `>`), and `try_run_simple` runs `script`
+    ///   afterward with whatever ended up in the file as its stdin, once the
+    ///   write has actually happened.
+    fn expand_process_sub(&mut self, script: &Script, write: bool) -> String {
+        let path = self.alloc_proc_sub_path();
+        if write {
+            let _ = self.fs.write_file(&path, b"");
+            self.pending_output_subs
+                .push((path.clone(), script.clone()));
+        } else {
+            let captured = self.run_captured(&script.statements);
+            let _ = self.fs.write_file(&path, captured.as_bytes());
+        }
+        path
+    }
+
+    /// Run every `>(script)` queued by the command just executed, each fed
+    /// the content its placeholder file ended up holding. Isolated the same
+    /// way `run_captured` isolates a `$(...)`, but writes to the shell's real
+    /// output (bash sends `>(...)`'s own output straight to the terminal, not
+    /// back into the pipeline) rather than being captured.
+    fn run_pending_process_subs(&mut self) {
+        let pending = std::mem::take(&mut self.pending_output_subs);
+        for (path, script) in pending {
+            let content = self
+                .fs
+                .read_file(&path)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default();
+            let saved_control = self.loop_control.take();
+            let saved_depth = self.loop_depth;
+            self.loop_depth = 0;
+            self.injected_stdin = Some(content);
+            for statement in &script.statements {
+                self.run_statement(statement);
+            }
+            self.injected_stdin = None;
+            self.loop_control = saved_control;
+            self.loop_depth = saved_depth;
         }
     }
 
@@ -347,7 +420,10 @@ impl Interpreter {
     }
 
     fn run_pipeline(&mut self, pipeline: &Pipeline) -> i32 {
-        let mut stdin = String::new();
+        // The only source of injected stdin today is a `>(script)` process
+        // substitution feeding its placeholder's content to `script`'s first
+        // pipeline; ordinary pipelines just get "".
+        let mut stdin = self.injected_stdin.take().unwrap_or_default();
         let mut exit_code = 0;
         // `set -o pipefail`: the pipeline's status is the last non-zero
         // command's, not just the final command's.
@@ -579,6 +655,34 @@ impl Interpreter {
                     }
                 }
             }
+            // `{ list; }`: runs right here, so env/cwd/positional mutations
+            // and a `break`/`continue` all reach the enclosing shell/loop
+            // exactly like they would if `list` had been inlined directly.
+            CompoundCommand::Group(body) => {
+                self.run_block(body, true);
+            }
+            // `( list )`: bash forks a child shell for this, so none of
+            // `list`'s mutations (env, cwd, positional params, shell
+            // options) or a stray `break`/`continue` are visible once it
+            // returns -- only its exit status and captured output are (the
+            // latter already handled by `run_compound`'s mark/take-stdout
+            // wrapper around this whole function).
+            CompoundCommand::Subshell(body) => {
+                let saved_env = self.env.clone();
+                let saved_cwd = self.cwd.clone();
+                let saved_positional = self.positional.clone();
+                let saved_options = self.options;
+                let saved_control = self.loop_control.take();
+                let saved_depth = self.loop_depth;
+                self.loop_depth = 0;
+                self.run_block(body, true);
+                self.env = saved_env;
+                self.cwd = saved_cwd;
+                self.positional = saved_positional;
+                self.options = saved_options;
+                self.loop_control = saved_control;
+                self.loop_depth = saved_depth;
+            }
         }
     }
 
@@ -625,14 +729,20 @@ impl Interpreter {
     /// in an argument) into the same `bash: {msg}` / exit 1 shape bash uses
     /// instead of running the command at all.
     fn run_simple(&mut self, cmd: &SimpleCommand, stdin: String) -> CommandOutput {
-        match self.try_run_simple(cmd, stdin) {
+        let result = match self.try_run_simple(cmd, stdin) {
             Ok(result) => result,
             Err(msg) => CommandOutput {
                 stdout: String::new(),
                 stderr: format!("bash: {msg}\n"),
                 exit_code: 1,
             },
+        };
+        // Any `>(script)` substitutions this command's words expanded to have
+        // now had their chance to be written to; run each queued `script`.
+        if !self.pending_output_subs.is_empty() {
+            self.run_pending_process_subs();
         }
+        result
     }
 
     fn try_run_simple(
@@ -640,15 +750,18 @@ impl Interpreter {
         cmd: &SimpleCommand,
         stdin: String,
     ) -> Result<CommandOutput, String> {
-        // Resolve redirections up front. `< file` overrides the piped stdin;
-        // the output plan (`dests`) maps each descriptor to where it points,
-        // seeded with the terminal streams and mutated in source order so
-        // `2>&1 >f` differs from `>f 2>&1`. `file_inits` lists explicit file
-        // targets to truncate/create even if the command writes nothing.
+        // Resolve redirections up front, LEFT TO RIGHT and transactionally:
+        // bash applies each redirection as it's encountered, so a later
+        // redirection that fails (e.g. a missing `<` target) leaves every
+        // earlier one's side effects (a `>` target already truncated) in
+        // place rather than rolling them back. The output plan (`dests`)
+        // maps each descriptor to where it points, seeded with the terminal
+        // streams and mutated in source order so `2>&1 >f` differs from
+        // `>f 2>&1`. `>`/`>>` targets are truncated/created here, immediately,
+        // rather than deferred to `route_output`, so that ordering holds.
         let mut stdin = stdin;
         let mut dests: BTreeMap<u32, OutDest> =
             BTreeMap::from([(1, OutDest::Stdout), (2, OutDest::Stderr)]);
-        let mut file_inits: Vec<(String, bool)> = Vec::new();
         for redirect in &cmd.redirects {
             match &redirect.target {
                 RedirectTarget::File(word) => {
@@ -665,13 +778,31 @@ impl Interpreter {
                                 });
                             }
                         },
-                        RedirectKind::Write => {
-                            dests.insert(redirect.fd, OutDest::File(path.clone()));
-                            file_inits.push((path, false));
-                        }
-                        RedirectKind::Append => {
-                            dests.insert(redirect.fd, OutDest::File(path.clone()));
-                            file_inits.push((path, true));
+                        RedirectKind::Write | RedirectKind::Append => {
+                            let append = matches!(redirect.kind, RedirectKind::Append);
+                            let write = if append {
+                                self.fs.append_file(&path, b"")
+                            } else {
+                                self.fs.write_file(&path, b"")
+                            };
+                            match write {
+                                Err(FsError::IsDirectory(p)) => {
+                                    return Ok(CommandOutput {
+                                        stdout: String::new(),
+                                        stderr: format!("bash: {p}: Is a directory\n"),
+                                        exit_code: 1,
+                                    });
+                                }
+                                Err(FsError::ReadUnavailable(p)) => {
+                                    return Ok(CommandOutput {
+                                        stdout: String::new(),
+                                        stderr: format!("bash: {p}: File body is unavailable\n"),
+                                        exit_code: 1,
+                                    });
+                                }
+                                _ => {}
+                            }
+                            dests.insert(redirect.fd, OutDest::File(path));
                         }
                     }
                 }
@@ -705,7 +836,7 @@ impl Interpreter {
                 stderr: String::new(),
                 exit_code: 0,
             };
-            self.route_output(&mut result, &dests, &file_inits);
+            self.route_output(&mut result, &dests);
             return Ok(result);
         }
 
@@ -723,7 +854,7 @@ impl Interpreter {
                 stderr: String::new(),
                 exit_code: 0,
             };
-            self.route_output(&mut result, &dests, &file_inits);
+            self.route_output(&mut result, &dests);
             return Ok(result);
         }
         // Prefix assignments (`X=1 cmd`) apply only to `cmd`'s environment.
@@ -760,56 +891,27 @@ impl Interpreter {
         }
 
         let mut result = commands::dispatch(self, &args, stdin, scoped);
-        self.route_output(&mut result, &dests, &file_inits);
+        self.route_output(&mut result, &dests);
         Ok(result)
     }
 
     /// Route a finished command's stdout (fd 1) and stderr (fd 2) through the
-    /// redirection plan built in `try_run_simple`. Explicit file targets are
-    /// truncated/created first (in source order, so `> f` empties `f` even
-    /// when nothing is written), then each descriptor's captured content is
-    /// sent wherever it now points. A directory target is reported on stderr.
-    fn route_output(
-        &mut self,
-        result: &mut CommandOutput,
-        dests: &BTreeMap<u32, OutDest>,
-        file_inits: &[(String, bool)],
-    ) {
+    /// redirection plan built in `try_run_simple`. File targets were already
+    /// truncated/created transactionally as their redirections were parsed
+    /// (see the comment there); this only appends the command's captured
+    /// output to wherever each descriptor ended up pointing.
+    fn route_output(&mut self, result: &mut CommandOutput, dests: &BTreeMap<u32, OutDest>) {
         let raw_out = std::mem::take(&mut result.stdout);
         let raw_err = std::mem::take(&mut result.stderr);
         let mut new_out = String::new();
         let mut new_err = String::new();
-
-        let mut failed = std::collections::BTreeSet::new();
-        for (path, append) in file_inits {
-            let write = if *append {
-                self.fs.append_file(path, b"")
-            } else {
-                self.fs.write_file(path, b"")
-            };
-            match write {
-                Err(FsError::IsDirectory(p)) => {
-                    new_err.push_str(&format!("bash: {p}: Is a directory\n"));
-                    result.exit_code = 1;
-                    failed.insert(path.clone());
-                }
-                Err(FsError::ReadUnavailable(p)) => {
-                    new_err.push_str(&format!("bash: {p}: File body is unavailable\n"));
-                    result.exit_code = 1;
-                    failed.insert(path.clone());
-                }
-                _ => {}
-            }
-        }
 
         for (fd, content) in [(1u32, raw_out), (2u32, raw_err)] {
             match dests.get(&fd).cloned().unwrap_or_else(|| default_dest(fd)) {
                 OutDest::Stdout => new_out.push_str(&content),
                 OutDest::Stderr => new_err.push_str(&content),
                 OutDest::File(path) => {
-                    if !failed.contains(&path) {
-                        let _ = self.fs.append_file(&path, content.as_bytes());
-                    }
+                    let _ = self.fs.append_file(&path, content.as_bytes());
                 }
             }
         }
@@ -833,6 +935,9 @@ impl Interpreter {
                 WordPart::Arith { expr, .. } => {
                     let n = arithmetic::eval(expr, &mut self.env)?;
                     out.push_str(&n.to_string());
+                }
+                WordPart::ProcessSub { script, write } => {
+                    out.push_str(&self.expand_process_sub(script, *write));
                 }
             }
         }
@@ -885,6 +990,11 @@ impl Interpreter {
                     } else {
                         Segment::splittable(value)
                     }
+                }
+                // Never split/globbed: it's always our own synthetic path,
+                // never containing whitespace or glob metacharacters.
+                WordPart::ProcessSub { script, write } => {
+                    Segment::anchor(self.expand_process_sub(script, *write))
                 }
             };
             segments.push(segment);

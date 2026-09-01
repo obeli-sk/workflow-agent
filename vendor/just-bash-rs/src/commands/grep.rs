@@ -91,9 +91,11 @@ fn run(
         before: 0,
         after: 0,
     };
-    let mut pattern: Option<String> = None;
+    let mut patterns: Vec<String> = Vec::new();
+    let mut explicit_pattern_source = false;
     let mut files: Vec<String> = Vec::new();
     let mut parse_options = true;
+    let mut had_stdin_read = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -106,7 +108,46 @@ fn run(
         if parse_options && arg.starts_with('-') && arg != "-" {
             if arg == "-e" && i + 1 < args.len() {
                 i += 1;
-                pattern = Some(args[i].clone());
+                patterns.extend(args[i].split('\n').map(str::to_string));
+                explicit_pattern_source = true;
+                i += 1;
+                continue;
+            }
+            if arg == "-f" && i + 1 < args.len() {
+                i += 1;
+                match read_pattern_file(interp, &args[i], &stdin, &mut had_stdin_read) {
+                    Ok(lines) => patterns.extend(lines),
+                    Err(err) => return err,
+                }
+                explicit_pattern_source = true;
+                i += 1;
+                continue;
+            }
+            if let Some(file) = arg.strip_prefix("--file=") {
+                match read_pattern_file(interp, file, &stdin, &mut had_stdin_read) {
+                    Ok(lines) => patterns.extend(lines),
+                    Err(err) => return err,
+                }
+                explicit_pattern_source = true;
+                i += 1;
+                continue;
+            }
+            if arg == "--file" && i + 1 < args.len() {
+                i += 1;
+                match read_pattern_file(interp, &args[i], &stdin, &mut had_stdin_read) {
+                    Ok(lines) => patterns.extend(lines),
+                    Err(err) => return err,
+                }
+                explicit_pattern_source = true;
+                i += 1;
+                continue;
+            }
+            if let Some(file) = arg.strip_prefix("-f").filter(|s| !s.is_empty()) {
+                match read_pattern_file(interp, file, &stdin, &mut had_stdin_read) {
+                    Ok(lines) => patterns.extend(lines),
+                    Err(err) => return err,
+                }
+                explicit_pattern_source = true;
                 i += 1;
                 continue;
             }
@@ -190,8 +231,8 @@ fn run(
                 }
             }
             i += 1;
-        } else if pattern.is_none() {
-            pattern = Some(arg.clone());
+        } else if !explicit_pattern_source && patterns.is_empty() {
+            patterns.push(arg.clone());
             i += 1;
         } else {
             files.push(arg.clone());
@@ -199,23 +240,38 @@ fn run(
         }
     }
 
-    let Some(pattern) = pattern else {
+    if patterns.is_empty() && !explicit_pattern_source {
         return fail("grep: missing pattern\n".to_string(), 2);
-    };
+    }
 
-    let re = match build_regex(
-        &pattern,
-        mode,
-        opts.ignore_case,
-        opts.whole_word,
-        opts.line_regexp,
-    ) {
-        Some(re) => re,
-        None => return fail(format!("grep: invalid regular expression: {pattern}\n"), 2),
+    // An empty pattern list (e.g. an empty -f file, with no -e patterns)
+    // selects nothing: no output, no per-file diagnostics, exit 1 (unless -v).
+    let res: Vec<Regex> = if patterns.is_empty() {
+        Vec::new()
+    } else {
+        match build_regexes(
+            &patterns,
+            mode,
+            opts.ignore_case,
+            opts.whole_word,
+            opts.line_regexp,
+        ) {
+            Some(res) => res,
+            None => {
+                return fail(
+                    format!(
+                        "grep: invalid regular expression: {}\n",
+                        patterns.join("\n")
+                    ),
+                    2,
+                );
+            }
+        }
     };
 
     if files.is_empty() {
-        let (output, matched, _) = search(&stdin, &re, &opts, "");
+        let content = if had_stdin_read { String::new() } else { stdin };
+        let (output, matched, _) = search(&content, &res, &opts, "");
         if opts.quiet {
             return CommandOutput {
                 stdout: String::new(),
@@ -230,38 +286,58 @@ fn run(
         };
     }
 
-    // Expand -r/-R directories into a flat file list.
+    // Expand -r/-R directories into a flat file list. `-` is a literal
+    // operand naming standard input, never a directory to recurse into.
     let mut targets: Vec<String> = Vec::new();
+    let mut has_file_target = false;
     for file in &files {
-        if opts.recursive {
+        if file == "-" {
+            targets.push(file.clone());
+        } else if opts.recursive {
+            has_file_target = true;
             collect_recursive(interp, file, &mut targets);
         } else {
+            has_file_target = true;
             targets.push(file.clone());
         }
     }
 
-    let show_filename = (targets.len() > 1 || opts.recursive) && !opts.no_filename;
+    let show_filename =
+        (targets.len() > 1 || (opts.recursive && has_file_target)) && !opts.no_filename;
     let mut stdout = String::new();
     let mut stderr = String::new();
     let mut any_match = false;
     let mut any_error = false;
+    let mut stdin_consumed = had_stdin_read;
 
     for file in &targets {
-        let path = normalize_path(&interp.cwd, file);
-        if interp.fs.is_dir(&path) {
-            if !opts.recursive {
-                stderr.push_str(&format!("grep: {file}: Is a directory\n"));
+        const STDIN_FILENAME: &str = "(standard input)";
+        let content = if file == "-" {
+            let text = if stdin_consumed {
+                String::new()
+            } else {
+                stdin.clone()
+            };
+            stdin_consumed = true;
+            text
+        } else {
+            let path = normalize_path(&interp.cwd, file);
+            if interp.fs.is_dir(&path) {
+                if !opts.recursive {
+                    stderr.push_str(&format!("grep: {file}: Is a directory\n"));
+                }
+                continue;
             }
-            continue;
-        }
-        let Some(bytes) = interp.fs.read_file(&path) else {
-            stderr.push_str(&format!("grep: {file}: No such file or directory\n"));
-            any_error = true;
-            continue;
+            let Some(bytes) = interp.fs.read_file(&path) else {
+                stderr.push_str(&format!("grep: {file}: No such file or directory\n"));
+                any_error = true;
+                continue;
+            };
+            String::from_utf8_lossy(&bytes).into_owned()
         };
-        let content = String::from_utf8_lossy(&bytes);
-        let name = if show_filename { file.as_str() } else { "" };
-        let (output, matched, _) = search(&content, &re, &opts, name);
+        let display_name = if file == "-" { STDIN_FILENAME } else { file };
+        let name = if show_filename { display_name } else { "" };
+        let (output, matched, _) = search(&content, &res, &opts, name);
         if matched {
             any_match = true;
             if opts.quiet {
@@ -272,23 +348,24 @@ fn run(
                 };
             }
             if opts.files_with_matches {
-                stdout.push_str(file);
+                stdout.push_str(display_name);
                 stdout.push('\n');
             } else if !opts.files_without_match {
                 stdout.push_str(&output);
             }
         } else if opts.files_without_match {
-            stdout.push_str(file);
+            stdout.push_str(display_name);
             stdout.push('\n');
         } else if opts.count_only && !opts.files_with_matches {
             stdout.push_str(&output);
         }
     }
 
+    // Exit status reports whether a line was *selected*, never whether a
+    // filename was *printed* -- -L shares the ordinary rule (verified
+    // against GNU grep 3.12 / BSD grep 2.6.0-FreeBSD).
     let exit_code = if any_error {
         2
-    } else if opts.files_without_match {
-        if stdout.is_empty() { 1 } else { 0 }
     } else if any_match {
         0
     } else {
@@ -332,8 +409,10 @@ fn collect_recursive(interp: &Interpreter, root: &str, out: &mut Vec<String>) {
 }
 
 /// Search `content` line by line, returning `(formatted_output, any_match,
-/// match_count)`. `filename` is `""` to suppress the `file:` prefix.
-fn search(content: &str, re: &Regex, opts: &Opts, filename: &str) -> (String, bool, usize) {
+/// match_count)`. `filename` is `""` to suppress the `file:` prefix. An empty
+/// `patterns` slice (an empty `-f` pattern file with no `-e`/positional
+/// pattern) never matches any line.
+fn search(content: &str, patterns: &[Regex], opts: &Opts, filename: &str) -> (String, bool, usize) {
     let mut lines: Vec<&str> = content.split('\n').collect();
     if lines.last() == Some(&"") {
         lines.pop();
@@ -342,7 +421,7 @@ fn search(content: &str, re: &Regex, opts: &Opts, filename: &str) -> (String, bo
     let mut matched_flags = vec![false; lines.len()];
     let mut match_count = 0usize;
     for (i, line) in lines.iter().enumerate() {
-        let is_match = re.is_match(line);
+        let is_match = patterns.iter().any(|re| re.is_match(line));
         let selected = if opts.invert { !is_match } else { is_match };
         if selected {
             matched_flags[i] = true;
@@ -395,7 +474,13 @@ fn search(content: &str, re: &Regex, opts: &Opts, filename: &str) -> (String, bo
         }
         let sep = if matched_flags[i] { ':' } else { '-' };
         if opts.only_matching {
-            for m in re.find_iter(line) {
+            let mut matches: Vec<(usize, &str)> = patterns
+                .iter()
+                .flat_map(|re| re.find_iter(line))
+                .map(|m| (m.start(), m.as_str()))
+                .collect();
+            matches.sort_by_key(|(start, _)| *start);
+            for (_, text) in matches {
                 if !filename.is_empty() {
                     out.push_str(filename);
                     out.push(sep);
@@ -404,7 +489,7 @@ fn search(content: &str, re: &Regex, opts: &Opts, filename: &str) -> (String, bo
                     out.push_str(&(i + 1).to_string());
                     out.push(sep);
                 }
-                out.push_str(m.as_str());
+                out.push_str(text);
                 out.push('\n');
             }
         } else {
@@ -422,6 +507,54 @@ fn search(content: &str, re: &Regex, opts: &Opts, filename: &str) -> (String, bo
         prev_printed = Some(i);
     }
     (out, any_match, match_count)
+}
+
+/// Reads pattern lines for `-f`/`--file`. `name == "-"` reads stdin (only the
+/// first such read sees its content; a repeated `-f -` hits EOF, matching
+/// `Interpreter`'s single-consumer stdin stream). Returns a GNU-style
+/// diagnostic (exit 2) for a missing file or a directory.
+fn read_pattern_file(
+    interp: &mut Interpreter,
+    name: &str,
+    stdin: &str,
+    stdin_read: &mut bool,
+) -> Result<Vec<String>, CommandOutput> {
+    if name == "-" {
+        if *stdin_read {
+            return Ok(Vec::new());
+        }
+        *stdin_read = true;
+        return Ok(stdin.lines().map(str::to_string).collect());
+    }
+    let path = normalize_path(&interp.cwd, name);
+    if interp.fs.is_dir(&path) {
+        return Err(fail(format!("grep: {name}: Is a directory\n"), 2));
+    }
+    let Some(bytes) = interp.fs.read_file(&path) else {
+        return Err(fail(
+            format!("grep: {name}: No such file or directory\n"),
+            2,
+        ));
+    };
+    let content = String::from_utf8_lossy(&bytes);
+    Ok(content.lines().map(str::to_string).collect())
+}
+
+/// Compiles each pattern individually (rather than joining them into one
+/// alternation) so a malformed pattern can't silently swallow the separator
+/// and absorb its neighbour, and so `-x`'s `^(?:...)$` wrap anchors each
+/// alternative rather than only the first/last.
+fn build_regexes(
+    patterns: &[String],
+    mode: Mode,
+    ignore_case: bool,
+    whole_word: bool,
+    line_regexp: bool,
+) -> Option<Vec<Regex>> {
+    patterns
+        .iter()
+        .map(|p| build_regex(p, mode, ignore_case, whole_word, line_regexp))
+        .collect()
 }
 
 fn build_regex(
@@ -770,5 +903,78 @@ mod tests {
             .unwrap();
         let r = run(&mut bash, "grep -E '^[[:alpha:]]+$' /test.txt");
         assert_eq!(r.stdout, "abc\n");
+    }
+
+    #[test]
+    fn dash_operand_reads_stdin() {
+        let mut bash = fresh();
+        let r = run(&mut bash, "printf 'hello world\\nbye\\n' | grep hello -");
+        assert_eq!(r.stdout, "hello world\n");
+        assert_eq!(r.exit_code, 0);
+    }
+
+    #[test]
+    fn dash_operand_labels_standard_input_alongside_a_real_file() {
+        let mut bash = fresh();
+        bash.fs_mut()
+            .write_file("/a.txt", b"needle in a\n")
+            .unwrap();
+        let r = run(
+            &mut bash,
+            "printf 'needle in stdin\\n' | grep needle /a.txt -",
+        );
+        assert_eq!(
+            r.stdout,
+            "/a.txt:needle in a\n(standard input):needle in stdin\n"
+        );
+    }
+
+    #[test]
+    fn files_without_match_exit_code_follows_gnu_not_output() {
+        let mut bash = fresh();
+        // Every file matches: -L prints nothing but still exits 0.
+        bash.fs_mut().write_file("/a.txt", b"needle\n").unwrap();
+        let r = run(&mut bash, "grep -L needle /a.txt");
+        assert_eq!(r.stdout, "");
+        assert_eq!(r.exit_code, 0);
+
+        // No file matches: -L lists it but exits 1.
+        bash.fs_mut().write_file("/b.txt", b"nothing\n").unwrap();
+        let r = run(&mut bash, "grep -L needle /b.txt");
+        assert_eq!(r.stdout, "/b.txt\n");
+        assert_eq!(r.exit_code, 1);
+    }
+
+    #[test]
+    fn dash_f_reads_patterns_from_file_and_ors_them() {
+        let mut bash = fresh();
+        bash.fs_mut()
+            .write_file("/pat.txt", b"apple\nbanana\n")
+            .unwrap();
+        bash.fs_mut()
+            .write_file("/hay.txt", b"apple pie\ncherry\nbanana split\n")
+            .unwrap();
+        let r = run(&mut bash, "grep -f /pat.txt /hay.txt");
+        assert_eq!(r.stdout, "apple pie\nbanana split\n");
+        assert_eq!(r.exit_code, 0);
+    }
+
+    #[test]
+    fn dash_f_combines_with_dash_x_to_anchor_every_alternative() {
+        let mut bash = fresh();
+        bash.fs_mut().write_file("/pat.txt", b"foo\nbar\n").unwrap();
+        bash.fs_mut()
+            .write_file("/data.txt", b"foo\nbar\nfoobar\n")
+            .unwrap();
+        let r = run(&mut bash, "grep -x -f /pat.txt /data.txt");
+        assert_eq!(r.stdout, "foo\nbar\n");
+    }
+
+    #[test]
+    fn missing_pattern_file_is_an_error() {
+        let mut bash = fresh();
+        let r = run(&mut bash, "grep -f /missing.txt /hay.txt");
+        assert_eq!(r.stderr, "grep: /missing.txt: No such file or directory\n");
+        assert_eq!(r.exit_code, 2);
     }
 }

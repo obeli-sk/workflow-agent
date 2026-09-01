@@ -72,6 +72,9 @@ enum Token {
     /// holds three `;`-separated expressions, isn't rejected by the
     /// single-expression arithmetic parser at lex time.
     DParen(String),
+    /// `( ... )`: a subshell. The raw text between the parens, parsed lazily
+    /// as its own script by the AST parser (mirroring `DParen`).
+    Paren(String),
 }
 
 struct Lexer {
@@ -165,7 +168,18 @@ impl Lexer {
                     let body = self.read_double_paren_body()?;
                     tokens.push(Token::DParen(body));
                 }
-                Some('<') => {
+                // A bare `(` (not `((`, and not `<(`/`>(` process
+                // substitution, both already claimed above/below) starts a
+                // subshell. A lone `(` is otherwise never valid word content
+                // in bash, so claiming it unconditionally here is safe.
+                Some('(') => {
+                    self.bump();
+                    let body = self.read_paren_body()?;
+                    tokens.push(Token::Paren(body));
+                }
+                // `<(` / `>(` is process substitution, a word (an argument),
+                // not a redirection operator -- fall through to read_word.
+                Some('<') if self.peek2() != Some('(') => {
                     self.bump();
                     if self.peek() == Some('&') {
                         self.bump();
@@ -174,7 +188,7 @@ impl Lexer {
                         tokens.push(Token::Less);
                     }
                 }
-                Some('>') => {
+                Some('>') if self.peek2() != Some('(') => {
                     self.bump();
                     if self.peek() == Some('>') {
                         self.bump();
@@ -246,6 +260,18 @@ impl Lexer {
 
         loop {
             match self.peek() {
+                // `<(script)` / `>(script)`: process substitution, part of
+                // the word rather than the redirect operator it looks like.
+                Some(write @ ('<' | '>')) if self.peek2() == Some('(') => {
+                    flush!();
+                    self.bump(); // < or >
+                    self.bump(); // (
+                    let body = self.read_paren_body()?;
+                    parts.push(WordPart::ProcessSub {
+                        script: parse(&body)?,
+                        write: write == '>',
+                    });
+                }
                 None | Some(' ' | '\t' | '\n' | ';' | '&' | '|' | '<' | '>') => break,
                 Some('\'') => {
                     flush!();
@@ -278,14 +304,22 @@ impl Lexer {
                     parts.push(self.read_backtick(false)?);
                 }
                 Some('\\') => {
-                    flush!();
                     self.bump();
                     match self.bump() {
                         None => return err("trailing backslash"),
-                        Some('\n') => {} // line continuation
+                        // A line continuation vanishes entirely (not even a
+                        // word-part boundary), so a reserved word split by one
+                        // (`wh\<newline>ile`) still lexes as a single Literal
+                        // part and is recognized as the `while` keyword.
+                        Some('\n') => {}
                         // A backslash-escaped char is quoted: never a glob
-                        // wildcard even when the surrounding word is unquoted.
-                        Some(c) => parts.push(WordPart::QuotedLiteral(c.to_string())),
+                        // wildcard even when the surrounding word is unquoted,
+                        // and its own part so an escaped reserved word
+                        // (`\time`) never single-part-matches the keyword.
+                        Some(c) => {
+                            flush!();
+                            parts.push(WordPart::QuotedLiteral(c.to_string()));
+                        }
                     }
                 }
                 Some(c) => {
@@ -746,6 +780,14 @@ impl Parser {
                 crate::arithmetic::parse(&body).map_err(|e| ParseError { message: e.message })?;
             return Ok(Command::Arith(expr));
         }
+        if matches!(self.peek(), Some(Token::Paren(_))) {
+            let Some(Token::Paren(body)) = self.bump() else {
+                unreachable!()
+            };
+            return Ok(Command::Compound(CompoundCommand::Subshell(
+                parse(&body)?.statements,
+            )));
+        }
         // A reserved word in command position starts a compound command.
         let compound = match self.peek() {
             Some(Token::Word(w)) => compound_keyword(w),
@@ -758,6 +800,12 @@ impl Parser {
                 "while" => self.parse_while(false),
                 "until" => self.parse_while(true),
                 "case" => self.parse_case(),
+                "{" => {
+                    self.bump();
+                    let body = self.parse_statement_list(&["}"])?;
+                    self.expect_keyword("}")?;
+                    Ok(Command::Compound(CompoundCommand::Group(body)))
+                }
                 // A terminator keyword here has no opening construct.
                 _ => err(format!("syntax error near unexpected token `{kw}`")),
             };
@@ -999,16 +1047,22 @@ impl Parser {
     /// Pattern list up to the clause-opening `)`. The `)` may ride on the last
     /// pattern's word (`*finished*)`) or stand alone. Only an *unquoted* `)`
     /// terminates: quoted parens are literal pattern text.
+    ///
+    /// An optional leading `(` may wrap the whole list (`( foo|bar )`); the
+    /// lexer's subshell handling already captured that span as one
+    /// `Token::Paren` (its raw text is exactly the pattern list, since the
+    /// wrapping paren's own close is the same paren that would otherwise
+    /// terminate the list), so that case is handled separately by re-lexing
+    /// the captured body rather than falling through to the loop below.
     fn parse_case_patterns(&mut self) -> Result<Vec<Word>, ParseError> {
+        if matches!(self.peek(), Some(Token::Paren(_))) {
+            let Some(Token::Paren(body)) = self.bump() else {
+                unreachable!()
+            };
+            return parse_pattern_list_body(&body);
+        }
         let mut patterns = Vec::new();
         loop {
-            // Optional leading `(` around the first pattern.
-            if patterns.is_empty()
-                && matches!(self.peek(), Some(Token::Word(w)) if word_literal(w) == Some("("))
-            {
-                self.bump();
-                continue;
-            }
             match self.peek() {
                 Some(Token::Word(_)) => {
                     let Some(Token::Word(mut word)) = self.bump() else {
@@ -1035,7 +1089,6 @@ impl Parser {
         }
     }
 
-    /// Arm body: statements until `;;` or `esac`, mirroring
     /// `parse_statement_list` with an extra terminator token.
     fn parse_case_body(&mut self) -> Result<Vec<Statement>, ParseError> {
         let mut statements = Vec::new();
@@ -1118,6 +1171,8 @@ fn compound_keyword(word: &Word) -> Option<&'static str> {
         "done" => Some("done"),
         "case" => Some("case"),
         "esac" => Some("esac"),
+        "{" => Some("{"),
+        "}" => Some("}"),
         _ => None,
     }
 }
@@ -1126,6 +1181,31 @@ fn compound_keyword(word: &Word) -> Option<&'static str> {
 /// `case` clause opener riding on a pattern (`*finished*)`). Returns false
 /// when the word does not end in an unquoted `)`, leaving it untouched. A
 /// quoted `)` (`QuotedLiteral`) is pattern text, not a terminator.
+/// Re-lexes the raw text captured by an optional-leading-paren-wrapped case
+/// pattern list (`( foo|bar )`, whose `( ... )` span the lexer already
+/// captured whole as a `Token::Paren`) as a plain `word (`|` word)*` pattern
+/// list, since that span never had its own closing-paren terminator to find.
+fn parse_pattern_list_body(body: &str) -> Result<Vec<Word>, ParseError> {
+    let tokens = Lexer::new(body).tokenize()?;
+    let mut patterns = Vec::new();
+    let mut expect_word = true;
+    for token in tokens {
+        match token {
+            Token::Word(w) if expect_word => {
+                patterns.push(w);
+                expect_word = false;
+            }
+            Token::Pipe if !expect_word => expect_word = true,
+            Token::Newline => {}
+            _ => return err("expected a pattern in `case` clause"),
+        }
+    }
+    if patterns.is_empty() || expect_word {
+        return err("expected a pattern in `case` clause");
+    }
+    Ok(patterns)
+}
+
 fn split_trailing_rparen(word: &mut Word) -> bool {
     let ends = matches!(word.last(), Some(WordPart::Literal(s)) if s.ends_with(')'));
     if !ends {
@@ -1271,11 +1351,13 @@ fn extract_here_docs(source: &str) -> Result<(String, Vec<HereDoc>), ParseError>
                 }
                 line_index += 1;
             }
-            if !terminated {
-                return err(format!(
-                    "here-document delimited by end-of-file (wanted `{}`)",
-                    spec.delimiter
-                ));
+            // Bash does not error on a heredoc that runs off the end of the
+            // script without its closing delimiter: it just executes with
+            // whatever was collected, completing an unterminated final line
+            // with the newline it's missing (`cat <<EOF\nbody` -> "body\n";
+            // `cat <<EOF` with nothing after -> empty input).
+            if !terminated && !body.is_empty() && !body.ends_with('\n') {
+                body.push('\n');
             }
             let body = if spec.expand {
                 parse_here_doc_body(&body)?
@@ -1526,6 +1608,9 @@ fn replace_here_docs_in_command(command: &mut Command, here_docs: &[HereDoc]) {
                 replace_here_docs_in_statements(&mut arm.body, here_docs);
             }
         }
+        Command::Compound(CompoundCommand::Group(body) | CompoundCommand::Subshell(body)) => {
+            replace_here_docs_in_statements(body, here_docs);
+        }
         Command::Arith(_) => {}
     }
 }
@@ -1542,8 +1627,11 @@ fn replace_here_docs_in_statements(statements: &mut [Statement], here_docs: &[He
 
 fn replace_here_docs_in_word(word: &mut Word, here_docs: &[HereDoc]) {
     for part in word {
-        if let WordPart::CommandSub { script, .. } = part {
-            replace_here_docs(script, here_docs);
+        match part {
+            WordPart::CommandSub { script, .. } | WordPart::ProcessSub { script, .. } => {
+                replace_here_docs(script, here_docs);
+            }
+            _ => {}
         }
     }
 }
@@ -1720,6 +1808,31 @@ mod tests {
     fn stray_terminator_is_a_syntax_error() {
         assert!(parse("then echo hi").is_err());
         assert!(parse("if true; then echo hi").is_err());
+    }
+
+    #[test]
+    fn escaped_reserved_word_is_a_plain_command_name() {
+        // `\if` is the literal command name "if", not the `if` keyword, so
+        // this must fail to parse (no matching `then`/`fi`), not succeed as
+        // a conditional. The word itself is two parts (an escaped `i` plus
+        // the literal `f`), which is what defeats the single-part keyword
+        // check in `word_literal`/`compound_keyword`.
+        let script = parse(r"\if").unwrap();
+        let cmd = simple(&script.statements[0].pipelines[0].commands[0]);
+        assert_eq!(cmd.words, vec![vec![qlit("i"), lit("f")]]);
+        assert!(parse(r"\if true; then echo hi; fi").is_err());
+    }
+
+    #[test]
+    fn reserved_word_split_by_a_line_continuation_still_recognized() {
+        // A backslash-newline is a continuation that vanishes entirely
+        // before tokenization proper, so `wh\<newline>ile` is indistinguishable
+        // from `while` -- it must still lex as a single Literal part.
+        let script = parse("wh\\\nile true; do echo hi; break; done").unwrap();
+        assert!(matches!(
+            &script.statements[0].pipelines[0].commands[0],
+            Command::Compound(CompoundCommand::While { .. })
+        ));
     }
 
     #[test]

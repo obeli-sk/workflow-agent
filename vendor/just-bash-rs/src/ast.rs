@@ -80,6 +80,13 @@ pub enum CompoundCommand {
     /// `case subject in pat|pat) body;; ... esac`. First matching arm wins;
     /// no fallthrough (`;&` / `;;&` are not modelled).
     Case { subject: Word, arms: Vec<CaseArm> },
+    /// `{ list; }`: a group. Runs in the CURRENT shell (env/cwd mutations and
+    /// `break`/`continue` all escape it), unlike `Subshell`.
+    Group(Vec<Statement>),
+    /// `( list )`: a subshell. Runs `list` against a snapshot of env/cwd/
+    /// positional params/shell options, restoring the original afterward, so
+    /// none of its mutations (nor a stray `break`/`continue`) escape it.
+    Subshell(Vec<Statement>),
 }
 
 /// One `case` arm: any-of patterns plus the body run on the first match.
@@ -163,6 +170,11 @@ pub enum WordPart {
         expr: crate::arithmetic::ArithExpr,
         quoted: bool,
     },
+    /// `<(script)` or `>(script)`: process substitution. Expands to the path
+    /// of an anonymous file the interpreter backs with `script`'s output
+    /// (`write: false`) or arranges to feed `script`'s stdin (`write: true`);
+    /// see `Interpreter::expand_word`'s `ProcessSub` arm.
+    ProcessSub { script: Script, write: bool },
 }
 
 impl Script {
@@ -212,6 +224,9 @@ fn command_has_background(command: &Command) -> bool {
             CompoundCommand::Case { arms, .. } => arms
                 .iter()
                 .any(|arm| arm.body.iter().any(statement_has_background)),
+            CompoundCommand::Group(body) | CompoundCommand::Subshell(body) => {
+                body.iter().any(statement_has_background)
+            }
         },
     }
 }

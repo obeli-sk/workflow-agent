@@ -21,9 +21,18 @@
 //! select map add range floor ceil round sqrt abs tostring tonumber fromjson tojson split
 //! join`. CLI flags: `-r`/`-R`/`-c`/`-n`/`-s`/`-e`/`--tab`/`-S`.
 //!
+//! External-argument variables: `$NAME` resolves an argument bound via
+//! `--arg`/`--argjson`/`--rawfile`/`--slurpfile`, or the builtin `$ARGS`
+//! (`{positional, named}`) populated by those plus `--args`/`--jsonargs`.
+//! This is *only* the external-binding surface, not general variable
+//! binding: `... as $x |` still isn't supported (there is nowhere to
+//! introduce a new binding mid-filter), so `$NAME` is a lookup into the
+//! fixed external-argument map threaded through `evaluate`, never a pattern
+//! target.
+//!
 //! Explicitly out of scope (skipped, not started): `reduce`/`foreach`,
 //! custom `def`, `try`/`catch` (bare `?` is supported, full `try` is not),
-//! `path()`/`paths`, variables (`... as $x |`), `@base64`/`@csv`-style format
+//! `path()`/`paths`, `... as $x |` binding, `@base64`/`@csv`-style format
 //! strings, module imports, `input`/`inputs` streaming,
 //! regex builtins (`test`/`match`/`sub`/`gsub`/`capture`), and resource
 //! other `@` format strings, and resource limits (upstream's
@@ -32,7 +41,7 @@
 use serde_json::{Map, Number, Value};
 
 use super::{fail, ok};
-use crate::interpreter::CommandOutput;
+use crate::interpreter::{CommandOutput, Interpreter};
 
 // ============================================================================
 // AST
@@ -54,6 +63,9 @@ enum Filter {
     ArrayConstruct(Option<Box<Filter>>),
     ObjectConstruct(Vec<(ObjKey, Filter)>),
     Call(String, Vec<Filter>),
+    /// `$NAME`: looks up an external argument bound via `--arg`/`--argjson`/
+    /// `--rawfile`/`--slurpfile`, or the builtin `$ARGS`.
+    Var(String),
     Neg(Box<Filter>),
     BinOp(&'static str, Box<Filter>, Box<Filter>),
     And(Box<Filter>, Box<Filter>),
@@ -461,6 +473,13 @@ impl Parser {
                 } else {
                     Err(format!("unsupported format '@{name}'"))
                 }
+            }
+            Some('$') => {
+                self.pos += 1;
+                if !matches!(self.peek(), Some(c) if c.is_alphabetic() || c == '_') {
+                    return Err(format!("expected a variable name at position {}", self.pos));
+                }
+                Ok(Filter::Var(self.read_ident()))
             }
             Some(c) if c.is_ascii_digit() => self.parse_number(),
             Some(c) if c.is_alphabetic() || c == '_' => {
@@ -1022,11 +1041,11 @@ fn format_tsv(value: &Value) -> Result<String, String> {
         .map(|fields| fields.join("\t"))
 }
 
-fn evaluate(filter: &Filter, value: &Value) -> EResult {
+fn evaluate(filter: &Filter, value: &Value, vars: &Map<String, Value>) -> EResult {
     match filter {
         Filter::Identity => Ok(vec![value.clone()]),
         Filter::Field(base, name) => {
-            let bases = evaluate(base, value)?;
+            let bases = evaluate(base, value, vars)?;
             let mut out = Vec::with_capacity(bases.len());
             for b in bases {
                 match &b {
@@ -1040,8 +1059,8 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
             Ok(out)
         }
         Filter::Index(base, idx) => {
-            let bases = evaluate(base, value)?;
-            let idxs = evaluate(idx, value)?;
+            let bases = evaluate(base, value, vars)?;
+            let idxs = evaluate(idx, value, vars)?;
             let mut out = Vec::with_capacity(bases.len() * idxs.len().max(1));
             for b in &bases {
                 for i in &idxs {
@@ -1051,7 +1070,7 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
             Ok(out)
         }
         Filter::Iterate(base) => {
-            let bases = evaluate(base, value)?;
+            let bases = evaluate(base, value, vars)?;
             let mut out = Vec::new();
             for b in bases {
                 match b {
@@ -1063,16 +1082,16 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
             Ok(out)
         }
         Filter::Slice(base, lo, hi) => {
-            let bases = evaluate(base, value)?;
+            let bases = evaluate(base, value, vars)?;
             let los = match lo {
-                Some(f) => evaluate(f, value)?
+                Some(f) => evaluate(f, value, vars)?
                     .into_iter()
                     .map(|v| Some(as_f64(&v)))
                     .collect(),
                 None => vec![None],
             };
             let his = match hi {
-                Some(f) => evaluate(f, value)?
+                Some(f) => evaluate(f, value, vars)?
                     .into_iter()
                     .map(|v| Some(as_f64(&v)))
                     .collect(),
@@ -1088,18 +1107,18 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
             }
             Ok(out)
         }
-        Filter::Optional(inner) => Ok(evaluate(inner, value).unwrap_or_default()),
+        Filter::Optional(inner) => Ok(evaluate(inner, value, vars).unwrap_or_default()),
         Filter::Pipe(l, r) => {
-            let lvals = evaluate(l, value)?;
+            let lvals = evaluate(l, value, vars)?;
             let mut out = Vec::new();
             for v in lvals {
-                out.extend(evaluate(r, &v)?);
+                out.extend(evaluate(r, &v, vars)?);
             }
             Ok(out)
         }
         Filter::Comma(l, r) => {
-            let mut out = evaluate(l, value)?;
-            out.extend(evaluate(r, value)?);
+            let mut out = evaluate(l, value, vars)?;
+            out.extend(evaluate(r, value, vars)?);
             Ok(out)
         }
         Filter::Literal(v) => Ok(vec![v.clone()]),
@@ -1113,7 +1132,7 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
                         }
                     }
                     StrPart::Expr(f) => {
-                        let vals = evaluate(f, value)?;
+                        let vals = evaluate(f, value, vars)?;
                         let mut next = Vec::with_capacity(acc.len() * vals.len().max(1));
                         for a in &acc {
                             for v in &vals {
@@ -1132,7 +1151,7 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
         },
         Filter::ArrayConstruct(inner) => match inner {
             None => Ok(vec![Value::Array(vec![])]),
-            Some(f) => Ok(vec![Value::Array(evaluate(f, value)?)]),
+            Some(f) => Ok(vec![Value::Array(evaluate(f, value, vars)?)]),
         },
         Filter::ObjectConstruct(pairs) => {
             // Cartesian product across all pairs' (possibly multi-valued) keys/values.
@@ -1140,7 +1159,7 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
             for (key, value_filter) in pairs {
                 let keys: Vec<String> = match key {
                     ObjKey::Literal(s) => vec![s.clone()],
-                    ObjKey::Dynamic(kf) => evaluate(kf, value)?
+                    ObjKey::Dynamic(kf) => evaluate(kf, value, vars)?
                         .into_iter()
                         .map(|v| match v {
                             Value::String(s) => Ok(s),
@@ -1148,7 +1167,7 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
                         })
                         .collect::<Result<Vec<_>, String>>()?,
                 };
-                let vals = evaluate(value_filter, value)?;
+                let vals = evaluate(value_filter, value, vars)?;
                 let mut next =
                     Vec::with_capacity(objs.len() * keys.len().max(1) * vals.len().max(1));
                 for obj in &objs {
@@ -1164,9 +1183,13 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
             }
             Ok(objs.into_iter().map(Value::Object).collect())
         }
-        Filter::Call(name, args) => eval_call(name, args, value),
+        Filter::Call(name, args) => eval_call(name, args, value, vars),
+        Filter::Var(name) => vars
+            .get(name)
+            .map(|v| vec![v.clone()])
+            .ok_or_else(|| format!("${name} is not defined")),
         Filter::Neg(inner) => {
-            let vals = evaluate(inner, value)?;
+            let vals = evaluate(inner, value, vars)?;
             vals.into_iter()
                 .map(|v| match v {
                     Value::Number(_) => Ok(num(-as_f64(&v))),
@@ -1175,8 +1198,8 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
                 .collect()
         }
         Filter::BinOp(op, l, r) => {
-            let lvals = evaluate(l, value)?;
-            let rvals = evaluate(r, value)?;
+            let lvals = evaluate(l, value, vars)?;
+            let rvals = evaluate(r, value, vars)?;
             let mut out = Vec::with_capacity(lvals.len() * rvals.len().max(1));
             for lv in &lvals {
                 for rv in &rvals {
@@ -1186,50 +1209,50 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
             Ok(out)
         }
         Filter::And(l, r) => {
-            let lvals = evaluate(l, value)?;
+            let lvals = evaluate(l, value, vars)?;
             let mut out = Vec::new();
             for lv in lvals {
                 if !is_truthy(&lv) {
                     out.push(Value::Bool(false));
                     continue;
                 }
-                for rv in evaluate(r, value)? {
+                for rv in evaluate(r, value, vars)? {
                     out.push(Value::Bool(is_truthy(&rv)));
                 }
             }
             Ok(out)
         }
         Filter::Or(l, r) => {
-            let lvals = evaluate(l, value)?;
+            let lvals = evaluate(l, value, vars)?;
             let mut out = Vec::new();
             for lv in lvals {
                 if is_truthy(&lv) {
                     out.push(Value::Bool(true));
                     continue;
                 }
-                for rv in evaluate(r, value)? {
+                for rv in evaluate(r, value, vars)? {
                     out.push(Value::Bool(is_truthy(&rv)));
                 }
             }
             Ok(out)
         }
         Filter::Alt(l, r) => {
-            let lvals = evaluate(l, value).unwrap_or_default();
+            let lvals = evaluate(l, value, vars).unwrap_or_default();
             let nonnull: Vec<Value> = lvals.into_iter().filter(is_truthy).collect();
             if !nonnull.is_empty() {
                 Ok(nonnull)
             } else {
-                evaluate(r, value)
+                evaluate(r, value, vars)
             }
         }
         Filter::If(cond, then_b, else_b) => {
-            let conds = evaluate(cond, value)?;
+            let conds = evaluate(cond, value, vars)?;
             let mut out = Vec::new();
             for c in conds {
                 if is_truthy(&c) {
-                    out.extend(evaluate(then_b, value)?);
+                    out.extend(evaluate(then_b, value, vars)?);
                 } else {
-                    out.extend(evaluate(else_b, value)?);
+                    out.extend(evaluate(else_b, value, vars)?);
                 }
             }
             Ok(out)
@@ -1237,11 +1260,15 @@ fn evaluate(filter: &Filter, value: &Value) -> EResult {
     }
 }
 
-fn one_arg(args: &[Filter], value: &Value) -> Result<Vec<Value>, String> {
-    evaluate(&args[0], value)
+fn one_arg(
+    args: &[Filter],
+    value: &Value,
+    vars: &Map<String, Value>,
+) -> Result<Vec<Value>, String> {
+    evaluate(&args[0], value, vars)
 }
 
-fn eval_call(name: &str, args: &[Filter], value: &Value) -> EResult {
+fn eval_call(name: &str, args: &[Filter], value: &Value, vars: &Map<String, Value>) -> EResult {
     match name {
         "empty" => Ok(vec![]),
         "not" => Ok(vec![Value::Bool(!is_truthy(value))]),
@@ -1270,7 +1297,7 @@ fn eval_call(name: &str, args: &[Filter], value: &Value) -> EResult {
             other => Err(format!("{} has no keys", type_name(other))),
         },
         "has" => {
-            let keys = one_arg(args, value)?;
+            let keys = one_arg(args, value, vars)?;
             keys.into_iter()
                 .map(|k| match (value, &k) {
                     (Value::Object(m), Value::String(s)) => Ok(Value::Bool(m.contains_key(s))),
@@ -1283,7 +1310,7 @@ fn eval_call(name: &str, args: &[Filter], value: &Value) -> EResult {
                 .collect()
         }
         "select" => {
-            let conds = evaluate(&args[0], value)?;
+            let conds = evaluate(&args[0], value, vars)?;
             let mut out = Vec::new();
             for c in conds {
                 if is_truthy(&c) {
@@ -1296,7 +1323,7 @@ fn eval_call(name: &str, args: &[Filter], value: &Value) -> EResult {
             Value::Array(a) => {
                 let mut out = Vec::new();
                 for item in a {
-                    out.extend(evaluate(&args[0], item)?);
+                    out.extend(evaluate(&args[0], item, vars)?);
                 }
                 Ok(vec![Value::Array(out)])
             }
@@ -1314,16 +1341,16 @@ fn eval_call(name: &str, args: &[Filter], value: &Value) -> EResult {
         },
         "range" => {
             let (from, to, by) = match args.len() {
-                1 => (0.0, as_f64(&one_arg(args, value)?.remove(0)), 1.0),
+                1 => (0.0, as_f64(&one_arg(args, value, vars)?.remove(0)), 1.0),
                 2 => {
-                    let a = evaluate(&args[0], value)?;
-                    let b = evaluate(&args[1], value)?;
+                    let a = evaluate(&args[0], value, vars)?;
+                    let b = evaluate(&args[1], value, vars)?;
                     (as_f64(&a[0]), as_f64(&b[0]), 1.0)
                 }
                 _ => {
-                    let a = evaluate(&args[0], value)?;
-                    let b = evaluate(&args[1], value)?;
-                    let c = evaluate(&args[2], value)?;
+                    let a = evaluate(&args[0], value, vars)?;
+                    let b = evaluate(&args[1], value, vars)?;
+                    let c = evaluate(&args[2], value, vars)?;
                     (as_f64(&a[0]), as_f64(&b[0]), as_f64(&c[0]))
                 }
             };
@@ -1375,7 +1402,7 @@ fn eval_call(name: &str, args: &[Filter], value: &Value) -> EResult {
         )]),
         "split" => match value {
             Value::String(s) => {
-                let sep = one_arg(args, value)?;
+                let sep = one_arg(args, value, vars)?;
                 let sep = match sep.first() {
                     Some(Value::String(s)) => s.clone(),
                     _ => return Err("split() separator must be a string".to_string()),
@@ -1396,7 +1423,7 @@ fn eval_call(name: &str, args: &[Filter], value: &Value) -> EResult {
         },
         "join" => match value {
             Value::Array(a) => {
-                let sep = one_arg(args, value)?;
+                let sep = one_arg(args, value, vars)?;
                 let sep = match sep.first() {
                     Some(Value::String(s)) => s.clone(),
                     _ => return Err("join() separator must be a string".to_string()),
@@ -1518,7 +1545,31 @@ struct JqOptions {
     sort_keys: bool,
 }
 
-pub fn jq(args: &[String], stdin: String) -> CommandOutput {
+/// Error result for external-argument option parsing failures. jq uses exit
+/// code 2 for command-line option errors.
+fn jq_arg_error(message: &str) -> CommandOutput {
+    fail(format!("jq: {message}\n"), 2)
+}
+
+/// Parses a single `--argjson`/`--jsonargs` value, requiring it to decode to
+/// exactly one JSON value (matching upstream's `parseJsonStream` check).
+fn parse_one_json(text: &str) -> Option<Value> {
+    let mut stream = serde_json::Deserializer::from_str(text.trim()).into_iter::<Value>();
+    let first = stream.next()?.ok()?;
+    if stream.next().is_some() {
+        return None;
+    }
+    Some(first)
+}
+
+#[derive(PartialEq)]
+enum PositionalMode {
+    None,
+    Args,
+    JsonArgs,
+}
+
+pub fn jq(interp: &mut Interpreter, args: &[String], stdin: String) -> CommandOutput {
     let mut opts = JqOptions {
         raw: false,
         raw_input: false,
@@ -1529,8 +1580,13 @@ pub fn jq(args: &[String], stdin: String) -> CommandOutput {
         sort_keys: false,
     };
     let mut filter_text: Option<String> = None;
-    for arg in args {
-        match arg.as_str() {
+    let mut named: Map<String, Value> = Map::new();
+    let mut positional: Vec<Value> = Vec::new();
+    let mut positional_mode = PositionalMode::None;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        match arg {
             "-r" | "--raw-output" => opts.raw = true,
             "-R" | "--raw-input" => opts.raw_input = true,
             "-c" | "--compact-output" => opts.compact = true,
@@ -1538,6 +1594,79 @@ pub fn jq(args: &[String], stdin: String) -> CommandOutput {
             "-s" | "--slurp" => opts.slurp = true,
             "-e" | "--exit-status" => opts.exit_status = true,
             "-S" | "--sort-keys" => opts.sort_keys = true,
+            "--arg" => {
+                let (Some(name), Some(value)) = (args.get(i + 1), args.get(i + 2)) else {
+                    return jq_arg_error("--arg takes two parameters (e.g. --arg varname value)");
+                };
+                named.insert(name.clone(), Value::String(value.clone()));
+                i += 2;
+            }
+            "--argjson" => {
+                let (Some(name), Some(json)) = (args.get(i + 1), args.get(i + 2)) else {
+                    return jq_arg_error(
+                        "--argjson takes two parameters (e.g. --argjson varname text)",
+                    );
+                };
+                let Some(parsed) = parse_one_json(json) else {
+                    return jq_arg_error("invalid JSON text passed to --argjson");
+                };
+                named.insert(name.clone(), parsed);
+                i += 2;
+            }
+            "--rawfile" => {
+                let (Some(name), Some(file)) = (args.get(i + 1), args.get(i + 2)) else {
+                    return jq_arg_error(
+                        "--rawfile takes two parameters (e.g. --rawfile varname filename)",
+                    );
+                };
+                let path = super::normalize_path(&interp.cwd, file);
+                let Some(bytes) = interp.fs.read_file(&path) else {
+                    return jq_arg_error(&format!("{file}: No such file or directory"));
+                };
+                named.insert(
+                    name.clone(),
+                    Value::String(String::from_utf8_lossy(&bytes).into_owned()),
+                );
+                i += 2;
+            }
+            "--slurpfile" => {
+                let (Some(name), Some(file)) = (args.get(i + 1), args.get(i + 2)) else {
+                    return jq_arg_error(
+                        "--slurpfile takes two parameters (e.g. --slurpfile varname filename)",
+                    );
+                };
+                let path = super::normalize_path(&interp.cwd, file);
+                let Some(bytes) = interp.fs.read_file(&path) else {
+                    return jq_arg_error(&format!("{file}: No such file or directory"));
+                };
+                let text = String::from_utf8_lossy(&bytes);
+                let trimmed = text.trim();
+                let values = if trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    let mut stream =
+                        serde_json::Deserializer::from_str(trimmed).into_iter::<Value>();
+                    let mut values = Vec::new();
+                    let mut ok = true;
+                    for item in &mut stream {
+                        match item {
+                            Ok(v) => values.push(v),
+                            Err(_) => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !ok {
+                        return jq_arg_error("invalid JSON text passed to --slurpfile");
+                    }
+                    values
+                };
+                named.insert(name.clone(), Value::Array(values));
+                i += 2;
+            }
+            "--args" => positional_mode = PositionalMode::Args,
+            "--jsonargs" => positional_mode = PositionalMode::JsonArgs,
             _ if arg.starts_with('-') && arg.len() > 1 && !arg.starts_with("--") => {
                 for c in arg[1..].chars() {
                     match c {
@@ -1552,10 +1681,30 @@ pub fn jq(args: &[String], stdin: String) -> CommandOutput {
                     }
                 }
             }
-            _ if filter_text.is_none() => filter_text = Some(arg.clone()),
+            // The first non-option token is always the filter, even once a
+            // positional mode has already been enabled by --args/--jsonargs.
+            _ if filter_text.is_none() => filter_text = Some(arg.to_string()),
+            _ if positional_mode == PositionalMode::Args => {
+                positional.push(Value::String(arg.to_string()));
+            }
+            _ if positional_mode == PositionalMode::JsonArgs => {
+                let Some(parsed) = parse_one_json(arg) else {
+                    return jq_arg_error("invalid JSON text passed to --jsonargs");
+                };
+                positional.push(parsed);
+            }
             _ => return fail(format!("jq: unexpected argument '{arg}'\n"), 2),
         }
+        i += 1;
     }
+    let mut vars = named.clone();
+    vars.insert(
+        "ARGS".to_string(),
+        Value::Object(Map::from_iter([
+            ("positional".to_string(), Value::Array(positional)),
+            ("named".to_string(), Value::Object(named)),
+        ])),
+    );
     // No positional filter defaults to identity `.`, matching upstream jq.
     let filter_text = filter_text.unwrap_or_else(|| ".".to_string());
 
@@ -1595,7 +1744,7 @@ pub fn jq(args: &[String], stdin: String) -> CommandOutput {
 
     let mut outputs = Vec::new();
     for input in &inputs {
-        match evaluate(&filter, input) {
+        match evaluate(&filter, input, &vars) {
             Ok(vs) => outputs.extend(vs),
             Err(e) => return fail(format!("jq: error: {e}\n"), 5),
         }
@@ -2074,6 +2223,118 @@ mod tests {
         let r = run(&mut bash, r#"echo '{"a":1}' | jq"#);
         assert_eq!(r.stdout, "{\n  \"a\": 1\n}\n");
         assert_eq!(r.exit_code, 0);
+    }
+
+    // ---- external-argument flags (--arg/--argjson/--rawfile/--slurpfile/--args/--jsonargs) ----
+
+    #[test]
+    fn arg_binds_a_string() {
+        let mut bash = fresh();
+        let r = run(
+            &mut bash,
+            r#"jq -n --arg name World '{greeting: ("Hello " + $name)}'"#,
+        );
+        assert_eq!(r.stdout, "{\n  \"greeting\": \"Hello World\"\n}\n");
+        assert_eq!(r.exit_code, 0);
+    }
+
+    #[test]
+    fn arg_always_binds_a_string_even_for_numeric_text() {
+        let mut bash = fresh();
+        let r = run(&mut bash, r#"jq -n --arg x 5 '$x'"#);
+        assert_eq!(r.stdout, "\"5\"\n");
+    }
+
+    #[test]
+    fn multiple_arg_populate_args_named_in_order() {
+        let mut bash = fresh();
+        let r = run(
+            &mut bash,
+            r#"jq -cn --arg a foo --arg b bar --arg c baz '$ARGS.named'"#,
+        );
+        assert_eq!(r.stdout, "{\"a\":\"foo\",\"b\":\"bar\",\"c\":\"baz\"}\n");
+    }
+
+    #[test]
+    fn argjson_binds_a_decoded_value() {
+        let mut bash = fresh();
+        let r = run(&mut bash, r#"jq -n --argjson x 5 '$x'"#);
+        assert_eq!(r.stdout, "5\n");
+        let r = run(&mut bash, r#"jq -n --argjson x '{"a":1}' '$x.a'"#);
+        assert_eq!(r.stdout, "1\n");
+    }
+
+    #[test]
+    fn argjson_invalid_json_errors_exit_two() {
+        let mut bash = fresh();
+        let r = run(&mut bash, r#"jq -n --argjson x notjson '$x'"#);
+        assert_eq!(r.stderr, "jq: invalid JSON text passed to --argjson\n");
+        assert_eq!(r.exit_code, 2);
+    }
+
+    #[test]
+    fn rawfile_binds_raw_file_contents() {
+        let mut bash = fresh();
+        let r = run(
+            &mut bash,
+            "printf 'line1\\nline2\\n' > rf.txt && jq -n --rawfile r rf.txt '$r'",
+        );
+        assert_eq!(r.stdout, "\"line1\\nline2\\n\"\n");
+    }
+
+    #[test]
+    fn slurpfile_binds_array_of_json_values() {
+        let mut bash = fresh();
+        let r = run(
+            &mut bash,
+            "printf '1 2 3\\n' > sf.json && jq -cn --slurpfile s sf.json '$s'",
+        );
+        assert_eq!(r.stdout, "[1,2,3]\n");
+    }
+
+    #[test]
+    fn slurpfile_missing_file_errors_exit_two() {
+        let mut bash = fresh();
+        let r = run(&mut bash, r#"jq -n --slurpfile s nope.json '$s'"#);
+        assert_eq!(r.exit_code, 2);
+    }
+
+    #[test]
+    fn args_flag_collects_string_positionals() {
+        let mut bash = fresh();
+        let r = run(&mut bash, "jq -cn '$ARGS.positional' --args a b c");
+        assert_eq!(r.stdout, "[\"a\",\"b\",\"c\"]\n");
+    }
+
+    #[test]
+    fn jsonargs_flag_collects_decoded_positionals() {
+        let mut bash = fresh();
+        let r = run(
+            &mut bash,
+            r#"jq -cn '$ARGS.positional' --jsonargs 1 '"x"' true"#,
+        );
+        assert_eq!(r.stdout, "[1,\"x\",true]\n");
+    }
+
+    #[test]
+    fn args_and_named_populate_both_args_fields() {
+        let mut bash = fresh();
+        let r = run(&mut bash, "jq -cn '$ARGS' --arg k v --args a b");
+        assert_eq!(
+            r.stdout,
+            "{\"positional\":[\"a\",\"b\"],\"named\":{\"k\":\"v\"}}\n"
+        );
+    }
+
+    #[test]
+    fn missing_arg_operand_errors_exit_two() {
+        let mut bash = fresh();
+        let r = run(&mut bash, "jq -n --arg x");
+        assert_eq!(
+            r.stderr,
+            "jq: --arg takes two parameters (e.g. --arg varname value)\n"
+        );
+        assert_eq!(r.exit_code, 2);
     }
 
     // ---- string interpolation ----

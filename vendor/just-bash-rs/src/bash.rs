@@ -508,6 +508,27 @@ mod tests {
     }
 
     #[test]
+    fn unterminated_heredoc_runs_with_whatever_was_collected() {
+        let mut bash = fresh();
+        // No closing delimiter before the script ends: bash completes the
+        // partial final line rather than erroring.
+        let r = run(&mut bash, "cat <<EOF\nbody");
+        assert_eq!(r.stdout, "body\n");
+        assert_eq!(r.exit_code, 0);
+
+        // Nothing at all after the opener.
+        let r = run(&mut bash, "cat <<EOF");
+        assert_eq!(r.stdout, "");
+        assert_eq!(r.exit_code, 0);
+
+        // A trailing unquoted backslash at the cutoff is a continuation with
+        // nothing to continue onto, so it (and the newline completing the
+        // line) vanish entirely rather than becoming a literal backslash.
+        let r = run(&mut bash, "cat <<EOF\nbody\\");
+        assert_eq!(r.stdout, "body");
+    }
+
+    #[test]
     fn cat_missing_file_reports_error() {
         let mut bash = fresh();
         let out = run(&mut bash, "cat nope.txt");
@@ -532,6 +553,100 @@ mod tests {
         let mut bash = fresh();
         run(&mut bash, "echo hi | cat > out");
         assert_eq!(run(&mut bash, "cat out").stdout, "hi\n");
+    }
+
+    #[test]
+    fn process_substitution_input_feeds_a_file_argument() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "cat <(echo hi)");
+        assert_eq!(out.stdout, "hi\n");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn process_substitution_input_works_with_multiple_substitutions() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "diff <(echo a) <(echo b)");
+        assert_eq!(out.exit_code, 1);
+        assert!(out.stdout.contains("-a"));
+        assert!(out.stdout.contains("+b"));
+    }
+
+    #[test]
+    fn process_substitution_output_receives_what_is_written_to_it() {
+        let mut bash = fresh();
+        run(&mut bash, "echo out | tee >(cat > sink) > /dev/null");
+        assert_eq!(run(&mut bash, "cat sink").stdout, "out\n");
+    }
+
+    #[test]
+    fn subshell_isolates_variable_and_directory_mutations() {
+        let mut bash = fresh();
+        run(&mut bash, "mkdir -p /tmp");
+        let start_cwd = run(&mut bash, "pwd").stdout;
+        let out = run(
+            &mut bash,
+            r#"X=outer; (X=inner; cd /tmp; echo "in:$X:$PWD"); echo "out:$X:$PWD""#,
+        );
+        assert_eq!(
+            out.stdout,
+            format!("in:inner:/tmp\nout:outer:{}", start_cwd)
+        );
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn subshell_composes_its_stdout_in_a_pipeline() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "(echo a; echo b) | cat");
+        assert_eq!(out.stdout, "a\nb\n");
+    }
+
+    #[test]
+    fn subshell_exit_code_is_its_last_command() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "(true; false); echo \"status:$?\"");
+        assert_eq!(out.stdout, "status:1\n");
+    }
+
+    #[test]
+    fn subshell_break_does_not_escape_to_an_enclosing_loop() {
+        let mut bash = fresh();
+        let out = run(
+            &mut bash,
+            r#"for i in 1 2 3; do ( [ "$i" = 2 ] && break ); echo "i:$i"; done"#,
+        );
+        assert_eq!(out.stdout, "i:1\ni:2\ni:3\n");
+    }
+
+    #[test]
+    fn group_shares_the_enclosing_shells_variables_and_directory() {
+        let mut bash = fresh();
+        run(&mut bash, "mkdir -p /tmp");
+        let out = run(
+            &mut bash,
+            r#"X=outer; { X=inner; cd /tmp; echo "in:$X:$PWD"; }; echo "out:$X:$PWD""#,
+        );
+        assert_eq!(out.stdout, "in:inner:/tmp\nout:inner:/tmp\n");
+    }
+
+    #[test]
+    fn group_break_reaches_an_enclosing_loop() {
+        let mut bash = fresh();
+        // Unlike a subshell, a group's `break` unwinds the enclosing `for`
+        // immediately, so the `echo` after the group for i=2 never runs.
+        let out = run(
+            &mut bash,
+            r#"for i in 1 2 3; do { [ "$i" = 2 ] && break; }; echo "i:$i"; done"#,
+        );
+        assert_eq!(out.stdout, "i:1\n");
+    }
+
+    #[test]
+    fn case_pattern_optional_wrapping_parens_still_work() {
+        let mut bash = fresh();
+        let out = run(&mut bash, "case foo in ( foo|bar ) echo P;; esac");
+        assert_eq!(out.stdout, "P\n");
     }
 
     #[test]
@@ -576,6 +691,26 @@ mod tests {
         // `> f 2>&1`: fd2 follows fd1 to the file, so the error lands in f.
         run(&mut bash, "ls /nope > f 2>&1");
         assert!(run(&mut bash, "cat f").stdout.contains("cannot access"));
+    }
+
+    #[test]
+    fn redirections_apply_transactionally_left_to_right() {
+        let mut bash = fresh();
+        // `> out` truncates/creates `out` as it's parsed, before the later
+        // `< nosuch` fails -- bash processes redirections in source order and
+        // does not roll back earlier ones when a later one fails.
+        run(&mut bash, "echo keep > out");
+        let cmd_result = run(&mut bash, "cat > out < nosuch");
+        assert_eq!(cmd_result.exit_code, 1);
+        assert!(cmd_result.stderr.contains("No such file or directory"));
+        assert_eq!(run(&mut bash, "cat out").stdout, "");
+
+        // The opposite order: the failing `<` comes first, so the `>` target
+        // is never reached and is left untouched.
+        run(&mut bash, "echo keep > out2");
+        let cmd_result = run(&mut bash, "cat < nosuch > out2");
+        assert_eq!(cmd_result.exit_code, 1);
+        assert_eq!(run(&mut bash, "cat out2").stdout, "keep\n");
     }
 
     #[test]
