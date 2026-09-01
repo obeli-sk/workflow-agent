@@ -34,6 +34,7 @@ test-rs:
 # Activities: unit tests for the curl and chat programs' flag handling, plus
 # the GitHub contents mount transport (symlink resolution).
 # Shared session-state projection (sidebar + chat state).
+# vendor/just-bash: the hand-written JS bash interpreter (JS workflow backend).
 test-js:
   node --test webhook/ui/shell.test.js
   node --test activity/curl.test.js
@@ -41,6 +42,7 @@ test-js:
   node --test activity/github-contents.test.js
   node --test packs/obelisk-control/native-call.test.mjs
   node --test shared/session-state.test.js
+  node --test vendor/just-bash/src/bash.test.js
 
 # All end-to-end suites, each against its own isolated, throwaway obelisk server.
 # See scripts/test-e2e-*.sh; the mcp suite SKIPs when no docker/podman is on PATH.
