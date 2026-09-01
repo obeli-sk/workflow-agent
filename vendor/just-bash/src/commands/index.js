@@ -10,6 +10,7 @@ import { cutCommand, trCommand } from "./text.js";
 import { findCommand } from "./find.js";
 import { xargsCommand } from "./xargs.js";
 import { diffCommand } from "./diff.js";
+import { sedCommand } from "./sed.js";
 
 export const BUILTIN_NAMES = [
     "echo", "printf", "pwd", "cd", "true", "false", ":",
@@ -19,7 +20,7 @@ export const BUILTIN_NAMES = [
     "help", "clear", "basename", "dirname", "source", ".",
     "ls", "cat", "mkdir", "touch", "rm", "rmdir", "cp", "mv",
     "wc", "head", "tail", "sort", "uniq", "tee", "stat", "grep",
-    "base64", "md5sum", "sha256sum", "cut", "tr", "find", "xargs", "diff",
+    "base64", "md5sum", "sha256sum", "cut", "tr", "find", "xargs", "diff", "sed",
 ];
 
 const handlers = {
@@ -34,6 +35,7 @@ const handlers = {
     find: findCommand,
     xargs: xargsCommand,
     diff: diffCommand,
+    sed: sedCommand,
 };
 
 export function dispatch(interp, args, stdin) {
