@@ -1,9 +1,10 @@
 # JS-only workflow backend: migration notes
 
-Status: **in progress** (Phase 1 done, e2e-verified). This doc tracks design
-decisions and progress for the JS-alternative workflow backend so another
-agent can resume without re-deriving the research. Update it after every
-phase.
+Status: **in progress** (Phase 1 done and e2e-verified; Phase 2 command
+parity partially landed — see the tracker below for exactly which commands).
+This doc tracks design decisions and progress for the JS-alternative
+workflow backend so another agent can resume without re-deriving the
+research. Update it after every phase.
 
 ## Why
 
@@ -240,9 +241,18 @@ Fill in as commands land; source of truth for scope is
 | hash (base64/md5sum/sha256sum) | `commands/hash.rs` | **done** (`commands/hash.js` + `utf8.js`) |
 | timeutil (date/time/timeout formatting) | `commands/timeutil.rs` | not started — `date`/`sleep` have a minimal version in `commands/core.js` (epoch/strftime-lite only, no full GNU date parsing/arithmetic) |
 | xargs | `commands/xargs.rs` | **done** (`commands/xargs.js`) |
-| misc (chmod/readlink/ln/file/du/tree/alias/comm/join/...) | `commands/misc.rs` | partial — seq/tee/which/env/printenv/whoami/hostname/help/clear done in Phase 1 (`commands/core.js`/`fsutil.js`); alias/unalias and the rest not started |
-| text (cut/tr/wc/head/tail/printf/basename/dirname) | `commands/text.rs` | **done** — cut/tr in `commands/text.js`, wc/head/tail/basename/dirname/printf in Phase 1's `core.js`/`fsutil.js` |
-| textutil2 (comm/join/nl/od/rev/fold/expand/unexpand/column/paste/strings/split) | `commands/textutil2.rs` | not started |
+| misc (chmod/readlink/ln/file/du/tree/comm/join/...) | `commands/misc.rs` | partial — seq/tee/which/env/printenv/whoami/hostname/help/clear/alias/unalias done (`commands/core.js`/`fsutil.js`); chmod/readlink/ln/file/du/tree not started |
+| text (cut/tr/wc/head/tail/printf/basename/dirname) | `commands/text.rs` | **done** — cut/tr/rev in `commands/text.js`, wc/head/tail/basename/dirname/printf in Phase 1's `core.js`/`fsutil.js` |
+| textutil2 (comm/join/nl/od/fold/expand/unexpand/column/paste/strings/split) | `commands/textutil2.rs` | `rev` done (moved into `commands/text.js` for symmetry with the Rust `text.rs` grouping); comm/join/nl/od/fold/expand/unexpand/column/paste/strings/split not started — `fold`'s tab-width/break-at-space column tracking is the fiddliest of the batch |
+
+Remaining for a future session, roughly in priority order for an agent shell:
+`jq` (subset, not full jq language), `awk` (subset), `timeutil`'s fuller
+`date`/`time`/`timeout` (today's `date`/`sleep` in `core.js` are minimal:
+UTC-only strftime subset, no relative/`-d`/arithmetic parsing), then the
+remaining `textutil2`/`misc` grab-bag commands (lower value, rarely reached
+for by an agent). 137 `node --test` cases (128 in `vendor/just-bash`, 9 in
+`workflow/workflow-js`) and the live e2e smoke test
+(`scripts/test-e2e-agent-workflow-js.sh`) are green as of this checkpoint.
 
 Also fixed along the way (both grep and sed depend on it):
 `vendor/just-bash/src/regex-bre.js` translates POSIX BRE to JS RegExp syntax
