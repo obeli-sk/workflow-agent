@@ -21,6 +21,7 @@ export const BUILTIN_NAMES = [
     "help", "clear", "alias", "unalias", "basename", "dirname", "source", ".",
     "ls", "cat", "mkdir", "touch", "rm", "rmdir", "cp", "mv",
     "wc", "head", "tail", "sort", "uniq", "tee", "stat",
+    "chmod", "readlink", "ln", "file", "du", "tree",
     "grep", "egrep", "fgrep",
     "base64", "md5sum", "sha256sum", "cut", "tr", "rev", "find", "xargs", "diff", "sed",
 ];
