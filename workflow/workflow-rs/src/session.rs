@@ -1,9 +1,9 @@
 //! PORT: workflow/agent-loop-src.js
 //!
 //! The generic session loop: one persistent `Bash` instance, one named
-//! `session-events` notification join set and one named `user` join set for
-//! the whole session. The latter races each LLM completion child against an
-//! always-outstanding user-injection offer. Direct shell
+//! `session-events` notification join set and one named `user-{turn}` join set
+//! per conversational turn. The latter races each LLM completion child against
+//! an always-outstanding user-injection offer. Direct shell
 //! interactions are turns too: their synthetic Bash request/result pair is
 //! included in the next turn's completion request.
 //!
@@ -15,9 +15,8 @@
 //!   `demo-stargazers`'s workflow-rs), so the turn/step/dispatch/rate-limit
 //!   log lines have no Rust equivalent and are dropped.
 //! - No explicit `joinSet.close()` / `finally`: a WIT `join-set` resource
-//!   closes on `Drop`, so scope exit (a fresh `Session` each loop, and the
-//!   session-wide notification join sets falling out of scope when this function
-//!   returns) already does the equivalent cleanup.
+//!   closes on `Drop`, so turn rotation and the session-wide notification join
+//!   sets falling out of scope already do the equivalent cleanup.
 //! - `WORKFLOW_UNAVAILABLE_COMMANDS` (gzip/gunzip/zcat) has no Rust
 //!   equivalent: this port's command catalog (`just_bash_rs::commands`) never
 //!   included those commands in the first place, so there is nothing to
@@ -456,13 +455,13 @@ fn has_user_visible_text(content: &[Value]) -> bool {
     })
 }
 
-/// The durable input channel: a user-injection offer raced against LLM
-/// completion children on the session-wide named `user` join set. Unlike
+/// One turn's durable input channel: a user-injection offer raced against LLM
+/// completion children on its named `user-{turn}` join set. Unlike
 /// JS's `session.completionExecutionId`, the
 /// in-flight completion id lives in a local variable in
 /// `call_llm_with_user` (its only reader), not a struct field.
 struct Session {
-    join_set: JoinSet,
+    join_set: Option<JoinSet>,
     injection_execution_id: workflow_support::ExecutionId,
     turn_index: u64,
 }
@@ -477,8 +476,8 @@ struct LlmReply {
 
 /// `Failed` is a recoverable LLM provider error (e.g. HTTP 529); a fatal
 /// protocol violation is still an `Err` from `call_llm_with_user`. `Interrupted`
-/// is an operator stop: the in-flight completion was still drained (its reply
-/// discarded) so the join set stays clean, but the turn ends without acting on it.
+/// is an operator stop: the in-flight completion is cancelled immediately
+/// (its join set is closed and replaced) rather than awaited to completion.
 enum LlmOutcome {
     Reply(LlmReply),
     Failed(String),
@@ -800,7 +799,7 @@ pub fn agent_loop(
             should_call_llm = false;
             publish_agent_status(&notifications, false, turn_index)?;
             agent_steps = 0;
-            turn_index += 1;
+            turn_index = advance_turn(&mut session, &notifications)?;
             continue;
         }
         // One-time wrap-up nudge as the turn approaches its budget (see
@@ -872,6 +871,15 @@ pub fn agent_loop(
                 }),
                 None => take_user_event(&mut session, &notifications)?,
             };
+            // A composer/opening shell command runs synchronously right here,
+            // with no LLM call to mark the turn "working": publish before it
+            // starts (not just after `should_call_llm` turns out true) so the
+            // composer's Stop control is visible for its whole run, matching
+            // a model-driven bash tool call.
+            let is_shell = matches!(event, SessionInput::Shell(_));
+            if is_shell {
+                publish_agent_status(&notifications, true, turn_index)?;
+            }
             should_call_llm = apply_session_input(
                 event,
                 turn_index,
@@ -882,6 +890,8 @@ pub fn agent_loop(
             )?;
             if should_call_llm {
                 publish_agent_status(&notifications, true, turn_index)?;
+            } else if is_shell {
+                publish_agent_status(&notifications, false, turn_index)?;
             }
             turn_complete = !should_call_llm;
         } else {
@@ -905,7 +915,7 @@ pub fn agent_loop(
                     should_call_llm = false;
                     agent_steps = 0;
                     publish_agent_status(&notifications, false, turn_index)?;
-                    turn_index += 1;
+                    turn_index = advance_turn(&mut session, &notifications)?;
                     continue;
                 }
                 LlmOutcome::Interrupted => {
@@ -922,7 +932,7 @@ pub fn agent_loop(
                     should_call_llm = false;
                     agent_steps = 0;
                     publish_agent_status(&notifications, false, turn_index)?;
-                    turn_index += 1;
+                    turn_index = advance_turn(&mut session, &notifications)?;
                     continue;
                 }
             };
@@ -1016,7 +1026,7 @@ pub fn agent_loop(
             }
         }
         if turn_complete {
-            turn_index += 1;
+            turn_index = advance_turn(&mut session, &notifications)?;
         }
     }
 }
@@ -1254,7 +1264,7 @@ fn call_llm_with_user(
         let messages_json = serde_json::to_string(messages).expect("json");
         let started_at = host_now_ms();
         let completion_execution_id = llm_ext::completion_submit(
-            &session.join_set,
+            session.join_set.as_ref().expect("turn join set is open"),
             system,
             &messages_json,
             BASH_TOOLS_JSON,
@@ -1262,24 +1272,17 @@ fn call_llm_with_user(
             effort,
         );
 
-        // Set once an operator stop lands: the completion is still drained
-        // below (its response would otherwise strand on `session.join_set` and
-        // trip the "unexpected session response" guard for a later turn), but
-        // its content is discarded rather than acted on.
-        let mut interrupted = false;
         let res = loop {
             // The `user` join set is heterogeneous (completion child + injection
             // offer), so await generically and dispatch on the completed id read
             // from `last-id`, then fetch the typed value with the matching `-get`.
             // A typed `-await-next` here would mark the next response processed
             // even on a function mismatch, consuming the wrong child.
-            let _ = workflow_support::join_next(&session.join_set).map_err(|e| format!("{e:?}"))?;
-            let completed_id = last_response_execution_id(&session.join_set)
+            let join_set = session.join_set.as_ref().expect("turn join set is open");
+            let _ = workflow_support::join_next(join_set).map_err(|e| format!("{e:?}"))?;
+            let completed_id = last_response_execution_id(join_set)
                 .expect("user join set has only child executions, never delays");
             if completed_id == completion_execution_id.id {
-                if interrupted {
-                    break None;
-                }
                 match llm_ext::completion_get(&completion_execution_id)
                     .map_err(|e| format!("{e:?}"))?
                 {
@@ -1290,20 +1293,22 @@ fn call_llm_with_user(
                 let event = session_ext::injection_get(&session.injection_execution_id)
                     .map_err(|e| format!("{e:?}"))?
                     .map_err(|e| format!("session injection failed: {e}"))?;
-                rearm_user_input(session, notifications)?;
-                match event {
-                    SessionInput::Interrupt(_) => interrupted = true,
-                    other => {
-                        prompt_queued |= apply_session_input(
-                            other,
-                            session.turn_index,
-                            false,
-                            notifications,
-                            bash,
-                            messages,
-                        )?;
-                    }
+                if matches!(event, SessionInput::Interrupt(_)) {
+                    // Closing this turn's join set cancels the outstanding
+                    // completion immediately. The outer loop opens the next
+                    // turn's uniquely named set after recording the stop.
+                    drop(session.join_set.take().expect("turn join set is open"));
+                    break None;
                 }
+                rearm_user_input(session, notifications)?;
+                prompt_queued |= apply_session_input(
+                    event,
+                    session.turn_index,
+                    false,
+                    notifications,
+                    bash,
+                    messages,
+                )?;
             } else {
                 return Err(format!("unexpected session response: {completed_id}"));
             }
@@ -1372,18 +1377,37 @@ fn tool_error(id: &str, message: &str) -> ToolResultBlock {
 // ----- durable session channel ------------------------------------------------
 
 fn open_session(turn_index: u64, notifications: &Notifications) -> Result<Session, String> {
-    let join_set = workflow_support::join_set_create_named("user").map_err(|e| format!("{e:?}"))?;
+    let join_set = workflow_support::join_set_create_named(&format!("user-{turn_index}"))
+        .map_err(|e| format!("user-{turn_index} join set: {e:?}"))?;
     let injection_execution_id = session_ext::injection_submit(&join_set);
     publish_input_offer(notifications, &injection_execution_id, turn_index)?;
     Ok(Session {
-        join_set,
+        join_set: Some(join_set),
         injection_execution_id,
         turn_index,
     })
 }
 
+fn advance_turn(session: &mut Session, notifications: &Notifications) -> Result<u64, String> {
+    if let Some(join_set) = session.join_set.take() {
+        drop(join_set);
+    }
+    let turn_index = session
+        .turn_index
+        .checked_add(1)
+        .ok_or_else(|| "turn index overflow".to_string())?;
+    let join_set = workflow_support::join_set_create_named(&format!("user-{turn_index}"))
+        .map_err(|e| format!("user-{turn_index} join set: {e:?}"))?;
+    session.injection_execution_id = session_ext::injection_submit(&join_set);
+    session.join_set = Some(join_set);
+    session.turn_index = turn_index;
+    publish_input_offer(notifications, &session.injection_execution_id, turn_index)?;
+    Ok(turn_index)
+}
+
 fn rearm_user_input(session: &mut Session, notifications: &Notifications) -> Result<(), String> {
-    session.injection_execution_id = session_ext::injection_submit(&session.join_set);
+    session.injection_execution_id =
+        session_ext::injection_submit(session.join_set.as_ref().expect("turn join set is open"));
     publish_input_offer(
         notifications,
         &session.injection_execution_id,
@@ -1426,8 +1450,9 @@ fn take_user_event(
     // Same heterogeneous-join-set discipline as `call_llm_with_user`: await
     // generically, confirm the completed id is the outstanding injection offer,
     // then fetch its typed value with `injection-get`.
-    let _ = workflow_support::join_next(&session.join_set).map_err(|e| format!("{e:?}"))?;
-    let completed_id = last_response_execution_id(&session.join_set)
+    let join_set = session.join_set.as_ref().expect("turn join set is open");
+    let _ = workflow_support::join_next(join_set).map_err(|e| format!("{e:?}"))?;
+    let completed_id = last_response_execution_id(join_set)
         .expect("user join set has only child executions, never delays");
     if completed_id != session.injection_execution_id.id {
         return Err(format!(

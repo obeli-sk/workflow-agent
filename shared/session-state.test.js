@@ -190,3 +190,18 @@ test("latest-window scan reports null flags when nothing matches", () => {
     assert.deepEqual(scan.markers, emptyMarkers());
     assert.equal(projectLatestWindow([]).working, null);
 });
+
+test("latest-window scan invalidates a turn's offer until the next one is advertised", () => {
+    const ended = projectLatestWindow([
+        row({ input_offered: { execution_id: "E_s.n:user-0_2", turn_index: 0 } }),
+        row({ shell_output: { id: "shell-0", turn_complete: true, turn_index: 0 } }),
+    ]);
+    assert.equal(ended.offerId, null);
+
+    const advanced = projectLatestWindow([
+        row({ input_offered: { execution_id: "E_s.n:user-0_2", turn_index: 0 } }),
+        row({ assistant_reply: { content_json: "[]", turn_complete: true, turn_index: 0 } }),
+        row({ input_offered: { execution_id: "E_s.n:user-1_1", turn_index: 1 } }),
+    ]);
+    assert.equal(advanced.offerId, "E_s.n:user-1_1");
+});

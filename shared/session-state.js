@@ -163,6 +163,15 @@ export function scanMarkers(markers, value) {
     }
 }
 
+/** Whether a session event ends the turn whose advertised input offer it followed. */
+export function sessionEventEndsTurn(value) {
+    if (value?.assistant_reply?.turn_complete === true) return true;
+    if (value?.shell_output?.turn_complete === true) return true;
+    const errorId = value?.agent_error?.id;
+    return typeof errorId === "string"
+        && /^(step-limit|llm-error|interrupted|empty-reply)-/.test(errorId);
+}
+
 function intOr(value, fallback) {
     return Number.isInteger(value) ? value : fallback;
 }
@@ -197,6 +206,7 @@ export function projectLatestWindow(responses, valueOf = sessionEventValue) {
         const value = valueOf(response);
         if (!value || typeof value !== "object") continue;
         scanMarkers(markers, value);
+        if (sessionEventEndsTurn(value)) offerId = null;
         if (typeof value.agent_status?.working === "boolean") {
             working = value.agent_status.working;
         }

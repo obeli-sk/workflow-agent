@@ -187,7 +187,7 @@ core subset session.rs exercises day to day.
       dependency-free, `vendor/just-bash/`) + core session loop
       (`workflow/workflow-js/src/session.js` + `session-logic.js`):
       bash-per-session, turn loop, step-budget nudge/limit (kept in scope,
-      cheap), injection racing on a heterogeneous "user" join set, `llm/chat`
+      cheap), injection racing on a heterogeneous per-turn `user-{turn}` join set, `llm/chat`
       completion via `-obelisk-ext`, session-events via self-stub on a
       "session-events" join set. Deliberately **not yet ported**: programs/
       MCP/mounts (no `obelisk`/`mcp`/program commands registered — no

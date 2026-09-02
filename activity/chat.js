@@ -19,6 +19,7 @@ import {
     projectLatestWindow,
     projectSessionState,
     scanMarkers,
+    sessionEventEndsTurn,
     sessionEventValue,
 } from "../shared/session-state.js";
 
@@ -429,6 +430,7 @@ async function walkResponses(executionId) {
             const value = sessionEventValue(r);
             if (!value) continue;
             scanMarkers(markers, value);
+            if (sessionEventEndsTurn(value)) inputOffer = null;
             if (value.session_started) sessionStarted = projectSessionStarted(value.session_started);
             else if (value.input_offered) {
                 inputOffer = {

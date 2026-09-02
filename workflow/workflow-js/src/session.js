@@ -4,9 +4,10 @@
 //
 // PORT: workflow/workflow-rs/src/{agent,session}.rs. One persistent Bash
 // instance, a "session-events" notification join set (the workflow self-stubs
-// each event so it lands as a durably readable response), and a "user" join
-// set racing each LLM completion against an always-outstanding user-injection
-// offer. Also wires in programs/MCP/mounts (obelisk-pack.js/obelisk-program.js/
+// each event so it lands as a durably readable response), and one
+// "user-{turn}" join set per conversational turn racing each LLM completion
+// against an always-outstanding user-injection offer. Also wires in
+// programs/MCP/mounts (obelisk-pack.js/obelisk-program.js/
 // obelisk-mcp.js/obelisk-web.js), per-script interrupt/timeout (script-watch.js),
 // session rename, ask-user, and chat peer sessions (chat.js) — see
 // docs/js-backend-migration.md for phase-by-phase status and fidelity notes.
@@ -366,10 +367,20 @@ function applySessionInput(event, turnIndex, shellCompletesTurn, notifications, 
 // ----- durable "user" channel: LLM completion raced against injection -----
 
 function openSession(turnIndex, notifications) {
-    const joinSet = obelisk.createJoinSet({ name: "user" });
+    const joinSet = obelisk.createJoinSet({ name: `user-${turnIndex}` });
     const injectionId = injectionSubmit(joinSet);
     notifications.notify({ input_offered: { execution_id: injectionId, turn_index: turnIndex } });
     return { joinSet, injectionId, turnIndex };
+}
+
+function advanceTurn(session, notifications) {
+    if (session.joinSet) session.joinSet.close();
+    const turnIndex = session.turnIndex + 1;
+    session.joinSet = obelisk.createJoinSet({ name: `user-${turnIndex}` });
+    session.injectionId = injectionSubmit(session.joinSet);
+    session.turnIndex = turnIndex;
+    notifications.notify({ input_offered: { execution_id: session.injectionId, turn_index: turnIndex } });
+    return turnIndex;
 }
 
 function rearmUserInput(session, notifications) {
@@ -405,7 +416,6 @@ function callLlmWithUser(session, system, messages, model, effort, bash, notific
         const startedAt = hostNowMs();
         const completionId = completionSubmit(session.joinSet, system, messagesJson, BASH_TOOLS_JSON, model, effort);
 
-        let interrupted = false;
         let completion;
         while (true) {
             let value;
@@ -418,19 +428,23 @@ function callLlmWithUser(session, system, messages, model, effort, bash, notific
             }
             const completedId = session.joinSet.lastId;
             if (completedId === completionId) {
-                if (interrupted) { completion = null; break; }
                 if (failed) return { kind: "failed", message: `llm.completion failed: ${errorMessage(failed)}` };
                 completion = value;
                 break;
             } else if (completedId === session.injectionId) {
                 if (failed) throw `session injection failed: ${errorMessage(failed)}`;
                 const event = value;
-                rearmUserInput(session, notifications);
                 if (event.interrupt) {
-                    interrupted = true;
-                } else {
-                    promptQueued = promptQueued || applySessionInput(event, session.turnIndex, false, notifications, bash, messages);
+                    // Closing this turn's join set cancels the outstanding
+                    // completion immediately. The outer loop opens the next
+                    // turn's uniquely named set after recording the stop.
+                    session.joinSet.close();
+                    session.joinSet = null;
+                    completion = null;
+                    break;
                 }
+                rearmUserInput(session, notifications);
+                promptQueued = promptQueued || applySessionInput(event, session.turnIndex, false, notifications, bash, messages);
             } else {
                 throw `unexpected session response: ${completedId}`;
             }
@@ -547,7 +561,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
             shouldCallLlm = false;
             publishAgentStatus(notifications, false, turnIndex);
             agentSteps = 0;
-            turnIndex += 1;
+            turnIndex = advanceTurn(session, notifications);
             continue;
         }
         if (shouldCallLlm && agentSteps >= stepWarningThreshold(maxSteps) && stepWarnedTurn !== turnIndex) {
@@ -561,8 +575,16 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
                 ? { shell: { id: `shell-opened-${turnIndex}`, script: pendingShell, stdin: "" } }
                 : takeUserEvent(session, notifications);
             pendingShell = null;
+            // A composer/opening shell command runs synchronously right here,
+            // with no LLM call to mark the turn "working": publish before it
+            // starts (not just after `shouldCallLlm` turns out true) so the
+            // composer's Stop control is visible for its whole run, matching
+            // a model-driven bash tool call.
+            const isShell = Boolean(event.shell);
+            if (isShell) publishAgentStatus(notifications, true, turnIndex);
             shouldCallLlm = applySessionInput(event, turnIndex, true, notifications, bash, messages);
             if (shouldCallLlm) publishAgentStatus(notifications, true, turnIndex);
+            else if (isShell) publishAgentStatus(notifications, false, turnIndex);
             turnComplete = !shouldCallLlm;
         } else {
             publishAgentStatus(notifications, true, turnIndex);
@@ -572,7 +594,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
                 shouldCallLlm = false;
                 agentSteps = 0;
                 publishAgentStatus(notifications, false, turnIndex);
-                turnIndex += 1;
+                turnIndex = advanceTurn(session, notifications);
                 continue;
             }
             if (outcome.kind === "interrupted") {
@@ -582,7 +604,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
                 shouldCallLlm = false;
                 agentSteps = 0;
                 publishAgentStatus(notifications, false, turnIndex);
-                turnIndex += 1;
+                turnIndex = advanceTurn(session, notifications);
                 continue;
             }
 
@@ -634,6 +656,6 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
                 if (!shouldCallLlm) publishAgentStatus(notifications, false, turnIndex);
             }
         }
-        if (turnComplete) turnIndex += 1;
+        if (turnComplete) turnIndex = advanceTurn(session, notifications);
     }
 }

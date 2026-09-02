@@ -4,6 +4,7 @@ import { getExecutionResponses, getLatestExecutionResponses } from "./obelisk-ap
 import {
     emptyMarkers,
     projectLatestWindow,
+    sessionEventEndsTurn,
     sessionEventValue,
 } from "../../shared/session-state.js";
 
@@ -114,6 +115,7 @@ export async function loadLatestAgentState(execId) {
 
 function appendSessionEvent(target, event, response) {
     if (!event || typeof event !== "object") return;
+    if (sessionEventEndsTurn(event)) target.inputOffer = null;
     const createdAt = response.event?.created_at || "";
     if (event.session_started) {
         const started = event.session_started;

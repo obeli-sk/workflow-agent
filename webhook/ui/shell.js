@@ -935,6 +935,25 @@ function shellIsWorking(d) {
   }
   return pending.size > 0;
 }
+// The offer id of whichever bash script is currently running (a composer or
+// opening dollar-prefixed shell command, or a model-driven tool call), or
+// null when none is. Mirrors shellIsWorking's pending-detection so the
+// composer's Stop button can arm that script's own interrupt offer alongside
+// the turn-level one.
+function runningScriptOfferId(d) {
+  if (!d || runPhase(d.status) !== 'active') return null;
+  for (const turn of d.turns || []) {
+    if (turn.source === 'shell' && turn.calls?.[0] && !('ok' in turn.calls[0]) && turn.calls[0].offer_id) {
+      return turn.calls[0].offer_id;
+    }
+    if (turn.kind === 'tool_calls') {
+      const call = (turn.calls || []).find((c) =>
+        c?.name === 'bash' && !('ok' in c) && !('err' in c) && c.offer_id);
+      if (call) return call.offer_id;
+    }
+  }
+  return null;
+}
 function agentIsWorking(d) {
   if (!d || runPhase(d.status) !== 'active' || hasHumanGate(d)) return false;
   if (d.agent_working) return true;
@@ -1548,26 +1567,39 @@ async function interruptScript(runId, offerId, btn) {
   }
 }
 
-// Stop the agent's current turn: fulfils the same live input offer send/shell
-// already use, with an interrupt payload instead. The workflow drains whatever
-// LLM call is already in flight and discards its reply, so this takes effect
-// at most one model step later, deterministically, rather than depending on
-// the model noticing a "stop" message.
+// Stop the agent's whole current turn: fulfils the same live input offer
+// send/shell already use, with an interrupt payload instead, cancelling an
+// in-flight LLM call immediately. Also arms any currently-running script's
+// own interrupt offer, cutting it short too -- unlike the per-call inline
+// "stop" next to a running script, which stops only that script and lets the
+// agent loop continue with further tool calls.
 async function stopAgent(runId) {
   const offer = state.detail?.input_offer || state.transcript?.input_offer;
   if (!runId || !offer?.id) return;
   const id = 'interrupt-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+  const scriptOfferId = runningScriptOfferId(state.detail);
   const btn = document.getElementById('composer-stop');
   if (btn) { btn.disabled = true; btn.textContent = 'stopping'; }
   try {
-    const r = await fetch('/api/input/' + encodeURIComponent(runId), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ offer_id: offer.id, input: { interrupt: { id } } }),
-    });
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      throw new Error(e.error || ('HTTP ' + r.status));
+    const requests = [
+      fetch('/api/input/' + encodeURIComponent(runId), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ offer_id: offer.id, input: { interrupt: { id } } }),
+      }),
+    ];
+    if (scriptOfferId) {
+      requests.push(fetch('/api/interrupt/' + encodeURIComponent(runId), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ offer_id: scriptOfferId }),
+      }));
+    }
+    for (const r of await Promise.all(requests)) {
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.error || ('HTTP ' + r.status));
+      }
     }
     await refreshDetail();
   } catch (e) {
