@@ -20,12 +20,15 @@ class ContinueSignal {
 export class ExitSignal {
     constructor(code) { this.code = code; }
 }
-// Thrown when a script-watch guard (Phase 3: timeout / operator interrupt)
-// fires mid-script; `kind` becomes ExecResult.interrupted ("timeout" |
-// "operator") and `exitCode` follows bash's 124 / 130 convention.
-export class WatchInterrupt {
-    constructor(kind, exitCode) { this.kind = kind; this.exitCode = exitCode; }
-}
+// Thrown to unwind statement-list execution once a script-watch guard
+// (watch.js: timeout / operator interrupt) has fired -- the actual "why" is
+// read back off `interp.interrupted` (see `checkWatch`/`Bash#exec`), not off
+// this signal, since the boundary that notices the flag (a loop header, a
+// statement-list check) is not necessarily the boundary that set it (after a
+// custom command, or inside `sleep`). Mirrors just-bash-rs's `interpreter.rs`
+// `halted()` check, ported to JS's exception-based control flow instead of a
+// per-call boolean return.
+export class WatchInterrupt {}
 
 export class OutputLog {
     constructor() {
@@ -74,14 +77,35 @@ export class Interpreter {
         this.commandNames = commandNames ?? [];
         this.rootLog = log;
         this.opts = { errexit: false, nounset: false, pipefail: false, xtrace: false };
+        // Host-installed abort watcher (watch.js's duck-typed ScriptWatch),
+        // installed by `Bash#exec` for the duration of one script.
         this.watcher = null;
+        // Set once the watcher fires (PORT: interpreter.rs's `interrupted`
+        // field); `null` while the script runs normally. Read directly by
+        // `Bash#exec` after the run, so the exit code is correct even when
+        // nothing after the triggering point calls `checkWatch` again (e.g.
+        // the interrupted command was the script's last statement).
+        this.interrupted = null;
         this.aliases = new Map();
     }
 
+    // Durable boundary check (PORT: interpreter.rs's `halted()`), called at
+    // every statement-list/loop-iteration boundary. Peeking the watcher
+    // itself only happens in `pollWatchAfterCustomCommand`/`sleep` -- this
+    // just observes the flag those set and unwinds once it's there.
     checkWatch() {
-        if (this.watcher && this.watcher.check()) {
-            throw new WatchInterrupt(this.watcher.kind(), this.watcher.exitCode());
-        }
+        if (this.interrupted !== null) throw new WatchInterrupt();
+    }
+
+    // Durable boundary (PORT: commands/mod.rs's `poll_script_watch`), called
+    // once right after a *custom* command handler returns (never after a
+    // builtin). Records the signal without unwinding: this command's own
+    // output/status still land normally, matching Rust's "the remaining
+    // statements are skipped but this command's output and status stand."
+    pollWatchAfterCustomCommand() {
+        if (!this.watcher || this.interrupted !== null) return;
+        const kind = this.watcher.poll();
+        if (kind) this.interrupted = kind;
     }
 
     getVar(name) {
@@ -276,7 +300,11 @@ export class Interpreter {
     invoke(args, stdin, bindings) {
         const name = args[0];
         if (!name) return { stdout: "", stderr: "", exitCode: 0 };
-        if (this.custom.has(name)) return this.custom.get(name)(this, args, stdin);
+        if (this.custom.has(name)) {
+            const result = this.custom.get(name)(this, args, stdin);
+            this.pollWatchAfterCustomCommand();
+            return result;
+        }
         return this.dispatchBuiltin(this, args, stdin);
     }
 
@@ -303,6 +331,7 @@ export class Interpreter {
         this.opts.errexit = false;
         try {
             for (const statement of body) {
+                this.checkWatch();
                 status = this.runStatement(statement, io);
                 if (errexit && status !== 0) throw new ExitSignal(status);
             }
@@ -341,7 +370,10 @@ export class Interpreter {
         this.opts.errexit = false;
         try {
             let status = 0;
-            for (const statement of statements) status = this.runStatement(statement, io);
+            for (const statement of statements) {
+                this.checkWatch();
+                status = this.runStatement(statement, io);
+            }
             return status;
         } finally {
             this.opts.errexit = errexit;

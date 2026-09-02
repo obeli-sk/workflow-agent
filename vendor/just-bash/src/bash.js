@@ -9,6 +9,7 @@ import { Interpreter, OutputLog, ExitSignal, WatchInterrupt, ShellError } from "
 import { ShellExpansionError } from "./expansion.js";
 import { ArithError } from "./arithmetic.js";
 import { dispatch, BUILTIN_NAMES } from "./commands/index.js";
+import { exitCodeForInterrupt } from "./watch.js";
 
 export class Bash {
     constructor(options = {}) {
@@ -30,6 +31,10 @@ export class Bash {
         this.custom.set(name, handler);
     }
 
+    // Install the abort watcher (watch.js's duck-typed ScriptWatch) observed
+    // at durable boundaries (after custom commands and inside `sleep`). The
+    // session loop swaps it in before one script and takes it back out
+    // afterward (PORT: just-bash-rs's `Bash::set_script_watch`).
     setScriptWatch(watcher) {
         this.watcher = watcher;
     }
@@ -64,7 +69,6 @@ export class Bash {
         });
         interp.watcher = this.watcher;
         let exitCode = 0;
-        let interrupted = null;
         try {
             interp.runStatements(ast.statements, {
                 0: { kind: "string", text: stdin },
@@ -76,8 +80,8 @@ export class Bash {
             if (e instanceof ExitSignal) {
                 exitCode = e.code;
             } else if (e instanceof WatchInterrupt) {
-                exitCode = e.exitCode;
-                interrupted = e.kind;
+                // interp.interrupted (read below) carries the "why"; this
+                // signal only unwound the statement lists.
             } else if (e instanceof ShellExpansionError || e instanceof ArithError) {
                 log.push("stderr", `bash: ${e.message}\n`);
                 exitCode = 1;
@@ -88,6 +92,13 @@ export class Bash {
                 throw e;
             }
         }
+        // An interrupt overrides whatever status the last statement left,
+        // whether or not it was actually observed as a thrown WatchInterrupt
+        // (e.g. the triggering custom command was the script's very last
+        // statement, so no later boundary check ever ran) -- PORT: bash.rs's
+        // `exec`'s exit-code override.
+        const interrupted = interp.interrupted;
+        if (interrupted !== null) exitCode = exitCodeForInterrupt(interrupted);
         this.cwd = interp.cwd;
         this.env = interp.envSnapshot();
         return this._result(log, exitCode, interrupted, interp.envSnapshot());

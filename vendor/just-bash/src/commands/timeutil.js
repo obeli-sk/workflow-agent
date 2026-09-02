@@ -23,6 +23,7 @@
 
 import { ok, fail } from "./core.js";
 import { translateBre } from "../regex-bre.js";
+import { exitCodeForInterrupt } from "../watch.js";
 
 // ---------------------------------------------------------------------
 // Calendar math (Howard Hinnant's civil_from_days / days_from_civil), used
@@ -522,11 +523,11 @@ function parseDurationMs(s) {
 // `sleepMs` option). Under the workflow that seam is the durable Obelisk
 // `sleep`, so the delay suspends the workflow rather than busy-waiting.
 //
-// Not ported: timeutil.rs's script-watch integration (a timeout/operator
-// interrupt joining the sleep and ending it early) — this JS interpreter's
-// watch guard (`interp.checkWatch()`) fires generically at statement
-// boundaries instead of being threaded through individual builtins, so
-// there is no per-command seam to hook here; see `interpreter.js`.
+// With a script watch installed (`interp.watcher`, see watch.js), the delay
+// joins the watch instead: a timeout or operator interrupt ends the sleep
+// early and records `interp.interrupted`, so the script's remaining
+// statements are skipped at the next boundary check (PORT: timeutil.rs's
+// `sleep_cmd`).
 export function sleepCommand(interp, args) {
     const rest = args.slice(1);
     if (rest.length === 0) return fail("sleep: missing operand\n", 1);
@@ -536,7 +537,16 @@ export function sleepCommand(interp, args) {
         if (ms === null) return fail(`sleep: invalid time interval '${arg}'\n`, 1);
         totalMs += ms;
     }
-    interp.sleepFn(Math.max(Math.round(totalMs), 0));
+    const ms = Math.max(Math.round(totalMs), 0);
+    if (interp.watcher) {
+        const { interrupted } = interp.watcher.sleep(ms);
+        if (interrupted) {
+            if (interp.interrupted === null) interp.interrupted = interrupted;
+            return fail(`sleep: interrupted (${interrupted})\n`, exitCodeForInterrupt(interrupted));
+        }
+        return ok("");
+    }
+    interp.sleepFn(ms);
     return ok("");
 }
 

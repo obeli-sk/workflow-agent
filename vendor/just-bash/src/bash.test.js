@@ -201,3 +201,102 @@ test("parse error is reported, not thrown", () => {
     assert.equal(r.exitCode, 2);
     assert.match(r.stderr, /syntax error/);
 });
+
+// The script-watch contract from the session loop's perspective (PORT:
+// vendor/just-bash-rs/src/bash.rs's `mod script_watch`): signals land only
+// at durable boundaries, output already produced stays recorded, and the
+// final status is the interrupt kind's exit code.
+
+// Scripted watcher matching watch.js's duck-typed ScriptWatch contract:
+// fires on the Nth poll (1-based, custom commands only) and/or on every
+// watched sleep.
+class FakeWatch {
+    constructor({ interruptOnPoll = null, interruptSleeps = false } = {}) {
+        this.interruptOnPoll = interruptOnPoll;
+        this.interruptSleeps = interruptSleeps;
+        this.polls = 0;
+        this.sleptMs = [];
+    }
+    poll() {
+        this.polls += 1;
+        return this.interruptOnPoll === this.polls ? "timeout" : null;
+    }
+    sleep(ms) {
+        this.sleptMs.push(ms);
+        return { interrupted: this.interruptSleeps ? "operator" : null };
+    }
+}
+
+function bashWithStep(watch) {
+    const bash = new Bash({ cwd: "/workspace" });
+    bash.registerCommand("step", () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    bash.setScriptWatch(watch);
+    return bash;
+}
+
+test("script watch: poll at a command boundary skips only what follows", () => {
+    const watch = new FakeWatch({ interruptOnPoll: 2 });
+    const bash = bashWithStep(watch);
+    const r = bash.exec("step; echo one; step; echo two; echo three");
+    // Output collected before the signal stands; everything after the
+    // second boundary is gone.
+    assert.equal(r.stdout, "one\n");
+    assert.equal(r.exitCode, 124);
+    assert.equal(r.interrupted, "timeout");
+    assert.equal(r.stderr, "");
+});
+
+test("script watch: watched sleep wakes early and ends the script", () => {
+    const watch = new FakeWatch({ interruptSleeps: true });
+    const bash = bashWithStep(watch);
+    const r = bash.exec("sleep 5; echo after");
+    assert.equal(r.stdout, "");
+    assert.equal(r.exitCode, 130);
+    assert.equal(r.interrupted, "operator");
+    assert.match(r.stderr, /sleep: interrupted \(operator\)/);
+    // The delay reached the watch with its full duration; waking early is
+    // the watch's business.
+    assert.deepEqual(watch.sleptMs, [5000]);
+});
+
+test("script watch: interrupted run overrides the last statement status", () => {
+    const watch = new FakeWatch({ interruptSleeps: true });
+    const bash = bashWithStep(watch);
+    // Without `set -e` the failed `false` would leave exit 1; the interrupt
+    // code wins.
+    const r = bash.exec("false; sleep 5");
+    assert.equal(r.exitCode, 130);
+});
+
+test("script watch: natural completion records no marker", () => {
+    const watch = new FakeWatch();
+    const bash = bashWithStep(watch);
+    const r = bash.exec("step; echo done; step");
+    assert.equal(r.stdout, "done\n");
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.interrupted, null);
+    // One peek per host-backed command.
+    assert.equal(watch.polls, 2);
+});
+
+test("script watch: unset watch keeps plain sleep semantics", () => {
+    const bash = new Bash({ cwd: "/workspace" });
+    const r = bash.exec("sleep 0; echo fine");
+    assert.equal(r.stdout, "fine\n");
+    assert.equal(r.interrupted, null);
+});
+
+test("script watch: a bounded loop stops at the boundary right after the triggering poll, not at the next loop header", () => {
+    // Regression coverage for interpreter.js's `runGroupBody`/`runCondition`:
+    // a loop body with more than one statement must stop between statements,
+    // not just re-check at its next iteration header. Bounded to 1000
+    // iterations as a safety net -- if the watch failed to stop the loop,
+    // this fails on the stdout/exit-code assertions below instead of hanging
+    // `node --test`.
+    const watch = new FakeWatch({ interruptOnPoll: 3 });
+    const bash = bashWithStep(watch);
+    const r = bash.exec("for ((i=0; i<1000; i++)); do step; echo after-$i; done");
+    assert.equal(r.stdout, "after-0\nafter-1\n");
+    assert.equal(r.exitCode, 124);
+    assert.equal(r.interrupted, "timeout");
+});
