@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Bash } from "./bash.js";
+import { MAX_LAZY_FETCH_BYTES } from "./fs.js";
 
 function run(script, opts) {
     const bash = new Bash({ cwd: "/workspace" });
@@ -299,4 +300,17 @@ test("script watch: a bounded loop stops at the boundary right after the trigger
     assert.equal(r.stdout, "after-0\nafter-1\n");
     assert.equal(r.exitCode, 124);
     assert.equal(r.interrupted, "timeout");
+});
+
+test("a command reading an unfetchable lazy-mounted file fails the script, not the whole exec()", () => {
+    // Regression: FsError (thrown by fs.js for a lazy/pending file that's too
+    // large or whose fetch fails) used to be absent from exec()'s catch list,
+    // so it escaped uncaught out of Bash#exec and turned into a fatal
+    // "Workflow err" instead of a normal nonzero-exit bash result.
+    const bash = new Bash({ cwd: "/workspace" });
+    bash.fs().registerLazy("/dep/big.bin", "sha256:big", MAX_LAZY_FETCH_BYTES + 1);
+    let r;
+    assert.doesNotThrow(() => { r = bash.exec("head /dep/big.bin"); });
+    assert.equal(r.exitCode, 1);
+    assert.match(r.stderr, /File too large: \/dep\/big\.bin/);
 });
