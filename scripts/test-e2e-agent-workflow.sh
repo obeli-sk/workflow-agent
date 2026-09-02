@@ -132,9 +132,16 @@ while true; do
     sleep 1
 done
 node scripts/e2e-json.js check-shell-notification <<<"$SHELL_NOTIFICATION"
-SHELL_PROJECTION="$(curl --fail --silent \
-    "http://127.0.0.1:28091/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")"
-node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"
+
+# The next input_offer is published after the record-output stub, so poll until it settles.
+SECONDS=0
+while true; do
+    SHELL_PROJECTION="$(curl --fail --silent \
+        "http://127.0.0.1:28091/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")"
+    node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION" 2>/dev/null && break
+    [[ $SECONDS -ge 30 ]] && { node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"; exit 1; }
+    sleep 1
+done
 echo ">>> shell-only E2E PASS: curl was registered and invoked without starting the agent"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 
