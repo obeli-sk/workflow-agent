@@ -1,7 +1,7 @@
 # JS-only workflow backend: migration notes
 
-Status: **in progress** (Phases 0-4 done and verified — see the checklist and
-command tracker below; Phase 5 — `chat` peer sessions — is next). This doc
+Status: **in progress** (Phases 0-5 done and verified — see the checklist and
+command tracker below; Phase 6 — `WORKFLOW_FFQN` switch wiring — is next). This doc
 tracks design decisions and progress for the JS-alternative workflow backend
 so another agent can resume without re-deriving the research. Update it
 after every phase.
@@ -407,7 +407,50 @@ core subset session.rs exercises day to day.
       several iterations. If an e2e re-run doesn't reflect a just-made edit,
       check `ps aux | grep 'obelisk server'` for a leftover process before
       assuming the fix is wrong.
-- [ ] Phase 5: `chat` peer-sessions workflow-side wrapper (`chat.rs` port).
+- [x] Phase 5: `chat` peer-sessions workflow-side wrapper (`chat.rs` port:
+      `chat.js`/`chat-logic.js`, ported by a background agent then merged,
+      70 combined `node --test` cases). `session.js` integration (done
+      centrally, not delegated — the highest-risk piece): constructs
+      `ownSession = new chat.ChatSelf(obelisk.executionIdCurrent(), model,
+      effort, name || null)` before registering programs; a new
+      `CHAT_PROGRAM_FFQN` constant makes `registerProgramsAndMcp` wrap only
+      the program whose ffqn matches with `chat.commandHandler(plainHandler,
+      ownSession, notifications, submitFn)`; `submitFn` closes over the
+      self-referential static import `runCancellableSubmit` from
+      `"obelisk-agent:workflow-js-obelisk-ext/workflow"` (the JS analogue of
+      Rust's `workflow_obelisk_ext::workflow::run_cancellable_submit`,
+      confirmed correct — see verification note below, not just guessed by
+      analogy). `renderSystemPrompt` (`session-logic.js`) gained a third
+      `selfSection` parameter and a new `SUBAGENTS_SECTION` constant,
+      composed in the same order as session.rs's `agent_loop`: base prompt →
+      `# Shell` → `# User input` → `# Subagents` → `chat.selfSection(own
+      Session)` → `obelisk_pack::SYSTEM_PROMPT`. `chat::self_section` is
+      always included, regardless of whether a `chat` program is actually
+      registered (matches Rust).
+      **Verification**: this is the one phase where a static-import name was
+      genuinely unverified going in (no WIT/doc source confirmed
+      `workflow-js-obelisk-ext` as the generated ext-package name the way
+      `askUserSubmit`/`sessionRenamedSubmit` etc. were earlier). `just verify`
+      does **not** catch a wrong static-import name here — this deployment's
+      pre-existing `[[workflow_js]]` block already established that
+      `workflow_js` import resolution is dynamic against the deployment's
+      function registry at *run* time, not a static/WIT-file check `verify`
+      performs. So this needed a real run: a fifth e2e scenario was added to
+      `scripts/test-e2e-agent-workflow-js.sh` that runs `chat create --name
+      e2e-chat-child ...` as a direct shell turn against a live JS-backend
+      session, then polls the returned child execution id's projection until
+      it reports `name === "e2e-chat-child"` — proving both that the import
+      resolved and that the child actually started running under the JS
+      backend. All 5 scenarios pass; `just test-js` (70 cases) and
+      `just verify` are green.
+      **Debugging note**: the first run of the new e2e scenario failed with a
+      generic `err: "error"` on an unrelated-looking MCP execution; the real
+      cause was a copy-paste bug in the test script itself, not the
+      integration — `run_shell_turn` depends on the shared `$SESSION_ID`
+      global, and the new scenario introduced its own `$CHAT_SESSION_ID`
+      without assigning it into `$SESSION_ID`, so the helper polled a stale
+      session from an earlier scenario. Fixed by assigning
+      `SESSION_ID="$CHAT_SESSION_ID"` before calling `run_shell_turn`.
 - [ ] Phase 6: `WORKFLOW_FFQN` switch wiring (`mutations.js`, `runs.js`,
       `activity/chat.js`, `deployment.toml` env_vars), README/docs.
 - [ ] Phase 7: test parity (`node --test` unit tests, e2e suites against both
