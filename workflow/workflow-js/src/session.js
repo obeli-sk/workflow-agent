@@ -506,7 +506,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
         runCancellableSubmit(joinSet, childPrompt, childModel, null, childEffort, childName);
     registerProgramsAndMcp(bash, config, ownSession, notifications, submitFn);
 
-    const system = renderSystemPrompt(systemPrompt, config.programs, chat.selfSection(ownSession));
+    const system = renderSystemPrompt(systemPrompt, config.programs, config.apps, chat.selfSection(ownSession));
 
     let pendingShell = openingShellScript(prompt);
     let messages = pendingShell === null && prompt.trim() ? [userText(prompt.trim())] : [];

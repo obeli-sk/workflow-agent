@@ -17,12 +17,15 @@ interface config {
   }
 
   // A GitHub repo tree mounted read-only at /workspace/apps/<name>
-  // (obelisk_web/obelisk-web.js -> the mount_apps activity).
+  // (obelisk_web/obelisk-web.js -> the mount_apps activity). `description`
+  // is surfaced in the system prompt so the model knows what the repo is
+  // and how to use it.
   record app {
     name: string,
     owner: string,
     repo: string,
     ref: string,
+    description: string,
   }
 
   record session-config {

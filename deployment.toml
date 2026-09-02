@@ -40,14 +40,35 @@ ffqn = "obelisk-agent:config/config.discover"
 wit = "wit"
 location = "activity/config-discover.js"
 env_vars = [
-  { key = "MAX_STEPS",        value = "${MAX_STEPS:-20}" },
-  { key = "PROGRAMS_JSON",    value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"},{"name":"chat","ffqn":"obelisk-agent:programs/program.chat","description":"discover, read, message, and create peer agent sessions on this instance"}]}' },
+  { key = "MAX_STEPS", value = "${MAX_STEPS:-20}" },
+  { key = "PROGRAMS_JSON", value = '''
+${PROGRAMS_JSON:-[
+  {"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"},
+  {"name":"chat","ffqn":"obelisk-agent:programs/program.chat","description":"discover, read, message, and create peer agent sessions on this instance"}
+]}
+''' },
   { key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' },
   # Each entry mounts a lazily-listed GitHub repo tree at /workspace/apps/<name>
   # (obelisk_web/obelisk-web.js -> the mount_apps activity below). `owner`
-  # defaults to "obeli-sk" and `ref` to "main" when omitted; override the whole
-  # list to mount a different set of repos, private forks, or pinned refs.
-  { key = "APPS_JSON", value = '${APPS_JSON:-[{"name":"components","repo":"components"},{"name":"agent-backed-llm-server","repo":"agent-backed-llm-server"},{"name":"benchmark-fibo","repo":"benchmark-fibo"},{"name":"demo-stargazers","repo":"demo-stargazers"},{"name":"demo-tutorial","repo":"demo-tutorial"},{"name":"obelisk-deploy-flyio","repo":"obelisk-deploy-flyio"},{"name":"obelisk-templates","repo":"obelisk-templates"},{"name":"obelisk-version-monitor","repo":"obelisk-version-monitor"},{"name":"webui","repo":"webui"}]}' },
+  # defaults to "obeli-sk" and `ref` to "main" when omitted; `description` is
+  # a terse "Lang: phrase" surfaced verbatim as a bullet in the system
+  # prompt (session.rs's render_app_help / session-logic.js's renderAppHelp) -
+  # keep it short, the repo's own README.md is the place for detail. The
+  # default list is curated for authoring value: JS repos are directly
+  # copy-and-adapt, Rust ones only make the cut when they publish reusable
+  # OCI components or demonstrate a pattern worth rewriting to JS - no
+  # Go/Python-only material. Override the whole list to mount a different
+  # set of repos, private forks, or pinned refs.
+  { key = "APPS_JSON", value = '''
+${APPS_JSON:-[
+  {"name":"components","repo":"components","description":"Rust: reusable OCI activities (HTTP, GitHub, Fly.io, Docker, OpenAI, browser); copy any `*-oci.toml`"},
+  {"name":"agent-backed-llm-server","repo":"agent-backed-llm-server","description":"JS: OpenAI-compatible LLM endpoint over a Claude/Codex CLI"},
+  {"name":"demo-stargazers","repo":"demo-stargazers","description":"Rust: webhook -> workflow -> external-API pattern"},
+  {"name":"demo-tutorial","repo":"demo-tutorial","description":"JS: serial/parallel durable workflow tutorial"},
+  {"name":"obelisk-version-monitor","repo":"obelisk-version-monitor","description":"JS: dashboard app example"},
+  {"name":"workflow-agent","repo":"workflow-agent","description":"Rust + JS: this agent's own source"}
+]}
+''' },
   { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
 ]
 exec.lock_expiry.seconds = 30

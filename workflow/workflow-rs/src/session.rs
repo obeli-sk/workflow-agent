@@ -85,13 +85,15 @@ const MOUNT_HEADER: &str = concat!(
 const MOUNT_FOOTER: &str = "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
 /// An `APPS_JSON`-configured GitHub repo tree mounted at
-/// `/workspace/apps/<name>` (see `App`/`obelisk_web::mount`).
+/// `/workspace/apps/<name>` (see `App`/`obelisk_web::mount`). `description`
+/// is surfaced in the system prompt (`render_app_help`).
 #[derive(Clone)]
 struct App {
     name: String,
     owner: String,
     repo: String,
     git_ref: String,
+    description: String,
 }
 
 /// The `mount` shell command: list the session's network-backed mount points and
@@ -274,6 +276,28 @@ it printed before that stays recorded.",
     text
 }
 
+/// The `# Example apps` system-prompt section, listing each `APPS_JSON`-
+/// configured repo mount and what it is for. Empty when no apps are
+/// configured, keeping the prompt lean (mirrors `render_program_help`).
+fn render_app_help(apps: &[App]) -> String {
+    if apps.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from(
+        "\n# Example apps\n\n\
+Read-only, mounted at /workspace/apps/<name>; each repo's own README.md has the full story:\n\n",
+    );
+    for app in apps {
+        if app.description.is_empty() {
+            text.push_str(&format!("- `{}`\n", app.name));
+        } else {
+            text.push_str(&format!("- `{}` - {}\n", app.name, app.description));
+        }
+    }
+    text.push('\n');
+    text
+}
+
 fn parse_mcp_servers(value: &Value) -> Result<Vec<(String, String)>, String> {
     let entries = value
         .as_array()
@@ -317,11 +341,16 @@ fn parse_apps(value: &Value) -> Result<Vec<App>, String> {
                 .get("ref")
                 .and_then(Value::as_str)
                 .ok_or_else(|| format!("app {name} has no ref"))?;
+            let description = entry
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             Ok(App {
                 name: name.to_string(),
                 owner: owner.to_string(),
                 repo: repo.to_string(),
                 git_ref: git_ref.to_string(),
+                description: description.to_string(),
             })
         })
         .collect()
@@ -663,10 +692,12 @@ pub fn agent_loop(
     );
 
     let shell_help = render_program_help(&programs);
+    let app_help = render_app_help(&apps);
     let system = format!(
         "{system_prompt}\n\n\
 # Shell\n\n\
 {shell_help}\n\
+{app_help}\
 # User input\n\n\
 When you need a user answer before you can continue the current task, run \
 `obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. It \
@@ -1443,7 +1474,18 @@ mod tests {
         assert_eq!(apps[0].owner, "obeli-sk");
         assert_eq!(apps[0].repo, "components");
         assert_eq!(apps[0].git_ref, "main");
+        // description is optional, defaulting to empty.
+        assert_eq!(apps[0].description, "");
         assert!(parse_apps(&json!([])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_apps_reads_description_when_present() {
+        let apps = parse_apps(&json!([
+            {"name":"components","owner":"obeli-sk","repo":"components","ref":"main","description":"example activities"}
+        ]))
+        .unwrap();
+        assert_eq!(apps[0].description, "example activities");
     }
 
     #[test]
@@ -1556,6 +1598,36 @@ mod tests {
     }
 
     #[test]
+    fn app_help_lists_mounted_repos_with_descriptions() {
+        let apps = vec![
+            App {
+                name: "components".to_string(),
+                owner: "obeli-sk".to_string(),
+                repo: "components".to_string(),
+                git_ref: "main".to_string(),
+                description: "reusable Rust activities".to_string(),
+            },
+            App {
+                name: "webui".to_string(),
+                owner: "obeli-sk".to_string(),
+                repo: "webui".to_string(),
+                git_ref: "main".to_string(),
+                description: String::new(),
+            },
+        ];
+        let help = render_app_help(&apps);
+        assert!(help.contains("# Example apps"), "{help}");
+        assert!(
+            help.contains("\n- `components` - reusable Rust activities\n"),
+            "{help}"
+        );
+        // An app without a description is listed by its name alone.
+        assert!(help.contains("\n- `webui`\n"), "{help}");
+        // With no apps, the section is omitted entirely.
+        assert_eq!(render_app_help(&[]), "");
+    }
+
+    #[test]
     fn mount_reports_mcp_reachability() {
         struct FakeHost(BTreeMap<String, Result<Option<String>, String>>);
         impl ObeliskHost for FakeHost {
@@ -1582,6 +1654,7 @@ mod tests {
             owner: "obeli-sk".to_string(),
             repo: "components".to_string(),
             git_ref: "main".to_string(),
+            description: "".to_string(),
         }];
         let out = render_mount(&apps, &servers, "http://127.0.0.1:9290", &mut host);
         // Every entry (header, apps, webhook URL, MCP) is indented two spaces consistently.

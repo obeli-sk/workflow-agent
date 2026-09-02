@@ -3,7 +3,7 @@
 //     max-steps: u32,
 //     programs: list<record { name: string, ffqn: string, description: string }>,
 //     mcp-servers: list<record { name: string, ffqn: string }>,
-//     apps: list<record { name: string, owner: string, repo: string, ref: string }>,
+//     apps: list<record { name: string, owner: string, repo: string, ref: string, description: string }>,
 //     webhook-url: string
 //   }, string>
 
@@ -70,9 +70,11 @@ function parseApp(entry, index, envName) {
     const repo = entry?.repo;
     const owner = entry?.owner ?? DEFAULT_APP_OWNER;
     const ref = entry?.ref ?? DEFAULT_APP_REF;
+    const description = entry?.description ?? "";
     if (typeof name !== "string" || !name) throw `${envName}[${index}] has no name`;
     if (typeof repo !== "string" || !repo) throw `${envName}[${index}] has no repo`;
     if (typeof owner !== "string" || !owner) throw `${envName}[${index}] owner must be a string`;
     if (typeof ref !== "string" || !ref) throw `${envName}[${index}] ref must be a string`;
-    return { name, owner, repo, ref };
+    if (typeof description !== "string") throw `${envName}[${index}] description must be a string`;
+    return { name, owner, repo, ref, description };
 }

@@ -7,6 +7,7 @@ import {
     openingShellScript,
     parseDurationMs,
     parseToolTimeout,
+    renderAppHelp,
     renderMount,
     renderProgramHelp,
     renderSystemPrompt,
@@ -104,15 +105,34 @@ test("renderProgramHelp lists each program, with or without a description", () =
     assert.ok(text.includes("  jira\n"));
 });
 
-test("renderSystemPrompt composes the base prompt, shell help, user-input, subagents, self, and pack sections in order", () => {
+test("renderAppHelp omits the section when there are no apps", () => {
+    assert.equal(renderAppHelp([]), "");
+    assert.equal(renderAppHelp(undefined), "");
+});
+
+test("renderAppHelp lists each app as a markdown bullet, with or without a description", () => {
+    const text = renderAppHelp([
+        { name: "components", owner: "obeli-sk", repo: "components", ref: "main", description: "reusable Rust activities" },
+        { name: "webui", owner: "obeli-sk", repo: "webui", ref: "main", description: "" },
+    ]);
+    assert.ok(text.includes("# Example apps"));
+    assert.ok(text.includes("- `components` - reusable Rust activities\n"));
+    // An app without a description is listed by its name alone.
+    assert.ok(text.includes("- `webui`\n"));
+});
+
+test("renderSystemPrompt composes the base prompt, shell help, apps, user-input, subagents, self, and pack sections in order", () => {
     const text = renderSystemPrompt(
         "Base instructions.",
         [{ name: "curl", ffqn: "x", description: "fetch" }],
+        [{ name: "components", owner: "obeli-sk", repo: "components", ref: "main", description: "reusable Rust activities" }],
         "# This session\n\nself section text\n",
     );
     const baseAt = text.indexOf("Base instructions.");
     const shellAt = text.indexOf("# Shell");
     const helpAt = text.indexOf("registers these external commands");
+    const appsAt = text.indexOf("# Example apps");
+    const appEntryAt = text.indexOf("- `components` - reusable Rust activities");
     const userInputAt = text.indexOf("# User input");
     const askUserAt = text.indexOf("ask-user");
     const subagentsAt = text.indexOf("# Subagents");
@@ -120,7 +140,8 @@ test("renderSystemPrompt composes the base prompt, shell help, user-input, subag
     const selfAt = text.indexOf("self section text");
     const packAt = text.indexOf(PACK_SYSTEM_PROMPT);
     assert.ok(
-        baseAt < shellAt && shellAt < helpAt && helpAt < userInputAt && userInputAt < askUserAt &&
+        baseAt < shellAt && shellAt < helpAt && helpAt < appsAt && appsAt < appEntryAt &&
+        appEntryAt < userInputAt && userInputAt < askUserAt &&
         askUserAt < subagentsAt && subagentsAt < chatCreateAt && chatCreateAt < selfAt && selfAt < packAt,
         text,
     );

@@ -101,6 +101,22 @@ export function renderProgramHelp(programs) {
     return text;
 }
 
+// PORT: session.rs's `render_app_help`. `apps` is the operator-owned
+// APPS_JSON registry (see activity/config-discover.js) - each
+// `{name, owner, repo, ref, description}`. Empty when no apps are
+// configured, keeping the prompt lean (mirrors renderProgramHelp).
+export function renderAppHelp(apps) {
+    if (!apps || apps.length === 0) return "";
+    let text =
+        "\n# Example apps\n\n" +
+        "Read-only, mounted at /workspace/apps/<name>; each repo's own README.md has the full story:\n\n";
+    for (const app of apps) {
+        text += app.description ? `- \`${app.name}\` - ${app.description}\n` : `- \`${app.name}\`\n`;
+    }
+    text += "\n";
+    return text;
+}
+
 // PORT: session.rs's inline "# User input" section (agent_loop's `format!`).
 const USER_INPUT_SECTION =
     "# User input\n\n" +
@@ -128,8 +144,8 @@ const SUBAGENTS_SECTION =
 // session" paragraph); always included, matching session.rs's agent_loop,
 // which composes it into the system prompt unconditionally regardless of
 // whether a `chat` program is actually registered.
-export function renderSystemPrompt(systemPrompt, programs, selfSection) {
-    return `${systemPrompt}\n\n# Shell\n\n${renderProgramHelp(programs)}\n${USER_INPUT_SECTION}\n\n${SUBAGENTS_SECTION}\n\n${selfSection}\n\n${PACK_SYSTEM_PROMPT}\n`;
+export function renderSystemPrompt(systemPrompt, programs, apps, selfSection) {
+    return `${systemPrompt}\n\n# Shell\n\n${renderProgramHelp(programs)}\n${renderAppHelp(apps)}${USER_INPUT_SECTION}\n\n${SUBAGENTS_SECTION}\n\n${selfSection}\n\n${PACK_SYSTEM_PROMPT}\n`;
 }
 
 // PORT: workflow-rs/src/session.rs's `MOUNT_HEADER`/`MOUNT_FOOTER`.

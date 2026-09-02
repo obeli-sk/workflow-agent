@@ -164,18 +164,24 @@ under `/workspace/apps/<name>`, sourced from the GitHub contents API
 (one deployed activity backs every mount; which repo each one browses travels
 in the request, not a fixed env var). A directory lists on first `ls` and a
 file's bytes fetch on first `cat`, one recorded activity call each. The
-default list mounts every `obeli-sk` example repo (`components`,
-`agent-backed-llm-server`, `benchmark-fibo`, `demo-stargazers`,
-`demo-tutorial`, `obelisk-deploy-flyio`, `obelisk-templates`,
-`obelisk-version-monitor`, `webui`) at `main`; override it to mount a
-different set, private forks, or pinned refs:
+default list mounts a handful of `obeli-sk` repos (`components`,
+`agent-backed-llm-server`, `demo-stargazers`, `demo-tutorial`,
+`obelisk-version-monitor`, and `workflow-agent` itself) at `main`, curated
+for authoring value: a JS repo is directly copy-and-adapt, a Rust one only
+makes the cut when it publishes reusable OCI components (`components`) or
+demonstrates a pattern worth rewriting to JS (`demo-stargazers`); override
+it to mount a different set, private forks, or pinned refs:
 
 ```sh
 export APPS_JSON='[{"name":"components","repo":"components","ref":"v0.3.0"}]'
 ```
 
-Each entry is `{name, repo}` plus optional `owner` (default `obeli-sk`) and
-`ref` (default `main`). `GH_OWNER` (default `obeli-sk`) scopes the deployed
+Each entry is `{name, repo}` plus optional `owner` (default `obeli-sk`),
+`ref` (default `main`), and `description` (default empty). The system
+prompt's "Example apps" section renders each entry as a one-line Markdown
+bullet (`- \`name\` - description`), so keep `description` to a short
+"Lang: what it's for" phrase; a repo's own README.md is the place for
+detail. `GH_OWNER` (default `obeli-sk`) scopes the deployed
 activity's `allowed_host` boundary to one GitHub org/user; every mounted
 repo's `owner` must fall within it. `GITHUB_TOKEN` is optional: unset, the
 mount shares GitHub's 60 req/h anonymous IP rate limit; set it (e.g. `gh auth
