@@ -34,6 +34,21 @@ export const BASH_TOOLS_JSON = JSON.stringify([
     },
 ]);
 
+const MAX_SLUG_LEN = 64;
+
+// PORT: chat.rs's `validate_slug` (the shared naming rule for both an
+// initial `name` and a later `chat rename`, Phase 5). Kept here rather than
+// deferred entirely to Phase 5 since Phase 4's session_renamed already needs
+// it for the at-creation name. Returns an error string, or null when valid.
+export function validateSlug(name) {
+    if (!name || name.length > MAX_SLUG_LEN) return `slug must be 1..=${MAX_SLUG_LEN} characters`;
+    if (!/^[a-z0-9-]+$/.test(name)) return "slug allows lowercase letters, digits, and dashes";
+    if (name.startsWith("-") || name.endsWith("-") || name.includes("--")) {
+        return "dashes in a slug must be single and inner";
+    }
+    return null;
+}
+
 // PORT: workflow-rs/src/session.rs's `render_program_help`. `programs` is the
 // operator-owned PROGRAMS_JSON registry (see activity/config-discover.js) -
 // each `{name, ffqn, description}`.
@@ -50,8 +65,16 @@ export function renderProgramHelp(programs) {
     return text;
 }
 
+// PORT: session.rs's inline "# User input" section (agent_loop's `format!`).
+const USER_INPUT_SECTION =
+    "# User input\n\n" +
+    "When you need a user answer before you can continue the current task, run " +
+    "`obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. It publishes the question " +
+    "to the UI, blocks, and returns the answer so you can continue in the same turn. Use it only when " +
+    "the answer is required to proceed; to end the turn, reply in Markdown without a command.";
+
 export function renderSystemPrompt(systemPrompt, programs) {
-    return `${systemPrompt}\n\n# Shell\n\n${renderProgramHelp(programs)}\n${PACK_SYSTEM_PROMPT}\n`;
+    return `${systemPrompt}\n\n# Shell\n\n${renderProgramHelp(programs)}\n${USER_INPUT_SECTION}\n\n${PACK_SYSTEM_PROMPT}\n`;
 }
 
 // PORT: workflow-rs/src/session.rs's `MOUNT_HEADER`/`MOUNT_FOOTER`.

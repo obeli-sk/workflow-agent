@@ -8,6 +8,7 @@ import {
     renderMount,
     renderProgramHelp,
     renderSystemPrompt,
+    validateSlug,
     shellResultOf,
     stepWarningThreshold,
     toolError,
@@ -101,13 +102,18 @@ test("renderProgramHelp lists each program, with or without a description", () =
     assert.ok(text.includes("  jira\n"));
 });
 
-test("renderSystemPrompt composes the base prompt, shell help, and the pack prompt in order", () => {
+test("renderSystemPrompt composes the base prompt, shell help, user-input section, and pack prompt in order", () => {
     const text = renderSystemPrompt("Base instructions.", [{ name: "curl", ffqn: "x", description: "fetch" }]);
     const baseAt = text.indexOf("Base instructions.");
     const shellAt = text.indexOf("# Shell");
     const helpAt = text.indexOf("registers these external commands");
+    const userInputAt = text.indexOf("# User input");
+    const askUserAt = text.indexOf("ask-user");
     const packAt = text.indexOf(PACK_SYSTEM_PROMPT);
-    assert.ok(baseAt < shellAt && shellAt < helpAt && helpAt < packAt, text);
+    assert.ok(
+        baseAt < shellAt && shellAt < helpAt && helpAt < userInputAt && userInputAt < askUserAt && askUserAt < packAt,
+        text,
+    );
 });
 
 test("renderMount lists the webhook URL only when configured and probes each MCP server", () => {
@@ -124,4 +130,17 @@ test("renderMount lists the webhook URL only when configured and probes each MCP
 
     const withoutWebhook = renderMount([], "", probe);
     assert.ok(!withoutWebhook.includes("target Obelisk webhooks"));
+});
+
+test("validateSlug enforces the kebab-case shape", () => {
+    assert.equal(validateSlug("deploy-triage"), null);
+    assert.equal(validateSlug("a"), null);
+    assert.equal(validateSlug("a-1"), null);
+    assert.notEqual(validateSlug(""), null);
+    assert.notEqual(validateSlug("-lead"), null);
+    assert.notEqual(validateSlug("trail-"), null);
+    assert.notEqual(validateSlug("dou--ble"), null);
+    assert.notEqual(validateSlug("Upper"), null);
+    assert.notEqual(validateSlug("under_score"), null);
+    assert.notEqual(validateSlug("x".repeat(65)), null);
 });

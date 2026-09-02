@@ -20,8 +20,8 @@
 
 import { discover } from "obelisk-agent:config/config";
 import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
-import { injectionSubmit, recordOutputSubmit } from "obelisk-agent:stub-obelisk-ext/stub";
-import { recordOutputStub } from "obelisk-agent:stub-obelisk-stub/stub";
+import { askUserSubmit, injectionSubmit, recordOutputSubmit, sessionRenamedSubmit } from "obelisk-agent:stub-obelisk-ext/stub";
+import { recordOutputStub, sessionRenamedStub } from "obelisk-agent:stub-obelisk-stub/stub";
 import { Bash } from "../../../vendor/just-bash/src/bash.js";
 import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
 import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
@@ -41,6 +41,7 @@ import {
     openingShellScript,
     renderMount,
     renderSystemPrompt,
+    validateSlug,
     shellResultOf,
     shortWarningId,
     stepLimitError,
@@ -59,6 +60,11 @@ const COMPONENTS_MOUNT_FFQN = "obelisk-agent:mounts/components.request";
 
 const DEFAULT_DESCRIPTOR_FFQN = "obelisk-control:agent/pack.describe";
 const SESSION_EVENTS_JOIN_SET = "session-events";
+// Renames publish here instead, so a reader fetches the current name with one
+// bounded request instead of racing the mixed session-events stream.
+const SESSION_NAME_JOIN_SET = "session-name";
+const ASK_USER_FFQN = "obelisk-agent:stub/stub.ask-user";
+const NATIVE_CALL_FFQN = "obelisk-control:tools/native.call";
 
 export default function runCancellable(prompt, model, descriptorFfqn, effort, name) {
     try {
@@ -69,6 +75,10 @@ export default function runCancellable(prompt, model, descriptorFfqn, effort, na
 }
 
 function runInner(prompt, model, descriptorFfqn, effort, name) {
+    if (name) {
+        const error = validateSlug(name);
+        if (error) throw `invalid session name ${JSON.stringify(name)}: ${error}`;
+    }
     const descriptor = descriptorFfqn || DEFAULT_DESCRIPTOR_FFQN;
     const described = obelisk.call(descriptor, []);
     if (typeof described?.prompt !== "string") {
@@ -93,6 +103,9 @@ function errorMessage(e) {
 class Notifications {
     constructor() {
         this.joinSet = obelisk.createJoinSet({ name: SESSION_EVENTS_JOIN_SET });
+        // Lazily created on first rename: most sessions are never renamed, so
+        // this avoids a join set nobody ends up using.
+        this.nameJoinSet = null;
         this.turnIndex = 0;
     }
 
@@ -108,6 +121,92 @@ class Notifications {
             throw `unexpected session event response: ${this.joinSet.lastId}`;
         }
     }
+
+    humanInputRequested(executionId, question) {
+        this.notify({ human_input_requested: { execution_id: executionId, question, turn_index: this.turnIndex } });
+    }
+
+    humanInputResolved(executionId) {
+        this.notify({ human_input_resolved: { execution_id: executionId, turn_index: this.turnIndex } });
+    }
+
+    // PORT: session.rs's Notifications::session_renamed. A dedicated join set
+    // (not session-events) so a reader can fetch the current name with one
+    // bounded request instead of racing the mixed event stream.
+    sessionRenamed(name) {
+        if (!this.nameJoinSet) this.nameJoinSet = obelisk.createJoinSet({ name: SESSION_NAME_JOIN_SET });
+        const execId = sessionRenamedSubmit(this.nameJoinSet, name);
+        sessionRenamedStub(execId, { ok: { name } });
+        const published = this.nameJoinSet.joinNext();
+        if (this.nameJoinSet.lastId !== execId || published?.name !== name) {
+            throw `unexpected session rename response: ${this.nameJoinSet.lastId}`;
+        }
+    }
+}
+
+// PORT: host.rs's RealHost::call_json interception of ASK_USER_FFQN reached
+// through native.call, plus RealHost::ask_user itself. Wraps a plain
+// createHost() so `obelisk call obelisk-agent:stub/stub.ask-user [...]`
+// (the only path that ever reaches native.call, see obelisk-pack.js's
+// `targetCall`) is answered by a real join-set-based question/answer
+// exchange instead of falling through to native.call's normal HTTP bridge
+// to the target instance, which has no such function.
+let askUserJoinSetCounter = 0;
+
+function askUserAwareHost(notifications) {
+    const host = createHost();
+    return {
+        callJson(ffqn, paramsJson) {
+            if (ffqn === NATIVE_CALL_FFQN) {
+                const intercepted = interceptAskUser(paramsJson, notifications);
+                if (intercepted !== undefined) return intercepted;
+            }
+            return host.callJson(ffqn, paramsJson);
+        },
+    };
+}
+
+// `undefined` means "not an ask-user call, fall through to the normal host".
+function interceptAskUser(nativeCallParamsJson, notifications) {
+    let params;
+    try {
+        params = JSON.parse(nativeCallParamsJson);
+    } catch {
+        return undefined;
+    }
+    if (!Array.isArray(params) || params[0] !== ASK_USER_FFQN) return undefined;
+    const targetParamsJson = params[1];
+    if (typeof targetParamsJson !== "string") throw "native call requires params-json";
+    return askUser(targetParamsJson, notifications);
+}
+
+// Returns native.call's own callJson contract: JSON text of native.call's
+// decoded (string) return value - i.e. JSON.stringify'd twice, matching how
+// a normal callJson(NATIVE_CALL_FFQN, ...) call would encode a string
+// result (see host.js's header comment for the "one layer of JSON text"
+// convention every obelisk-*.js module is written against).
+function askUser(paramsJson, notifications) {
+    let params;
+    try {
+        params = JSON.parse(paramsJson);
+    } catch (error) {
+        throw `ask-user params_json must be valid JSON: ${error.message}`;
+    }
+    const question = Array.isArray(params) ? params[0] : undefined;
+    if (typeof question !== "string" || !question) throw "ask-user requires a question";
+
+    const joinSet = obelisk.createJoinSet({ name: `ask-user-${askUserJoinSetCounter++}` });
+    const executionId = askUserSubmit(joinSet, question);
+    notifications.humanInputRequested(executionId, question);
+    let answer;
+    try {
+        answer = joinSet.joinNext();
+    } catch (e) {
+        throw `ask-user await failed: ${errorMessage(e)}`;
+    }
+    if (joinSet.lastId !== executionId) throw `unexpected ask-user response: ${joinSet.lastId}`;
+    notifications.humanInputResolved(executionId);
+    return JSON.stringify(JSON.stringify(answer));
 }
 
 function hostNowMs() {
@@ -342,8 +441,12 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const notifications = new Notifications();
     const bash = new Bash({ cwd: "/workspace", nowMs: hostNowMs, sleepMs: hostSleepMs });
     // Always registered, independent of operator config (mirrors session.rs
-    // registering obelisk_pack unconditionally right after Bash::new).
-    bash.registerCommand("obelisk", obeliskPack.commandHandler(createHost()));
+    // registering obelisk_pack unconditionally right after Bash::new). Only
+    // this registration's host needs the ask-user interception: it's the
+    // only path that ever dispatches through native.call (obelisk-pack.js's
+    // `targetCall`, backing `obelisk call FFQN`); programs/MCP commands never
+    // route through it, so a plain createHost() is enough for those.
+    bash.registerCommand("obelisk", obeliskPack.commandHandler(askUserAwareHost(notifications)));
 
     const config = loadSessionConfig();
     const maxSteps = config.maxSteps;
@@ -357,6 +460,9 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     notifications.notify({
         session_started: { protocol_version: 9, prompt, backend: model, effort, system_prompt: system },
     });
+    // A session created with a slug label (`chat create --name`, Phase 5)
+    // starts already renamed; anything else arrives unnamed.
+    if (name) notifications.sessionRenamed(name);
 
     for (const warning of descriptorWarnings) {
         notifications.notify({ agent_error: { id: `descriptor-warning-${shortWarningId(warning)}`, text: warning, turn_index: 0 } });

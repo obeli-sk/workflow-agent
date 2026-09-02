@@ -107,6 +107,22 @@ fi
 echo ">>> obelisk/mount E2E PASS: the ported obelisk-pack.js command runs for real inside Boa"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 
+echo ">>> creating a JS-backend session with an initial name"
+NAMED_SESSION_ID="$("$OBELISK" generate execution-id)"
+"$OBELISK" execution submit -a "$E2E_API_URL" -e "$NAMED_SESSION_ID" "$RUN_FFQN" \
+    '["", null, null, null, "e2e-rename-check"]'
+SECONDS=0
+while true; do
+    NAME_PROJECTION="$(run_detail "$NAMED_SESSION_ID" || true)"
+    if node -e "process.exit(JSON.parse(require('fs').readFileSync(0,'utf8')||'{}')?.name==='e2e-rename-check'?0:1)" <<<"$NAME_PROJECTION" 2>/dev/null; then
+        break
+    fi
+    [[ $SECONDS -ge 30 ]] && { echo "session did not report its initial name: $NAME_PROJECTION" >&2; exit 1; }
+    sleep 1
+done
+echo ">>> rename E2E PASS: the session-name join set published the at-creation name"
+"$OBELISK" execution cancel -a "$E2E_API_URL" "$NAMED_SESSION_ID" >/dev/null || true
+
 EXEC_ID="$("$OBELISK" generate execution-id)"
 echo ">>> submitting $RUN_FFQN as $EXEC_ID"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$EXEC_ID" "$RUN_FFQN" \
