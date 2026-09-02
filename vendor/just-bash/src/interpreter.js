@@ -218,6 +218,7 @@ export class Interpreter {
             const target = r.target;
             if (target.type === "file") {
                 const path = this.resolvePath(expandWordSingle(target.word, ctx));
+                this.vfs.ensureMountedFor(path);
                 if (r.kind === "read") {
                     bindings[r.fd] = { kind: "file-read", path };
                 } else {
@@ -251,6 +252,15 @@ export class Interpreter {
         }
         const words = cmd.words.flatMap(braceExpandWord);
         const args = words.flatMap((w) => expandWordToFields(w, ctx));
+        // Fire a deferred mount (the deployment tree, an MCP server's
+        // resources, ...) if this command references a path under its root,
+        // so a session that never touches a given mount never fetches it.
+        // Checks cwd (for `cd .../current; cat foo`) and each expanded
+        // argument (absolute or relative references); runs after glob
+        // expansion, so a glob as the very first reference to a tree lists
+        // nothing until the mount materializes on the next access.
+        this.vfs.ensureMountedFor(this.cwd);
+        for (const arg of args) this.vfs.ensureMountedFor(this.resolvePath(arg));
         const stdinText = this.resolveStdinText(bindings[0]);
         const result = this.invoke(args, stdinText, bindings);
         // Prefix assignments (`FOO=bar cmd`) are scoped to this invocation only.
