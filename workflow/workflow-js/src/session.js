@@ -23,6 +23,11 @@ import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
 import { injectionSubmit, recordOutputSubmit } from "obelisk-agent:stub-obelisk-ext/stub";
 import { recordOutputStub } from "obelisk-agent:stub-obelisk-stub/stub";
 import { Bash } from "../../../vendor/just-bash/src/bash.js";
+import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
+import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
+import * as obeliskMcp from "../../../vendor/just-bash/src/obelisk-mcp.js";
+import * as obeliskWeb from "../../../vendor/just-bash/src/obelisk-web.js";
+import { createHost } from "./host.js";
 import {
     BASH_TOOLS_JSON,
     EMPTY_REPLY_NUDGE,
@@ -34,6 +39,7 @@ import {
     interruptedError,
     llmErrorEvent,
     openingShellScript,
+    renderMount,
     renderSystemPrompt,
     shellResultOf,
     shortWarningId,
@@ -45,6 +51,11 @@ import {
     toolResultMessageValue,
     userText,
 } from "./session-logic.js";
+
+// obelisk-agent:mounts/components.request: the read-only reference tree of
+// example components (obeli-sk/components), mounted at /workspace/components
+// (see obelisk-pack.js's SYSTEM_PROMPT). Fixed FFQN, not operator-configured.
+const COMPONENTS_MOUNT_FFQN = "obelisk-agent:mounts/components.request";
 
 const DEFAULT_DESCRIPTOR_FFQN = "obelisk-control:agent/pack.describe";
 const SESSION_EVENTS_JOIN_SET = "session-events";
@@ -121,6 +132,62 @@ function loadSessionConfig() {
         mcpServers: config.mcp_servers ?? [],
         webhookUrl: config.webhook_url ?? "",
     };
+}
+
+// ----- programs / MCP servers / mounts (PORT: session.rs's agent_loop setup) -----
+
+// Registers one shell command per operator-configured program
+// (PROGRAMS_JSON), plus the `mcp` registry command and one command per
+// configured MCP server (MCP_SERVERS_JSON) and the `mount` listing command.
+// Each handler owns its own host (matching session.rs's `host()` closure
+// pattern: one RealHost-equivalent per registration, not shared mutable
+// state) since `createHost()` is stateless and cheap.
+function registerProgramsAndMcp(bash, config) {
+    for (const program of config.programs) {
+        bash.registerCommand(program.name, obeliskProgram.commandHandler(program.name, program.ffqn, createHost()));
+    }
+
+    const mcpRegistry = config.mcpServers.map(({ name, ffqn }) => ({ name, ffqn }));
+    bash.registerCommand("mcp", obeliskMcp.registryCommandHandler(mcpRegistry, createHost()));
+    for (const { name, ffqn } of config.mcpServers) {
+        bash.registerCommand(name, obeliskMcp.serverCommandHandler(name, ffqn, createHost()));
+    }
+
+    bash.registerCommand("mount", mountCommandHandler(config.mcpServers, config.webhookUrl));
+}
+
+// The `mount` shell command: list the session's network-backed mount points
+// and live-probe each MCP server's reachability (PORT: session.rs's
+// `mount_command`/`render_mount`).
+function mountCommandHandler(mcpServers, webhookUrl) {
+    return (_interp, _args, _stdin) => {
+        const host = createHost();
+        const probe = (ffqn) => {
+            try {
+                host.callJson(ffqn, '["tools/list","{}"]');
+                return null;
+            } catch (e) {
+                return typeof e === "string" ? e : String(e?.message ?? e);
+            }
+        };
+        return { stdout: renderMount(mcpServers, webhookUrl, probe), stderr: "", exitCode: 0 };
+    };
+}
+
+// Registers the deployment tree, the read-only components reference tree, and
+// each MCP server's resources as lazy VFS mounts (PORT: session.rs's
+// pack_mounted block). None of this makes a host call by itself - a
+// bash-only session that never references a mounted path never touches the
+// network - so it is safe to run unconditionally, once, right after the
+// input offer opens.
+function mountPacks(bash, config) {
+    const fs = bash.fs();
+    fs.setBlobLoader(obeliskPack.blobLoader(createHost()));
+    obeliskPack.registerDeferredMount(fs, createHost());
+    obeliskWeb.mount(fs, createHost(), COMPONENTS_MOUNT_FFQN, "/workspace/components");
+    for (const { name, ffqn } of config.mcpServers) {
+        obeliskMcp.registerDeferredMount(fs, createHost(), createHost(), ffqn, `/workspace/mcp/${name}`);
+    }
 }
 
 // ----- shell exec -----
@@ -274,9 +341,13 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
 
     const notifications = new Notifications();
     const bash = new Bash({ cwd: "/workspace", nowMs: hostNowMs, sleepMs: hostSleepMs });
+    // Always registered, independent of operator config (mirrors session.rs
+    // registering obelisk_pack unconditionally right after Bash::new).
+    bash.registerCommand("obelisk", obeliskPack.commandHandler(createHost()));
 
     const config = loadSessionConfig();
     const maxSteps = config.maxSteps;
+    registerProgramsAndMcp(bash, config);
 
     const system = renderSystemPrompt(systemPrompt, config.programs);
 
@@ -297,6 +368,10 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     let shouldCallLlm = messages.length > 0;
     let agentSteps = 0;
     const session = openSession(turnIndex, notifications);
+    // Deployment/components/MCP-resource trees mount lazily: registering them
+    // makes no host call itself, so this runs once the input offer is already
+    // open (a live session is visible immediately) without delaying startup.
+    mountPacks(bash, config);
     publishAgentStatus(notifications, shouldCallLlm, turnIndex);
 
     while (true) {

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Smoke-tests the JS workflow backend (workflow/workflow-js) against the same
 # session protocol the Rust backend's test-e2e-agent-workflow.sh exercises:
-# a direct shell turn through the idle input offer, and a prompt-driven turn
-# that reaches obelisk-agent:llm/chat.completion and surfaces its recoverable
-# config error. Phase 1 has no ask-user/programs/mounts yet (see
-# docs/js-backend-migration.md), so this is a strict subset of the Rust
+# direct shell turns through the idle input offer (including the Phase 3
+# obelisk/mount custom commands), and a prompt-driven turn that reaches
+# obelisk-agent:llm/chat.completion and surfaces its recoverable config
+# error. Phase 4/5 (ask-user, chat peer sessions) have no JS coverage yet
+# (see docs/js-backend-migration.md), so this is a strict subset of the Rust
 # suite's coverage, not a replacement for it.
 
 set -euo pipefail
@@ -29,53 +30,81 @@ run_detail() {
     curl --fail --silent --show-error "http://127.0.0.1:28092/api/runs/$1" 2>&1
 }
 
-echo ">>> creating an empty JS-backend session and running one direct shell turn"
+# Waits for SESSION_ID's next input offer, submits SCRIPT as a direct shell
+# turn under that offer, waits for its record-output notification, and
+# leaves the notification's stdout in SHELL_STDOUT (stderr/nonzero exit
+# print to this process's stderr via `shell-stdout`, so a script bug is
+# visible in the log rather than silently swallowed).
+run_shell_turn() {
+    local shell_id="$1" script="$2"
+    SECONDS=0
+    local session_projection injection_id
+    while true; do
+        if session_projection="$(run_detail "$SESSION_ID")"; then
+            injection_id="$(node scripts/e2e-json.js input-offer-id <<<"$session_projection")"
+            [[ -n "$injection_id" ]] && break
+        fi
+        [[ $SECONDS -ge 30 ]] && { echo "session did not publish an input offer: $session_projection" >&2; exit 1; }
+        sleep 1
+    done
+    # Cursor position *before* this turn's events, so the projection fetched
+    # after the turn completes can diff against it (matches how the caller
+    # queries /api/runs/...&response_cursor=...).
+    RESPONSE_CURSOR="$(node scripts/e2e-json.js response-cursor <<<"$session_projection")"
+
+    curl --fail --silent --show-error \
+        -H 'content-type: application/json' \
+        -d "{\"offer_id\":\"$injection_id\",\"input\":{\"shell\":{\"id\":\"$shell_id\",\"script\":$(printf '%s' "$script" | node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8")))'),\"stdin\":\"\"}}}" \
+        "http://127.0.0.1:28092/api/input/$SESSION_ID" >/dev/null
+
+    SECONDS=0
+    local notification=""
+    while true; do
+        local session_executions
+        session_executions="$("$OBELISK" execution list -j -a "$E2E_API_URL" -e "$SESSION_ID" --show-derived --limit 100)"
+        while IFS= read -r record_id; do
+            [[ -n "$record_id" ]] || continue
+            local candidate
+            candidate="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$record_id" 2>/dev/null)" || continue
+            if node -e "const r=JSON.parse(require('fs').readFileSync(0,'utf8'))?.ok?.shell_output; process.exit(r?.id===process.argv[1]?0:1)" "$shell_id" <<<"$candidate" 2>/dev/null; then
+                notification="$candidate"
+                break
+            fi
+        done < <(node scripts/e2e-json.js execution-ids "obelisk-agent:stub/stub.record-output" <<<"$session_executions")
+        [[ -n "$notification" ]] && break
+        [[ $SECONDS -ge 30 ]] && { echo "shell turn $shell_id did not complete: $session_executions" >&2; exit 1; }
+        sleep 1
+    done
+    SHELL_STDOUT="$(node scripts/e2e-json.js shell-stdout <<<"$notification")"
+}
+
+echo ">>> creating an empty JS-backend session"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
 
-SECONDS=0
-while true; do
-    if ! SESSION_PROJECTION="$(run_detail "$SESSION_ID")"; then
-        [[ $SECONDS -ge 30 ]] && { echo "empty session detail unavailable: $SESSION_PROJECTION" >&2; exit 1; }
-        sleep 1
-        continue
-    fi
-    INJECTION_ID="$(node scripts/e2e-json.js input-offer-id <<<"$SESSION_PROJECTION")"
-    [[ -n "$INJECTION_ID" ]] && break
-    [[ $SECONDS -ge 30 ]] && { echo "empty session did not publish its input offer: $SESSION_PROJECTION" >&2; exit 1; }
-    sleep 1
-done
-RESPONSE_CURSOR="$(node scripts/e2e-json.js response-cursor <<<"$SESSION_PROJECTION")"
-
-curl --fail --silent --show-error \
-    -H 'content-type: application/json' \
-    -d "{\"offer_id\":\"$INJECTION_ID\",\"input\":{\"shell\":{\"id\":\"shell-e2e-1\",\"script\":\"sleep 0.05 && which grep && echo shell-ok\",\"stdin\":\"\"}}}" \
-    "http://127.0.0.1:28092/api/input/$SESSION_ID" >/dev/null
-
-SECONDS=0
-SHELL_NOTIFICATION=""
-while true; do
-    SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$E2E_API_URL" \
-        -e "$SESSION_ID" --show-derived --limit 100)"
-    while IFS= read -r RECORD_ID; do
-        [[ -n "$RECORD_ID" ]] || continue
-        CANDIDATE="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$RECORD_ID" 2>/dev/null)" || continue
-        if node scripts/e2e-json.js check-shell-notification <<<"$CANDIDATE" 2>/dev/null; then
-            SHELL_NOTIFICATION="$CANDIDATE"
-            break
-        fi
-    done < <(node scripts/e2e-json.js execution-ids \
-        "obelisk-agent:stub/stub.record-output" <<<"$SESSION_EXECUTIONS")
-    [[ -n "$SHELL_NOTIFICATION" ]] && break
-    [[ $SECONDS -ge 30 ]] && { echo "shell turn did not complete correctly: $SESSION_EXECUTIONS" >&2; exit 1; }
-    sleep 1
-done
-node scripts/e2e-json.js check-shell-notification <<<"$SHELL_NOTIFICATION"
+echo ">>> running a direct shell turn"
+run_shell_turn "shell-e2e-1" "sleep 0.05 && which grep && echo shell-ok"
 SHELL_PROJECTION="$(curl --fail --silent \
     "http://127.0.0.1:28092/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")"
 node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"
 echo ">>> shell-only E2E PASS: the JS interpreter ran a real script through the session protocol"
+
+echo ">>> running the Phase 3 obelisk/mount custom commands"
+run_shell_turn "shell-e2e-2" "mount && echo --- && obelisk functions list --help"
+if [[ "$SHELL_STDOUT" != *"Network-backed mounts"* ]]; then
+    echo "mount command did not print the expected header: $SHELL_STDOUT" >&2
+    exit 1
+fi
+if [[ "$SHELL_STDOUT" != *"/workspace/components"* ]]; then
+    echo "mount command did not list the components mount: $SHELL_STDOUT" >&2
+    exit 1
+fi
+if [[ "$SHELL_STDOUT" != *"Usage: obelisk functions"* ]]; then
+    echo "obelisk functions --help did not print its usage: $SHELL_STDOUT" >&2
+    exit 1
+fi
+echo ">>> obelisk/mount E2E PASS: the ported obelisk-pack.js command runs for real inside Boa"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 
 EXEC_ID="$("$OBELISK" generate execution-id)"
