@@ -1,7 +1,7 @@
 # JS-only workflow backend: migration notes
 
-Status: **in progress** (Phases 0-5 done and verified — see the checklist and
-command tracker below; Phase 6 — `WORKFLOW_FFQN` switch wiring — is next). This doc
+Status: **in progress** (Phases 0-6 done and verified — see the checklist and
+command tracker below; Phase 7 — test parity — is next). This doc
 tracks design decisions and progress for the JS-alternative workflow backend
 so another agent can resume without re-deriving the research. Update it
 after every phase.
@@ -451,8 +451,52 @@ core subset session.rs exercises day to day.
       without assigning it into `$SESSION_ID`, so the helper polled a stale
       session from an earlier scenario. Fixed by assigning
       `SESSION_ID="$CHAT_SESSION_ID"` before calling `run_shell_turn`.
-- [ ] Phase 6: `WORKFLOW_FFQN` switch wiring (`mutations.js`, `runs.js`,
-      `activity/chat.js`, `deployment.toml` env_vars), README/docs.
+- [x] Phase 6: `WORKFLOW_FFQN` switch wiring. `webhook/lib/mutations.js`'s
+      `submit`/`createSession` dropped the Rust-pinned static import
+      `runCancellableSchedule` (from `obelisk-agent:workflow-obelisk-schedule/
+      workflow`) in favor of the fully dynamic `obelisk.executionIdGenerate()`
+      + `obelisk.schedule(execId, WORKFLOW_FFQN, [prompt, backend, null,
+      effort, null], null)` — confirmed as a genuine `obelisk` global in the
+      webhook JS runtime by reading
+      `obelisk/crates/webhook-js-runtime/src/webhook_js_runtime.rs`
+      (`setup_obelisk_api`/`register_global_property`), the same ambient-
+      global convention `session.js` already relies on for
+      `obelisk.createJoinSet` etc. `activity/chat.js`'s `cmdCreate`
+      (`--top-level` fallback) honors the same env var via a small
+      `activeWorkflowFfqn()` helper. Listing merges **both** known FFQNs
+      unconditionally (not env-gated): `webhook/lib/runs.js`'s `listRuns`
+      queries each backend's FFQN and merges/sorts by `created_at` descending
+      (the list-executions API's `ffqn_prefix` is a single string, no OR/array
+      support — confirmed against `obelisk/src/server/web_api_server.rs`'s
+      `ExecutionsListParams`); `activity/chat.js`'s `cmdList` does the same
+      but sequentially (`listBothBackends`), since — per an existing comment
+      in that file, `cmdList`'s original single-call code — this activity
+      runtime services outbound requests one at a time, unlike webhook JS
+      which already uses `Promise.all` elsewhere in `runs.js`. Wired into
+      `deployment.toml` via `WORKFLOW_FFQN` env_vars on `ui-api`
+      (`webhook_endpoint_js`) and `program_chat` (`activity_js`), same
+      `${WORKFLOW_FFQN:-obelisk-agent:workflow/workflow.run-cancellable}`
+      interpolation pattern as `TARGET_OBELISK_WEBHOOK_URL` etc. A session's
+      own `chat create` (the workflow-side interception from Phase 5) is
+      unaffected — it always schedules its own kind via the injected
+      `submitFn`, no env var involved, matching Rust's `chat.rs`.
+      **Verification**: like Phase 5's self-referential submit, `just verify`
+      does not exercise `webhook_endpoint_js`/`activity_js` code paths at
+      runtime (no static/WIT check on `obelisk.schedule` call sites), so a
+      sixth e2e scenario was added to `test-e2e-agent-workflow-js.sh`: it sets
+      `WORKFLOW_FFQN` to the JS FFQN for the whole suite, POSTs to the
+      webhook's real `/api/submit`, and confirms via `obelisk execution list
+      -j` that the scheduled execution's `ffqn` actually is the JS one (not
+      just that the HTTP call succeeded). The existing Rust-only
+      `test-e2e-agent-workflow.sh` and `test-e2e-chat.sh` suites (unmodified
+      logic, `chat list`'s merge now live in the latter) still pass — run
+      with `GITHUB_TOKEN=""` since this sandbox has no `GITHUB_TOKEN` set and
+      neither script exports a blank default the way the JS suite does; this
+      is a pre-existing environment gap unrelated to Phase 6, not something
+      introduced here. `just test-js` (`activity/chat.test.js` gained a
+      `listBothBackends`-aware rewrite of its `list` tests, plus a new test
+      for the `--top-level` `WORKFLOW_FFQN` override) and `just verify` are
+      green. README gained a short "switching backends" note.
 - [ ] Phase 7: test parity (`node --test` unit tests, e2e suites against both
       backends, CI).
 
