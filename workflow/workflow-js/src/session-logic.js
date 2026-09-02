@@ -34,6 +34,42 @@ export const BASH_TOOLS_JSON = JSON.stringify([
     },
 ]);
 
+// PORT: chat.rs's `parse_duration_ms`. Sleep-style durations: `90s`,
+// `500ms`, `5m`, `2h`, composites like `1m30s`; a bare number is seconds.
+// Shared between the bash tool's `timeout` argument (Phase 4) and `chat
+// send --timeout` (Phase 5). Throws a string message on an invalid form.
+export function parseDurationMs(text) {
+    const invalid = () => `invalid duration ${JSON.stringify(text)} (use forms like 30s, 500ms, 5m, 1h30m)`;
+    if (!text) throw invalid();
+    let rest = text;
+    let totalMs = 0;
+    while (rest.length > 0) {
+        const digitsMatch = rest.match(/^[0-9]+/);
+        if (!digitsMatch) throw invalid();
+        const number = digitsMatch[0];
+        rest = rest.slice(number.length);
+        const unitMatch = rest.match(/^[A-Za-z]*/);
+        const unit = unitMatch[0];
+        rest = rest.slice(unit.length);
+        const factorMs = { "": 1000, ms: 1, s: 1000, m: 60_000, h: 3_600_000 }[unit];
+        if (factorMs === undefined) throw invalid();
+        totalMs += Number(number) * factorMs;
+    }
+    return totalMs;
+}
+
+// PORT: session.rs's `parse_tool_timeout`. The bash tool's optional
+// `timeout`: sleep-style duration text. An absent or blank value means no
+// watchdog (`null`). Throws a string message on an invalid form.
+export function parseToolTimeout(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "string") throw 'timeout must be a string like "5m"';
+    if (!value.trim()) return null;
+    const ms = parseDurationMs(value);
+    if (ms === 0) throw "timeout must be greater than zero";
+    return ms;
+}
+
 const MAX_SLUG_LEN = 64;
 
 // PORT: chat.rs's `validate_slug` (the shared naming rule for both an

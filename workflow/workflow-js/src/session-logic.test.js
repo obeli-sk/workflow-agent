@@ -5,6 +5,8 @@ import {
     containsBackgroundStatement,
     hasUserVisibleText,
     openingShellScript,
+    parseDurationMs,
+    parseToolTimeout,
     renderMount,
     renderProgramHelp,
     renderSystemPrompt,
@@ -143,4 +145,26 @@ test("validateSlug enforces the kebab-case shape", () => {
     assert.notEqual(validateSlug("Upper"), null);
     assert.notEqual(validateSlug("under_score"), null);
     assert.notEqual(validateSlug("x".repeat(65)), null);
+});
+
+test("parseDurationMs accepts sleep-style forms and composites", () => {
+    assert.equal(parseDurationMs("30s"), 30_000);
+    assert.equal(parseDurationMs("500ms"), 500);
+    assert.equal(parseDurationMs("5m"), 300_000);
+    assert.equal(parseDurationMs("2h"), 7_200_000);
+    assert.equal(parseDurationMs("1m30s"), 90_000);
+    assert.equal(parseDurationMs("5"), 5_000);
+    assert.throws(() => parseDurationMs(""));
+    assert.throws(() => parseDurationMs("abc"));
+    assert.throws(() => parseDurationMs("5x"));
+});
+
+test("parseToolTimeout treats an absent or blank value as no watchdog", () => {
+    assert.equal(parseToolTimeout(undefined), null);
+    assert.equal(parseToolTimeout(null), null);
+    assert.equal(parseToolTimeout(""), null);
+    assert.equal(parseToolTimeout("  "), null);
+    assert.equal(parseToolTimeout("30s"), 30_000);
+    assert.throws(() => parseToolTimeout(5));
+    assert.throws(() => parseToolTimeout("0s"));
 });

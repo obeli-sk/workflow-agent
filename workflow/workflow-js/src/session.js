@@ -28,6 +28,7 @@ import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.j
 import * as obeliskMcp from "../../../vendor/just-bash/src/obelisk-mcp.js";
 import * as obeliskWeb from "../../../vendor/just-bash/src/obelisk-web.js";
 import { createHost } from "./host.js";
+import { arm as armScriptWatch } from "./script-watch.js";
 import {
     BASH_TOOLS_JSON,
     EMPTY_REPLY_NUDGE,
@@ -39,6 +40,7 @@ import {
     interruptedError,
     llmErrorEvent,
     openingShellScript,
+    parseToolTimeout,
     renderMount,
     renderSystemPrompt,
     validateSlug,
@@ -291,12 +293,28 @@ function mountPacks(bash, config) {
 
 // ----- shell exec -----
 
-function execShell(bash, script, stdin) {
+// Run one script under its own per-script watch: a fresh join set holding
+// the interrupt offer (plus a watchdog when `timeoutMs` is given), announced
+// via a `shell-started` event before the script runs so the UI and peer
+// sessions (`chat interrupt`, Phase 5) can arm it while the script is still
+// going. PORT: session.rs's `exec_shell`, shared by both the direct-shell
+// input path and the model tool dispatch (`dispatchBash`) - `timeoutMs` is
+// only ever non-null from the latter (a direct-shell turn from the composer
+// has no timeout argument to parse).
+function execShell(bash, notifications, id, turnIndex, script, stdin, timeoutMs) {
     if (containsBackgroundStatement(script)) {
         const message = "bash: background jobs with `&` are not supported in durable sessions\n";
         return { output: [{ fd: "stderr", text: message }], exitCode: 2, interrupted: null };
     }
-    return bash.exec(script, { stdin });
+    const guard = armScriptWatch(timeoutMs ?? null, id);
+    notifications.notify({ shell_started: { id, offer_id: guard.offerExecutionId, turn_index: turnIndex } });
+    bash.setScriptWatch(guard.watcher());
+    try {
+        return bash.exec(script, { stdin });
+    } finally {
+        bash.setScriptWatch(null);
+        guard.close();
+    }
 }
 
 // ----- session input application -----
@@ -305,7 +323,7 @@ function applySessionInput(event, turnIndex, shellCompletesTurn, notifications, 
     if (event.shell) {
         const { id, script, stdin = "" } = event.shell;
         const startedAt = hostNowMs();
-        const result = execShell(bash, script, stdin);
+        const result = execShell(bash, notifications, id, turnIndex, script, stdin, null);
         const durationMilliseconds = elapsedMilliseconds(startedAt, hostNowMs());
         const record = {
             id, script, result: shellResultOf(result), turn_index: turnIndex,
@@ -425,12 +443,19 @@ function callLlmWithUser(session, system, messages, model, effort, bash, notific
 
 // ----- bash tool dispatch -----
 
-function dispatchBash(call, bash) {
+function dispatchBash(call, bash, notifications, turnIndex) {
     if (call.name !== "bash") return toolError(call.id, `unknown tool: ${call.name}`);
     const script = typeof call.input?.script === "string" ? call.input.script : "";
     if (!script.trim()) return toolError(call.id, "script is required");
     const stdin = typeof call.input?.stdin === "string" ? call.input.stdin : "";
-    return toolOk(call.id, shellResultOf(execShell(bash, script, stdin)));
+    let timeoutMs;
+    try {
+        timeoutMs = parseToolTimeout(call.input?.timeout);
+    } catch (error) {
+        return toolError(call.id, typeof error === "string" ? error : String(error));
+    }
+    const result = execShell(bash, notifications, call.id, turnIndex, script, stdin, timeoutMs);
+    return toolOk(call.id, shellResultOf(result));
 }
 
 // ----- main loop -----
@@ -549,7 +574,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
                 const resultBlocks = [];
                 for (const call of calls) {
                     const startedAt = hostNowMs();
-                    const block = dispatchBash(call, bash);
+                    const block = dispatchBash(call, bash, notifications, turnIndex);
                     const durationMilliseconds = elapsedMilliseconds(startedAt, hostNowMs());
                     notifications.notify({
                         tool_result: {
