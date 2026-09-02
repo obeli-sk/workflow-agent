@@ -671,7 +671,12 @@ pub fn agent_loop(
     let mcp_servers = config.mcp_servers;
     let apps = config.apps;
 
-    let own_session = chat::ChatSelf::new(execution_id, model.clone(), effort.clone(), initial_name.clone());
+    let own_session = chat::ChatSelf::new(
+        execution_id,
+        model.clone(),
+        effort.clone(),
+        initial_name.clone(),
+    );
     for program in &programs {
         let handler =
             obelisk_program::command_handler(&program.name, &program.ffqn, Box::new(host()));
@@ -1559,10 +1564,9 @@ mod tests {
             .is_err()
         );
         assert!(parse_session_config(r#"{"max_steps":10,"programs":[]}"#).is_err());
-        assert!(parse_session_config(
-            r#"{"max_steps":10,"programs":[],"mcp_servers":[]}"#
-        )
-        .is_err());
+        assert!(
+            parse_session_config(r#"{"max_steps":10,"programs":[],"mcp_servers":[]}"#).is_err()
+        );
         // prompt_tail is required, not optional.
         assert!(
             parse_session_config(r#"{"max_steps":10,"programs":[],"mcp_servers":[],"apps":[]}"#)
@@ -1605,7 +1609,10 @@ mod tests {
             help.contains("registers these external commands:"),
             "{help}"
         );
-        assert!(help.contains("\n- `curl`: GET-only HTTP client\n"), "{help}");
+        assert!(
+            help.contains("\n- `curl`: GET-only HTTP client\n"),
+            "{help}"
+        );
         // A program without a description is listed by name alone.
         assert!(help.contains("\n- `jq`\n"), "{help}");
         // With no programs, bash is the only advertised tool.
@@ -1676,10 +1683,7 @@ mod tests {
         let out = render_mount(&apps, &servers, "http://127.0.0.1:9290", &mut host);
         // Every entry (header, apps, webhook URL, MCP) is indented two spaces consistently.
         assert!(out.contains("\n  /workspace/deployment/current  "), "{out}");
-        assert!(
-            out.contains("\n  /workspace/apps/components  "),
-            "{out}"
-        );
+        assert!(out.contains("\n  /workspace/apps/components  "), "{out}");
         assert!(out.contains("(obeli-sk/components)"), "{out}");
         assert!(
             out.contains("\n  http://127.0.0.1:9290  target Obelisk webhooks"),
