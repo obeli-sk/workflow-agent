@@ -1,10 +1,10 @@
 # JS-only workflow backend: migration notes
 
-Status: **in progress** (Phases 0-2 done and verified — see the checklist and
-command tracker below; Phase 3 — programs/MCP/mounts — is next). This doc
-tracks design decisions and progress for the JS-alternative workflow backend
-so another agent can resume without re-deriving the research. Update it
-after every phase.
+Status: **in progress** (Phases 0-3 done and verified — see the checklist and
+command tracker below; Phase 4 — step budget, interrupt/timeout, rename,
+ask-user — is next). This doc tracks design decisions and progress for the
+JS-alternative workflow backend so another agent can resume without
+re-deriving the research. Update it after every phase.
 
 ## Why
 
@@ -127,33 +127,40 @@ core subset session.rs exercises day to day.
 
 - `apps/workflow-agent/vendor/just-bash/src/` — hand-written plain-JS
   interpreter, ESM, relative imports only, no `package.json`/build step:
-  `fs.js` (VFS), `arithmetic.js`, `brace.js`, `glob.js`, `parser.js`
-  (scanner-integrated recursive-descent parser producing a plain-object AST),
-  `expansion.js` (parameter/command-sub/arithmetic expansion, IFS field
-  splitting, glob application), `interpreter.js` (tree-walking executor, I/O
-  binding/redirection/dup routing, control flow), `commands/{core,fsutil,
-  index}.js` (builtins), `bash.js` (public `Bash` class, mirrors
-  `just-bash-rs::Bash`), `index.js` (barrel). `bash.test.js` covers it
-  end-to-end via `node --test` (29 cases).
+  `fs.js` (VFS, incl. symlinks/lazy-digest files/deferred mounts/web mounts,
+  see the Phase 3 checklist entry), `arithmetic.js`, `brace.js`, `glob.js`,
+  `parser.js` (scanner-integrated recursive-descent parser producing a
+  plain-object AST), `expansion.js` (parameter/command-sub/arithmetic
+  expansion, IFS field splitting, glob application), `interpreter.js`
+  (tree-walking executor, I/O binding/redirection/dup routing, control flow,
+  fires deferred mounts via `fs.ensureMountedFor`), `commands/*.js`
+  (the full `just-bash-rs`-parity builtin set, see the command tracker),
+  `obelisk-pack.js`/`obelisk-mcp.js`/`obelisk-web.js`/`obelisk-program.js`
+  (host-agnostic Obelisk-control/MCP/mount command ports, Phase 3),
+  `bash.js` (public `Bash` class, mirrors `just-bash-rs::Bash`), `index.js`
+  (barrel). `bash.test.js` plus one `*.test.js` per command/module file cover
+  it end-to-end via `node --test` (389 cases).
 - `apps/workflow-agent/workflow/workflow-js/src/` — `session.js` (host-facing
   orchestration: WIT imports, `Notifications` self-stub class, the
-  `agentLoop`/`callLlmWithUser` port of `session.rs`/`agent.rs`) and
-  `session-logic.js` (every pure helper with no `obelisk` global and no WIT
-  imports — event/error-text builders, `containsBackgroundStatement`,
-  `shellResultOf`, tool-result encoding — pulled out so it's unit-testable;
-  see `session-logic.test.js`, matching this repo's existing
-  `shared/session-state.js` split).
+  `agentLoop`/`callLlmWithUser` port of `session.rs`/`agent.rs`, program/MCP/
+  mount registration), `session-logic.js` (every pure helper with no
+  `obelisk` global and no WIT imports — event/error-text builders,
+  `containsBackgroundStatement`, `shellResultOf`, tool-result encoding,
+  `renderSystemPrompt`/`renderProgramHelp`/`renderMount` — pulled out so it's
+  unit-testable; see `session-logic.test.js`, matching this repo's existing
+  `shared/session-state.js` split), `host.js` (the one seam bridging the
+  host-agnostic `obelisk-*.js` modules onto the real `obelisk.call`, Phase 3).
 - No root `package.json`/`pnpm-workspace.yaml`/`Justfile` `install`/`build-js`
   targets — there is nothing to build. `just verify` compiles/links/verifies
   both backends together; `just test-js` runs the new `node --test` suites;
   `scripts/test-e2e-agent-workflow-js.sh` (wired into `just test-e2e` and
   `.github/workflows/check.yml`) is a real end-to-end smoke test against an
   isolated live `obelisk server`.
-- No `boa-polyfills.js`/`node-zlib-shim.js` needed: Phase 1's interpreter has
-  no `TextEncoder`/`crypto.subtle.digest`/gzip dependency yet (those land, if
-  at all, with `hash`/`textutil2` command parity in Phase 2 — `just-bash-rs`
-  doesn't implement gzip/gunzip/zcat either, so those are simply out of
-  scope, matching the old JS version's `WORKFLOW_UNAVAILABLE_COMMANDS`).
+- No `boa-polyfills.js`/`node-zlib-shim.js` needed: the interpreter has no
+  `TextEncoder`/`crypto.subtle.digest`/gzip dependency (`hash.js`/`utf8.js`
+  hand-roll what's needed; `just-bash-rs` doesn't implement gzip/gunzip/zcat
+  either, so those are simply out of scope, matching the old JS version's
+  `WORKFLOW_UNAVAILABLE_COMMANDS`).
 
 ## Phase checklist
 
@@ -216,10 +223,101 @@ core subset session.rs exercises day to day.
       merge conflicts on that shared file. See the tracker below for the
       per-family detail and the couple of scope notes worth knowing
       (jq/awk are deliberately-scoped subsets, not full implementations).
-- [ ] Phase 3: `obelisk` pack command + deferred mounts (port of
-      `obelisk_pack.rs`), programs registry (`obelisk_program.rs`), MCP
-      (`obelisk_mcp.rs`), GitHub components mount (`obelisk_web.rs`), `mount`
-      command. Apply `port-findings.md` §B1-B6 fixes as needed.
+- [x] Phase 3: `obelisk` pack command + deferred mounts, programs registry,
+      MCP, GitHub components mount, `mount` command — all landed. Ports (each
+      a new `vendor/just-bash/src/obelisk-*.js` module, host-agnostic and
+      independently `node --test`-able against a fake `host`, mirroring
+      `just-bash-rs`'s `ObeliskHost`-trait pattern):
+      - `obelisk-pack.js` PORTs `obelisk_pack.rs`: the `obelisk` command
+        (`functions`/`executions`/`call`/`deployment`/`generate`, every help
+        level), deferred deployment-tree mounting via `fs.js`'s lazy-mount
+        primitives (see below), and a **hand-written TOML editor** (no bare
+        npm TOML library resolves in a deployed component) that does surgical
+        byte-range replacements over the original text — not
+        parse/mutate/re-serialize — so untouched bytes (comments, formatting,
+        key order) survive `content_digest`/`component_files`/
+        `backtrace.sources` simplify/expand round trips exactly. The
+        `obelisk generate deployment` template text is captured live from the
+        devshell's `obelisk` binary and committed as an escaped JS string
+        constant (`obelisk-deployment-template.js`), matching this repo's
+        existing convention (`packs/obelisk-control/descriptor.js`) of
+        embedding static text in JS source rather than reading a file at
+        deploy time. 57 tests.
+      - `obelisk-mcp.js` PORTs `obelisk_mcp.rs`: MCP resource listing/lazy
+        mounting (paginated `resources/list`, digest-keyed lazy reads via
+        `resources/read`, `sk.obeli/content-digest` `_meta`), the per-server
+        `<name> tools|call|prompts|prompt|info` commands with schema-derived
+        help text, and the `mcp`/`mcp list`/`mcp tools` registry command. 30
+        tests.
+      - `obelisk-web.js` PORTs `obelisk_web.rs`: the GitHub-components
+        lazily-listed read-only mount (`list`/`read` transport methods). 2
+        tests.
+      - `obelisk-program.js` PORTs `obelisk_program.rs`: the plain
+        `stdin, argv -> {stdout, stderr, exit_code}` adapter used for every
+        operator-configured `PROGRAMS_JSON` entry. 3 tests.
+      - `workflow/workflow-js/src/host.js` (new) is the **only** place that
+        bridges these host-agnostic modules onto the real `obelisk.call`: a
+        `callJson(ffqn, paramsJson) -> string|null` seam that re-encodes
+        `obelisk.call`'s already-decoded return value with `JSON.stringify`,
+        reproducing the WIT `call-json` host import's raw-JSON-text contract
+        (quoted for a string, `null` for void) so every module's
+        `decodeString`/`decodeJson`-style peeling ports unchanged from Rust.
+        `obelisk-control:tools/native.call` needs no special case: it's just
+        another ffqn through the same seam (see `obelisk-pack.js`'s
+        `targetCall`, backing `obelisk call FFQN --`).
+      - `vendor/just-bash/src/fs.js` (VFS) was extended first, as prerequisite
+        shared infrastructure: `symlink`/`isSymlink`; `registerLazy`/
+        `registerLazyWithLoader`/`setBlobLoader`/`isPending`/`lazyFileRef`
+        (a "pending" file lists immediately, fetches its bytes at most once on
+        read, and **stays pending after a read** — only a local write clears
+        it, since `deployment_sources`/submit need to tell "fetched but
+        unmodified" apart from "locally edited"); `registerDeferredMount`/
+        `ensureMountedFor`/`clearDeferredMount` (a one-shot populate callback
+        that fires the first time any path under its root is touched);
+        `registerWebMount` (a lazily-listed remote directory tree, `list`
+        called at most once per directory even on failure, `read` at most
+        once per file); `setExecutable`/`isExecutable`. `ensureMountedFor` is
+        now wired into `interpreter.js`'s command-dispatch chokepoint
+        (`resolveBindings`'s file-redirect path and `runSimple`'s cwd +
+        every expanded argument), so a deferred mount actually activates on
+        first reference instead of being dead API surface. 15 new tests.
+      - `session.js` registers the `obelisk` command unconditionally (matching
+        `agent_loop` registering `obelisk_pack` right after `Bash::new`, no
+        config gate), one command per configured program and MCP server, the
+        `mcp` registry and `mount` commands, and the three lazy mounts
+        (deployment tree, `/workspace/components`, each MCP server's
+        resources) once the session's input offer is open. `renderSystemPrompt`
+        now takes the discovered `programs` list and appends
+        `obelisk-pack.js`'s `SYSTEM_PROMPT` (previously a hand-transcribed
+        duplicate lived in `session-logic.js`; it now imports the one in
+        `obelisk-pack.js` instead — single source of truth).
+      **Parallel-agent process**: `fs.js`'s extension landed first and alone
+      (foreground, blocking, since everything else depends on it), then
+      `obelisk-pack.js` and `obelisk-mcp.js` (the two large ports) ran as two
+      parallel worktree-isolated background agents while `obelisk-program.js`/
+      `obelisk-web.js`/`host.js` (small, mechanical) and the `session.js`/
+      `session-logic.js` wiring were done directly in the main session. Each
+      background agent's single commit was cherry-picked back once finished,
+      verified with a full `just test-js` + `just verify` pass after each
+      merge, then its worktree/branch cleaned up.
+      **Verification**: `nix develop -c just test-js` — 389 `vendor/just-bash`
+      + 13 `workflow/workflow-js` cases, all green, zero regressions.
+      `just verify` passes. The live e2e suite
+      (`scripts/test-e2e-agent-workflow-js.sh`) gained a third scenario: a
+      direct shell turn running `mount && obelisk functions list --help`
+      inside a **real Boa runtime** (not the `node --test` fakes the two
+      large ports were otherwise verified against) asserts on the actual
+      `mount` header and `obelisk` help text, retiring the risk that the real
+      `host.js`/`obelisk.call` wiring behaved differently than its test
+      doubles assumed — this is the same "pull e2e coverage forward"
+      discipline Phase 1 established for the join-set-racing risk.
+      **Not covered by e2e yet** (unit-tested only, via fakes): the actual
+      network-backed deployment mount / MCP resource fetch against a real
+      target Obelisk instance (would need `TARGET_OBELISK_*` env plus a
+      second isolated server acting as the target) — a good Phase 7
+      candidate, not required to consider Phase 3 done, matching Phase 2's
+      precedent of unit-testing command fidelity without e2e-covering every
+      command.
 - [ ] Phase 4: step-budget nudge, per-script interrupt/timeout
       (`script_watch.rs` port), session rename, `ask-user`.
 - [ ] Phase 5: `chat` peer-sessions workflow-side wrapper (`chat.rs` port).
@@ -271,10 +369,10 @@ already-bounded scope, not full jq/full awk):
   progfile` (`getline`/`function` are rejected with a clear parse error
   rather than silently mishandled).
 
-291 `node --test` cases and the live e2e smoke test
-(`scripts/test-e2e-agent-workflow-js.sh`) are green as of this checkpoint.
-Phase 2 is considered complete; any further command-fidelity gaps found
-later are bugs to fix in the relevant file, not missing phases.
+291 `node --test` cases and the live e2e smoke test were green when Phase 2
+completed; see the Phase 3 checklist entry above for the current 389+13
+count. Phase 2 is considered complete; any further command-fidelity gaps
+found later are bugs to fix in the relevant file, not missing phases.
 
 Also fixed along the way (both grep and sed depend on it):
 `vendor/just-bash/src/regex-bre.js` translates POSIX BRE to JS RegExp syntax
