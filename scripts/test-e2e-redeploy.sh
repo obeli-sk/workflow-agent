@@ -10,6 +10,7 @@ export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28017"
 # server.toml's [secrets] requires every named var to exist; empty is fine.
 export MCP_SERVER_TOKEN=""
+export GITHUB_TOKEN=""
 export AGENT_MODELS="[]"
 
 e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"
@@ -45,3 +46,34 @@ if [[ -z "$NEW_ID" || "$NEW_ID" == "null" || "$NEW_ID" == "$ORIG_ID" ]]; then
 fi
 
 echo ">>> E2E PASS: redeployed from the content-addressed store (${ORIG_ID} -> ${NEW_ID})"
+
+UI_BASE="http://127.0.0.1:28092"
+for RUN_FFQN in \
+    "obelisk-agent:workflow/workflow.run-cancellable" \
+    "obelisk-agent:workflow-js/workflow.run-cancellable"; do
+    AUTHORED_ID="$("$OBELISK" generate deployment-id)"
+    AUTHOR_DIR="/workspace/deployment/$AUTHORED_ID"
+    AUTHOR_SCRIPT="$(printf '%s\n' \
+        "mkdir -p $AUTHOR_DIR/src $AUTHOR_DIR/wit" \
+        "printf '%s\\n' '[[activity_js]]' 'name = \"generated\"' 'ffqn = \"test:generated/api.run\"' 'wit = \"wit\"' 'location = \"src/index.js\"' > $AUTHOR_DIR/deployment.toml" \
+        "printf '%s\\n' 'import { value } from \"./lib.js\"; export default function run() { return value; }' > $AUTHOR_DIR/src/index.js" \
+        "printf '%s\\n' 'export const value = { ok: \"ok\" };' > $AUTHOR_DIR/src/lib.js" \
+        "printf '%s\\n' 'package test:generated; interface api { run: func() -> result<string>; } world impl { export api; }' > $AUTHOR_DIR/wit/world.wit" \
+        "obelisk deployment submit --allow-missing-runtime-config $AUTHOR_DIR")"
+    SESSION_ID="$("$OBELISK" generate execution-id)"
+    PARAMS="$(node -e 'process.stdout.write(JSON.stringify(["$" + process.argv[1], null, null, null, null]))' "$AUTHOR_SCRIPT")"
+    "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" "$PARAMS"
+    SECONDS=0
+    while true; do
+        PROJECTION="$(curl --fail --silent "$UI_BASE/api/runs/$SESSION_ID" || true)"
+        if node scripts/e2e-json.js check-shell-event-done shell-opened-0 <<<"$PROJECTION" 2>/dev/null; then
+            break
+        fi
+        [[ $SECONDS -ge 60 ]] && { echo "authored submit did not finish for $RUN_FFQN: $PROJECTION" >&2; exit 1; }
+        sleep 1
+    done
+    OUTPUT="$(node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION")"
+    [[ "$OUTPUT" == *"$AUTHORED_ID"* ]] || { echo "authored submit failed for $RUN_FFQN: $PROJECTION" >&2; exit 1; }
+    "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
+done
+echo ">>> E2E PASS: Rust and JS sessions submitted authored WIT plus a multi-file JS graph"
