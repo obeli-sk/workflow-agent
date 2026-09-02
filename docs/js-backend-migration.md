@@ -1,10 +1,10 @@
 # JS-only workflow backend: migration notes
 
-Status: **in progress** (Phases 0-3 done and verified — see the checklist and
-command tracker below; Phase 4 — step budget, interrupt/timeout, rename,
-ask-user — is next). This doc tracks design decisions and progress for the
-JS-alternative workflow backend so another agent can resume without
-re-deriving the research. Update it after every phase.
+Status: **in progress** (Phases 0-4 done and verified — see the checklist and
+command tracker below; Phase 5 — `chat` peer sessions — is next). This doc
+tracks design decisions and progress for the JS-alternative workflow backend
+so another agent can resume without re-deriving the research. Update it
+after every phase.
 
 ## Why
 
@@ -318,8 +318,95 @@ core subset session.rs exercises day to day.
       candidate, not required to consider Phase 3 done, matching Phase 2's
       precedent of unit-testing command fidelity without e2e-covering every
       command.
-- [ ] Phase 4: step-budget nudge, per-script interrupt/timeout
-      (`script_watch.rs` port), session rename, `ask-user`.
+- [x] Phase 4: step-budget nudge (already landed in Phase 1), per-script
+      interrupt/timeout, session rename, `ask-user` — all landed. Ports (a
+      parallel worktree-isolated background agent did the `vendor/just-bash`
+      interpreter-level watch mechanism and the workflow-level guard; the
+      session.js wiring for all four pieces, plus rename/ask-user in full,
+      were done directly in the main session):
+      - `vendor/just-bash/src/watch.js` PORTs `watch.rs`: `TIMEOUT`/`OPERATOR`
+        string constants (doubling as `ExecResult.interrupted` and the WIT
+        `shell-result.interrupted` field with no further mapping) and
+        `exitCodeForInterrupt` (124/130). The duck-typed `ScriptWatch`
+        contract (`poll()`/`sleep(ms)`) is installed via `Bash#setScriptWatch`
+        and observed only at durable boundaries: `interpreter.js` gained an
+        `interrupted` field, a `checkWatch()`/`WatchInterrupt`-exception pair
+        (PORT: `halted()`) checked at every statement-list/loop-iteration
+        boundary (`runStatements`, `runGroupBody`, `runCondition`,
+        `runWhile`/`runFor`/`runCStyleFor` headers), and
+        `pollWatchAfterCustomCommand()` called once right after a *custom*
+        command handler returns (never after a builtin) from `invoke()`.
+        `commands/timeutil.js`'s `sleepCommand` delegates to the watch's
+        `sleep(ms)` when one is installed, waking early instead of blocking
+        the full duration.
+      - `workflow/workflow-js/src/script-watch-logic.js` (+`script-watch.js`)
+        PORTs `script_watch.rs`'s `ScriptWatchGuard`/`ScriptWatcher`, split
+        the way `session.js`/`session-logic.js` already are so the
+        join-set classification/poll/sleep logic is unit-testable with a fake
+        join set; `script-watch.js` is the thin wrapper submitting the real
+        interrupt offer (`interruptSubmit`, the generated `-obelisk-ext`
+        binding for the WIT `stub` interface's `interrupt` function) and
+        watchdog delay (`joinSet.submitDelay(...)`, found by reading the
+        actual Obelisk host source since it isn't in the WIT/docs).
+        **Gotcha**: `arm()`'s join set cannot use a fixed name — a session
+        running more than one script fails its second `createJoinSet` call
+        with `JoinSetCreateError::Conflict` (a real host constraint, not a
+        replay/caching artifact — confirmed by reading
+        `workflow_ctx.rs`'s `persist_join_set_with_kind`, which rejects any
+        name already present in this execution's own event history). Fixed
+        by naming the join set after the caller's own shell/tool-call id
+        (`script-watch-<id>`), already unique per script execution by
+        construction, rather than a synthesized counter.
+      - `session.js`'s `execShell` (used by both the direct-shell input path
+        and the model's bash tool call) now arms a guard before running a
+        script, publishes a `shell-started` event carrying the interrupt
+        offer's execution id, and closes the guard after — PORT: session.rs's
+        `exec_shell`. The bash tool's optional `timeout` argument is parsed by
+        new `session-logic.js` helpers `parseDurationMs` (PORT: chat.rs's
+        `parse_duration_ms`, sleep-style forms `30s`/`500ms`/`5m`/`1h30m`) and
+        `parseToolTimeout` (PORT: session.rs's `parse_tool_timeout`).
+      - `session.js`'s `Notifications` gained `humanInputRequested`/
+        `humanInputResolved` (published on the main session-events channel)
+        and `sessionRenamed` (PORT: `Notifications::session_renamed` — a
+        **dedicated `session-name` join set**, lazily created on first
+        rename, self-stubbed the same way `record-output` is, so a reader
+        fetches the current name with one bounded request instead of racing
+        the mixed event stream). A session created with an initial `name`
+        (the WIT export's 5th param) now validates it with `validateSlug`
+        (PORT: chat.rs's `validate_slug`, pulled ahead of the full Phase 5
+        chat port since Phase 4 already needs it) and publishes the rename
+        right after `session-started`.
+      - `ask-user` (PORT: `host.rs`'s `RealHost::ask_user`/`native_ask_user`):
+        a new `askUserAwareHost(notifications)` in `session.js` wraps a plain
+        `createHost()` and is used **only** for the `obelisk` command's own
+        host registration (the sole path that ever dispatches through
+        `obelisk-control:tools/native.call` — see `obelisk-pack.js`'s
+        `targetCall`, backing `obelisk call FFQN`). A call to
+        `obelisk-agent:stub/stub.ask-user` is intercepted before it would
+        otherwise fall through to native.call's HTTP bridge to the target
+        instance (which has no such function): it submits the real
+        `askUserSubmit` child, publishes `human_input_requested`, blocks on
+        the join set, then publishes `human_input_resolved`. The system
+        prompt gained the "# User input" section describing this to the
+        model (`renderSystemPrompt` in `session-logic.js`).
+      **Verification**: `nix develop -c just test-js` — 397 `vendor/just-bash`
+      + 32 `workflow/workflow-js` cases, all green. `just verify` passes. The
+      live e2e suite (`scripts/test-e2e-agent-workflow-js.sh`) now runs both
+      shell turns under a real armed watch and added a fourth scenario
+      verifying the at-creation rename publishes for real against a live
+      server. **Not covered by e2e yet**: `ask-user` itself (needs an
+      external actor to write the answer, e.g. a webhook call simulating the
+      UI) and an actual operator interrupt / timeout firing mid-script (the
+      existing scenarios exercise the watch being armed and closed
+      cleanly, not the signal actually landing) — good Phase 7 candidates.
+      **Debugging note for whoever hits something similar**: while wiring
+      this in, a stale `obelisk server run` process left over from an
+      earlier interrupted debugging session silently kept listening on the
+      e2e suite's port and answered every subsequent "fresh" test run with
+      pre-fix code, making a real, already-fixed bug look unfixed for
+      several iterations. If an e2e re-run doesn't reflect a just-made edit,
+      check `ps aux | grep 'obelisk server'` for a leftover process before
+      assuming the fix is wrong.
 - [ ] Phase 5: `chat` peer-sessions workflow-side wrapper (`chat.rs` port).
 - [ ] Phase 6: `WORKFLOW_FFQN` switch wiring (`mutations.js`, `runs.js`,
       `activity/chat.js`, `deployment.toml` env_vars), README/docs.
