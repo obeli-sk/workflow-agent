@@ -1,0 +1,37 @@
+package obelisk-agent:config;
+
+// Session settings the workflow discovers once at start
+// (activity/config-discover.js backs this interface, reading the
+// PROGRAMS_JSON/MCP_SERVERS_JSON/APPS_JSON/MAX_STEPS env vars), so operator
+// config changes take effect without rebuilding either workflow backend.
+interface config {
+  record program {
+    name: string,
+    ffqn: string,
+    description: string,
+  }
+
+  record mcp-server {
+    name: string,
+    ffqn: string,
+  }
+
+  // A GitHub repo tree mounted read-only at /workspace/apps/<name>
+  // (obelisk_web/obelisk-web.js -> the mount_apps activity).
+  record app {
+    name: string,
+    owner: string,
+    repo: string,
+    ref: string,
+  }
+
+  record session-config {
+    max-steps: u32,
+    programs: list<program>,
+    mcp-servers: list<mcp-server>,
+    apps: list<app>,
+    webhook-url: string,
+  }
+
+  discover: func() -> result<session-config, string>;
+}

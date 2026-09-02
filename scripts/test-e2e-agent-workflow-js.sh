@@ -122,8 +122,8 @@ if [[ "$SHELL_STDOUT" != *"Network-backed mounts"* ]]; then
     echo "mount command did not print the expected header: $SHELL_STDOUT" >&2
     exit 1
 fi
-if [[ "$SHELL_STDOUT" != *"/workspace/components"* ]]; then
-    echo "mount command did not list the components mount: $SHELL_STDOUT" >&2
+if [[ "$SHELL_STDOUT" != *"/workspace/apps/components"* ]]; then
+    echo "mount command did not list the components app mount: $SHELL_STDOUT" >&2
     exit 1
 fi
 if [[ "$SHELL_STDOUT" != *"Usage: obelisk functions"* ]]; then

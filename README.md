@@ -156,16 +156,31 @@ curl https://obeli.sk/docs/latest/js/js-workflows/
 Override the whole list with `DOCS_URLS_JSON` (a JSON array of URLs). No GitHub
 credential is involved; the former `/workspace/docs` mount is gone.
 
-## Example components mount
+## Example app mounts
 
-`/workspace/components` is a read-only, lazily-listed view of
-[obeli-sk/components](https://github.com/obeli-sk/components) (a public repo),
-sourced from the GitHub contents API (`activity/github-contents.js`). A
-directory lists on first `ls` and a file's bytes fetch on first `cat`, one
-recorded activity call each. `COMPONENTS_REF` pins the mounted ref (default
-`main`). `GITHUB_TOKEN` is optional: unset, the mount shares GitHub's 60
-req/h anonymous IP rate limit; set it (e.g. `gh auth token`) to raise that to
-5000 req/h, which matters once multiple sessions share an egress IP.
+`APPS_JSON` lists GitHub repos the session mounts read-only and lazily-listed
+under `/workspace/apps/<name>`, sourced from the GitHub contents API
+(`activity/github-contents.js`) through the single `mount_apps` activity
+(one deployed activity backs every mount; which repo each one browses travels
+in the request, not a fixed env var). A directory lists on first `ls` and a
+file's bytes fetch on first `cat`, one recorded activity call each. The
+default list mounts every `obeli-sk` example repo (`components`,
+`agent-backed-llm-server`, `benchmark-fibo`, `demo-stargazers`,
+`demo-tutorial`, `obelisk-deploy-flyio`, `obelisk-templates`,
+`obelisk-version-monitor`, `webui`) at `main`; override it to mount a
+different set, private forks, or pinned refs:
+
+```sh
+export APPS_JSON='[{"name":"components","repo":"components","ref":"v0.3.0"}]'
+```
+
+Each entry is `{name, repo}` plus optional `owner` (default `obeli-sk`) and
+`ref` (default `main`). `GH_OWNER` (default `obeli-sk`) scopes the deployed
+activity's `allowed_host` boundary to one GitHub org/user; every mounted
+repo's `owner` must fall within it. `GITHUB_TOKEN` is optional: unset, the
+mount shares GitHub's 60 req/h anonymous IP rate limit; set it (e.g. `gh auth
+token`) to raise that to 5000 req/h, which matters once multiple sessions
+share an egress IP.
 
 ## The shell
 

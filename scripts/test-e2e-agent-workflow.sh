@@ -10,6 +10,7 @@ export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28016"
 # server.toml's [secrets] requires every named var to exist; empty is fine.
 export MCP_SERVER_TOKEN=""
+export GITHUB_TOKEN=""
 export AGENT_MODELS="[]"
 
 e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"

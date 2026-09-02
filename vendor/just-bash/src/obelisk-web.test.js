@@ -15,12 +15,17 @@ function fakeHost(fixtures) {
     };
 }
 
+const TEST_REPO = { owner: "obeli-sk", repo: "components", ref: "main" };
+
 function args(method, path) {
-    return JSON.stringify([method, JSON.stringify({ path })]);
+    return JSON.stringify([
+        method,
+        JSON.stringify({ owner: "obeli-sk", repo: "components", ref: "main", path }),
+    ]);
 }
 
 test("lists and reads through the transport, lazily", () => {
-    const ffqn = "obelisk-agent:mounts/components.request";
+    const ffqn = "obelisk-agent:mounts/apps.request";
     const host = fakeHost({
         [args("list", "")]: JSON.stringify(
             JSON.stringify([
@@ -34,7 +39,7 @@ test("lists and reads through the transport, lazily", () => {
         [args("read", "README.md")]: JSON.stringify("# Components\nnot json {"),
     });
     const fs = new Vfs();
-    mount(fs, host, ffqn, "/workspace/components");
+    mount(fs, host, ffqn, "/workspace/components", TEST_REPO);
 
     assert.equal(host.calls.length, 0, "mounting itself makes no network call");
     assert.deepEqual(fs.readdir("/workspace/components"), ["README.md", "obelisk"]);
@@ -46,11 +51,11 @@ test("an unknown entry type fails the listing silently, like any other list() er
     // directory expanded with no children, never retries) rather than
     // propagating - matching fs.rs's `if let Ok(entries) = entries`. The
     // directory lists empty rather than raising through readdir.
-    const ffqn = "obelisk-agent:mounts/components.request";
+    const ffqn = "obelisk-agent:mounts/apps.request";
     const host = fakeHost({
         [args("list", "")]: JSON.stringify(JSON.stringify([{ name: "weird", type: "symlink" }])),
     });
     const fs = new Vfs();
-    mount(fs, host, ffqn, "/workspace/components");
+    mount(fs, host, ffqn, "/workspace/components", TEST_REPO);
     assert.deepEqual(fs.readdir("/workspace/components"), []);
 });

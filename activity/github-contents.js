@@ -1,12 +1,17 @@
-// obelisk-agent:mounts/<name>.request:
+// obelisk-agent:mounts/apps.request:
 //   func(method: string, params-json: string) -> result<string, string>
 //
-// The transport behind a lazily-mounted GitHub repo tree in the session VFS
-// (see vendor/just-bash-rs/src/obelisk_web.rs). One activity invocation issues
-// one or more GitHub contents-API requests. Two methods:
+// The transport behind every lazily-mounted GitHub repo tree in the session
+// VFS (see vendor/just-bash-rs/src/obelisk_web.rs). One activity invocation
+// issues one or more GitHub contents-API requests against the repo named in
+// params. Two methods:
 //
-//   list  params { path } -> JSON array of { name, type: "file"|"dir", size }
-//   read  params { path } -> the file's raw text body
+//   list  params { owner, repo, ref, path } -> JSON array of { name, type: "file"|"dir", size }
+//   read  params { owner, repo, ref, path } -> the file's raw text body
+//
+// `owner`/`repo` are required; `ref` defaults to "main". These come from the
+// session's APPS_JSON registry (activity/config-discover.js), not from fixed
+// per-block env vars, so one deployed activity backs every mounted repo.
 //
 // Symlinks are resolved here. The contents API reports a link as
 // {"type":"symlink","target"} and never follows one: any path passing through
@@ -16,11 +21,11 @@
 // directories); `list` and `read` then follow links until they reach a real
 // tree or blob.
 //
-// One github-contents.js backs every mount block (currently just
-// /workspace/components -> obeli-sk/components); each block sets the fixed
-// env vars GH_OWNER, GH_REPO, GH_REF and, for a private repo, exposes the
-// placeholder secret GITHUB_TOKEN the runtime swaps into the Authorization
-// header. Any HTTP or transport failure becomes the err arm (a throw).
+// The deployment's allowed_host grants GET on the GitHub contents API scoped
+// to one operator-configured owner (GH_OWNER in deployment.toml's
+// request_url_regex); GITHUB_TOKEN is an optional secret the runtime swaps
+// into the Authorization header for a private repo or a higher rate limit.
+// Any HTTP or transport failure becomes the err arm (a throw).
 
 const API_BASE = "https://api.github.com";
 const JSON_ACCEPT = "application/vnd.github+json";
@@ -30,15 +35,20 @@ const MAX_LINK_HOPS = 10;
 
 export default async function githubContents(method, paramsJson) {
     const m = typeof method === "string" ? method.trim() : "";
+    if (m !== "list" && m !== "read") throw `unknown method '${m}'`;
     const params = parseParams(paramsJson);
+    const repo = {
+        owner: requiredParam(params, "owner"),
+        repo: requiredParam(params, "repo"),
+        ref: typeof params.ref === "string" && params.ref ? params.ref : "main",
+    };
     const path = typeof params.path === "string" ? normalize(params.path) : "";
-    if (m === "list") return JSON.stringify(await list(path));
-    if (m === "read") return await read(path);
-    throw `unknown method '${m}'`;
+    if (m === "list") return JSON.stringify(await list(repo, path));
+    return await read(repo, path);
 }
 
-async function list(path) {
-    const found = await resolveEntry(path, "dir");
+async function list(repo, path) {
+    const found = await resolveEntry(repo, path, "dir");
     return found.listing
         .filter((entry) => entry && typeof entry.name === "string" && entry.name)
         .map((entry) => {
@@ -50,26 +60,26 @@ async function list(path) {
         });
 }
 
-async function read(path) {
+async function read(repo, path) {
     if (!path) throw "read requires a file path";
     // Fast path for an unbroken path: one request. The VFS never asks to read
     // a final component that is itself a link (listings label those as dirs),
     // so a 404 here means some prefix needs rewriting.
-    const direct = await fetchBody(path, RAW_ACCEPT);
+    const direct = await fetchBody(repo, path, RAW_ACCEPT);
     if (direct !== null) return direct;
-    const found = await resolveEntry(path, "file");
-    const body = await fetchBody(found.path, RAW_ACCEPT);
+    const found = await resolveEntry(repo, path, "file");
+    const body = await fetchBody(repo, found.path, RAW_ACCEPT);
     if (body === null) throw `${found.path} not found`;
     return body;
 }
 
 // Locate `path`'s real entry by following symlinks. Returns
 // { path } for want="file" or { path, listing } for want="dir".
-async function resolveEntry(path, want) {
+async function resolveEntry(repo, path, want) {
     let current = path;
     let hops = 0;
     for (;;) {
-        const probe = await metaOrNull(current);
+        const probe = await metaOrNull(repo, current);
         if (probe !== null && !Array.isArray(probe)) {
             if (probe.type === "symlink" && typeof probe.target === "string") {
                 current = joinFrom(dirname(current), probe.target);
@@ -85,7 +95,7 @@ async function resolveEntry(path, want) {
         } else {
             // 404: some component along the way is a symlinked directory
             // pointing elsewhere; rewrite the whole path against the real tree.
-            const rewritten = await rewriteComponents(current);
+            const rewritten = await rewriteComponents(repo, current);
             if (rewritten === null) throw notFound(path);
             current = rewritten;
             hops += 1;
@@ -97,12 +107,12 @@ async function resolveEntry(path, want) {
 // Walk `path` component by component from the repo root, replacing each
 // symlinked component with its target. Returns the rewritten path, or null
 // when a component genuinely does not exist.
-async function rewriteComponents(path) {
+async function rewriteComponents(repo, path) {
     let base = "";
     for (const segment of path.split("/")) {
         if (!segment) continue;
         const candidate = base ? `${base}/${segment}` : segment;
-        const probe = await metaOrNull(candidate);
+        const probe = await metaOrNull(repo, candidate);
         if (probe === null) return null;
         base =
             !Array.isArray(probe) && probe.type === "symlink" && typeof probe.target === "string"
@@ -114,8 +124,8 @@ async function rewriteComponents(path) {
 
 // GET a contents path as JSON metadata; null on 404 so callers can fall back
 // to resolution. Any other non-OK status throws.
-async function metaOrNull(path) {
-    const res = await request(path, JSON_ACCEPT);
+async function metaOrNull(repo, path) {
+    const res = await request(repo, path, JSON_ACCEPT);
     if (res.status === 404) return null;
     if (!res.ok) throw httpError(res.status, path, res.text);
     try {
@@ -126,20 +136,17 @@ async function metaOrNull(path) {
 }
 
 // GET a contents path expecting a raw body; null on 404.
-async function fetchBody(path, accept) {
-    const res = await request(path, accept);
+async function fetchBody(repo, path, accept) {
+    const res = await request(repo, path, accept);
     if (res.status === 404) return null;
     if (!res.ok) throw httpError(res.status, path, res.text);
     return res.text;
 }
 
-async function request(path, accept) {
-    const owner = required("GH_OWNER");
-    const repo = required("GH_REPO");
-    const ref = process.env["GH_REF"] || "main";
+async function request(repo, path, accept) {
     const encoded = encodePath(path);
     const suffix = encoded ? `/${encoded}` : "";
-    const url = `${API_BASE}/repos/${owner}/${repo}/contents${suffix}?ref=${encodeURIComponent(ref)}`;
+    const url = `${API_BASE}/repos/${repo.owner}/${repo.repo}/contents${suffix}?ref=${encodeURIComponent(repo.ref)}`;
     const headers = {
         accept,
         "user-agent": "workflow-agent",
@@ -202,10 +209,10 @@ function encodePath(path) {
         .join("/");
 }
 
-function required(name) {
-    const value = process.env[name];
-    if (!value) throw `${name} is not configured`;
-    return String(value);
+function requiredParam(params, name) {
+    const value = params[name];
+    if (typeof value !== "string" || !value) throw `params-json has no ${name}`;
+    return value;
 }
 
 function parseParams(paramsJson) {

@@ -37,13 +37,17 @@ methods = ["GET"]
 [[activity_js]]
 name = "config_discover"
 ffqn = "obelisk-agent:config/config.discover"
-params = []
-return_type = "result<record { max-steps: u32, programs: list<record { name: string, ffqn: string, description: string }>, mcp-servers: list<record { name: string, ffqn: string }>, webhook-url: string }, string>"
+wit = "wit"
 location = "activity/config-discover.js"
 env_vars = [
   { key = "MAX_STEPS",        value = "${MAX_STEPS:-20}" },
   { key = "PROGRAMS_JSON",    value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"},{"name":"chat","ffqn":"obelisk-agent:programs/program.chat","description":"discover, read, message, and create peer agent sessions on this instance"}]}' },
   { key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' },
+  # Each entry mounts a lazily-listed GitHub repo tree at /workspace/apps/<name>
+  # (obelisk_web/obelisk-web.js -> the mount_apps activity below). `owner`
+  # defaults to "obeli-sk" and `ref` to "main" when omitted; override the whole
+  # list to mount a different set of repos, private forks, or pinned refs.
+  { key = "APPS_JSON", value = '${APPS_JSON:-[{"name":"components","repo":"components"},{"name":"agent-backed-llm-server","repo":"agent-backed-llm-server"},{"name":"benchmark-fibo","repo":"benchmark-fibo"},{"name":"demo-stargazers","repo":"demo-stargazers"},{"name":"demo-tutorial","repo":"demo-tutorial"},{"name":"obelisk-deploy-flyio","repo":"obelisk-deploy-flyio"},{"name":"obelisk-templates","repo":"obelisk-templates"},{"name":"obelisk-version-monitor","repo":"obelisk-version-monitor"},{"name":"webui","repo":"webui"}]}' },
   { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
 ]
 exec.lock_expiry.seconds = 30
@@ -123,16 +127,18 @@ params = [
 return_type = "result<string, string>"
 location = "packs/obelisk-control/native-call.js"
 
-# --- Reference mount: GitHub repo tree -----------------------------------------
-# A lazily-listed VFS tree the session mounts to author deployments against
-# example components: /workspace/components -> obeli-sk/components (public).
-# GH_OWNER/GH_REPO/GH_REF fix the repo; GITHUB_TOKEN is optional but raises the
+# --- Reference mounts: GitHub repo trees ---------------------------------------
+# One activity backs every lazily-listed VFS repo tree the session mounts to
+# browse example apps while authoring deployments (APPS_JSON above picks which
+# repos and where; owner/repo/ref travel in params-json, not fixed env vars, so
+# this single block serves them all). GH_OWNER scopes the allowed_host
+# boundary to one GitHub org/user; GITHUB_TOKEN is optional but raises the
 # GitHub API rate limit from the shared 60 req/h anonymous IP pool to 5000 req/h,
 # which matters once multiple sessions share an egress IP. The workflow calls
-# (method, params-json) on first `ls`/`cat` under the mount.
+# (method, params-json) on first `ls`/`cat` under each mount.
 [[activity_js]]
-name = "mount_components"
-ffqn = "obelisk-agent:mounts/components.request"
+name = "mount_apps"
+ffqn = "obelisk-agent:mounts/apps.request"
 params = [
   { name = "method",      type = "string" },
   { name = "params-json", type = "string" },
@@ -140,15 +146,10 @@ params = [
 return_type = "result<string, string>"
 location = "activity/github-contents.js"
 exec.lock_expiry.seconds = 30
-env_vars = [
-  { key = "GH_OWNER", value = "obeli-sk" },
-  { key = "GH_REPO",  value = "components" },
-  { key = "GH_REF",   value = "${COMPONENTS_REF:-main}" },
-]
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET"]
-request_url_regex = "^GET https://api\\.github\\.com/repos/obeli-sk/components/contents"
+request_url_regex = "^GET https://api\\.github\\.com/repos/${GH_OWNER:-obeli-sk}/[^/]+/contents"
 secrets = ["GITHUB_TOKEN"]
 replace_in = ["headers"]
 

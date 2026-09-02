@@ -135,8 +135,7 @@ export function renderSystemPrompt(systemPrompt, programs, selfSection) {
 // PORT: workflow-rs/src/session.rs's `MOUNT_HEADER`/`MOUNT_FOOTER`.
 const MOUNT_HEADER =
     "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n" +
-    "  /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n" +
-    "  /workspace/components          example components, read-only (obeli-sk/components)\n";
+    "  /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n";
 const MOUNT_FOOTER =
     "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
@@ -145,8 +144,11 @@ const MOUNT_FOOTER =
 // doesn't (session.js supplies a real `host.callJson` probe; tests supply a
 // fake) - kept a plain function argument rather than a `host` object so this
 // stays a pure, host-agnostic renderer like every other helper in this file.
-export function renderMount(mcpServers, webhookUrl, probe) {
+export function renderMount(apps, mcpServers, webhookUrl, probe) {
     let text = MOUNT_HEADER;
+    for (const { name, owner, repo } of apps) {
+        text += `  /workspace/apps/${name}          example app, read-only (${owner}/${repo})\n`;
+    }
     if (webhookUrl) {
         text += `  ${webhookUrl}  target Obelisk webhooks (GET allowed via curl)\n`;
     }

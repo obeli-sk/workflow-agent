@@ -126,19 +126,22 @@ test("renderSystemPrompt composes the base prompt, shell help, user-input, subag
     );
 });
 
-test("renderMount lists the webhook URL only when configured and probes each MCP server", () => {
+test("renderMount lists apps and the webhook URL only when configured, and probes each MCP server", () => {
+    const apps = [{ name: "components", owner: "obeli-sk", repo: "components", ref: "main" }];
     const servers = [
         { name: "up", ffqn: "obelisk-agent:mcp/server.up" },
         { name: "down", ffqn: "obelisk-agent:mcp/server.down" },
     ];
     const probe = (ffqn) => (ffqn.endsWith(".down") ? "connection refused\nextra detail" : null);
 
-    const withWebhook = renderMount(servers, "http://target:8080", probe);
+    const withWebhook = renderMount(apps, servers, "http://target:8080", probe);
+    assert.ok(withWebhook.includes("/workspace/apps/components  "));
+    assert.ok(withWebhook.includes("(obeli-sk/components)"));
     assert.ok(withWebhook.includes("http://target:8080  target Obelisk webhooks"));
     assert.ok(withWebhook.includes("/workspace/mcp/up  MCP server, read-only (responding)"));
     assert.ok(withWebhook.includes("/workspace/mcp/down  MCP server, read-only (not responding: connection refused)"));
 
-    const withoutWebhook = renderMount([], "", probe);
+    const withoutWebhook = renderMount([], [], "", probe);
     assert.ok(!withoutWebhook.includes("target Obelisk webhooks"));
 });
 

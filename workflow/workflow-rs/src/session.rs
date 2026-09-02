@@ -81,9 +81,18 @@ const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash scrip
 const MOUNT_HEADER: &str = concat!(
     "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n",
     "  /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n",
-    "  /workspace/components          example components, read-only (obeli-sk/components)\n",
 );
 const MOUNT_FOOTER: &str = "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
+
+/// An `APPS_JSON`-configured GitHub repo tree mounted at
+/// `/workspace/apps/<name>` (see `App`/`obelisk_web::mount`).
+#[derive(Clone)]
+struct App {
+    name: String,
+    owner: String,
+    repo: String,
+    git_ref: String,
+}
 
 /// The `mount` shell command: list the session's network-backed mount points and
 /// their laziness, so the model sees what is mounted and which trees to avoid
@@ -92,6 +101,7 @@ const MOUNT_FOOTER: &str = "Avoid tree, find, and recursive grep (grep -r / fgre
 /// whether it is responding, so a not-yet-started server is visible without the
 /// model having to open its resource tree.
 fn mount_command(
+    apps: Vec<App>,
     mcp_servers: Vec<(String, String)>,
     webhook_url: String,
     host: Box<dyn ObeliskHost>,
@@ -100,7 +110,7 @@ fn mount_command(
     Box::new(
         move |_: &mut just_bash_rs::interpreter::Interpreter, _: &[String], _: String| {
             just_bash_rs::interpreter::CommandOutput {
-                stdout: render_mount(&mcp_servers, &webhook_url, host.as_mut()),
+                stdout: render_mount(&apps, &mcp_servers, &webhook_url, host.as_mut()),
                 stderr: String::new(),
                 exit_code: 0,
             }
@@ -110,11 +120,18 @@ fn mount_command(
 
 /// Render the `mount` listing, live-probing each MCP server for reachability.
 fn render_mount(
+    apps: &[App],
     mcp_servers: &[(String, String)],
     webhook_url: &str,
     host: &mut dyn ObeliskHost,
 ) -> String {
     let mut text = String::from(MOUNT_HEADER);
+    for app in apps {
+        text.push_str(&format!(
+            "  /workspace/apps/{}          example app, read-only ({}/{})\n",
+            app.name, app.owner, app.repo
+        ));
+    }
     if !webhook_url.is_empty() {
         text.push_str(&format!(
             "  {webhook_url}  target Obelisk webhooks (GET allowed via curl)\n"
@@ -152,6 +169,7 @@ struct SessionConfig {
     max_steps: u32,
     programs: Vec<Program>,
     mcp_servers: Vec<(String, String)>,
+    apps: Vec<App>,
     /// Base URL of the target's webhook listener; empty when not configured.
     webhook_url: String,
 }
@@ -184,6 +202,11 @@ fn parse_session_config(json: &str) -> Result<SessionConfig, String> {
             .get("mcp_servers")
             .ok_or_else(|| "session config has no mcp_servers".to_string())?,
     )?;
+    let apps = parse_apps(
+        value
+            .get("apps")
+            .ok_or_else(|| "session config has no apps".to_string())?,
+    )?;
     let webhook_url = value
         .get("webhook_url")
         .and_then(Value::as_str)
@@ -193,6 +216,7 @@ fn parse_session_config(json: &str) -> Result<SessionConfig, String> {
         max_steps,
         programs,
         mcp_servers,
+        apps,
         webhook_url,
     })
 }
@@ -266,6 +290,39 @@ fn parse_mcp_servers(value: &Value) -> Result<Vec<(String, String)>, String> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| format!("mcp server {name} has no ffqn"))?;
             Ok((name.to_string(), ffqn.to_string()))
+        })
+        .collect()
+}
+
+fn parse_apps(value: &Value) -> Result<Vec<App>, String> {
+    let entries = value
+        .as_array()
+        .ok_or_else(|| "session config apps is not an array".to_string())?;
+    entries
+        .iter()
+        .map(|entry| {
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "app entry has no name".to_string())?;
+            let owner = entry
+                .get("owner")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("app {name} has no owner"))?;
+            let repo = entry
+                .get("repo")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("app {name} has no repo"))?;
+            let git_ref = entry
+                .get("ref")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("app {name} has no ref"))?;
+            Ok(App {
+                name: name.to_string(),
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+                git_ref: git_ref.to_string(),
+            })
         })
         .collect()
 }
@@ -546,6 +603,7 @@ pub fn agent_loop(
     let max_steps = config.max_steps;
     let programs = config.programs;
     let mcp_servers = config.mcp_servers;
+    let apps = config.apps;
 
     // A session created with a slug label (`chat create --name`) starts
     // already renamed; anything else arrives unnamed.
@@ -597,6 +655,7 @@ pub fn agent_loop(
     bash.register_command(
         "mount",
         mount_command(
+            apps.clone(),
             mcp_servers.clone(),
             config.webhook_url.clone(),
             Box::new(host()),
@@ -726,15 +785,23 @@ turn.\n\n{}\n\n{}",
             bash.fs_mut()
                 .set_blob_loader(obelisk_pack::blob_loader(Box::new(host())));
             obelisk_pack::register_deferred_mount(bash.fs_mut(), Box::new(host()));
-            // Reference tree for authoring: a browsable GitHub repo listed and
-            // fetched lazily on first `ls`/`cat` (obelisk_web). Read-only;
+            // Reference trees for authoring: each APPS_JSON-configured GitHub
+            // repo listed and fetched lazily on first `ls`/`cat` (obelisk_web),
+            // one deployed activity backing every mount. Read-only;
             // registration itself makes no network call.
-            obelisk_web::mount(
-                bash.fs_mut(),
-                Box::new(host()),
-                "obelisk-agent:mounts/components.request",
-                "/workspace/components",
-            );
+            for app in &apps {
+                obelisk_web::mount(
+                    bash.fs_mut(),
+                    Box::new(host()),
+                    "obelisk-agent:mounts/apps.request",
+                    &format!("/workspace/apps/{}", app.name),
+                    obelisk_web::RepoRef {
+                        owner: app.owner.clone(),
+                        repo: app.repo.clone(),
+                        git_ref: app.git_ref.clone(),
+                    },
+                );
+            }
             // Each MCP server's resources mount lazily too: registering a
             // deferred mount defers its `resources/list` until the session first
             // touches `/workspace/mcp/<name>`.
@@ -1366,6 +1433,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_apps_reads_name_owner_repo_and_ref() {
+        let apps = parse_apps(&json!([
+            {"name":"components","owner":"obeli-sk","repo":"components","ref":"main"}
+        ]))
+        .unwrap();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].name, "components");
+        assert_eq!(apps[0].owner, "obeli-sk");
+        assert_eq!(apps[0].repo, "components");
+        assert_eq!(apps[0].git_ref, "main");
+        assert!(parse_apps(&json!([])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_apps_rejects_bad_shapes() {
+        assert!(parse_apps(&json!({"name":"a"})).is_err());
+        assert!(parse_apps(&json!([{"owner":"o","repo":"r","ref":"main"}])).is_err());
+        assert!(parse_apps(&json!([{"name":"a","repo":"r","ref":"main"}])).is_err());
+        assert!(parse_apps(&json!([{"name":"a","owner":"o","ref":"main"}])).is_err());
+        assert!(parse_apps(&json!([{"name":"a","owner":"o","repo":"r"}])).is_err());
+    }
+
+    #[test]
     fn parse_programs_reads_name_ffqn_and_description() {
         let programs = parse_programs(&json!([
             {"name":"curl","ffqn":"ns:programs/program.curl","description":"GET-only HTTP client"}
@@ -1394,21 +1484,31 @@ mod tests {
     #[test]
     fn parse_session_config_reads_step_limit_and_registries() {
         let config = parse_session_config(
-            r#"{"max_steps":25,"programs":[],"mcp_servers":[],"webhook_url":"http://x:9290"}"#,
+            r#"{"max_steps":25,"programs":[],"mcp_servers":[],"apps":[],"webhook_url":"http://x:9290"}"#,
         )
         .unwrap();
         assert_eq!(config.max_steps, 25);
         assert!(config.programs.is_empty());
         assert!(config.mcp_servers.is_empty());
+        assert!(config.apps.is_empty());
         assert_eq!(config.webhook_url, "http://x:9290");
 
         // webhook_url is optional and defaults to empty.
-        let bare =
-            parse_session_config(r#"{"max_steps":25,"programs":[],"mcp_servers":[]}"#).unwrap();
+        let bare = parse_session_config(
+            r#"{"max_steps":25,"programs":[],"mcp_servers":[],"apps":[]}"#,
+        )
+        .unwrap();
         assert_eq!(bare.webhook_url, "");
 
-        assert!(parse_session_config(r#"{"max_steps":0,"programs":[],"mcp_servers":[]}"#).is_err());
+        assert!(
+            parse_session_config(r#"{"max_steps":0,"programs":[],"mcp_servers":[],"apps":[]}"#)
+                .is_err()
+        );
         assert!(parse_session_config(r#"{"max_steps":10,"programs":[]}"#).is_err());
+        assert!(parse_session_config(
+            r#"{"max_steps":10,"programs":[],"mcp_servers":[]}"#
+        )
+        .is_err());
     }
 
     #[test]
@@ -1477,16 +1577,27 @@ mod tests {
             ("up".to_string(), "ns:mcp/server.up".to_string()),
             ("down".to_string(), "ns:mcp/server.down".to_string()),
         ];
-        let out = render_mount(&servers, "http://127.0.0.1:9290", &mut host);
-        // Every entry (header, webhook URL, MCP) is indented two spaces consistently.
+        let apps = vec![App {
+            name: "components".to_string(),
+            owner: "obeli-sk".to_string(),
+            repo: "components".to_string(),
+            git_ref: "main".to_string(),
+        }];
+        let out = render_mount(&apps, &servers, "http://127.0.0.1:9290", &mut host);
+        // Every entry (header, apps, webhook URL, MCP) is indented two spaces consistently.
         assert!(out.contains("\n  /workspace/deployment/current  "), "{out}");
+        assert!(
+            out.contains("\n  /workspace/apps/components  "),
+            "{out}"
+        );
+        assert!(out.contains("(obeli-sk/components)"), "{out}");
         assert!(
             out.contains("\n  http://127.0.0.1:9290  target Obelisk webhooks"),
             "{out}"
         );
         assert!(out.contains("\n  /workspace/mcp/up  "), "{out}");
         // An empty webhook URL omits the line instead of rendering a blank entry.
-        let bare = render_mount(&servers, "", &mut host);
+        let bare = render_mount(&apps, &servers, "", &mut host);
         assert!(!bare.contains("webhook"), "{bare}");
         assert!(
             out.contains("/workspace/mcp/up  MCP server, read-only (responding)"),
