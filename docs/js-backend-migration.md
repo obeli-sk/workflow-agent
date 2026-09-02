@@ -1,8 +1,10 @@
 # JS-only workflow backend: migration notes
 
-Status: **all planned phases (0-7) done and verified** — see the checklist
-and command tracker below for what shipped, and "Open questions / gotchas to
-revisit" for the coverage gaps left as deliberate follow-ups. This doc
+Status: **all planned phases (0-8) done and verified**, including Phase 8's
+same-FFQN, two-manifest redesign and its cross-language replay-parity proof
+— see the checklist and command tracker below for what shipped, and "Open
+questions / gotchas to revisit" for the one coverage gap left (an upstream
+Obelisk limitation, not something this repo can close on its own). This doc
 tracks design decisions and progress for the JS-alternative workflow backend
 so another agent can resume without re-deriving the research. Update it
 after every phase.
@@ -112,17 +114,12 @@ core subset session.rs exercises day to day.
   is dynamic against the deployment's function registry, not a WIT-file
   lookup) — the earlier plan's assumption that `wit = "wit"` might be needed
   for `session.js`'s stub/llm imports was wrong; it isn't required.
-- FFQN naming chosen: JS workflow exports
-  `obelisk-agent:workflow-js/workflow.run-cancellable` (same params/return
-  type as the Rust `obelisk-agent:workflow/workflow.run-cancellable`),
-  `[[workflow_js]] name = "workflow_agent_js"` (component names: `[a-zA-Z0-9_]`
-  only, package names in the FFQN may use hyphens like existing
-  `workflow-obelisk-ext`).
-- Switch env var: `WORKFLOW_FFQN`, default = the Rust FFQN. Listing
-  (`runs.js` sidebar, `chat list`) merges **both** known FFQNs so switching
-  never hides sessions started under the other backend; only *scheduling new
-  sessions* honors the single active value. A session's own `chat create`
-  always schedules its own kind (self-referential, no env needed).
+- FFQN naming (superseded in Phase 8, see below): the JS workflow originally
+  exported a second FFQN, `obelisk-agent:workflow-js/workflow.run-cancellable`,
+  switchable at runtime via a `WORKFLOW_FFQN` env var alongside the Rust
+  workflow's `obelisk-agent:workflow/workflow.run-cancellable` in one shared
+  `deployment.toml`. Phase 8 replaced this with a same-FFQN, two-manifest
+  model; the FFQN/env-var details below are historical.
 
 ## Directory layout (actual)
 
@@ -513,6 +510,139 @@ core subset session.rs exercises day to day.
       the specific coverage gaps left as deliberate follow-ups (ask-user and
       interrupt-actually-firing e2e, and CI wiring for the chat/interrupt/mcp
       e2e suites, a pre-existing gap unrelated to this migration).
+- [x] Phase 8: same-FFQN, two-manifest model, replacing Phase 6's
+      `WORKFLOW_FFQN` dual-coexistence design, plus a cross-language
+      **replay-parity proof** — a strictly stronger test than "both backends
+      individually work": a session started under one backend must survive
+      having its executor handed to the *other* backend mid-flight, which
+      only succeeds if the two implementations make byte-identical durable
+      host calls (join sets, submits, awaits) up to that point. A behavioral
+      difference invisible to black-box testing surfaces immediately as a
+      `NonDeterminismError`.
+      - **Design change**: `deployment.toml` (Rust) and `deployment.js.toml`
+        (new, JS) each export the *same* canonical
+        `obelisk-agent:workflow/workflow.run-cancellable` FFQN — impossible
+        in one file (two components cannot export the same FFQN in a single
+        deployment), hence two files. Only one is ever the active
+        deployment; switching backend is now `obelisk deployment apply
+        deployment.js.toml` (or back), not a per-request env var. This
+        removed `WORKFLOW_FFQN` and the dual-FFQN-merge machinery entirely:
+        `webhook/lib/mutations.js`/`runs.js` and `activity/chat.js` go back
+        to a single hardcoded `RUN_FFQN` constant (no env, no
+        `listBothBackends`), and `session.js`'s self-referential `chat
+        create` submit import collapsed to the same
+        `obelisk-agent:workflow-obelisk-ext/workflow` Rust already used
+        (previously `workflow-js-obelisk-ext`, now provably correct rather
+        than guessed, since both backends share the ext package derived
+        from the FFQN's package name). `deployment.toml`/`deployment.js.toml`
+        stay in sync outside their marked `# --- Workflow
+        (implementation-specific...) ---` block via
+        `scripts/check-deployment-toml-parity.sh` (wired into `just verify`
+        and CI's `verify` job) — a lightweight guardrail chosen over a
+        templating/generator layer, since the workflow-agent project avoids
+        build steps for its deployment-owned sources.
+      - **E2E collapse**: `test-e2e-agent-workflow.sh`,
+        `test-e2e-chat.sh`, `test-e2e-interrupt.sh`, `test-e2e-mcp.sh`,
+        `test-e2e-redeploy.sh` all take a `[rs|js]` backend argument now
+        (`e2e-lib.sh` gained `e2e_select_backend`); `RUN_FFQN` no longer
+        varies by backend, so this was a pure parametrization, not a
+        rewrite. `test-e2e-agent-workflow-js.sh` (the old JS-only sibling)
+        is deleted — its unique scenarios (obelisk/mount custom commands,
+        at-creation rename, self-referential `chat create`) were folded into
+        the now-shared `test-e2e-agent-workflow.sh`, and its obsolete
+        `WORKFLOW_FFQN`-switched-webhook-submit scenario was dropped
+        (nothing left to switch per-request). Running the collapsed scripts
+        against `js` closes two Phase 7 "Open questions" gaps for free:
+        ask-user (already exercised by `test-e2e-agent-workflow.sh`) and
+        operator-interrupt/timeout-firing (already exercised by
+        `test-e2e-interrupt.sh`) now both run against the JS backend too,
+        no new test-writing needed. `chat`/`interrupt`/`mcp` are now wired
+        into CI for the first time (previously only `bash-workflow`,
+        `agent-workflow`, `agent-workflow-js`, `redeploy` ran there); CI's
+        `e2e` job became a `backend: [rs, js]` matrix
+        (`agent-workflow`/`chat`/`interrupt`/`mcp`/`redeploy`), plus a
+        non-matrix `e2e-common` job (`bash-workflow`, which tests the
+        unrelated standalone `bash-rs` workflow) and a new
+        `e2e-replay-parity` job. `test-e2e-interrupt.sh` was also missing
+        `export GITHUB_TOKEN=""` (a pre-existing, never-CI-tested gap,
+        unrelated to this phase) — fixed while wiring it into CI.
+      - **`scripts/test-e2e-replay-parity.sh`** (new): starts a session
+        under `deployment.toml`, runs a shell turn, `obelisk deployment
+        apply deployment.js.toml`, runs a second shell turn on the *same*
+        execution id, applies back to the original Rust deployment id, runs
+        a third turn — round-tripping rs → js → rs so both directions are
+        checked. Two **real, confirmed bugs** surfaced and were fixed:
+        1. `script-watch.js`'s per-script interrupt/timeout guard
+           (`arm()`) and `session.js`'s ask-user join set both used a
+           **named** join set (`obelisk.createJoinSet({name})`), while
+           Rust's equivalents (`script_watch.rs`, `host.rs::ask_user`) use
+           an **anonymous** one (`workflow_support::join_set_create()`,
+           no name). The original JS choice was based on a wrong
+           assumption that `obelisk.createJoinSet()` requires a name (it
+           doesn't — confirmed against obelisk's own
+           `workflow_js_worker.rs` tests, which cover unnamed
+           `createJoinSet()` explicitly) to dodge
+           `JoinSetCreateError::Conflict` on a second same-named call — a
+           problem anonymous join sets don't have in the first place
+           (ordinal-numbered, unique by construction). Fixed by switching
+           both to `obelisk.createJoinSet()` (no name); this also let
+           `script-watch.js` drop its `scriptId`-based naming entirely
+           (`joinSetNameFor` and its test deleted, `arm()` no longer takes
+           a `scriptId` parameter).
+        2. `session.js`'s `Notifications` class created its
+           `session-events` join set **eagerly in the constructor**, while
+           Rust's `Notifications::notify` creates it **lazily on first
+           use** (after `discover_session_config` runs) — a real ordering
+           mismatch, confirmed by diffing full `t_execution_log` traces
+           (RS vs. a fresh JS-only run) byte-for-byte. Fixed by making
+           `Notifications.joinSet` lazy too (mirroring the `nameJoinSet`
+           laziness already used for renames), which removes the ordering
+           dependency entirely rather than just matching today's call
+           order.
+      - **Confirmed, non-workflow-agent blocker (expected-red)**: after
+        both fixes above, a full trace diff (RS vs. a fresh JS run, same
+        scenario, execution ids/hashes/timestamps normalized) showed
+        exactly **one** remaining difference across the entire pre-switch
+        history: every `join_next` on the `session-events`/`session-name`
+        join sets records `"requested_ffqn":
+        "obelisk-agent:stub/stub.record-output"` (or `session-renamed`)
+        under Rust, vs. `"requested_ffqn": null` under JS. Rust reaches
+        this via `session_ext::record_output_await_next`/
+        `session_renamed_await_next` — genuinely distinct
+        `wit-bindgen`-generated typed host calls the executor's replay
+        matcher compares `requested_ffqn` against
+        (`crates/wasm-workers/src/workflow/event_history.rs:1105` in
+        obelisk). Switching `session.js` to the equivalent typed imports
+        (`recordOutputAwaitNext`/`sessionRenamedAwaitNext` from
+        `obelisk-agent:stub-obelisk-ext/stub`, already imported for their
+        `*Submit` counterparts) changed **nothing** in the recorded trace:
+        reading obelisk's `crates/workflow-js-runtime/src/
+        workflow_js_runtime.rs::create_ext_await_next_proxy` shows every
+        `*-await-next` extension import for a JS workflow is proxied to
+        the exact same generic `join_next` host call, with no
+        `requested_ffqn` tracking at all — the typed/generic distinction
+        that exists in Rust's codegen has no JS-runtime equivalent yet.
+        This is an Obelisk core limitation (a different repo,
+        `/workspace/obelisk`, its own release process), not fixable from
+        workflow-agent source. The typed imports were kept anyway (they
+        are the semantically correct call and cost nothing today); comments
+        at both call sites explain the current no-op status and point back
+        here. `scripts/test-e2e-replay-parity.sh` fails at turn 2 (rs → js)
+        until Obelisk's JS runtime gains equivalent typed
+        join-next-child tracking; it is deliberately still wired into CI
+        (`continue-on-error: true`) and `just test-e2e` (prefixed `-`) so
+        it starts passing automatically once that lands, rather than being
+        silently skipped or deleted.
+      **Verification**: `just test-js` (71 cases, two removed:
+      `joinSetNameFor`'s tests, now dead code), `just test-rs`, `just
+      verify` (both manifests + the parity script) all green.
+      `test-e2e-agent-workflow.sh`/`test-e2e-chat.sh`/
+      `test-e2e-interrupt.sh`/`test-e2e-redeploy.sh` pass for both `rs` and
+      `js`; `test-e2e-mcp.sh` SKIPs without docker/podman (both backends,
+      unaffected by this phase). `test-e2e-replay-parity.sh` fails exactly
+      at the documented, expected point (turn 2, rs → js), not earlier or
+      for a different reason — confirmed by re-running it after each fix
+      and diffing full event traces, not just reading the top-level pass/fail.
 
 ## Command parity tracker (Phase 2)
 
@@ -613,15 +743,21 @@ natively (small algorithms) rather than vendoring the npm package's source.
   positional params). Since this is a fresh hand-port (not a copy of the old
   JS), write it correct the first time per `just-bash-rs`'s current behavior;
   no need to "re-break then fix."
-- Remaining e2e gaps, not blocking (call out if picked up later): `ask-user`
-  itself has no JS e2e coverage (needs an external actor to write the answer,
-  e.g. a webhook call simulating the UI); an actual operator interrupt or
-  per-script timeout *firing* mid-script has no JS e2e coverage either (the
-  existing scenarios exercise the watch being armed and closed cleanly, not
-  the signal actually landing — same gap noted for the Rust suite in
-  `test-e2e-interrupt.sh`, which the JS backend has no equivalent of yet).
-  Also unwired: CI has no step for `test-e2e-chat.sh`/`test-e2e-interrupt.sh`/
-  `test-e2e-mcp.sh` at all (pre-existing gap, predates the JS-backend work —
-  only `test-e2e-bash-workflow.sh`/`test-e2e-agent-workflow.sh`/
-  `test-e2e-agent-workflow-js.sh`/`test-e2e-redeploy.sh` run in
-  `.github/workflows/check.yml`'s `e2e` job).
+- ~~Remaining e2e gaps~~ (closed in Phase 8): ask-user, operator-interrupt/
+  timeout-firing, and chat/interrupt/mcp CI wiring are all covered now that
+  the e2e scripts are backend-parametrized and run against both `rs` and
+  `js` in CI's `e2e` matrix job.
+- **Cross-backend replay is blocked on an Obelisk core limitation, not a
+  workflow-agent bug** (Phase 8): Obelisk's JS workflow runtime's
+  `*-await-next` extension-import proxy (`create_ext_await_next_proxy` in
+  `crates/workflow-js-runtime/src/workflow_js_runtime.rs`) doesn't track
+  `requested_ffqn` the way Rust's `wit-bindgen`-generated typed bindings do,
+  so a session that ran a turn under the Rust backend cannot yet replay
+  under the JS one (`scripts/test-e2e-replay-parity.sh` fails at turn 2,
+  documented as expected-red, `continue-on-error: true` in CI). Revisit once
+  Obelisk ships equivalent typed join-next-child tracking for JS workflows —
+  at that point the fixes already in `session.js` (the `recordOutputAwaitNext`/
+  `sessionRenamedAwaitNext` typed imports) should make the test pass with no
+  further workflow-agent changes; if it doesn't, re-run the same
+  full-trace-diff technique documented in the Phase 8 checklist entry above
+  to find what's still different.
