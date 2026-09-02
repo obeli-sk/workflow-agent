@@ -111,9 +111,15 @@ SESSION_ID="$("$OBELISK" generate execution-id)"
 
 echo ">>> running a direct shell turn"
 run_shell_turn "shell-e2e-1" "sleep 0.05 && which grep && echo shell-ok"
-SHELL_PROJECTION="$(curl --fail --silent \
-    "http://127.0.0.1:28092/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")"
-node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"
+# The next input_offer is published after the record-output stub, so poll until it settles.
+SECONDS=0
+while true; do
+    SHELL_PROJECTION="$(curl --fail --silent \
+        "http://127.0.0.1:28092/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")"
+    node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION" 2>/dev/null && break
+    [[ $SECONDS -ge 30 ]] && { node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"; exit 1; }
+    sleep 1
+done
 echo ">>> shell-only E2E PASS: the JS interpreter ran a real script through the session protocol"
 
 echo ">>> running the Phase 3 obelisk/mount custom commands"
