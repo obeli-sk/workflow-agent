@@ -14,6 +14,17 @@
 // child's own error, or when the set is exhausted), `.lastId` (the id of
 // whatever just completed -- still readable after a throw), `.close()`.
 
+// The join set name `arm()` (script-watch.js) requests from `obelisk.
+// createJoinSet()`. `scriptId` is the caller's shell/tool-call id -- often an
+// LLM tool_use id like "toolu_01XvLBgPHGY5Hk8ro1srgL9C" -- and JoinSetId only
+// allows alphanumeric plus `-`/`/`, so anything else (the tool_use
+// underscore, most commonly) is replaced with `-` before use. The
+// substitution stays injective enough in practice since `scriptId` is
+// already unique per script execution.
+export function joinSetNameFor(scriptId) {
+    return `script-watch-${scriptId}`.replace(/[^A-Za-z0-9\-/]/g, "-");
+}
+
 export class ScriptWatchGuard {
     // `watchdogDelayId` is `null` when no timeout was armed.
     constructor(joinSet, offerExecutionId, watchdogDelayId = null) {

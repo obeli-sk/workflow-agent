@@ -1,6 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ScriptWatchGuard } from "./script-watch-logic.js";
+import { joinSetNameFor, ScriptWatchGuard } from "./script-watch-logic.js";
+
+test("joinSetNameFor passes through an already-safe scriptId unchanged", () => {
+    assert.equal(joinSetNameFor("shell-e2e-1"), "script-watch-shell-e2e-1");
+});
+
+test("joinSetNameFor replaces underscores from an LLM tool_use id", () => {
+    assert.equal(
+        joinSetNameFor("toolu_01XvLBgPHGY5Hk8ro1srgL9C"),
+        "script-watch-toolu-01XvLBgPHGY5Hk8ro1srgL9C",
+    );
+});
 
 // A fake `obelisk.createJoinSet()`-shaped object: `.submitDelay()` models a
 // delay that resolves on its own, in submission order, via `.complete()`'s
