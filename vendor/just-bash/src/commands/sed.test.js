@@ -165,6 +165,41 @@ test("r on a missing file is silent", () => {
     assert.equal(r.exitCode, 0);
 });
 
+test("a appends text after the matching line", () => {
+    const r = withFixtures().exec("sed '2a\\\ninserted' /test/numbers.txt");
+    assert.equal(r.stdout, "line 1\nline 2\ninserted\nline 3\nline 4\nline 5\n");
+});
+
+test("a one-liner (GNU extension, no backslash-newline) appends text", () => {
+    const r = withFixtures().exec("sed '2a inserted' /test/numbers.txt");
+    assert.equal(r.stdout, "line 1\nline 2\ninserted\nline 3\nline 4\nline 5\n");
+});
+
+test("a with a multi-line backslash-continued block", () => {
+    const r = withFixtures().exec("sed '2a\\\nfirst\\\nsecond' /test/numbers.txt");
+    assert.equal(r.stdout, "line 1\nline 2\nfirst\nsecond\nline 3\nline 4\nline 5\n");
+});
+
+test("a is not suppressed by -n", () => {
+    const r = withFixtures().exec("sed -n '2a\\\ninserted' /test/numbers.txt");
+    assert.equal(r.stdout, "inserted\n");
+});
+
+test("i inserts text before the matching line", () => {
+    const r = withFixtures().exec("sed '2i\\\ninserted' /test/numbers.txt");
+    assert.equal(r.stdout, "line 1\ninserted\nline 2\nline 3\nline 4\nline 5\n");
+});
+
+test("c replaces the matching line with text", () => {
+    const r = withFixtures().exec("sed '2c\\\nchanged' /test/numbers.txt");
+    assert.equal(r.stdout, "line 1\nchanged\nline 3\nline 4\nline 5\n");
+});
+
+test("c on a two-address range prints its text once, at the range's end", () => {
+    const r = withFixtures().exec("sed '2,4c\\\nchanged' /test/numbers.txt");
+    assert.equal(r.stdout, "line 1\nchanged\nline 5\n");
+});
+
 test("Nth-occurrence substitution", () => {
     const bash = fresh();
     bash.vfs.writeFile("/t.txt", "foo bar foo baz foo\n");

@@ -1,8 +1,8 @@
 // PORT (simplified): vendor/just-bash-rs/src/commands/sed.rs
 // sed [-n] [-E|-r] [-i] [-e SCRIPT]... [SCRIPT] [FILE...]
 // Addressing: line number, $, /regex/, addr1,addr2 ranges, leading !.
-// Commands: s///[flags] (g/i/p, Nth-occurrence), d, p, q, r file.
-// Not ported: hold space, a/i/c, branching/labels, multiline N/D/P, y,
+// Commands: s///[flags] (g/i/p, Nth-occurrence), d, p, q, r file, a/i/c text.
+// Not ported: hold space, branching/labels, multiline N/D/P, y,
 // step/relative addresses, { } blocks — matches the Rust port's scope.
 
 import { fail } from "./core.js";
@@ -84,6 +84,46 @@ function skipSpace(chars, i) {
     return i;
 }
 
+// a/i/c text: either the GNU one-liner `a text` (rest of the line, leading
+// blanks skipped), or POSIX `a\` followed by a newline and one or more lines
+// joined by a trailing backslash (stripped); the first line without one ends
+// the text and its own newline is left unconsumed, like `r`'s filename read.
+function parseTextCommand(chars, i, kind) {
+    i += 1; // skip the command letter
+    let text;
+    if (chars[i] === "\\") {
+        i += 1;
+        if (chars[i] === "\n") {
+            i += 1;
+            const lines = [];
+            while (true) {
+                const start = i;
+                while (i < chars.length && chars[i] !== "\n") i++;
+                const line = chars.slice(start, i).join("");
+                if (line.endsWith("\\")) {
+                    lines.push(line.slice(0, -1));
+                    if (i >= chars.length) break;
+                    i += 1; // consume the newline, the text continues
+                    continue;
+                }
+                lines.push(line);
+                break;
+            }
+            text = lines.join("\n");
+        } else {
+            const start = i;
+            while (i < chars.length && chars[i] !== "\n") i++;
+            text = chars.slice(start, i).join("");
+        }
+    } else {
+        i = skipSpace(chars, i);
+        const start = i;
+        while (i < chars.length && chars[i] !== "\n") i++;
+        text = chars.slice(start, i).join("");
+    }
+    return [{ kind, text }, i];
+}
+
 function parseOneStatement(chars, i, extended) {
     let [addr1, ni] = parseAddress(chars, i, extended);
     i = skipSpace(chars, ni);
@@ -104,6 +144,9 @@ function parseOneStatement(chars, i, extended) {
     else if (cmdChar === "d") { cmd = { kind: "d" }; nextI = i + 1; }
     else if (cmdChar === "p") { cmd = { kind: "p" }; nextI = i + 1; }
     else if (cmdChar === "q") { cmd = { kind: "q" }; nextI = i + 1; }
+    else if (cmdChar === "a" || cmdChar === "i" || cmdChar === "c") {
+        [cmd, nextI] = parseTextCommand(chars, i, cmdChar);
+    }
     else if (cmdChar === "r") {
         let j = skipSpace(chars, i + 1);
         const start = j;
@@ -226,6 +269,17 @@ function runSed(stmts, content, suppressAuto, fileCache) {
                 quitAfter = true;
             } else if (cmd.kind === "r") {
                 if (fileCache.has(cmd.filename)) appends.push(fileCache.get(cmd.filename));
+            } else if (cmd.kind === "a") {
+                appends.push(`${cmd.text}\n`);
+            } else if (cmd.kind === "i") {
+                out += `${cmd.text}\n`;
+            } else if (cmd.kind === "c") {
+                deleted = true;
+                // A two-address range prints its text once, on the line that
+                // closes the range, not on every deleted line in between;
+                // rangeState[si].active is false exactly on that line (see
+                // addressApplies) and always false for a plain single address.
+                if (!rangeState[si].active) out += `${cmd.text}\n`;
             }
             if (deleted || quitAfter) break;
         }
