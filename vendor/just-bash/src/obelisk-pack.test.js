@@ -747,6 +747,7 @@ test("deployment submit skips unmodified lazy sources", () => {
         "[[workflow_wasm]]",
         'location = "w.wasm"',
         'content_digest = "sha256:1"',
+        'component_files = { "src/lib.rs" = "sha256:2" }',
         "[workflow_wasm.backtrace.sources]",
         '"w.wasm" = { path = "src/lib.rs", content_digest = "sha256:2" }',
     ].join("\n") + "\n";
@@ -812,6 +813,30 @@ test("deployment submit pins a digest for a new component with no content_digest
     );
     const retry = JSON.parse(host.calls[1][1]);
     assert.deepEqual(retry[1], [{ path: "activity/http.js", digest, content: "export default 1" }]);
+});
+
+test("deployment submit generates WIT and JS module component files", () => {
+    const manifest = [
+        "[[activity_js]]",
+        'name = "multi"',
+        'ffqn = "test:pkg/api.run"',
+        'wit = "wit"',
+        'location = "src/index.js"',
+    ].join("\n") + "\n";
+    const i = interp();
+    i.vfs.writeFile("/workspace/deployment/current/deployment.toml", manifest);
+    i.vfs.writeFile("/workspace/deployment/current/src/index.js", 'import { value } from "./lib.js"; export default () => value;');
+    i.vfs.writeFile("/workspace/deployment/current/src/lib.js", "export const value = 1;");
+    i.vfs.writeFile("/workspace/deployment/current/wit/world.wit", "package test:pkg; world api { export run: func(); }");
+    i.vfs.writeFile("/workspace/deployment/current/wit/deps/dep/dep.wit", "package test:dep; interface unused {}");
+
+    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    assert.equal(out.exitCode, 0, out.stderr);
+    const prepared = JSON.parse(host.calls[0][1])[0];
+    for (const path of ["src/index.js", "src/lib.js", "wit/world.wit", "wit/deps/dep/dep.wit"]) {
+        assert.ok(prepared.includes(`"${path}" = "sha256:`), prepared);
+    }
 });
 
 test("deployment submit propagates a terminal (non-missing-files) error", () => {

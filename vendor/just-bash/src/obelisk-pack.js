@@ -297,11 +297,12 @@ function executeDeployment(interp, action, args, host) {
         // `X`, or even `--description` itself, as the deployment directory.
         const dir = resolveDeploymentDir(interp, firstPositional(args, ["--description"]));
         const manifest = readManifest(interp.vfs, dir);
+        const prepared = manifestWithGeneratedFiles(interp.vfs, dir, manifest);
         // Expand the digest-free view back to what the server stores: every
         // `content_digest`, `component_files` value, and `backtrace.sources`
         // table, each digest recomputed from the file's current bytes (an
         // unchanged file keeps its CAS digest, a changed one is re-hashed).
-        const expanded = manifestWithDigests(interp.vfs, dir, manifest);
+        const expanded = manifestWithDigests(interp.vfs, dir, prepared);
         const deploymentId = basename(dir) === "current" ? "" : basename(dir);
         const description = option(args, "--description", "Submitted from workflow-agent VFS");
         const allowMissing = flagRuntimeConfig(args);
@@ -878,6 +879,136 @@ export function manifestWithDigests(fs, dir, manifest) {
         }
     }
     return applyEdits(manifest, edits);
+}
+
+// Rebuild metadata that the native CLI derives from authored directories and
+// module imports. Checked-out deployments already carry this map, while a
+// from-scratch manifest does not.
+export function manifestWithGeneratedFiles(fs, dir, manifest) {
+    const edits = [];
+    for (const block of groupBlocks(findRegions(manifest))) {
+        const refs = new Map();
+        const witAssign = findAssignment(manifest, block.root.start, block.root.end, "wit");
+        if (witAssign) {
+            const root = unquoteString(manifest.slice(witAssign.valueStart, witAssign.valueEnd));
+            for (const path of recursiveFiles(fs, `${dir}/${root}`, root)) {
+                if (path.endsWith(".wit")) addGeneratedRef(refs, fs, dir, path);
+            }
+        }
+
+        if (["activity_js", "workflow_js", "webhook_endpoint_js"].includes(block.blockName)) {
+            const locationAssign = findAssignment(manifest, block.root.start, block.root.end, "location");
+            if (locationAssign) {
+                const entry = unquoteString(manifest.slice(locationAssign.valueStart, locationAssign.valueEnd));
+                if (!entry.startsWith("oci://")) {
+                    const graph = collectJsGraph(fs, dir, entry);
+                    if (graph.length > 1) {
+                        for (const path of graph) addGeneratedRef(refs, fs, dir, path);
+                    }
+                }
+            }
+        }
+
+        for (const entry of backtraceEntries(manifest, block)) {
+            const raw = manifest.slice(entry.valueStart, entry.valueEnd).trim();
+            const path = raw.startsWith("{")
+                ? extractInlineField(manifest, entry.valueStart, entry.valueEnd, "path")
+                : unquoteString(raw);
+            if (path && !path.startsWith("oci://")) addGeneratedRef(refs, fs, dir, path);
+        }
+
+        const assignment = findAssignment(manifest, block.root.start, block.root.end, "component_files");
+        if (refs.size > 0) {
+            const value = `{ ${[...refs].sort(([a], [b]) => a.localeCompare(b))
+                .map(([path, digest]) => `${quoteString(path)} = ${quoteString(digest)}`).join(", ")} }`;
+            if (assignment) {
+                edits.push({ start: assignment.valueStart, end: assignment.valueEnd, text: value });
+            } else {
+                const at = lastContentEnd(manifest, block.root.start, block.root.end);
+                const newline = at > 0 && manifest[at - 1] !== "\n" ? "\n" : "";
+                edits.push({ start: at, end: at, text: `${newline}component_files = ${value}\n` });
+            }
+        } else if (assignment) {
+            edits.push({ start: assignment.line.lineStart, end: assignment.line.lineEnd, text: "" });
+        }
+    }
+    return applyEdits(manifest, edits);
+}
+
+function addGeneratedRef(refs, fs, dir, path) {
+    const digest = ownedSourceDigest(fs, `${dir}/${path}`);
+    if (digest !== null) refs.set(path, digest);
+}
+
+function recursiveFiles(fs, absoluteRoot, relativeRoot) {
+    const out = [];
+    const visit = (absolute, relative) => {
+        let names;
+        try { names = fs.readdir(absolute); } catch { return; }
+        for (const name of names) {
+            const childAbsolute = `${absolute}/${name}`;
+            const childRelative = `${relative}/${name}`;
+            try {
+                fs.readdir(childAbsolute);
+                visit(childAbsolute, childRelative);
+            } catch {
+                if (fs.exists(childAbsolute)) out.push(childRelative);
+            }
+        }
+    };
+    visit(absoluteRoot, relativeRoot);
+    return out;
+}
+
+function collectJsGraph(fs, dir, entry) {
+    const files = [];
+    const queued = [normalizeDeploymentPath(entry)];
+    const seen = new Set();
+    while (queued.length > 0) {
+        const path = queued.shift();
+        if (seen.has(path)) continue;
+        const source = fs.readFile(`${dir}/${path}`);
+        seen.add(path);
+        files.push(path);
+        for (const specifier of moduleSpecifiers(source)) {
+            if (specifier.startsWith("./") || specifier.startsWith("../")) {
+                const slash = path.lastIndexOf("/");
+                const base = slash === -1 ? "" : path.slice(0, slash + 1);
+                queued.push(normalizeDeploymentPath(base + specifier));
+            } else if (!(specifier.includes(":") && specifier.includes("/"))) {
+                throw `unsupported bare module specifier ${JSON.stringify(specifier)} in ${path}`;
+            }
+        }
+    }
+    return files;
+}
+
+function moduleSpecifiers(source) {
+    const found = [];
+    const patterns = [
+        /\bimport\s*["']([^"']+)["']/g,
+        /\b(?:import|export)\s+[\s\S]*?\sfrom\s*["']([^"']+)["']/g,
+    ];
+    for (const pattern of patterns) {
+        let match;
+        while ((match = pattern.exec(source)) !== null) found.push(match[1]);
+    }
+    return found;
+}
+
+function normalizeDeploymentPath(path) {
+    const parts = [];
+    for (const part of path.split("/")) {
+        if (!part || part === ".") continue;
+        if (part === "..") {
+            if (parts.length === 0) throw `deployment path escapes its root: ${path}`;
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    if (parts.length === 0) throw `deployment path is empty: ${path}`;
+    return parts.join("/");
 }
 
 // Every deployment-owned source location a submit tracks: each component's

@@ -12,6 +12,7 @@
 //! are implemented.
 
 use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 
 use serde_json::{Value, json};
@@ -447,6 +448,7 @@ fn execute_deployment(
             // even `--description` itself, as the deployment directory.
             let dir = resolve_deployment_dir(interp, first_positional(args, &["--description"]));
             let manifest = read_manifest(&interp.fs, &dir)?;
+            let manifest = manifest_with_generated_files(&interp.fs, &dir, &manifest)?;
             // Expand the digest-free view back to what the server stores: every
             // `content_digest`, `component_files` value, and `backtrace.sources`
             // table, each digest recomputed from the file's current bytes (an
@@ -725,6 +727,166 @@ fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str) -> String {
         }
     }
     doc.to_string()
+}
+
+/// Rebuild metadata that the native CLI derives from authored WIT directories
+/// and JavaScript module imports.
+fn manifest_with_generated_files(fs: &Vfs, dir: &str, manifest: &str) -> Result<String, String> {
+    let mut doc = manifest
+        .parse::<DocumentMut>()
+        .map_err(|err| format!("cannot parse deployment manifest as TOML: {err}"))?;
+    for (section, item) in doc.as_table_mut().iter_mut() {
+        let Some(components) = item.as_array_of_tables_mut() else {
+            continue;
+        };
+        for table in components.iter_mut() {
+            let mut refs = BTreeMap::new();
+            if let Some(root) = table.get("wit").and_then(Item::as_str) {
+                for path in recursive_files(fs, &format!("{dir}/{root}"), root)? {
+                    if path.ends_with(".wit") {
+                        add_generated_ref(&mut refs, fs, dir, &path);
+                    }
+                }
+            }
+
+            if matches!(
+                section.get(),
+                "activity_js" | "workflow_js" | "webhook_endpoint_js"
+            ) && let Some(entry) = table.get("location").and_then(Item::as_str)
+                && !entry.starts_with("oci://")
+            {
+                let graph = collect_js_graph(fs, dir, entry)?;
+                if graph.len() > 1 {
+                    for path in graph {
+                        add_generated_ref(&mut refs, fs, dir, &path);
+                    }
+                }
+            }
+
+            if let Some(sources) = backtrace_sources(table) {
+                for (_, source) in sources.iter() {
+                    let path = source.as_str().or_else(|| {
+                        source
+                            .as_table_like()
+                            .and_then(|entry| entry.get("path"))
+                            .and_then(Item::as_str)
+                    });
+                    if let Some(path) = path
+                        && !path.starts_with("oci://")
+                    {
+                        add_generated_ref(&mut refs, fs, dir, path);
+                    }
+                }
+            }
+
+            if refs.is_empty() {
+                table.remove("component_files");
+            } else {
+                let mut files = InlineTable::new();
+                for (path, digest) in refs {
+                    files.insert(&path, toml_edit::Value::from(digest));
+                }
+                table.insert(
+                    "component_files",
+                    Item::Value(toml_edit::Value::InlineTable(files)),
+                );
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
+fn add_generated_ref(refs: &mut BTreeMap<String, String>, fs: &Vfs, dir: &str, path: &str) {
+    if let Some(digest) = owned_source_digest(fs, &format!("{dir}/{path}")) {
+        refs.insert(path.to_string(), digest);
+    }
+}
+
+fn recursive_files(
+    fs: &Vfs,
+    absolute_root: &str,
+    relative_root: &str,
+) -> Result<Vec<String>, String> {
+    let Some(names) = fs.readdir(absolute_root) else {
+        return Err(format!("WIT path `{relative_root}` is not a directory"));
+    };
+    let mut files = Vec::new();
+    for name in names {
+        let absolute = format!("{absolute_root}/{name}");
+        let relative = format!("{relative_root}/{name}");
+        if fs.readdir(&absolute).is_some() {
+            files.extend(recursive_files(fs, &absolute, &relative)?);
+        } else if fs.exists(&absolute) {
+            files.push(relative);
+        }
+    }
+    Ok(files)
+}
+
+fn collect_js_graph(fs: &Vfs, dir: &str, entry: &str) -> Result<Vec<String>, String> {
+    let mut queue = VecDeque::from([normalize_deployment_path(entry)?]);
+    let mut seen = BTreeSet::new();
+    while let Some(path) = queue.pop_front() {
+        if seen.contains(&path) {
+            continue;
+        }
+        let bytes = fs
+            .read_file(&format!("{dir}/{path}"))
+            .ok_or_else(|| format!("cannot read JS module `{path}`"))?;
+        let source = String::from_utf8(bytes)
+            .map_err(|_| format!("JS module `{path}` is not valid UTF-8"))?;
+        seen.insert(path.clone());
+        for specifier in module_specifiers(&source) {
+            if specifier.starts_with("./") || specifier.starts_with("../") {
+                let base = path
+                    .rsplit_once('/')
+                    .map(|(parent, _)| parent)
+                    .unwrap_or("");
+                let joined = if base.is_empty() {
+                    specifier
+                } else {
+                    format!("{base}/{specifier}")
+                };
+                queue.push_back(normalize_deployment_path(&joined)?);
+            } else if !(specifier.contains(':') && specifier.contains('/')) {
+                return Err(format!(
+                    "unsupported bare module specifier {specifier:?} in {path}"
+                ));
+            }
+        }
+    }
+    Ok(seen.into_iter().collect())
+}
+
+fn module_specifiers(source: &str) -> Vec<String> {
+    let side_effect = regex::Regex::new(r#"\bimport\s*[\"']([^\"']+)[\"']"#).expect("regex");
+    let from = regex::Regex::new(r#"(?s)\b(?:import|export)\s+.*?\sfrom\s*[\"']([^\"']+)[\"']"#)
+        .expect("regex");
+    side_effect
+        .captures_iter(source)
+        .chain(from.captures_iter(source))
+        .filter_map(|capture| capture.get(1).map(|value| value.as_str().to_string()))
+        .collect()
+}
+
+fn normalize_deployment_path(path: &str) -> Result<String, String> {
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    return Err(format!("deployment path escapes its root: {path}"));
+                }
+            }
+            _ => parts.push(part),
+        }
+    }
+    if parts.is_empty() {
+        Err(format!("deployment path is empty: {path}"))
+    } else {
+        Ok(parts.join("/"))
+    }
 }
 
 /// A `TableLike`'s keys, materialized so a caller can mutate entries by key while iterating.
@@ -2263,6 +2425,7 @@ content_digest = \"sha256:1\"\n\
             "[[workflow_wasm]]\n",
             "location = \"w.wasm\"\n",
             "content_digest = \"sha256:1\"\n",
+            "component_files = { \"src/lib.rs\" = \"sha256:2\" }\n",
             "[workflow_wasm.backtrace.sources]\n",
             "\"w.wasm\" = { path = \"src/lib.rs\", content_digest = \"sha256:2\" }\n",
         );
@@ -2395,6 +2558,60 @@ content_digest = \"sha256:1\"\n\
             retry[1],
             json!([{"path": "activity/http.js", "digest": digest, "content": "export default 1"}])
         );
+    }
+
+    #[test]
+    fn deployment_submit_generates_wit_and_js_module_component_files() {
+        let manifest = concat!(
+            "[[activity_js]]\n",
+            "name = \"multi\"\n",
+            "ffqn = \"test:pkg/api.run\"\n",
+            "wit = \"wit\"\n",
+            "location = \"src/index.js\"\n",
+        );
+        let mut i = interp("/workspace");
+        let dir = "/workspace/deployment/current";
+        i.fs.write_file(&format!("{dir}/deployment.toml"), manifest.as_bytes())
+            .unwrap();
+        i.fs.write_file(
+            &format!("{dir}/src/index.js"),
+            br#"import { value } from "./lib.js"; export default () => value;"#,
+        )
+        .unwrap();
+        i.fs.write_file(&format!("{dir}/src/lib.js"), b"export const value = 1;")
+            .unwrap();
+        i.fs.write_file(
+            &format!("{dir}/wit/world.wit"),
+            b"package test:pkg; world api { export run: func(); }",
+        )
+        .unwrap();
+        i.fs.write_file(
+            &format!("{dir}/wit/deps/dep/dep.wit"),
+            b"package test:dep; interface unused {}",
+        )
+        .unwrap();
+
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", dir]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let prepared = params[0].as_str().unwrap();
+        for path in [
+            "src/index.js",
+            "src/lib.js",
+            "wit/world.wit",
+            "wit/deps/dep/dep.wit",
+        ] {
+            assert!(
+                prepared.contains(&format!("\"{path}\" = \"sha256:")),
+                "{prepared}"
+            );
+        }
     }
 
     #[test]
