@@ -39,6 +39,17 @@ Everything is pinned by the flake, so `nix develop` provides the matching
 Obelisk and Rust (wasm32) toolchain. The workflow is a native Rust component
 (`workflow/workflow-rs`); no special Obelisk build is required.
 
+`deployment.toml` also always deploys a full-parity JS alternative
+(`workflow/workflow-js`, a hand-written, dependency-free `just-bash`
+interpreter that ships as its own readable source, no compile/bundle step).
+Rust is the default; set `WORKFLOW_FFQN` to
+`obelisk-agent:workflow-js/workflow.run-cancellable` before `just serve` to
+schedule new sessions against the JS backend instead - no rebuild or
+redeploy needed either way. The sidebar always lists sessions from both
+backends regardless of which one is active. See
+[`docs/js-backend-migration.md`](docs/js-backend-migration.md) for why this
+exists and its current status.
+
 Then open http://localhost:9090 (the external/webhook listener; `server.toml`
 keeps the built-in default). Create an empty session to use the shell directly,
 or submit a prompt and inspect the same filesystem afterward. The user input

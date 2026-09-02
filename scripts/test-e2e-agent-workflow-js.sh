@@ -3,9 +3,10 @@
 # session protocol the Rust backend's test-e2e-agent-workflow.sh exercises:
 # direct shell turns through the idle input offer (including the Phase 3
 # obelisk/mount custom commands), session rename at creation, a `chat create`
-# self-referential child submit (Phase 5), and a prompt-driven turn that
-# reaches obelisk-agent:llm/chat.completion and surfaces its recoverable
-# config error. Phase 4's ask-user has no JS coverage yet (see
+# self-referential child submit (Phase 5), a WORKFLOW_FFQN-switched webhook
+# submit (Phase 6), and a prompt-driven turn that reaches
+# obelisk-agent:llm/chat.completion and surfaces its recoverable config
+# error. Phase 4's ask-user has no JS coverage yet (see
 # docs/js-backend-migration.md), so this is still a subset of the Rust
 # suite's coverage, not a replacement for it.
 
@@ -20,6 +21,11 @@ export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28017"
 export MCP_SERVER_TOKEN=""
 export GITHUB_TOKEN=""
 export AGENT_MODELS="[]"
+# Points the webhook's `/api/submit` (webhook/lib/mutations.js) at the JS
+# backend instead of the WORKFLOW_FFQN default (Rust) - see the "webhook
+# submit" scenario below, which is this suite's only coverage of that code
+# path (obelisk.schedule/obelisk.executionIdGenerate, Phase 6).
+export WORKFLOW_FFQN="obelisk-agent:workflow-js/workflow.run-cancellable"
 
 e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"
 DEPLOY="$ROOT/.e2e-agent-js-deployment.toml"
@@ -78,6 +84,25 @@ run_shell_turn() {
     done
     SHELL_STDOUT="$(node scripts/e2e-json.js shell-stdout <<<"$notification")"
 }
+
+echo ">>> submitting a session through the webhook (WORKFLOW_FFQN=$WORKFLOW_FFQN)"
+WEBHOOK_SUBMIT_BODY="$(curl --fail --silent --show-error \
+    -H 'content-type: application/json' \
+    -d '{"prompt":"hello via webhook"}' \
+    "http://127.0.0.1:28092/api/submit")"
+WEBHOOK_EXEC_ID="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(0,'utf8')).execution_id)" <<<"$WEBHOOK_SUBMIT_BODY")"
+if [[ -z "$WEBHOOK_EXEC_ID" ]]; then
+    echo "/api/submit did not return an execution_id: $WEBHOOK_SUBMIT_BODY" >&2
+    exit 1
+fi
+WEBHOOK_EXEC_FFQN="$("$OBELISK" execution list -j -a "$E2E_API_URL" -e "$WEBHOOK_EXEC_ID" --limit 1 \
+    | node -e "const rows=JSON.parse(require('fs').readFileSync(0,'utf8')); process.stdout.write(rows[0]?.ffqn || '')")"
+if [[ "$WEBHOOK_EXEC_FFQN" != "$RUN_FFQN" ]]; then
+    echo "webhook submit scheduled $WEBHOOK_EXEC_ID as ffqn=$WEBHOOK_EXEC_FFQN, expected $RUN_FFQN" >&2
+    exit 1
+fi
+echo ">>> webhook submit E2E PASS: obelisk.schedule routed the WORKFLOW_FFQN override to the JS backend"
+"$OBELISK" execution cancel -a "$E2E_API_URL" "$WEBHOOK_EXEC_ID" >/dev/null || true
 
 echo ">>> creating an empty JS-backend session"
 SESSION_ID="$("$OBELISK" generate execution-id)"

@@ -99,6 +99,10 @@ max_retries = 0
 exec.lock_expiry.seconds = 30
 env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  # Which backend `chat create --top-level` schedules a new session against
+  # (see docs/js-backend-migration.md); a session's own `chat create` always
+  # schedules its own kind instead, no env var needed.
+  { key = "WORKFLOW_FFQN", value = "${WORKFLOW_FFQN:-obelisk-agent:workflow/workflow.run-cancellable}" },
   "AGENT_MODELS",
 ]
 [[activity_js.allowed_host]]
@@ -620,6 +624,11 @@ routes = [
 env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  # Which backend a new session (`submit`/`createSession` in
+  # webhook/lib/mutations.js) is scheduled against; see
+  # docs/js-backend-migration.md. Run listing merges both backends
+  # unconditionally (webhook/lib/runs.js), so this only affects new sessions.
+  { key = "WORKFLOW_FFQN", value = "${WORKFLOW_FFQN:-obelisk-agent:workflow/workflow.run-cancellable}" },
   "AGENT_MODELS",
 ]
 # Read-only API access for the polling UI (statuses, responses, events, logs,
