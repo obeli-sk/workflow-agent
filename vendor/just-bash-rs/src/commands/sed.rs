@@ -5,17 +5,18 @@
 //! general token stream for a much bigger command set). Supports:
 //! addressing by line number, `$` (last line), `/regex/`, `addr1,addr2`
 //! ranges, and a leading `!`/trailing negation; commands `s///[flags]`
-//! (`g`/`i`/`p` and an `N`th-occurrence digit), `d`, `p`, `q`, and `r file`
+//! (`g`/`i`/`p` and an `N`th-occurrence digit), `d`, `p`, `q`, `r file`
 //! (queue a file's contents after the current line, `-n`-immune like GNU
-//! sed, missing file silently produces nothing); `-n` (suppress automatic
-//! printing), repeated `-e`, and `-i` (in-place, no backup-suffix support).
+//! sed, missing file silently produces nothing), and `a`/`i`/`c` text
+//! (POSIX `a\` + backslash-continued lines, or the one-line GNU extension
+//! `a text`; also `-n`-immune); `-n` (suppress automatic printing),
+//! repeated `-e`, and `-i` (in-place, no backup-suffix support).
 //! Regex flavor reuses `grep::translate_bre` for the BRE default and passes
 //! patterns straight through in `-E`/`-r` (ERE) mode.
 //! Not ported (the design doc's stretch goal): hold space (`h H g G x`),
-//! `a`/`i`/`c` text insertion, branching/labels (`b`/`t`/`:label`),
-//! multiline `N`/`D`/`P`, `y` transliteration, step addresses
-//! (`first~step`), relative-offset range ends (`addr1,+N`), and grouped
-//! `{ ... }` blocks.
+//! branching/labels (`b`/`t`/`:label`), multiline `N`/`D`/`P`, `y`
+//! transliteration, step addresses (`first~step`), relative-offset range
+//! ends (`addr1,+N`), and grouped `{ ... }` blocks.
 
 use std::collections::HashMap;
 
@@ -45,12 +46,19 @@ struct Substitution {
     occurrence: Option<usize>,
 }
 
+enum TextKind {
+    Append,
+    Insert,
+    Change,
+}
+
 enum SedCommand {
     Substitute(Substitution),
     Delete,
     Print,
     Quit,
     ReadFile(String),
+    Text(TextKind, String),
 }
 
 struct SedStmt {
@@ -189,6 +197,54 @@ fn skip_space(chars: &[char], mut i: usize) -> usize {
     i
 }
 
+/// `a`/`i`/`c` text: either the GNU one-liner `a text` (rest of the line,
+/// leading blanks skipped), or POSIX `a\` followed by a newline and one or
+/// more lines joined by a trailing backslash (stripped); the first line
+/// without one ends the text, and its own newline is left unconsumed, like
+/// `r`'s filename read.
+fn parse_text_command(chars: &[char], mut i: usize, kind: TextKind) -> (SedCommand, usize) {
+    i += 1; // skip the command letter
+    let text = if chars.get(i) == Some(&'\\') {
+        i += 1;
+        if chars.get(i) == Some(&'\n') {
+            i += 1;
+            let mut lines: Vec<String> = Vec::new();
+            loop {
+                let start = i;
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                let line: String = chars[start..i].iter().collect();
+                if let Some(stripped) = line.strip_suffix('\\') {
+                    lines.push(stripped.to_string());
+                    if i >= chars.len() {
+                        break;
+                    }
+                    i += 1; // consume the newline, the text continues
+                    continue;
+                }
+                lines.push(line);
+                break;
+            }
+            lines.join("\n")
+        } else {
+            let start = i;
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            chars[start..i].iter().collect()
+        }
+    } else {
+        i = skip_space(chars, i);
+        let start = i;
+        while i < chars.len() && chars[i] != '\n' {
+            i += 1;
+        }
+        chars[start..i].iter().collect()
+    };
+    (SedCommand::Text(kind, text), i)
+}
+
 fn parse_one_statement(
     chars: &[char],
     mut i: usize,
@@ -217,6 +273,9 @@ fn parse_one_statement(
         'd' => (SedCommand::Delete, i + 1),
         'p' => (SedCommand::Print, i + 1),
         'q' => (SedCommand::Quit, i + 1),
+        'a' => parse_text_command(chars, i, TextKind::Append),
+        'i' => parse_text_command(chars, i, TextKind::Insert),
+        'c' => parse_text_command(chars, i, TextKind::Change),
         'r' => {
             // GNU `r`: the filename is the rest of the line (leading blanks
             // skipped, `;` is not a separator here), so read to the newline.
@@ -417,6 +476,26 @@ fn run_sed(
                 SedCommand::ReadFile(name) => {
                     if let Some(text) = file_cache.get(name) {
                         appends.push(text);
+                    }
+                }
+                SedCommand::Text(TextKind::Append, text) => {
+                    appends.push(text.as_str());
+                    appends.push("\n");
+                }
+                SedCommand::Text(TextKind::Insert, text) => {
+                    out.push_str(text);
+                    out.push('\n');
+                }
+                SedCommand::Text(TextKind::Change, text) => {
+                    deleted = true;
+                    // A two-address range prints its text once, on the line
+                    // that closes the range, not on every deleted line in
+                    // between; range_active[si] is false exactly on that
+                    // line (see address_applies) and always false for a
+                    // plain single address.
+                    if !range_active[si] {
+                        out.push_str(text);
+                        out.push('\n');
                     }
                 }
             }
@@ -854,6 +933,67 @@ mod tests {
             .unwrap();
         let r = run(&mut bash, "sed -n '2r /test/note.txt' /test/numbers.txt");
         assert_eq!(r.stdout, "NOTE\n");
+    }
+
+    #[test]
+    fn append_after_matching_line() {
+        let mut bash = env_with_fixtures();
+        let r = run(&mut bash, "sed '2a\\\ninserted' /test/numbers.txt");
+        assert_eq!(
+            r.stdout,
+            "line 1\nline 2\ninserted\nline 3\nline 4\nline 5\n"
+        );
+    }
+
+    #[test]
+    fn append_one_liner_gnu_extension() {
+        let mut bash = env_with_fixtures();
+        let r = run(&mut bash, "sed '2a inserted' /test/numbers.txt");
+        assert_eq!(
+            r.stdout,
+            "line 1\nline 2\ninserted\nline 3\nline 4\nline 5\n"
+        );
+    }
+
+    #[test]
+    fn append_multiline_backslash_continued_block() {
+        let mut bash = env_with_fixtures();
+        let r = run(&mut bash, "sed '2a\\\nfirst\\\nsecond' /test/numbers.txt");
+        assert_eq!(
+            r.stdout,
+            "line 1\nline 2\nfirst\nsecond\nline 3\nline 4\nline 5\n"
+        );
+    }
+
+    #[test]
+    fn append_not_suppressed_by_n() {
+        let mut bash = env_with_fixtures();
+        let r = run(&mut bash, "sed -n '2a\\\ninserted' /test/numbers.txt");
+        assert_eq!(r.stdout, "inserted\n");
+    }
+
+    #[test]
+    fn insert_before_matching_line() {
+        let mut bash = env_with_fixtures();
+        let r = run(&mut bash, "sed '2i\\\ninserted' /test/numbers.txt");
+        assert_eq!(
+            r.stdout,
+            "line 1\ninserted\nline 2\nline 3\nline 4\nline 5\n"
+        );
+    }
+
+    #[test]
+    fn change_replaces_matching_line() {
+        let mut bash = env_with_fixtures();
+        let r = run(&mut bash, "sed '2c\\\nchanged' /test/numbers.txt");
+        assert_eq!(r.stdout, "line 1\nchanged\nline 3\nline 4\nline 5\n");
+    }
+
+    #[test]
+    fn change_on_range_prints_text_once_at_range_end() {
+        let mut bash = env_with_fixtures();
+        let r = run(&mut bash, "sed '2,4c\\\nchanged' /test/numbers.txt");
+        assert_eq!(r.stdout, "line 1\nchanged\nline 5\n");
     }
 
     #[test]
