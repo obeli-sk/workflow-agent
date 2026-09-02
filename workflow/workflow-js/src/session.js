@@ -234,14 +234,15 @@ function hostSleepMs(ms) {
     }
 }
 
-function loadSessionConfig() {
-    const config = discover();
+function loadSessionConfig(executionId, backend, effort, name) {
+    const config = discover(executionId, backend, effort, name);
     return {
         maxSteps: config.max_steps,
         programs: config.programs ?? [],
         mcpServers: config.mcp_servers ?? [],
         apps: config.apps ?? [],
         webhookUrl: config.webhook_url ?? "",
+        promptTail: config.prompt_tail,
     };
 }
 
@@ -492,12 +493,14 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     // route through it, so a plain createHost() is enough for those.
     bash.registerCommand("obelisk", obeliskPack.commandHandler(askUserAwareHost(notifications)));
 
-    const config = loadSessionConfig();
-    const maxSteps = config.maxSteps;
     // A session created with a slug label (`chat create --name`) starts
     // already renamed; anything else arrives unnamed. PORT: session.rs's
     // own_session construction (chat::ChatSelf::new).
-    const ownSession = new chat.ChatSelf(obelisk.executionIdCurrent(), model, effort, name || null);
+    const executionId = obelisk.executionIdCurrent();
+    const initialName = name || null;
+    const config = loadSessionConfig(executionId, model, effort, initialName);
+    const maxSteps = config.maxSteps;
+    const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
     // PORT: chat.rs's create_child's workflow_ext::run_cancellable_submit
     // call, with the descriptor-ffqn positional argument fixed to null
     // (matching Rust's `None`) since a child session always uses the default
@@ -506,7 +509,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
         runCancellableSubmit(joinSet, childPrompt, childModel, null, childEffort, childName);
     registerProgramsAndMcp(bash, config, ownSession, notifications, submitFn);
 
-    const system = renderSystemPrompt(systemPrompt, config.programs, config.apps, chat.selfSection(ownSession));
+    const system = renderSystemPrompt(systemPrompt, config.programs, config.apps, config.promptTail);
 
     let pendingShell = openingShellScript(prompt);
     let messages = pendingShell === null && prompt.trim() ? [userText(prompt.trim())] : [];

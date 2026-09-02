@@ -34,7 +34,13 @@ interface config {
     mcp-servers: list<mcp-server>,
     apps: list<app>,
     webhook-url: string,
+    // The whole tail of the system prompt after "# Example apps": user-input
+    // guidance, subagent delegation, deployment authoring, and the
+    // per-session "# This session" text - single-sourced here (given
+    // execution-id/backend/effort/name as inputs) so the Rust and JS
+    // workflow backends stop hand-duplicating this prose.
+    prompt-tail: string,
   }
 
-  discover: func() -> result<session-config, string>;
+  discover: func(execution-id: string, backend: string, effort: string, name: option<string>) -> result<session-config, string>;
 }

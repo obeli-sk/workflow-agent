@@ -56,31 +56,6 @@ export function currentOutput(own) {
     return { stdout: `${JSON.stringify(currentPayload(own))}\n`, stderr: "", exitCode: 0 };
 }
 
-// PORT: chat.rs's `self_section`. The "# This session" system-prompt
-// paragraph: the session's own identity (exactly what `chat current`
-// prints), its parent for context gathering, and when to rename itself.
-export function selfSection(own) {
-    const payload = currentPayload(own);
-    let text =
-        "# This session\n\n" +
-        "`chat current` output for the session you are running in:\n" +
-        `${JSON.stringify(payload)}\n\n` +
-        "Peers discover sessions by slug via `chat list`; read your own transcript " +
-        `with \`chat read ${own.executionId}\`. If your starting prompt already makes the task clear, ` +
-        "rename yourself first, before anything else (`chat rename <slug>`); " +
-        "otherwise wait until the task settles into something nameable. Rename once " +
-        "to a short kebab slug summarizing the task; do not rename repeatedly or " +
-        "preemptively while it is still unclear.\n";
-    const parent = parentOf(own.executionId);
-    if (parent !== null) {
-        text +=
-            `\nYou were started as a child session by ${parent}. If your prompt ` +
-            `leaves you short of context, run \`chat read ${parent}\` to see the transcript ` +
-            "that created you.\n";
-    }
-    return text;
-}
-
 // PORT: chat.rs's `has_help_flag`.
 export function hasHelpFlag(args) {
     return args.some((arg) => arg === "--help" || arg === "-h");

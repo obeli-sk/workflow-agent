@@ -4,9 +4,6 @@
 // only be exercised by deploying it.
 
 import { parseScript } from "../../../vendor/just-bash/src/parser.js";
-import { SYSTEM_PROMPT as PACK_SYSTEM_PROMPT } from "../../../vendor/just-bash/src/obelisk-pack.js";
-
-export { PACK_SYSTEM_PROMPT };
 
 export const MAX_TOOL_RESULT_BYTES = 96 * 1024;
 export const STEP_WARNING_FRACTION = 3;
@@ -92,11 +89,9 @@ export function renderProgramHelp(programs) {
     let text =
         "The only model-facing tool is bash. Its filesystem persists for this session. Run `help` to list every command available in the shell. A script can be cut short by an operator or peer interrupt (exit 130) or by its own timeout argument (exit 124); whatever it printed before that stays recorded.";
     if (!programs || programs.length === 0) return `${text}\n`;
-    text += " The workflow registers these external commands:\n";
+    text += " The workflow registers these external commands:\n\n";
     for (const program of programs) {
-        text += program.description
-            ? `  ${program.name}  ${program.description}\n`
-            : `  ${program.name}\n`;
+        text += program.description ? `- \`${program.name}\`: ${program.description}\n` : `- \`${program.name}\`\n`;
     }
     return text;
 }
@@ -117,35 +112,13 @@ export function renderAppHelp(apps) {
     return text;
 }
 
-// PORT: session.rs's inline "# User input" section (agent_loop's `format!`).
-const USER_INPUT_SECTION =
-    "# User input\n\n" +
-    "When you need a user answer before you can continue the current task, run " +
-    "`obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. It publishes the question " +
-    "to the UI, blocks, and returns the answer so you can continue in the same turn. Use it only when " +
-    "the answer is required to proceed; to end the turn, reply in Markdown without a command.";
-
-// PORT: session.rs's inline "# Subagents" section (agent_loop's `format!`).
-const SUBAGENTS_SECTION =
-    "# Subagents\n\n" +
-    "Delegate self-contained work with `chat create [--name slug] PROMPT`; pass " +
-    "`--watch` (or call `chat watch ID`) to block until the child stops progressing: " +
-    "it reports final-response when it answers, step-limit when its step budget ran " +
-    "out, awaiting-answer when an ask-user is pending, shell-only when a scripted " +
-    "prompt finished, or a terminal state; the reported JSON already includes a " +
-    "`final` field with the child's finished reply, error, or pending question, so " +
-    "you rarely need a follow-up read. When you do, use `chat read ID --final` " +
-    "(just that outcome) rather than a full `chat read ID` (the whole transcript, " +
-    "far more tokens) unless you actually need the reasoning trail. Never poll a " +
-    "child with sleep loops. A child parked in step-limit resumes where it left " +
-    "off when you send it `chat send ID continue`; budget resets for the new turn.";
-
-// `selfSection` is chat.js's `selfSection(ownSession)` output (the "# This
-// session" paragraph); always included, matching session.rs's agent_loop,
-// which composes it into the system prompt unconditionally regardless of
-// whether a `chat` program is actually registered.
-export function renderSystemPrompt(systemPrompt, programs, apps, selfSection) {
-    return `${systemPrompt}\n\n# Shell\n\n${renderProgramHelp(programs)}\n${renderAppHelp(apps)}${USER_INPUT_SECTION}\n\n${SUBAGENTS_SECTION}\n\n${selfSection}\n\n${PACK_SYSTEM_PROMPT}\n`;
+// `promptTail` is everything after "# Example apps" (user input, subagents,
+// deployment authoring, and "# This session") from config-discover.js's
+// discover() (PORT-OF-RECORD there), single-sourced given this execution's
+// identity so this backend and workflow-rs's session.rs don't hand-duplicate
+// any of that text.
+export function renderSystemPrompt(systemPrompt, programs, apps, promptTail) {
+    return `${systemPrompt}\n\n# Shell\n\n${renderProgramHelp(programs)}\n${renderAppHelp(apps)}${promptTail}`;
 }
 
 // PORT: workflow-rs/src/session.rs's `MOUNT_HEADER`/`MOUNT_FOOTER`.

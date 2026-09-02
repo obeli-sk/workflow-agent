@@ -61,12 +61,12 @@ ${PROGRAMS_JSON:-[
   # set of repos, private forks, or pinned refs.
   { key = "APPS_JSON", value = '''
 ${APPS_JSON:-[
-  {"name":"components","repo":"components","description":"Rust: reusable OCI activities (HTTP, GitHub, Fly.io, Docker, OpenAI, browser); copy any `*-oci.toml`"},
-  {"name":"agent-backed-llm-server","repo":"agent-backed-llm-server","description":"JS: OpenAI-compatible LLM endpoint over a Claude/Codex CLI"},
-  {"name":"demo-stargazers","repo":"demo-stargazers","description":"Rust: webhook -> workflow -> external-API pattern"},
-  {"name":"demo-tutorial","repo":"demo-tutorial","description":"JS: serial/parallel durable workflow tutorial"},
-  {"name":"obelisk-version-monitor","repo":"obelisk-version-monitor","description":"JS: dashboard app example"},
-  {"name":"workflow-agent","repo":"workflow-agent","description":"Rust + JS: this agent's own source"}
+  {"name":"components","repo":"components","description":"Rust: reusable OCI activities for HTTP, GitHub, Fly.io, Docker, OpenAI, and browser automation; copy a `*-oci.toml` block straight into a deployment.toml instead of writing the activity from scratch"},
+  {"name":"agent-backed-llm-server","repo":"agent-backed-llm-server","description":"JS: an OpenAI-compatible LLM endpoint backed by a Claude/Codex CLI subscription; copy the webhook+activity pair when bridging a similar CLI tool"},
+  {"name":"demo-stargazers","repo":"demo-stargazers","description":"Rust: a full webhook -> workflow -> external-API pattern (GitHub star notifications with persistent side effects); a reference before writing a similar workflow in JS"},
+  {"name":"demo-tutorial","repo":"demo-tutorial","description":"JS: a small serial/parallel durable workflow tutorial; the fastest way to see the obelisk.* host API used correctly"},
+  {"name":"obelisk-version-monitor","repo":"obelisk-version-monitor","description":"JS: a complete dashboard app (webhook + workflow + UI); reference it when building another operator-facing dashboard"},
+  {"name":"workflow-agent","repo":"workflow-agent","description":"Rust + JS: this agent's own source (session loop, just-bash interpreter, activity/pack examples); the reference for extending or debugging yourself"}
 ]}
 ''' },
   { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },

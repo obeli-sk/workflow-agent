@@ -174,13 +174,28 @@ struct SessionConfig {
     apps: Vec<App>,
     /// Base URL of the target's webhook listener; empty when not configured.
     webhook_url: String,
+    /// The whole tail of the system prompt after "# Example apps" (user
+    /// input, subagents, deployment authoring, and the per-session
+    /// "# This session" text), single-sourced in config-discover.js given
+    /// this execution's identity, so it is not hand-duplicated between this
+    /// backend and workflow-js's session-logic.js.
+    prompt_tail: String,
 }
 
 /// Load all operator-owned session settings in one activity call so environment
 /// changes do not require rebuilding this deterministic workflow component.
-fn discover_session_config(host: &mut dyn ObeliskHost) -> Result<SessionConfig, String> {
+/// `execution_id`/`backend`/`effort`/`name` are this session's own identity,
+/// needed only to render the "# This session" paragraph inside `prompt_tail`.
+fn discover_session_config(
+    host: &mut dyn ObeliskHost,
+    execution_id: &str,
+    backend: &str,
+    effort: &str,
+    name: Option<&str>,
+) -> Result<SessionConfig, String> {
+    let params = json!([execution_id, backend, effort, name]).to_string();
     let json = host
-        .call_json(CONFIG_DISCOVER_FFQN, "[]")?
+        .call_json(CONFIG_DISCOVER_FFQN, &params)?
         .ok_or_else(|| "session config activity returned no value".to_string())?;
     parse_session_config(&json)
 }
@@ -214,12 +229,18 @@ fn parse_session_config(json: &str) -> Result<SessionConfig, String> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
+    let prompt_tail = value
+        .get("prompt_tail")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "session config has no prompt_tail".to_string())?
+        .to_string();
     Ok(SessionConfig {
         max_steps,
         programs,
         mcp_servers,
         apps,
         webhook_url,
+        prompt_tail,
     })
 }
 
@@ -265,12 +286,12 @@ it printed before that stays recorded.",
         text.push('\n');
         return text;
     }
-    text.push_str(" The workflow registers these external commands:\n");
+    text.push_str(" The workflow registers these external commands:\n\n");
     for program in programs {
         if program.description.is_empty() {
-            text.push_str(&format!("  {}\n", program.name));
+            text.push_str(&format!("- `{}`\n", program.name));
         } else {
-            text.push_str(&format!("  {}  {}\n", program.name, program.description));
+            text.push_str(&format!("- `{}`: {}\n", program.name, program.description));
         }
     }
     text
@@ -628,12 +649,6 @@ pub fn agent_loop(
     });
     bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(host())));
 
-    let config = discover_session_config(&mut host())?;
-    let max_steps = config.max_steps;
-    let programs = config.programs;
-    let mcp_servers = config.mcp_servers;
-    let apps = config.apps;
-
     // A session created with a slug label (`chat create --name`) starts
     // already renamed; anything else arrives unnamed.
     let initial_name = if name.is_empty() {
@@ -643,12 +658,20 @@ pub fn agent_loop(
             .map_err(|error| format!("invalid session name {name:?}: {error}"))?;
         Some(name.clone())
     };
-    let own_session = chat::ChatSelf::new(
-        workflow_support::execution_id_current().id,
-        model.clone(),
-        effort.clone(),
-        initial_name.clone(),
-    );
+    let execution_id = workflow_support::execution_id_current().id;
+    let config = discover_session_config(
+        &mut host(),
+        &execution_id,
+        &model,
+        &effort,
+        initial_name.as_deref(),
+    )?;
+    let max_steps = config.max_steps;
+    let programs = config.programs;
+    let mcp_servers = config.mcp_servers;
+    let apps = config.apps;
+
+    let own_session = chat::ChatSelf::new(execution_id, model.clone(), effort.clone(), initial_name.clone());
     for program in &programs {
         let handler =
             obelisk_program::command_handler(&program.name, &program.ffqn, Box::new(host()));
@@ -693,32 +716,17 @@ pub fn agent_loop(
 
     let shell_help = render_program_help(&programs);
     let app_help = render_app_help(&apps);
+    // Everything after "# Example apps" (user input, subagents, deployment
+    // authoring, and "# This session") comes from config-discover.js,
+    // single-sourced there given this execution's identity so this backend
+    // and workflow-js's session-logic.js don't hand-duplicate the text.
+    let prompt_tail = &config.prompt_tail;
     let system = format!(
         "{system_prompt}\n\n\
 # Shell\n\n\
 {shell_help}\n\
 {app_help}\
-# User input\n\n\
-When you need a user answer before you can continue the current task, run \
-`obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. It \
-publishes the question to the UI, blocks, and returns the answer so you can \
-continue in the same turn. Use it only when the answer is required to proceed; \
-to end the turn, reply in Markdown without a command.\n\n\
-# Subagents\n\n\
-Delegate self-contained work with `chat create [--name slug] PROMPT`; pass \
-`--watch` (or call `chat watch ID`) to block until the child stops progressing: \
-it reports final-response when it answers, step-limit when its step budget ran \
-out, awaiting-answer when an ask-user is pending, shell-only when a scripted \
-prompt finished, or a terminal state; the reported JSON already includes a \
-`final` field with the child's finished reply, error, or pending question, so \
-you rarely need a follow-up read. When you do, use `chat read ID --final` \
-(just that outcome) rather than a full `chat read ID` (the whole transcript, \
-far more tokens) unless you actually need the reasoning trail. Never poll a \
-child with sleep loops. A child parked in step-limit resumes where it left \
-off when you send it `chat send ID continue`; budget resets for the new \
-turn.\n\n{}\n\n{}",
-        chat::self_section(&own_session),
-        obelisk_pack::SYSTEM_PROMPT
+{prompt_tail}"
     );
 
     // Like the webui composer, an opening prompt starting with `$` is a shell
@@ -1525,32 +1533,41 @@ mod tests {
 
     #[test]
     fn parse_session_config_reads_step_limit_and_registries() {
-        let config = parse_session_config(
-            r#"{"max_steps":25,"programs":[],"mcp_servers":[],"apps":[],"webhook_url":"http://x:9290"}"#,
-        )
+        const PROMPTS: &str = r#""prompt_tail":"prompt tail""#;
+        let config = parse_session_config(&format!(
+            r#"{{"max_steps":25,"programs":[],"mcp_servers":[],"apps":[],"webhook_url":"http://x:9290",{PROMPTS}}}"#
+        ))
         .unwrap();
         assert_eq!(config.max_steps, 25);
         assert!(config.programs.is_empty());
         assert!(config.mcp_servers.is_empty());
         assert!(config.apps.is_empty());
         assert_eq!(config.webhook_url, "http://x:9290");
+        assert_eq!(config.prompt_tail, "prompt tail");
 
         // webhook_url is optional and defaults to empty.
-        let bare = parse_session_config(
-            r#"{"max_steps":25,"programs":[],"mcp_servers":[],"apps":[]}"#,
-        )
+        let bare = parse_session_config(&format!(
+            r#"{{"max_steps":25,"programs":[],"mcp_servers":[],"apps":[],{PROMPTS}}}"#
+        ))
         .unwrap();
         assert_eq!(bare.webhook_url, "");
 
         assert!(
-            parse_session_config(r#"{"max_steps":0,"programs":[],"mcp_servers":[],"apps":[]}"#)
-                .is_err()
+            parse_session_config(&format!(
+                r#"{{"max_steps":0,"programs":[],"mcp_servers":[],"apps":[],{PROMPTS}}}"#
+            ))
+            .is_err()
         );
         assert!(parse_session_config(r#"{"max_steps":10,"programs":[]}"#).is_err());
         assert!(parse_session_config(
             r#"{"max_steps":10,"programs":[],"mcp_servers":[]}"#
         )
         .is_err());
+        // prompt_tail is required, not optional.
+        assert!(
+            parse_session_config(r#"{"max_steps":10,"programs":[],"mcp_servers":[],"apps":[]}"#)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1588,9 +1605,9 @@ mod tests {
             help.contains("registers these external commands:"),
             "{help}"
         );
-        assert!(help.contains("\n  curl  GET-only HTTP client\n"), "{help}");
+        assert!(help.contains("\n- `curl`: GET-only HTTP client\n"), "{help}");
         // A program without a description is listed by name alone.
-        assert!(help.contains("\n  jq\n"), "{help}");
+        assert!(help.contains("\n- `jq`\n"), "{help}");
         // With no programs, bash is the only advertised tool.
         let none = render_program_help(&[]);
         assert!(!none.contains("external commands"), "{none}");

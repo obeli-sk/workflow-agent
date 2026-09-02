@@ -18,7 +18,6 @@ import {
     toolOk,
     toolResultMessageValue,
     MAX_TOOL_RESULT_BYTES,
-    PACK_SYSTEM_PROMPT,
 } from "./session-logic.js";
 
 test("openingShellScript recognizes a $-prefixed prompt", () => {
@@ -101,8 +100,8 @@ test("renderProgramHelp lists each program, with or without a description", () =
         { name: "jira", ffqn: "obelisk-agent:programs/program.jira", description: "" },
     ]);
     assert.ok(text.includes("registers these external commands"));
-    assert.ok(text.includes("  curl  fetch a URL\n"));
-    assert.ok(text.includes("  jira\n"));
+    assert.ok(text.includes("- `curl`: fetch a URL\n"));
+    assert.ok(text.includes("- `jira`\n"));
 });
 
 test("renderAppHelp omits the section when there are no apps", () => {
@@ -121,12 +120,17 @@ test("renderAppHelp lists each app as a markdown bullet, with or without a descr
     assert.ok(text.includes("- `webui`\n"));
 });
 
-test("renderSystemPrompt composes the base prompt, shell help, apps, user-input, subagents, self, and pack sections in order", () => {
+test("renderSystemPrompt composes the base prompt, shell help, apps, and the prompt tail in order", () => {
+    const promptTail =
+        "# User input\n\nask-user stuff\n\n" +
+        "# Subagents\n\nchat create [--name slug] stuff\n\n" +
+        "# Deployment authoring\n\npack stuff\n\n" +
+        "# This session\n\nself section text\n";
     const text = renderSystemPrompt(
         "Base instructions.",
         [{ name: "curl", ffqn: "x", description: "fetch" }],
         [{ name: "components", owner: "obeli-sk", repo: "components", ref: "main", description: "reusable Rust activities" }],
-        "# This session\n\nself section text\n",
+        promptTail,
     );
     const baseAt = text.indexOf("Base instructions.");
     const shellAt = text.indexOf("# Shell");
@@ -137,12 +141,14 @@ test("renderSystemPrompt composes the base prompt, shell help, apps, user-input,
     const askUserAt = text.indexOf("ask-user");
     const subagentsAt = text.indexOf("# Subagents");
     const chatCreateAt = text.indexOf("chat create [--name slug]");
-    const selfAt = text.indexOf("self section text");
-    const packAt = text.indexOf(PACK_SYSTEM_PROMPT);
+    const packAt = text.indexOf("# Deployment authoring");
+    const selfAt = text.indexOf("# This session");
+    const selfTextAt = text.indexOf("self section text");
     assert.ok(
         baseAt < shellAt && shellAt < helpAt && helpAt < appsAt && appsAt < appEntryAt &&
         appEntryAt < userInputAt && userInputAt < askUserAt &&
-        askUserAt < subagentsAt && subagentsAt < chatCreateAt && chatCreateAt < selfAt && selfAt < packAt,
+        askUserAt < subagentsAt && subagentsAt < chatCreateAt && chatCreateAt < packAt &&
+        packAt < selfAt && selfAt < selfTextAt,
         text,
     );
 });

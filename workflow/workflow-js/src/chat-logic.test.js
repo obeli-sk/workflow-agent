@@ -13,7 +13,6 @@ import {
     parentOf,
     parseCreateArgs,
     parseWatchArgs,
-    selfSection,
     stampWatchFields,
     usage,
 } from "./chat-logic.js";
@@ -49,23 +48,6 @@ test("currentPayload defaults name/parent_id to explicit JSON null", () => {
     assert.equal(payload.parent_id, null);
     assert.ok(JSON.stringify(payload).includes('"name":null'));
     assert.ok(JSON.stringify(payload).includes('"parent_id":null'));
-});
-
-// PORT: chat.rs's `self_section_shows_identity_and_parent`.
-test("selfSection shows identity and parent", () => {
-    const own = { executionId: "E_01ABC.n:research_1", backend: "claude", effort: "", name: "research" };
-    const section = selfSection(own);
-    assert.ok(section.includes("# This session"));
-    assert.ok(section.includes('"execution_id":"E_01ABC.n:research_1"'));
-    assert.ok(section.includes('"name":"research"'));
-    assert.ok(section.includes("chat read E_01ABC.n:research_1"));
-    assert.ok(section.includes("chat read E_01ABC"));
-
-    const top = { executionId: "E_01XYZ", backend: "", effort: "", name: null };
-    const topSection = selfSection(top);
-    // Top-level sessions carry no parent beyond the JSON null.
-    assert.ok(topSection.includes('"parent_id":null'));
-    assert.ok(!topSection.includes("child session by"));
 });
 
 test("hasHelpFlag recognizes --help and -h anywhere in the args", () => {

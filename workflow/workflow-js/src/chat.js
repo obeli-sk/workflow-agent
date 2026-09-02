@@ -47,13 +47,12 @@ import {
     parentOf,
     parseCreateArgs,
     parseWatchArgs,
-    selfSection,
     stampWatchFields,
     usage,
 } from "./chat-logic.js";
 import { validateSlug } from "./session-logic.js";
 
-export { selfSection, parentOf };
+export { parentOf };
 
 // Live identity of the invoking session, captured where commands are
 // registered (the activity cannot learn its caller). PORT: chat.rs's

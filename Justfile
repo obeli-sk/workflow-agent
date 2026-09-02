@@ -40,8 +40,9 @@ test-rs:
   cargo test -p just-bash-rs -p workflow-agent-rs
 
 # Web UI: unit tests for the served transcript renderer (turn/step grouping).
-# Activities: unit tests for the curl and chat programs' flag handling, plus
-# the GitHub contents mount transport (symlink resolution).
+# Activities: unit tests for the curl and chat programs' flag handling, the
+# GitHub contents mount transport (symlink resolution), and config.discover
+# (registries plus the shared prompt-tail/self-section rendering).
 # Shared session-state projection (sidebar + chat state).
 # vendor/just-bash: the hand-written JS bash interpreter (JS workflow backend).
 test-js:
@@ -49,6 +50,7 @@ test-js:
   node --test activity/curl.test.js
   node --test activity/chat.test.js
   node --test activity/github-contents.test.js
+  node --test activity/config-discover.test.js
   node --test packs/obelisk-control/native-call.test.mjs
   node --test shared/session-state.test.js
   node --test $(find vendor/just-bash/src -name '*.test.js')
