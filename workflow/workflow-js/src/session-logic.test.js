@@ -5,12 +5,16 @@ import {
     containsBackgroundStatement,
     hasUserVisibleText,
     openingShellScript,
+    renderMount,
+    renderProgramHelp,
+    renderSystemPrompt,
     shellResultOf,
     stepWarningThreshold,
     toolError,
     toolOk,
     toolResultMessageValue,
     MAX_TOOL_RESULT_BYTES,
+    PACK_SYSTEM_PROMPT,
 } from "./session-logic.js";
 
 test("openingShellScript recognizes a $-prefixed prompt", () => {
@@ -79,4 +83,45 @@ test("appendShellExchange records a tool_use/tool_result pair", () => {
     assert.equal(messages[0].content[0].type, "tool_use");
     assert.equal(messages[0].content[0].input.script, "echo hi");
     assert.equal(messages[1].content[0].type, "tool_result");
+});
+
+test("renderProgramHelp omits the registered-commands block when there are none", () => {
+    const text = renderProgramHelp([]);
+    assert.ok(text.includes("Run `help` to list every command"));
+    assert.ok(!text.includes("registers these external commands"));
+});
+
+test("renderProgramHelp lists each program, with or without a description", () => {
+    const text = renderProgramHelp([
+        { name: "curl", ffqn: "obelisk-agent:programs/program.curl", description: "fetch a URL" },
+        { name: "jira", ffqn: "obelisk-agent:programs/program.jira", description: "" },
+    ]);
+    assert.ok(text.includes("registers these external commands"));
+    assert.ok(text.includes("  curl  fetch a URL\n"));
+    assert.ok(text.includes("  jira\n"));
+});
+
+test("renderSystemPrompt composes the base prompt, shell help, and the pack prompt in order", () => {
+    const text = renderSystemPrompt("Base instructions.", [{ name: "curl", ffqn: "x", description: "fetch" }]);
+    const baseAt = text.indexOf("Base instructions.");
+    const shellAt = text.indexOf("# Shell");
+    const helpAt = text.indexOf("registers these external commands");
+    const packAt = text.indexOf(PACK_SYSTEM_PROMPT);
+    assert.ok(baseAt < shellAt && shellAt < helpAt && helpAt < packAt, text);
+});
+
+test("renderMount lists the webhook URL only when configured and probes each MCP server", () => {
+    const servers = [
+        { name: "up", ffqn: "obelisk-agent:mcp/server.up" },
+        { name: "down", ffqn: "obelisk-agent:mcp/server.down" },
+    ];
+    const probe = (ffqn) => (ffqn.endsWith(".down") ? "connection refused\nextra detail" : null);
+
+    const withWebhook = renderMount(servers, "http://target:8080", probe);
+    assert.ok(withWebhook.includes("http://target:8080  target Obelisk webhooks"));
+    assert.ok(withWebhook.includes("/workspace/mcp/up  MCP server, read-only (responding)"));
+    assert.ok(withWebhook.includes("/workspace/mcp/down  MCP server, read-only (not responding: connection refused)"));
+
+    const withoutWebhook = renderMount([], "", probe);
+    assert.ok(!withoutWebhook.includes("target Obelisk webhooks"));
 });

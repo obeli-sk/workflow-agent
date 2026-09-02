@@ -278,7 +278,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const config = loadSessionConfig();
     const maxSteps = config.maxSteps;
 
-    const system = renderSystemPrompt(systemPrompt);
+    const system = renderSystemPrompt(systemPrompt, config.programs);
 
     let pendingShell = openingShellScript(prompt);
     let messages = pendingShell === null && prompt.trim() ? [userText(prompt.trim())] : [];
