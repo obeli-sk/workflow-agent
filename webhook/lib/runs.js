@@ -16,13 +16,9 @@ import {
 } from "./responses.js";
 import { SESSION_STATE_LABELS, emptyMarkers, projectSessionState } from "../../shared/session-state.js";
 
-// Both backends' FFQNs (see docs/js-backend-migration.md). The sidebar
-// queries and merges both, so switching WORKFLOW_FFQN (the write-path env
-// var, mutations.js) never hides sessions started under the other backend.
-const WORKFLOW_FFQNS = [
-    "obelisk-agent:workflow/workflow.run-cancellable",
-    "obelisk-agent:workflow-js/workflow.run-cancellable",
-];
+// Both the Rust and JS workflow backends export this same FFQN (see
+// docs/js-backend-migration.md); which one is active is a deployment choice.
+const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 function pickRunState(workflowStatus) {
     const ps = workflowStatus?.pending_state || null;
     return {
@@ -49,14 +45,8 @@ function projectRun(runState, working, markers) {
 export async function listRuns() {
     // Derived executions are included so child sessions created via
     // `chat create` appear nested under their parent (the FFQN prefix filters
-    // out every other derived child kind). Queried once per backend FFQN and
-    // merged newest-first.
-    const lists = await Promise.all(
-        WORKFLOW_FFQNS.map((ffqn) => listExecutions(ffqn, "", true, false, 100)),
-    );
-    const executions = lists.flat()
-        .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
-        .slice(0, 100);
+    // out every other derived child kind).
+    const executions = await listExecutions(WORKFLOW_FFQN, "", true, false, 100);
     const runs = await Promise.all(executions.map(async (e) => {
         const id = e.execution_id;
         const runState = pickRunState(e);

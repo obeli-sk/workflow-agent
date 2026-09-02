@@ -106,12 +106,7 @@ test("list queries sessions with derived included and renders rows", async () =>
         ["GET", "/v1/executions?", (url) => {
             assert.ok(url.includes("show_derived=true"));
             assert.ok(url.includes("length=20"));
-            // Queried once per backend FFQN and merged; only the Rust backend
-            // has a session in this fixture.
-            if (!url.includes("ffqn_prefix=obelisk-agent%3Aworkflow%2Fworkflow.run-cancellable")) {
-                assert.ok(url.includes("ffqn_prefix=obelisk-agent%3Aworkflow-js%2Fworkflow.run-cancellable"));
-                return jsonResponse(200, []);
-            }
+            assert.ok(url.includes("ffqn_prefix=obelisk-agent%3Aworkflow%2Fworkflow.run-cancellable"));
             return jsonResponse(200, [{
                 execution_id: RUN_ID,
                 created_at: "2026-08-25T01:02:03Z",
@@ -128,8 +123,7 @@ test("list queries sessions with derived included and renders rows", async () =>
     assert.equal(result.exit_code, 0);
     // Parked on the user join set while working: listed as working.
     assert.match(result.stdout, new RegExp(`${RUN_ID}.*blocked_by_join_set/working.*my-slug.*do things`));
-    // One execs GET per backend FFQN, plus join_set/responses/events.
-    assert.equal(calls.length, 5);
+    assert.equal(calls.length, 4);
 });
 
 test("list ignores a stale working flag from an older turn", async () => {
@@ -140,7 +134,6 @@ test("list ignores a stale working flag from an older turn", async () => {
             created_at: "2026-08-25T01:02:03Z",
             pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
         }])],
-        ["GET", "ffqn_prefix=obelisk-agent%3Aworkflow-js", () => jsonResponse(200, [])],
         ["GET", `/executions/${RUN_ID}/responses`, () => jsonResponse(200, responsesPayload([
             // Oldest-first: the model worked during turn 0, then parked.
             { agent_status: { working: true, turn_index: 0 } },
@@ -165,7 +158,6 @@ test("names come off the dedicated session-name join set", async () => {
             created_at: "2026-08-25T01:02:03Z",
             pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
         }])],
-        ["GET", "ffqn_prefix=obelisk-agent%3Aworkflow-js", () => jsonResponse(200, [])],
     ]);
     assert.equal(result.exit_code, 0);
     assert.match(result.stdout, /dedicated-slug/);
@@ -569,13 +561,13 @@ test("create POSTs params and prints the generated id", async () => {
     assert.equal(plain.result.stdout, "E_plain00000000000000000000000003\n");
 });
 
-test("create --top-level honors WORKFLOW_FFQN, defaulting to the Rust backend", async () => {
+test("create --top-level always schedules the canonical FFQN (backend is a deployment choice)", async () => {
     const { result } = await run(["create", "hello"], [
         ["POST", "/v1/executions", (url, init) => {
-            assert.equal(JSON.parse(init.body).ffqn, "obelisk-agent:workflow-js/workflow.run-cancellable");
+            assert.equal(JSON.parse(init.body).ffqn, "obelisk-agent:workflow/workflow.run-cancellable");
             return jsonResponse(201, { ok: "E_switched000000000000000000005" });
         }],
-    ], "", { WORKFLOW_FFQN: "obelisk-agent:workflow-js/workflow.run-cancellable" });
+    ]);
     assert.equal(result.exit_code, 0);
     assert.equal(result.stdout, "E_switched000000000000000000005\n");
 });

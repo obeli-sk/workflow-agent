@@ -39,14 +39,18 @@ Everything is pinned by the flake, so `nix develop` provides the matching
 Obelisk and Rust (wasm32) toolchain. The workflow is a native Rust component
 (`workflow/workflow-rs`); no special Obelisk build is required.
 
-`deployment.toml` also always deploys a full-parity JS alternative
-(`workflow/workflow-js`, a hand-written, dependency-free `just-bash`
-interpreter that ships as its own readable source, no compile/bundle step).
-Rust is the default; run `just serve-js` instead of `just serve` (or set
-`WORKFLOW_FFQN` to `obelisk-agent:workflow-js/workflow.run-cancellable`
-yourself) to schedule new sessions against the JS backend instead - no rebuild or
-redeploy needed either way. The sidebar always lists sessions from both
-backends regardless of which one is active. See
+There is a full-parity JS alternative (`workflow/workflow-js`, a hand-written,
+dependency-free `just-bash` interpreter that ships as its own readable
+source, no compile/bundle step) behind `deployment.js.toml`. It exports the
+exact same FFQN as the Rust workflow in `deployment.toml`
+(`obelisk-agent:workflow/workflow.run-cancellable`), so which one runs is a
+deployment choice, not a per-request switch: only one of the two files is
+ever the active deployment. Rust is the default (`just serve`); run
+`just serve-js` to start the server on the JS deployment instead. Since both
+sides export the same FFQN, a running server can hot-switch between them
+with `obelisk deployment apply deployment.js.toml` (or back with
+`deployment.toml`) and every in-flight session keeps running, replayed under
+the new implementation - proven by `scripts/test-e2e-replay-parity.sh`. See
 [`docs/js-backend-migration.md`](docs/js-backend-migration.md) for why this
 exists and its current status.
 

@@ -546,65 +546,31 @@ ffqn = "obelisk-agent:stub/stub.interrupt"
 wit = "wit"
 
 # --- Workflow (implementation-specific; see scripts/check-deployment-toml-parity.sh) ---
-# Native Rust workflow (workflow/workflow-rs). The public run-cancellable
-# export resolves the descriptor and runs the session loop in one execution.
-# Params and the return type come from the WIT, not this file.
-#
-# This is the Rust variant of the session workflow: it exports the canonical
-# `obelisk-agent:workflow/workflow.run-cancellable` FFQN backed by the native
-# component. `deployment.js.toml` is the JS variant: same FFQN, backed by
-# `workflow/workflow-js` instead. Only one of the two is ever the active
-# deployment at a time (see docs/js-backend-migration.md); everything outside
-# this workflow block must stay identical between the two files, enforced by
+# JS alternative workflow backend (workflow/workflow-js): a hand-written,
+# dependency-free `just-bash` interpreter and session loop with full feature
+# parity with the Rust workflow (see docs/js-backend-migration.md). It exports
+# the same canonical `obelisk-agent:workflow/workflow.run-cancellable` FFQN as
+# `deployment.toml`'s `[[workflow_wasm]]` block. Only one of the two files is
+# ever the active deployment at a time; deploying this one instead of
+# deployment.toml is how a workflow started under the Rust component keeps
+# running under this one (replay-compatible by construction, verified by
+# scripts/test-e2e-replay-parity.sh). Everything outside this workflow block
+# must stay identical between the two files, enforced by
 # `scripts/check-deployment-toml-parity.sh`.
 
-[[workflow_wasm]]
-name = "workflow_agent_rs"
-location = "target/wasm32-unknown-unknown/release/workflow_agent_rs.wasm"
+[[workflow_js]]
+name = "workflow_agent_js"
+ffqn = "obelisk-agent:workflow/workflow.run-cancellable"
+location = "workflow/workflow-js/src/session.js"
+params = [
+  { name = "prompt",          type = "string" },
+  { name = "model",           type = "option<string>" },
+  { name = "descriptor-ffqn", type = "option<string>" },
+  { name = "effort",          type = "option<string>" },
+  { name = "name",            type = "option<string>" },
+]
+return_type = "result<_, string>"
 exec.lock_expiry.seconds = 30
-
-# Backtrace source map for the native workflow. All these `.rs` files compile
-# into the single workflow_agent_rs.wasm, so every key is the full
-# deployment-relative path: suffix matching returns None on ambiguity, and a
-# bare `.../src/lib.rs` would collide between workflow-rs and just-bash-rs. The
-# build-generated `out/any.rs` glue (wit-bindgen) is intentionally omitted: it
-# lives under target/ with a per-build hash in its path, so it has no stable
-# deployment-owned source to point at.
-[workflow_wasm.backtrace.sources]
-# Hand-written workflow sources (workflow/workflow-rs).
-".../workflow/workflow-rs/src/lib.rs" = "workflow/workflow-rs/src/lib.rs"
-".../workflow/workflow-rs/src/agent.rs" = "workflow/workflow-rs/src/agent.rs"
-".../workflow/workflow-rs/src/host.rs" = "workflow/workflow-rs/src/host.rs"
-".../workflow/workflow-rs/src/session.rs" = "workflow/workflow-rs/src/session.rs"
-".../workflow/workflow-rs/src/support.rs" = "workflow/workflow-rs/src/support.rs"
-# Vendored just-bash-rs interpreter (vendor/just-bash-rs), linked into the wasm.
-".../vendor/just-bash-rs/src/lib.rs" = "vendor/just-bash-rs/src/lib.rs"
-".../vendor/just-bash-rs/src/arithmetic.rs" = "vendor/just-bash-rs/src/arithmetic.rs"
-".../vendor/just-bash-rs/src/ast.rs" = "vendor/just-bash-rs/src/ast.rs"
-".../vendor/just-bash-rs/src/bash.rs" = "vendor/just-bash-rs/src/bash.rs"
-".../vendor/just-bash-rs/src/custom_command.rs" = "vendor/just-bash-rs/src/custom_command.rs"
-".../vendor/just-bash-rs/src/expansion.rs" = "vendor/just-bash-rs/src/expansion.rs"
-".../vendor/just-bash-rs/src/fs.rs" = "vendor/just-bash-rs/src/fs.rs"
-".../vendor/just-bash-rs/src/glob.rs" = "vendor/just-bash-rs/src/glob.rs"
-".../vendor/just-bash-rs/src/interpreter.rs" = "vendor/just-bash-rs/src/interpreter.rs"
-".../vendor/just-bash-rs/src/obelisk_pack.rs" = "vendor/just-bash-rs/src/obelisk_pack.rs"
-".../vendor/just-bash-rs/src/parser.rs" = "vendor/just-bash-rs/src/parser.rs"
-".../vendor/just-bash-rs/src/types.rs" = "vendor/just-bash-rs/src/types.rs"
-".../vendor/just-bash-rs/src/commands/mod.rs" = "vendor/just-bash-rs/src/commands/mod.rs"
-".../vendor/just-bash-rs/src/commands/awk.rs" = "vendor/just-bash-rs/src/commands/awk.rs"
-".../vendor/just-bash-rs/src/commands/diff.rs" = "vendor/just-bash-rs/src/commands/diff.rs"
-".../vendor/just-bash-rs/src/commands/find.rs" = "vendor/just-bash-rs/src/commands/find.rs"
-".../vendor/just-bash-rs/src/commands/fsutil.rs" = "vendor/just-bash-rs/src/commands/fsutil.rs"
-".../vendor/just-bash-rs/src/commands/grep.rs" = "vendor/just-bash-rs/src/commands/grep.rs"
-".../vendor/just-bash-rs/src/commands/hash.rs" = "vendor/just-bash-rs/src/commands/hash.rs"
-".../vendor/just-bash-rs/src/commands/jq.rs" = "vendor/just-bash-rs/src/commands/jq.rs"
-".../vendor/just-bash-rs/src/commands/misc.rs" = "vendor/just-bash-rs/src/commands/misc.rs"
-".../vendor/just-bash-rs/src/commands/sed.rs" = "vendor/just-bash-rs/src/commands/sed.rs"
-".../vendor/just-bash-rs/src/commands/sort_uniq.rs" = "vendor/just-bash-rs/src/commands/sort_uniq.rs"
-".../vendor/just-bash-rs/src/commands/text.rs" = "vendor/just-bash-rs/src/commands/text.rs"
-".../vendor/just-bash-rs/src/commands/textutil2.rs" = "vendor/just-bash-rs/src/commands/textutil2.rs"
-".../vendor/just-bash-rs/src/commands/timeutil.rs" = "vendor/just-bash-rs/src/commands/timeutil.rs"
-".../vendor/just-bash-rs/src/commands/xargs.rs" = "vendor/just-bash-rs/src/commands/xargs.rs"
 # --- End workflow -----------------------------------------------------------
 
 [[webhook_endpoint_js]]

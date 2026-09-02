@@ -1,4 +1,5 @@
-// obelisk-agent:workflow-js/workflow.run-cancellable
+// obelisk-agent:workflow/workflow.run-cancellable (deployment.js.toml's JS
+// variant of the same canonical FFQN deployment.toml's Rust workflow exports)
 //   func(prompt: string, model: option<string>, descriptor-ffqn: option<string>,
 //        effort: option<string>, name: option<string>) -> result<_, string>
 //
@@ -22,9 +23,16 @@
 
 import { discover } from "obelisk-agent:config/config";
 import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
-import { askUserSubmit, injectionSubmit, recordOutputSubmit, sessionRenamedSubmit } from "obelisk-agent:stub-obelisk-ext/stub";
+import {
+    askUserSubmit,
+    injectionSubmit,
+    recordOutputAwaitNext,
+    recordOutputSubmit,
+    sessionRenamedAwaitNext,
+    sessionRenamedSubmit,
+} from "obelisk-agent:stub-obelisk-ext/stub";
 import { recordOutputStub, sessionRenamedStub } from "obelisk-agent:stub-obelisk-stub/stub";
-import { runCancellableSubmit } from "obelisk-agent:workflow-js-obelisk-ext/workflow";
+import { runCancellableSubmit } from "obelisk-agent:workflow-obelisk-ext/workflow";
 import { Bash } from "../../../vendor/just-bash/src/bash.js";
 import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
 import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
@@ -114,9 +122,15 @@ function errorMessage(e) {
 
 class Notifications {
     constructor() {
-        this.joinSet = obelisk.createJoinSet({ name: SESSION_EVENTS_JOIN_SET });
-        // Lazily created on first rename: most sessions are never renamed, so
-        // this avoids a join set nobody ends up using.
+        // Lazily created on first notify/rename, matching Rust's
+        // Notifications::notify (join_set_create_named on first use per
+        // name). Rust creates its session-events join set only after
+        // discover_session_config runs; creating it eagerly here instead
+        // would record it one call earlier than Rust's replay history and
+        // fail cross-backend replay with a NonDeterminismError (see
+        // scripts/test-e2e-replay-parity.sh) - lazy on both sides removes
+        // the ordering dependency entirely instead of just matching it once.
+        this.joinSet = null;
         this.nameJoinSet = null;
         this.turnIndex = 0;
     }
@@ -126,9 +140,25 @@ class Notifications {
     }
 
     notify(event) {
+        if (!this.joinSet) this.joinSet = obelisk.createJoinSet({ name: SESSION_EVENTS_JOIN_SET });
         const execId = recordOutputSubmit(this.joinSet);
         recordOutputStub(execId, { ok: event });
-        this.joinSet.joinNext();
+        // Semantically the right call (PORT: session.rs's session_ext::
+        // record_output_await_next; this join set is homogeneous, always
+        // `stub.record-output`, matching Rust's use of the typed await
+        // there), but currently indistinguishable in practice from the
+        // generic `joinSet.joinNext()`: Obelisk's JS workflow runtime proxies
+        // every `*-await-next` extension import to the same generic
+        // `join-next` host call and never records `requested_ffqn`
+        // (`create_ext_await_next_proxy` in obelisk's workflow-js-runtime),
+        // unlike Rust's wit-bindgen-generated bindings, which make a
+        // genuinely distinct typed call the executor's replay matcher
+        // compares `requested_ffqn` against (event_history.rs). A session
+        // that has run at least one turn under Rust therefore cannot yet
+        // replay under this JS backend (see
+        // scripts/test-e2e-replay-parity.sh, expected-red pending an
+        // Obelisk-side fix - not something this repo can close on its own).
+        recordOutputAwaitNext(this.joinSet);
         if (this.joinSet.lastId !== execId) {
             throw `unexpected session event response: ${this.joinSet.lastId}`;
         }
@@ -149,7 +179,10 @@ class Notifications {
         if (!this.nameJoinSet) this.nameJoinSet = obelisk.createJoinSet({ name: SESSION_NAME_JOIN_SET });
         const execId = sessionRenamedSubmit(this.nameJoinSet, name);
         sessionRenamedStub(execId, { ok: { name } });
-        const published = this.nameJoinSet.joinNext();
+        // Semantically the right call, matching session.rs's session_ext::
+        // session_renamed_await_next - see notify()'s comment above for why
+        // this is currently a no-op difference from joinNext() in practice.
+        const published = sessionRenamedAwaitNext(this.nameJoinSet);
         if (this.nameJoinSet.lastId !== execId || published?.name !== name) {
             throw `unexpected session rename response: ${this.nameJoinSet.lastId}`;
         }
@@ -163,7 +196,6 @@ class Notifications {
 // `targetCall`) is answered by a real join-set-based question/answer
 // exchange instead of falling through to native.call's normal HTTP bridge
 // to the target instance, which has no such function.
-let askUserJoinSetCounter = 0;
 
 function askUserAwareHost(notifications) {
     const host = createHost();
@@ -207,7 +239,10 @@ function askUser(paramsJson, notifications) {
     const question = Array.isArray(params) ? params[0] : undefined;
     if (typeof question !== "string" || !question) throw "ask-user requires a question";
 
-    const joinSet = obelisk.createJoinSet({ name: `ask-user-${askUserJoinSetCounter++}` });
+    // Anonymous, matching Rust's `workflow_support::join_set_create()` in
+    // host.rs's RealHost::ask_user - see script-watch.js's arm() for why a
+    // named join set here would fail cross-backend replay.
+    const joinSet = obelisk.createJoinSet();
     const executionId = askUserSubmit(joinSet, question);
     notifications.humanInputRequested(executionId, question);
     let answer;
@@ -327,7 +362,7 @@ function execShell(bash, notifications, id, turnIndex, script, stdin, timeoutMs)
         const message = "bash: background jobs with `&` are not supported in durable sessions\n";
         return { output: [{ fd: "stderr", text: message }], exitCode: 2, interrupted: null };
     }
-    const guard = armScriptWatch(timeoutMs ?? null, id);
+    const guard = armScriptWatch(timeoutMs ?? null);
     notifications.notify({ shell_started: { id, offer_id: guard.offerExecutionId, turn_index: turnIndex } });
     bash.setScriptWatch(guard.watcher());
     try {

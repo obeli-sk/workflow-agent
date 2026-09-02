@@ -12,13 +12,11 @@ import {
     unpauseObeliskExecution,
 } from "./obelisk-api.js";
 
-// Which backend new sessions are scheduled against (Rust remains the
-// default). `obelisk.schedule` takes a plain runtime-string FFQN, so
-// switching is a WORKFLOW_FFQN env var, no rebuild/redeploy of this file
-// needed (see docs/js-backend-migration.md). Listing merges both known
-// backends (see runs.js's WORKFLOW_FFQNS) so switching this never hides
-// sessions started under the other one.
-const WORKFLOW_FFQN = process.env["WORKFLOW_FFQN"] || "obelisk-agent:workflow/workflow.run-cancellable";
+// Both the Rust and JS workflow backends export this same FFQN (see
+// docs/js-backend-migration.md); which implementation actually runs it is a
+// deployment choice (deployment.toml vs deployment.js.toml), not something
+// this file picks per request.
+const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 
 function scheduleSession(prompt, backend, effort) {
     const execId = obelisk.executionIdGenerate();

@@ -19,25 +19,26 @@
 // (`injectionSubmit`/`recordOutputSubmit`, both imported from
 // "obelisk-agent:stub-obelisk-ext/stub").
 import { interruptSubmit } from "obelisk-agent:stub-obelisk-ext/stub";
-import { joinSetNameFor, ScriptWatchGuard } from "./script-watch-logic.js";
+import { ScriptWatchGuard } from "./script-watch-logic.js";
 
 export { ScriptWatchGuard };
 
 // Submit the interrupt offer, plus the watchdog delay when `timeoutMs` is
 // given (a number of milliseconds; `null`/`undefined` for "no timeout"),
-// onto a fresh join set named after `scriptId` (see `joinSetNameFor` in
-// script-watch-logic.js for the naming/sanitization rules). PORT:
-// script_watch.rs's `ScriptWatchGuard::arm` (Rust's
-// `workflow_support::join_set_create()` makes a fresh *unnamed* join set per
-// script; this runtime's `createJoinSet` requires a name, and a fixed one is
-// rejected the second time a session runs a script - "Failed to create named
-// join set: JoinSetCreateError::Conflict" - so each call needs a distinct
-// name). `scriptId` is the caller's own shell/tool-call id (e.g.
-// "shell-e2e-1", an LLM tool_use id), already unique per script execution by
-// construction, so reusing it here needs no separate counter or other
-// synthesized state.
-export function arm(timeoutMs, scriptId) {
-    const joinSet = obelisk.createJoinSet({ name: joinSetNameFor(scriptId) });
+// onto a fresh anonymous join set. PORT: script_watch.rs's
+// `ScriptWatchGuard::arm`, which uses Rust's `workflow_support::
+// join_set_create()` (unnamed). `obelisk.createJoinSet()` with no `name`
+// makes the same kind of unnamed, ordinal-numbered join set (confirmed
+// against obelisk's workflow-js-runtime tests), matching Rust's replay
+// history exactly - a *named* join set here (an earlier version of this
+// file used one keyed by the calling script id, to sidestep
+// `JoinSetCreateError::Conflict` on a second same-named call) diverges from
+// Rust's anonymous one and fails cross-backend replay with a
+// NonDeterminismError (see scripts/test-e2e-replay-parity.sh). Anonymous
+// join sets have no such conflict to sidestep in the first place: each call
+// gets its own ordinal, unique by construction.
+export function arm(timeoutMs) {
+    const joinSet = obelisk.createJoinSet();
     const offerExecutionId = interruptSubmit(joinSet);
     const watchdogDelayId = timeoutMs === null || timeoutMs === undefined
         ? null

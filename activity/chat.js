@@ -23,16 +23,10 @@ import {
     sessionEventValue,
 } from "../shared/session-state.js";
 
+// Both the Rust and JS workflow backends export this same FFQN (see
+// docs/js-backend-migration.md); which implementation runs it is a
+// deployment choice, not something this file picks per request.
 const RUN_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
-// Both backends' FFQNs (see docs/js-backend-migration.md). `list` queries
-// and merges both, so switching WORKFLOW_FFQN (the write-path env var, only
-// consulted below by cmdCreate's --top-level fallback) never hides sessions
-// started under the other backend.
-const JS_RUN_FFQN = "obelisk-agent:workflow-js/workflow.run-cancellable";
-const WORKFLOW_FFQNS = [RUN_FFQN, JS_RUN_FFQN];
-function activeWorkflowFfqn() {
-    return process.env["WORKFLOW_FFQN"] || RUN_FFQN;
-}
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 200;
 const RESPONSE_PAGE = 200;
@@ -101,7 +95,10 @@ async function cmdList(args) {
         throw new UsageError("--limit and --all are mutually exclusive");
     }
     const length = parsed.all ? MAX_LIST_LIMIT : parsed.limit ?? DEFAULT_LIST_LIMIT;
-    const executions = await listBothBackends(length);
+    const executions = await apiJson(
+        "GET",
+        `/v1/executions?ffqn_prefix=${encodeURIComponent(RUN_FFQN)}&show_derived=true&length=${length}`,
+    );
     // The activity runtime services outbound requests one at a time; every
     // fetch in this program is awaited sequentially.
     const rows = [];
@@ -115,22 +112,6 @@ async function cmdList(args) {
         r.prompt_preview || "-",
     ].join("  "));
     return ok(lines.join("\n") + (lines.length ? "\n" : ""));
-}
-
-// Queries both backends' FFQNs (sequentially: the activity runtime services
-// outbound requests one at a time) and merges newest-first, trimmed back to
-// `length`.
-async function listBothBackends(length) {
-    const merged = [];
-    for (const ffqn of WORKFLOW_FFQNS) {
-        const executions = await apiJson(
-            "GET",
-            `/v1/executions?ffqn_prefix=${encodeURIComponent(ffqn)}&show_derived=true&length=${length}`,
-        );
-        merged.push(...(executions ?? []));
-    }
-    merged.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
-    return merged.slice(0, length);
 }
 
 function cmdRead(args) {
@@ -373,7 +354,7 @@ async function cmdCreate(stdin, args) {
     // Only reached outside a wrapping session (or for --top-level): the
     // workflow intercepts create to schedule child sessions durably.
     const params = [prompt, parsed.model, null, effort, parsed.name];
-    const body = (await apiText("POST", "/v1/executions", { ffqn: activeWorkflowFfqn(), params })).trim();
+    const body = (await apiText("POST", "/v1/executions", { ffqn: RUN_FFQN, params })).trim();
     let execId = body;
     try {
         const parsed = JSON.parse(body);
