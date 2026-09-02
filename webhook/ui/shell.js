@@ -55,9 +55,10 @@ const SHELL_HTML = `<!doctype html>
   #composer-stop:hover { background: var(--err-bg); }
   #composer-stop:disabled { opacity: 0.5; cursor: not-allowed; }
   #composer-stop[hidden] { display: none; }
-  .working { display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.5em; color: var(--warn); font-size: 0.85em; font-weight: 600; }
-  .working[hidden] { display: none; }
-  .working .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); animation: workpulse 1s ease-in-out infinite; }
+  /* Named working-indicator, not .working: session-state.js also uses "working" as the status span's CSS class, and this display:flex rule matched it too. */
+  .working-indicator { display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.5em; color: var(--warn); font-size: 0.85em; font-weight: 600; }
+  .working-indicator[hidden] { display: none; }
+  .working-indicator .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); animation: workpulse 1s ease-in-out infinite; }
   @keyframes workpulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(0.7); } }
   .runs { flex: 1; overflow-y: auto; }
   .run-item { display: block; padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); cursor: pointer; text-decoration: none; color: inherit; }
@@ -177,7 +178,7 @@ const SHELL_HTML = `<!doctype html>
     <div id="detail-body"><p class="empty">Start a new conversation below, or pick a run from the sidebar.</p></div>
   </div>
   <div id="composer">
-    <div id="working" class="working" hidden><span class="dot"></span><span id="working-label">Agent is working…</span></div>
+    <div id="working" class="working-indicator" hidden><span class="dot"></span><span id="working-label">Agent is working…</span></div>
     <form id="composer-form">
       <textarea id="composer-input" placeholder="Message the agent, or type $ ls to run a shell command..." rows="3"></textarea>
       <div class="composer-row">
