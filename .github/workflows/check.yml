@@ -107,6 +107,27 @@ jobs:
       - name: Unit tests (just-bash-rs)
         run: nix develop --command just test-rs
 
+  js:
+    name: JS workflow backend
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          ref: ${{ github.event.inputs.ref }} # Use the ref if provided, otherwise defaults to the current branch/commit
+
+      - uses: nixbuild/nix-quick-install-action@v34
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          nix_conf: |
+            extra-substituters = https://obeli-sk.cachix.org
+            extra-trusted-public-keys = obeli-sk.cachix.org-1:31iM9GWSEhAXvvuTWQ7CvAcwvgRzsuJ9yJghywSd3Jw=
+
+      - name: Populate the nix store
+        run: nix develop --command echo
+
+      - name: Unit tests (webhook/activity/shared/vendor/just-bash/workflow-js)
+        run: nix develop --command just test-js
+
   verify:
     runs-on: ubuntu-24.04
     steps:
@@ -158,6 +179,12 @@ jobs:
 
       - name: agent workflow e2e
         run: nix develop --command ./scripts/test-e2e-agent-workflow.sh
+        env:
+          GITHUB_TOKEN: ""
+          MCP_SERVER_TOKEN: ""
+
+      - name: agent workflow (JS backend) e2e
+        run: nix develop --command ./scripts/test-e2e-agent-workflow-js.sh
         env:
           GITHUB_TOKEN: ""
           MCP_SERVER_TOKEN: ""

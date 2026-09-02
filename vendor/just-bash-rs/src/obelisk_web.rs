@@ -1,14 +1,18 @@
 //! Lazily-mounted remote directory trees (a GitHub repo browsed over the
 //! network), surfaced as ordinary VFS folders under `/workspace`.
 //!
-//! Each mount is one deployed activity with the uniform stateless-transport WIT
-//! signature `func(method: string, params-json: string) -> result<string,
-//! string>` (shared with `obelisk_mcp`). Two methods back the mount:
+//! One deployed activity backs every mount (they all share the uniform
+//! stateless-transport WIT signature `func(method: string, params-json:
+//! string) -> result<string, string>`, shared with `obelisk_mcp`); which repo
+//! a given mount browses is carried in `params-json`, not baked into the
+//! activity, so a session can mount as many repos as its `APPS_JSON` registry
+//! lists. Two methods back the mount:
 //!
-//!   * `list`  -> params `{ "path": "<remote path>" }`, result a JSON array of
-//!     `{ "name", "type": "file"|"dir", "size" }` entries.
-//!   * `read`  -> params `{ "path": "<remote path>" }`, result the file's raw
-//!     text body.
+//!   * `list`  -> params `{ "owner", "repo", "ref", "path": "<remote path>" }`,
+//!     result a JSON array of `{ "name", "type": "file"|"dir", "size" }`
+//!     entries.
+//!   * `read`  -> params `{ "owner", "repo", "ref", "path": "<remote path>" }`,
+//!     result the file's raw text body.
 //!
 //! The activity performs the actual GitHub contents-API fetch (`activity/
 //! github-contents.js`); this module only adapts it to the VFS `DirProvider`
@@ -23,12 +27,22 @@ use serde_json::{Value, json};
 use crate::fs::{DirProvider, Vfs, WebEntry, WebEntryKind};
 use crate::obelisk_pack::ObeliskHost;
 
+/// Identifies the GitHub repo (and ref) a mount browses; sent as fixed extra
+/// params alongside `path` on every `list`/`read` call.
+#[derive(Clone)]
+pub struct RepoRef {
+    pub owner: String,
+    pub repo: String,
+    pub git_ref: String,
+}
+
 /// A web mount backed by a `(method, params-json)` transport activity. Owns its
 /// own `ObeliskHost` (interior-mutable, since `DirProvider` is a `&self` seam),
 /// like `obelisk_mcp`'s resource loader.
 struct GithubMount {
     host: RefCell<Box<dyn ObeliskHost>>,
     ffqn: String,
+    repo: RepoRef,
 }
 
 impl DirProvider for GithubMount {
@@ -53,13 +67,19 @@ impl DirProvider for GithubMount {
 }
 
 impl GithubMount {
-    /// One transport call: hand `(method, {"path": remote})` to the activity and
-    /// return the string it produced. The activity's ok arm is a `string`, so
-    /// `call_json` returns it as JSON text (quoted); peeling that single layer
-    /// yields the activity's own return value (a JSON array for `list`, a raw
-    /// file body for `read`).
+    /// One transport call: hand `(method, {"owner", "repo", "ref", "path"})` to
+    /// the activity and return the string it produced. The activity's ok arm
+    /// is a `string`, so `call_json` returns it as JSON text (quoted); peeling
+    /// that single layer yields the activity's own return value (a JSON array
+    /// for `list`, a raw file body for `read`).
     fn call(&self, method: &str, remote_path: &str) -> Result<String, String> {
-        let params = json!({ "path": remote_path }).to_string();
+        let params = json!({
+            "owner": self.repo.owner,
+            "repo": self.repo.repo,
+            "ref": self.repo.git_ref,
+            "path": remote_path,
+        })
+        .to_string();
         let args = json!([method, params]).to_string();
         match self.host.borrow_mut().call_json(&self.ffqn, &args)? {
             Some(raw) => match serde_json::from_str::<Value>(&raw) {
@@ -91,12 +111,13 @@ fn parse_entry(entry: &Value) -> Result<WebEntry, String> {
     })
 }
 
-/// Mount the transport `ffqn` as a lazily-listed tree at `mount_dir`. The whole
-/// remote repo is shown at its root (`base` is empty).
-pub fn mount(fs: &mut Vfs, host: Box<dyn ObeliskHost>, ffqn: &str, mount_dir: &str) {
+/// Mount the transport `ffqn` as a lazily-listed tree at `mount_dir`, browsing
+/// `repo`. The whole remote repo is shown at its root (`base` is empty).
+pub fn mount(fs: &mut Vfs, host: Box<dyn ObeliskHost>, ffqn: &str, mount_dir: &str, repo: RepoRef) {
     let provider = Rc::new(GithubMount {
         host: RefCell::new(host),
         ffqn: ffqn.to_string(),
+        repo,
     });
     fs.register_web_mount(mount_dir.trim_end_matches('/'), "", provider);
 }
@@ -131,13 +152,26 @@ mod tests {
         serde_json::to_string(&payload.to_string()).unwrap()
     }
 
+    fn test_repo() -> RepoRef {
+        RepoRef {
+            owner: "obeli-sk".to_string(),
+            repo: "components".to_string(),
+            git_ref: "main".to_string(),
+        }
+    }
+
     fn args(method: &str, path: &str) -> String {
-        json!([method, json!({ "path": path }).to_string()]).to_string()
+        json!([
+            method,
+            json!({ "owner": "obeli-sk", "repo": "components", "ref": "main", "path": path })
+                .to_string()
+        ])
+        .to_string()
     }
 
     #[test]
     fn lists_and_reads_through_the_transport() {
-        let ffqn = "obelisk-agent:mounts/components.request";
+        let ffqn = "obelisk-agent:mounts/apps.request";
         let host = FakeHost {
             reads: BTreeMap::from([
                 (
@@ -159,7 +193,13 @@ mod tests {
             calls: RefCell::new(Vec::new()),
         };
         let mut fs = Vfs::new();
-        mount(&mut fs, Box::new(host), ffqn, "/workspace/components");
+        mount(
+            &mut fs,
+            Box::new(host),
+            ffqn,
+            "/workspace/components",
+            test_repo(),
+        );
 
         assert_eq!(
             fs.readdir("/workspace/components"),

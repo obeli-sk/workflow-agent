@@ -4,4 +4,5 @@ world exports {
   export obelisk-agent:stub/stub;
   export obelisk-agent:llm/chat;
   export obelisk-agent:tools/webapi;
+  export obelisk-agent:config/config;
 }

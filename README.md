@@ -39,6 +39,17 @@ Everything is pinned by the flake, so `nix develop` provides the matching
 Obelisk and Rust (wasm32) toolchain. The workflow is a native Rust component
 (`workflow/workflow-rs`); no special Obelisk build is required.
 
+`deployment.toml` also always deploys a full-parity JS alternative
+(`workflow/workflow-js`, a hand-written, dependency-free `just-bash`
+interpreter that ships as its own readable source, no compile/bundle step).
+Rust is the default; run `just serve-js` instead of `just serve` (or set
+`WORKFLOW_FFQN` to `obelisk-agent:workflow-js/workflow.run-cancellable`
+yourself) to schedule new sessions against the JS backend instead - no rebuild or
+redeploy needed either way. The sidebar always lists sessions from both
+backends regardless of which one is active. See
+[`docs/js-backend-migration.md`](docs/js-backend-migration.md) for why this
+exists and its current status.
+
 Then open http://localhost:9090 (the external/webhook listener; `server.toml`
 keeps the built-in default). Create an empty session to use the shell directly,
 or submit a prompt and inspect the same filesystem afterward. The user input
@@ -145,16 +156,37 @@ curl https://obeli.sk/docs/latest/js/js-workflows/
 Override the whole list with `DOCS_URLS_JSON` (a JSON array of URLs). No GitHub
 credential is involved; the former `/workspace/docs` mount is gone.
 
-## Example components mount
+## Example app mounts
 
-`/workspace/components` is a read-only, lazily-listed view of
-[obeli-sk/components](https://github.com/obeli-sk/components) (a public repo),
-sourced from the GitHub contents API (`activity/github-contents.js`). A
-directory lists on first `ls` and a file's bytes fetch on first `cat`, one
-recorded activity call each. `COMPONENTS_REF` pins the mounted ref (default
-`main`). `GITHUB_TOKEN` is optional: unset, the mount shares GitHub's 60
-req/h anonymous IP rate limit; set it (e.g. `gh auth token`) to raise that to
-5000 req/h, which matters once multiple sessions share an egress IP.
+`APPS_JSON` lists GitHub repos the session mounts read-only and lazily-listed
+under `/workspace/apps/<name>`, sourced from the GitHub contents API
+(`activity/github-contents.js`) through the single `mount_apps` activity
+(one deployed activity backs every mount; which repo each one browses travels
+in the request, not a fixed env var). A directory lists on first `ls` and a
+file's bytes fetch on first `cat`, one recorded activity call each. The
+default list mounts a handful of `obeli-sk` repos (`components`,
+`agent-backed-llm-server`, `demo-stargazers`, `demo-tutorial`,
+`obelisk-version-monitor`, and `workflow-agent` itself) at `main`, curated
+for authoring value: a JS repo is directly copy-and-adapt, a Rust one only
+makes the cut when it publishes reusable OCI components (`components`) or
+demonstrates a pattern worth rewriting to JS (`demo-stargazers`); override
+it to mount a different set, private forks, or pinned refs:
+
+```sh
+export APPS_JSON='[{"name":"components","repo":"components","ref":"v0.3.0"}]'
+```
+
+Each entry is `{name, repo}` plus optional `owner` (default `obeli-sk`),
+`ref` (default `main`), and `description` (default empty). The system
+prompt's "Example apps" section renders each entry as a one-line Markdown
+bullet (`- \`name\` - description`), so keep `description` to a short
+"Lang: what it's for" phrase; a repo's own README.md is the place for
+detail. `GH_OWNER` (default `obeli-sk`) scopes the deployed
+activity's `allowed_host` boundary to one GitHub org/user; every mounted
+repo's `owner` must fall within it. `GITHUB_TOKEN` is optional: unset, the
+mount shares GitHub's 60 req/h anonymous IP rate limit; set it (e.g. `gh auth
+token`) to raise that to 5000 req/h, which matters once multiple sessions
+share an egress IP.
 
 ## The shell
 

@@ -37,13 +37,38 @@ methods = ["GET"]
 [[activity_js]]
 name = "config_discover"
 ffqn = "obelisk-agent:config/config.discover"
-params = []
-return_type = "result<record { max-steps: u32, programs: list<record { name: string, ffqn: string, description: string }>, mcp-servers: list<record { name: string, ffqn: string }>, webhook-url: string }, string>"
+wit = "wit"
 location = "activity/config-discover.js"
 env_vars = [
-  { key = "MAX_STEPS",        value = "${MAX_STEPS:-20}" },
-  { key = "PROGRAMS_JSON",    value = '${PROGRAMS_JSON:-[{"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"},{"name":"chat","ffqn":"obelisk-agent:programs/program.chat","description":"discover, read, message, and create peer agent sessions on this instance"}]}' },
+  { key = "MAX_STEPS", value = "${MAX_STEPS:-20}" },
+  { key = "PROGRAMS_JSON", value = '''
+${PROGRAMS_JSON:-[
+  {"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"},
+  {"name":"chat","ffqn":"obelisk-agent:programs/program.chat","description":"discover, read, message, and create peer agent sessions on this instance"}
+]}
+''' },
   { key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' },
+  # Each entry mounts a lazily-listed GitHub repo tree at /workspace/apps/<name>
+  # (obelisk_web/obelisk-web.js -> the mount_apps activity below). `owner`
+  # defaults to "obeli-sk" and `ref` to "main" when omitted; `description` is
+  # a terse "Lang: phrase" surfaced verbatim as a bullet in the system
+  # prompt (session.rs's render_app_help / session-logic.js's renderAppHelp) -
+  # keep it short, the repo's own README.md is the place for detail. The
+  # default list is curated for authoring value: JS repos are directly
+  # copy-and-adapt, Rust ones only make the cut when they publish reusable
+  # OCI components or demonstrate a pattern worth rewriting to JS - no
+  # Go/Python-only material. Override the whole list to mount a different
+  # set of repos, private forks, or pinned refs.
+  { key = "APPS_JSON", value = '''
+${APPS_JSON:-[
+  {"name":"components","repo":"components","description":"Rust: reusable OCI activities for HTTP, GitHub, Fly.io, Docker, OpenAI, and browser automation; copy a `*-oci.toml` block straight into a deployment.toml instead of writing the activity from scratch"},
+  {"name":"agent-backed-llm-server","repo":"agent-backed-llm-server","description":"JS: an OpenAI-compatible LLM endpoint backed by a Claude/Codex CLI subscription; copy the webhook+activity pair when bridging a similar CLI tool"},
+  {"name":"demo-stargazers","repo":"demo-stargazers","description":"Rust: a full webhook -> workflow -> external-API pattern (GitHub star notifications with persistent side effects); a reference before writing a similar workflow in JS"},
+  {"name":"demo-tutorial","repo":"demo-tutorial","description":"JS: a small serial/parallel durable workflow tutorial; the fastest way to see the obelisk.* host API used correctly"},
+  {"name":"obelisk-version-monitor","repo":"obelisk-version-monitor","description":"JS: a complete dashboard app (webhook + workflow + UI); reference it when building another operator-facing dashboard"},
+  {"name":"workflow-agent","repo":"workflow-agent","description":"Rust + JS: this agent's own source (session loop, just-bash interpreter, activity/pack examples); the reference for extending or debugging yourself"}
+]}
+''' },
   { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
 ]
 exec.lock_expiry.seconds = 30
@@ -99,6 +124,10 @@ max_retries = 0
 exec.lock_expiry.seconds = 30
 env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  # Which backend `chat create --top-level` schedules a new session against
+  # (see docs/js-backend-migration.md); a session's own `chat create` always
+  # schedules its own kind instead, no env var needed.
+  { key = "WORKFLOW_FFQN", value = "${WORKFLOW_FFQN:-obelisk-agent:workflow/workflow.run-cancellable}" },
   "AGENT_MODELS",
 ]
 [[activity_js.allowed_host]]
@@ -119,16 +148,18 @@ params = [
 return_type = "result<string, string>"
 location = "packs/obelisk-control/native-call.js"
 
-# --- Reference mount: GitHub repo tree -----------------------------------------
-# A lazily-listed VFS tree the session mounts to author deployments against
-# example components: /workspace/components -> obeli-sk/components (public).
-# GH_OWNER/GH_REPO/GH_REF fix the repo; GITHUB_TOKEN is optional but raises the
+# --- Reference mounts: GitHub repo trees ---------------------------------------
+# One activity backs every lazily-listed VFS repo tree the session mounts to
+# browse example apps while authoring deployments (APPS_JSON above picks which
+# repos and where; owner/repo/ref travel in params-json, not fixed env vars, so
+# this single block serves them all). GH_OWNER scopes the allowed_host
+# boundary to one GitHub org/user; GITHUB_TOKEN is optional but raises the
 # GitHub API rate limit from the shared 60 req/h anonymous IP pool to 5000 req/h,
 # which matters once multiple sessions share an egress IP. The workflow calls
-# (method, params-json) on first `ls`/`cat` under the mount.
+# (method, params-json) on first `ls`/`cat` under each mount.
 [[activity_js]]
-name = "mount_components"
-ffqn = "obelisk-agent:mounts/components.request"
+name = "mount_apps"
+ffqn = "obelisk-agent:mounts/apps.request"
 params = [
   { name = "method",      type = "string" },
   { name = "params-json", type = "string" },
@@ -136,15 +167,10 @@ params = [
 return_type = "result<string, string>"
 location = "activity/github-contents.js"
 exec.lock_expiry.seconds = 30
-env_vars = [
-  { key = "GH_OWNER", value = "obeli-sk" },
-  { key = "GH_REPO",  value = "components" },
-  { key = "GH_REF",   value = "${COMPONENTS_REF:-main}" },
-]
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET"]
-request_url_regex = "^GET https://api\\.github\\.com/repos/obeli-sk/components/contents"
+request_url_regex = "^GET https://api\\.github\\.com/repos/${GH_OWNER:-obeli-sk}/[^/]+/contents"
 secrets = ["GITHUB_TOKEN"]
 replace_in = ["headers"]
 
@@ -576,6 +602,29 @@ exec.lock_expiry.seconds = 30
 ".../vendor/just-bash-rs/src/commands/timeutil.rs" = "vendor/just-bash-rs/src/commands/timeutil.rs"
 ".../vendor/just-bash-rs/src/commands/xargs.rs" = "vendor/just-bash-rs/src/commands/xargs.rs"
 
+# JS alternative workflow backend (workflow/workflow-js), same run-cancellable
+# shape as workflow_agent_rs above under the obelisk-agent:workflow-js package
+# so both coexist and callers pick one via the WORKFLOW_FFQN env var (see
+# docs/js-backend-migration.md). A full-parity session loop (hand-written
+# vendor/just-bash interpreter as the bash tool, LLM completion raced against
+# user injection, session-events self-stub notifications, programs/MCP/
+# mounts, per-script interrupt/timeout, rename, ask-user, and chat peer
+# sessions). Backend-switch wiring (WORKFLOW_FFQN in the callers that
+# schedule sessions) is still a later phase.
+[[workflow_js]]
+name = "workflow_agent_js"
+ffqn = "obelisk-agent:workflow-js/workflow.run-cancellable"
+location = "workflow/workflow-js/src/session.js"
+params = [
+  { name = "prompt",          type = "string" },
+  { name = "model",           type = "option<string>" },
+  { name = "descriptor-ffqn", type = "option<string>" },
+  { name = "effort",          type = "option<string>" },
+  { name = "name",            type = "option<string>" },
+]
+return_type = "result<_, string>"
+exec.lock_expiry.seconds = 30
+
 [[webhook_endpoint_js]]
 name = "ui-api"
 location = "webhook/ui-api.js"
@@ -597,6 +646,11 @@ routes = [
 env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  # Which backend a new session (`submit`/`createSession` in
+  # webhook/lib/mutations.js) is scheduled against; see
+  # docs/js-backend-migration.md. Run listing merges both backends
+  # unconditionally (webhook/lib/runs.js), so this only affects new sessions.
+  { key = "WORKFLOW_FFQN", value = "${WORKFLOW_FFQN:-obelisk-agent:workflow/workflow.run-cancellable}" },
   "AGENT_MODELS",
 ]
 # Read-only API access for the polling UI (statuses, responses, events, logs,

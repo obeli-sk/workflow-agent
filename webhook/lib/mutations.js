@@ -3,7 +3,6 @@
 // These stay durable native calls (`webapi`, workflow schedule), unlike the
 // read-only polling GETs.
 
-import { runCancellableSchedule } from "obelisk-agent:workflow-obelisk-schedule/workflow";
 import { jsonError, jsonResponse } from "./http.js";
 import {
     cancelObeliskExecution,
@@ -12,6 +11,20 @@ import {
     stubObeliskExecution,
     unpauseObeliskExecution,
 } from "./obelisk-api.js";
+
+// Which backend new sessions are scheduled against (Rust remains the
+// default). `obelisk.schedule` takes a plain runtime-string FFQN, so
+// switching is a WORKFLOW_FFQN env var, no rebuild/redeploy of this file
+// needed (see docs/js-backend-migration.md). Listing merges both known
+// backends (see runs.js's WORKFLOW_FFQNS) so switching this never hides
+// sessions started under the other one.
+const WORKFLOW_FFQN = process.env["WORKFLOW_FFQN"] || "obelisk-agent:workflow/workflow.run-cancellable";
+
+function scheduleSession(prompt, backend, effort) {
+    const execId = obelisk.executionIdGenerate();
+    obelisk.schedule(execId, WORKFLOW_FFQN, [prompt, backend, null, effort, null], null);
+    return execId;
+}
 
 export async function submit(request) {
     let body;
@@ -29,7 +42,7 @@ export async function submit(request) {
     // effort is the reasoning level (option<string>): null => provider default.
     const effort = (typeof payload?.effort === "string" && payload.effort) ? payload.effort : null;
     let execId;
-    try { execId = runCancellableSchedule(null, prompt, backend, null, effort, null); }
+    try { execId = scheduleSession(prompt, backend, effort); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }
@@ -45,7 +58,7 @@ export async function createSession(request) {
     const backend = typeof payload.backend === "string" && payload.backend ? payload.backend : null;
     const effort = typeof payload.effort === "string" && payload.effort ? payload.effort : null;
     let execId;
-    try { execId = runCancellableSchedule(null, "", backend, null, effort, null); }
+    try { execId = scheduleSession("", backend, effort); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }

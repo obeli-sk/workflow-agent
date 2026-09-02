@@ -30,7 +30,7 @@ pub use bash::Bash;
 pub use commands::command_names;
 pub use custom_command::{CustomCommandHandler, CustomCommands};
 pub use fs::{BlobLoader, DirProvider, FsError, Vfs, WebEntry, WebEntryKind};
-pub use obelisk_pack::{MountResult, ObeliskHost, SYSTEM_PROMPT, blob_loader};
+pub use obelisk_pack::{MountResult, ObeliskHost, blob_loader};
 pub use parser::parse;
 pub use types::{BashOptions, ExecOptions, ExecResult, ExecutionLimits, Fd, OutputChunk};
 pub use watch::{InterruptKind, ScriptWatch, SharedScriptWatch};

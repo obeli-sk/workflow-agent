@@ -7,5 +7,6 @@ world any {
   import obelisk-agent:llm-obelisk-ext/chat;
   import obelisk-agent:workflow-obelisk-ext/workflow;
   import obelisk-agent:tools/webapi;
+  import obelisk-agent:config/config;
   import obelisk:workflow/workflow-support@6.0.0;
 }

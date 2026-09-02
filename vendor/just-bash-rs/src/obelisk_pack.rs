@@ -37,41 +37,6 @@ const AUTO_DIGEST: &str = "auto";
 const DEPLOYMENT_TEMPLATE: &str =
     include_str!(concat!(env!("OUT_DIR"), "/deployment-template.toml"));
 
-/// PORT: `packs/obelisk-control/workflow-pack.js`'s `descriptor.systemPrompt`.
-/// Appended to the session system prompt by the workflow (`session.rs`).
-pub const SYSTEM_PROMPT: &str = "You are on a persistent virtual machine with a filesystem rooted at \
-/workspace. The target Obelisk's active deployment is at /workspace/deployment/current; \
-read and edit its deployment.toml and component sources with ordinary shell commands. Use the \
-`obelisk` command for operations against the target server (functions, executions, call, and \
-deployment current/refresh/check/submit/switch/apply). Edits under the deployment folder are \
-local until you deploy them: `obelisk deployment submit` stores them as a new inactive deployment \
-and prints its ID, then `obelisk deployment apply ID` hot-redeploys that stored deployment now; \
-`obelisk deployment refresh` discards local edits and re-fetches the current deployment. Never set \
-or maintain a digest in deployment.toml: submit recomputes each from the file bytes for you. \
-`content_digest` lines are omitted, `component_files` entries use the value \"auto\", and \
-`backtrace.sources` entries are plain path strings; leave them that way. Add a component by writing \
-its source and its [[activity_js]]/[[workflow_js]] table (name, location, params, return_type); add \
-a bundled file by writing it and listing its path in `component_files` with the value \"auto\". Run \
-`obelisk generate deployment` for a fully-commented starter deployment.toml when authoring one from \
-scratch. `obelisk executions list` hides webhook-spawned child executions unless `--show-derived` \
-is passed. The Obelisk documentation index is at https://obeli.sk/docs/latest/llms.txt/ - fetch it \
-with the curl program, then fetch any page it lists before writing components instead of guessing \
-API signatures. A read-only reference tree of example components is mounted at /workspace/components \
-(obeli-sk/components); browse it with ls and cat while authoring.
-Run `mount` to see the network-backed mount points; it reports whether each MCP \
-server is responding. These mounts (/workspace/deployment, /workspace/components, /workspace/mcp) \
-are lazy: a directory lists and a file's bytes fetch over the network on first access, so the first \
-touch of a path may pause briefly. The deployment mount is cheap (one request for its whole file \
-index), but /workspace/components fetches one network request per directory listed, so avoid \
-recursive scans over it: do not run tree, find, or a recursive grep (grep -r / fgrep -r) across it. \
-Navigate with targeted ls and cat, or read a known path directly, instead of walking the whole tree.
-
-The shell's HTTP access goes through an operator allowlist: commands such as curl work only for \
-explicitly granted hosts (GET only), and a policy-denied request is the expected result for anything \
-else. The target's webhook base URL printed by `mount` is granted for GET, so deployed webhook \
-endpoints can be smoke-tested directly there; verify anything else through the control plane \
-(`obelisk executions list` / `logs`) instead of probing its port.";
-
 /// The one primitive the whole pack needs: dynamically invoke a deployed FFQN
 /// and get back its JSON result. Mirrors Obelisk's real
 /// `workflow-support.call-json: func(function, params, ...) -> result<

@@ -7,10 +7,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import githubContents from "./github-contents.js";
 
-process.env.GH_OWNER = "acme";
-process.env.GH_REPO = "tree";
-delete process.env.GH_REF;
-
 const API = "https://api.github.com/repos/acme/tree/contents";
 
 const JSON_ACCEPT = "application/vnd.github+json";
@@ -52,7 +48,8 @@ async function withRoutes(routes, fn) {
     }
 }
 
-const call = (method, path) => githubContents(method, JSON.stringify({ path }));
+const call = (method, path) =>
+    githubContents(method, JSON.stringify({ owner: "acme", repo: "tree", path }));
 
 test("reads a plain file with a single raw request", async () => {
     await withRoutes(
@@ -208,4 +205,35 @@ test("symlink cycles are cut off instead of hanging", async () => {
 
 test("unknown methods throw", async () => {
     await assert.rejects(githubContents("write", "{}"), /unknown method 'write'/);
+});
+
+test("a missing owner or repo param throws", async () => {
+    await assert.rejects(
+        githubContents("list", JSON.stringify({ repo: "tree", path: "" })),
+        /params-json has no owner/,
+    );
+    await assert.rejects(
+        githubContents("list", JSON.stringify({ owner: "acme", path: "" })),
+        /params-json has no repo/,
+    );
+});
+
+test("an explicit ref overrides the main default", async () => {
+    await withRoutes(
+        new Map([
+            [
+                `${API}?ref=v1`,
+                jsonOk([{ name: "README.md", type: "file", size: 5 }]),
+            ],
+        ]),
+        async () => {
+            const listing = JSON.parse(
+                await githubContents(
+                    "list",
+                    JSON.stringify({ owner: "acme", repo: "tree", ref: "v1", path: "" }),
+                ),
+            );
+            assert.deepEqual(listing, [{ name: "README.md", type: "file", size: 5 }]);
+        },
+    );
 });

@@ -1,0 +1,46 @@
+package obelisk-agent:config;
+
+// Session settings the workflow discovers once at start
+// (activity/config-discover.js backs this interface, reading the
+// PROGRAMS_JSON/MCP_SERVERS_JSON/APPS_JSON/MAX_STEPS env vars), so operator
+// config changes take effect without rebuilding either workflow backend.
+interface config {
+  record program {
+    name: string,
+    ffqn: string,
+    description: string,
+  }
+
+  record mcp-server {
+    name: string,
+    ffqn: string,
+  }
+
+  // A GitHub repo tree mounted read-only at /workspace/apps/<name>
+  // (obelisk_web/obelisk-web.js -> the mount_apps activity). `description`
+  // is surfaced in the system prompt so the model knows what the repo is
+  // and how to use it.
+  record app {
+    name: string,
+    owner: string,
+    repo: string,
+    ref: string,
+    description: string,
+  }
+
+  record session-config {
+    max-steps: u32,
+    programs: list<program>,
+    mcp-servers: list<mcp-server>,
+    apps: list<app>,
+    webhook-url: string,
+    // The whole tail of the system prompt after "# Example apps": user-input
+    // guidance, subagent delegation, deployment authoring, and the
+    // per-session "# This session" text - single-sourced here (given
+    // execution-id/backend/effort/name as inputs) so the Rust and JS
+    // workflow backends stop hand-duplicating this prose.
+    prompt-tail: string,
+  }
+
+  discover: func(execution-id: string, backend: string, effort: string, name: option<string>) -> result<session-config, string>;
+}

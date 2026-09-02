@@ -130,32 +130,6 @@ fn current_output(own: &ChatSelf) -> CommandOutput {
     }
 }
 
-/// The `# This session` system-prompt paragraph: the session's own identity
-/// (exactly what `chat current` prints), its parent for context gathering,
-/// and when to rename itself.
-pub(crate) fn self_section(own: &ChatSelf) -> String {
-    let payload = current_payload(own);
-    let mut text = format!(
-        "# This session\n\n\
-`chat current` output for the session you are running in:\n{payload}\n\n\
-Peers discover sessions by slug via `chat list`; read your own transcript \
-with `chat read {}`. If your starting prompt already makes the task clear, \
-rename yourself first, before anything else (`chat rename <slug>`); \
-otherwise wait until the task settles into something nameable. Rename once \
-to a short kebab slug summarizing the task; do not rename repeatedly or \
-preemptively while it is still unclear.\n",
-        own.execution_id
-    );
-    if let Some(parent) = own.parent_id() {
-        text.push_str(&format!(
-            "\nYou were started as a child session by {parent}. If your prompt \
-leaves you short of context, run `chat read {parent}` to see the transcript \
-that created you.\n"
-        ));
-    }
-    text
-}
-
 fn rename(args: &[String], own: &ChatSelf, notifications: &Notifications) -> CommandOutput {
     let Some(name) = args.get(1) else {
         return usage("rename expects a slug name");
@@ -760,27 +734,5 @@ mod tests {
         let mut empty = Value::Null;
         stamp_watch_fields(&mut empty, true, 5);
         assert_eq!(empty["timed_out"], json!(true));
-    }
-
-    #[test]
-    fn self_section_shows_identity_and_parent() {
-        let own = ChatSelf::new(
-            "E_01ABC.n:research_1".to_string(),
-            "claude".to_string(),
-            String::new(),
-            Some("research".to_string()),
-        );
-        let section = self_section(&own);
-        assert!(section.contains("# This session"));
-        assert!(section.contains("\"execution_id\":\"E_01ABC.n:research_1\""));
-        assert!(section.contains("\"name\":\"research\""));
-        assert!(section.contains("chat read E_01ABC.n:research_1"));
-        assert!(section.contains("chat read E_01ABC"));
-
-        let top = ChatSelf::new("E_01XYZ".to_string(), String::new(), String::new(), None);
-        let section = self_section(&top);
-        // Top-level sessions carry no parent beyond the JSON null.
-        assert!(section.contains("\"parent_id\":null"));
-        assert!(!section.contains("child session by"));
     }
 }
