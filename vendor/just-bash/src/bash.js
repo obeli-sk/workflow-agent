@@ -3,7 +3,7 @@
 // and `env` persist across `exec` calls, matching the durable session loop's
 // expectation of a single long-lived interpreter.
 
-import { Vfs } from "./fs.js";
+import { Vfs, FsError } from "./fs.js";
 import { parseScript, ParseError } from "./parser.js";
 import { Interpreter, OutputLog, ExitSignal, WatchInterrupt, ShellError } from "./interpreter.js";
 import { ShellExpansionError } from "./expansion.js";
@@ -85,7 +85,13 @@ export class Bash {
             } else if (e instanceof ShellExpansionError || e instanceof ArithError) {
                 log.push("stderr", `bash: ${e.message}\n`);
                 exitCode = 1;
-            } else if (e instanceof ShellError) {
+            } else if (e instanceof ShellError || e instanceof FsError) {
+                // Commands are expected to catch FsError themselves (see rm's
+                // handling in commands/fsutil.js) and report it via their own
+                // exit code/stderr; this is the last-resort net for the ones
+                // that don't (e.g. a lazy-mounted file that's too large or
+                // unreachable), so a VFS problem never aborts the whole
+                // workflow the way an uncaught exception would.
                 log.push("stderr", `${e.message}\n`);
                 exitCode = 1;
             } else {
