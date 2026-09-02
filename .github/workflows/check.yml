@@ -150,11 +150,17 @@ jobs:
       - name: Build the workflow component
         run: nix develop --command just build
 
-      - name: obelisk deployment verify
+      - name: deployment.toml/deployment.js.toml parity
+        run: nix develop --command ./scripts/check-deployment-toml-parity.sh
+
+      - name: obelisk deployment verify (rs)
         run: nix develop --command obelisk deployment verify -d deployment.toml -s server.toml --allow-unavailable-runtime-config
 
-  e2e:
-    name: End-to-end tests
+      - name: obelisk deployment verify (js)
+        run: nix develop --command obelisk deployment verify -d deployment.js.toml -s server.toml --allow-unavailable-runtime-config
+
+  e2e-common:
+    name: End-to-end tests (backend-agnostic)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
@@ -177,20 +183,82 @@ jobs:
           GITHUB_TOKEN: ""
           MCP_SERVER_TOKEN: ""
 
+  e2e:
+    name: End-to-end tests (${{ matrix.backend }} backend)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [rs, js]
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          ref: ${{ github.event.inputs.ref }} # Use the ref if provided, otherwise defaults to the current branch/commit
+
+      - uses: nixbuild/nix-quick-install-action@v34
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          nix_conf: |
+            extra-substituters = https://obeli-sk.cachix.org
+            extra-trusted-public-keys = obeli-sk.cachix.org-1:31iM9GWSEhAXvvuTWQ7CvAcwvgRzsuJ9yJghywSd3Jw=
+
+      - name: Populate the nix store
+        run: nix develop --command echo
+
       - name: agent workflow e2e
-        run: nix develop --command ./scripts/test-e2e-agent-workflow.sh
+        run: nix develop --command ./scripts/test-e2e-agent-workflow.sh ${{ matrix.backend }}
         env:
           GITHUB_TOKEN: ""
           MCP_SERVER_TOKEN: ""
 
-      - name: agent workflow (JS backend) e2e
-        run: nix develop --command ./scripts/test-e2e-agent-workflow-js.sh
+      - name: chat e2e
+        run: nix develop --command ./scripts/test-e2e-chat.sh ${{ matrix.backend }}
         env:
           GITHUB_TOKEN: ""
           MCP_SERVER_TOKEN: ""
+
+      - name: interrupt e2e
+        run: nix develop --command ./scripts/test-e2e-interrupt.sh ${{ matrix.backend }}
+        env:
+          GITHUB_TOKEN: ""
+          MCP_SERVER_TOKEN: ""
+
+      - name: mcp e2e
+        run: nix develop --command ./scripts/test-e2e-mcp.sh ${{ matrix.backend }}
+        env:
+          GITHUB_TOKEN: ""
 
       - name: redeploy e2e
-        run: nix develop --command ./scripts/test-e2e-redeploy.sh
+        run: nix develop --command ./scripts/test-e2e-redeploy.sh ${{ matrix.backend }}
+        env:
+          GITHUB_TOKEN: ""
+          MCP_SERVER_TOKEN: ""
+
+  # Expected-red pending an Obelisk-side fix (see the script's header comment
+  # and docs/js-backend-migration.md): kept running, non-blocking, so it
+  # starts passing (and this job can lose its continue-on-error) automatically
+  # once Obelisk's JS workflow runtime gains typed join-next-child tracking.
+  e2e-replay-parity:
+    name: End-to-end replay parity (rs <-> js)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          ref: ${{ github.event.inputs.ref }} # Use the ref if provided, otherwise defaults to the current branch/commit
+
+      - uses: nixbuild/nix-quick-install-action@v34
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          nix_conf: |
+            extra-substituters = https://obeli-sk.cachix.org
+            extra-trusted-public-keys = obeli-sk.cachix.org-1:31iM9GWSEhAXvvuTWQ7CvAcwvgRzsuJ9yJghywSd3Jw=
+
+      - name: Populate the nix store
+        run: nix develop --command echo
+
+      - name: replay-parity e2e
+        run: nix develop --command ./scripts/test-e2e-replay-parity.sh
         env:
           GITHUB_TOKEN: ""
           MCP_SERVER_TOKEN: ""

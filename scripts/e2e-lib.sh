@@ -47,6 +47,31 @@ e2e_cleanup() {
     echo ">>> preserved isolated sqlite state at ${E2E_TMP}/obelisk-sqlite"
 }
 
+# Selects which session-workflow implementation an e2e suite deploys: "rs"
+# (default, workflow/workflow-rs -> deployment.toml) or "js"
+# (workflow/workflow-js -> deployment.js.toml). Both export the identical
+# obelisk-agent:workflow/workflow.run-cancellable FFQN (see
+# docs/js-backend-migration.md), so callers never need to vary RUN_FFQN by
+# backend. Sets E2E_DEPLOY_SRC for e2e_patch_workflow_manifest; the JS side
+# has no build artifact to patch a location for.
+e2e_select_backend() {
+    local backend="${1:-rs}"
+    case "$backend" in
+        rs)
+            e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"
+            E2E_DEPLOY_SRC="$ROOT/deployment.toml"
+            ;;
+        js)
+            E2E_REL_WASM=""
+            E2E_DEPLOY_SRC="$ROOT/deployment.js.toml"
+            ;;
+        *)
+            echo "unknown backend '$backend' (expected rs|js)" >&2
+            return 1
+            ;;
+    esac
+}
+
 e2e_build_component() {
     local crate="$1"
     local artifact="$2"
@@ -69,13 +94,18 @@ e2e_build_component() {
 
 e2e_patch_workflow_manifest() {
     local output="$1"
+    local src="${E2E_DEPLOY_SRC:-$ROOT/deployment.toml}"
     E2E_DEPLOYMENTS+=("$output")
-    sed "s#^location = \"target/wasm32-unknown-unknown/release/workflow_agent_rs.wasm\"#location = \"${E2E_REL_WASM}\"#" \
-        "$ROOT/deployment.toml" > "$output"
-    grep -q "$E2E_REL_WASM" "$output" || {
-        echo "failed to patch workflow_wasm location in generated manifest" >&2
-        return 1
-    }
+    if [[ -n "${E2E_REL_WASM:-}" ]]; then
+        sed "s#^location = \"target/wasm32-unknown-unknown/release/workflow_agent_rs.wasm\"#location = \"${E2E_REL_WASM}\"#" \
+            "$src" > "$output"
+        grep -q "$E2E_REL_WASM" "$output" || {
+            echo "failed to patch workflow_wasm location in generated manifest" >&2
+            return 1
+        }
+    else
+        cp "$src" "$output"
+    fi
 }
 
 e2e_start_server() {

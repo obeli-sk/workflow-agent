@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
+# Exercises the session-workflow protocol (ask-user lifecycle, a direct shell
+# turn, the obelisk/mount custom commands, at-creation rename, a
+# self-referential `chat create` child submit, and a prompt-driven turn
+# reaching the LLM endpoint) against whichever implementation backs
+# obelisk-agent:workflow/workflow.run-cancellable.
+# Usage: test-e2e-agent-workflow.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
-e2e_init "agent-workflow-e2e" 28016 28091 "e2e-agent-workflow-token"
+BACKEND="${1:-rs}"
+e2e_init "agent-workflow-e2e-$BACKEND" 28016 28091 "e2e-agent-workflow-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28016"
 # server.toml's [secrets] requires every named var to exist; empty is fine.
@@ -13,7 +20,7 @@ export MCP_SERVER_TOKEN=""
 export GITHUB_TOKEN=""
 export AGENT_MODELS="[]"
 
-e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"
+e2e_select_backend "$BACKEND"
 DEPLOY="$ROOT/.e2e-agent-deployment.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
@@ -21,6 +28,47 @@ e2e_start_server "$DEPLOY"
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 run_detail() {
     curl --fail --silent --show-error "http://127.0.0.1:28091/api/runs/$1" 2>&1
+}
+
+# Waits for SESSION_ID's next input offer, submits SCRIPT as a direct shell
+# turn under it, waits for its record-output notification, and leaves the
+# notification's stdout in SHELL_STDOUT.
+run_shell_turn() {
+    local shell_id="$1" script="$2"
+    SECONDS=0
+    local session_projection injection_id
+    while true; do
+        if session_projection="$(run_detail "$SESSION_ID")"; then
+            injection_id="$(node scripts/e2e-json.js input-offer-id <<<"$session_projection")"
+            [[ -n "$injection_id" ]] && break
+        fi
+        [[ $SECONDS -ge 30 ]] && { echo "session did not publish an input offer: $session_projection" >&2; exit 1; }
+        sleep 1
+    done
+    curl --fail --silent --show-error \
+        -H 'content-type: application/json' \
+        -d "{\"offer_id\":\"$injection_id\",\"input\":{\"shell\":{\"id\":\"$shell_id\",\"script\":$(printf '%s' "$script" | node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8")))'),\"stdin\":\"\"}}}" \
+        "http://127.0.0.1:28091/api/input/$SESSION_ID" >/dev/null
+
+    SECONDS=0
+    local notification=""
+    while true; do
+        local session_executions
+        session_executions="$("$OBELISK" execution list -j -a "$E2E_API_URL" -e "$SESSION_ID" --show-derived --limit 100)"
+        while IFS= read -r record_id; do
+            [[ -n "$record_id" ]] || continue
+            local candidate
+            candidate="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$record_id" 2>/dev/null)" || continue
+            if node -e "const r=JSON.parse(require('fs').readFileSync(0,'utf8'))?.ok?.shell_output; process.exit(r?.id===process.argv[1]?0:1)" "$shell_id" <<<"$candidate" 2>/dev/null; then
+                notification="$candidate"
+                break
+            fi
+        done < <(node scripts/e2e-json.js execution-ids "obelisk-agent:stub/stub.record-output" <<<"$session_executions")
+        [[ -n "$notification" ]] && break
+        [[ $SECONDS -ge 30 ]] && { echo "shell turn $shell_id did not complete: $session_executions" >&2; exit 1; }
+        sleep 1
+    done
+    SHELL_STDOUT="$(node scripts/e2e-json.js shell-stdout <<<"$notification")"
 }
 
 echo ">>> checking ask-user lifecycle through the session projection"
@@ -143,7 +191,63 @@ while true; do
     sleep 1
 done
 echo ">>> shell-only E2E PASS: curl was registered and invoked without starting the agent"
+
+echo ">>> running the obelisk/mount custom commands"
+run_shell_turn "shell-e2e-2" "mount && echo --- && obelisk functions list --help"
+if [[ "$SHELL_STDOUT" != *"Network-backed mounts"* ]]; then
+    echo "mount command did not print the expected header: $SHELL_STDOUT" >&2
+    exit 1
+fi
+if [[ "$SHELL_STDOUT" != *"/workspace/apps/components"* ]]; then
+    echo "mount command did not list the components app mount: $SHELL_STDOUT" >&2
+    exit 1
+fi
+if [[ "$SHELL_STDOUT" != *"Usage: obelisk functions"* ]]; then
+    echo "obelisk functions --help did not print its usage: $SHELL_STDOUT" >&2
+    exit 1
+fi
+echo ">>> obelisk/mount E2E PASS"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
+
+echo ">>> creating a session with an initial name"
+NAMED_SESSION_ID="$("$OBELISK" generate execution-id)"
+"$OBELISK" execution submit -a "$E2E_API_URL" -e "$NAMED_SESSION_ID" "$RUN_FFQN" \
+    '["", null, null, null, "e2e-rename-check"]'
+SECONDS=0
+while true; do
+    NAME_PROJECTION="$(run_detail "$NAMED_SESSION_ID" || true)"
+    if node -e "process.exit(JSON.parse(require('fs').readFileSync(0,'utf8')||'{}')?.name==='e2e-rename-check'?0:1)" <<<"$NAME_PROJECTION" 2>/dev/null; then
+        break
+    fi
+    [[ $SECONDS -ge 30 ]] && { echo "session did not report its initial name: $NAME_PROJECTION" >&2; exit 1; }
+    sleep 1
+done
+echo ">>> rename E2E PASS: the session-name join set published the at-creation name"
+"$OBELISK" execution cancel -a "$E2E_API_URL" "$NAMED_SESSION_ID" >/dev/null || true
+
+echo ">>> exercising 'chat create' (self-referential child submit)"
+SESSION_ID="$("$OBELISK" generate execution-id)"
+CHAT_SESSION_ID="$SESSION_ID"
+"$OBELISK" execution submit -a "$E2E_API_URL" -e "$CHAT_SESSION_ID" "$RUN_FFQN" \
+    '["", null, null, null, null]'
+run_shell_turn "shell-e2e-3" "chat create --name e2e-chat-child hello from the e2e test"
+CHILD_ID="$(printf '%s' "$SHELL_STDOUT" | tr -d '[:space:]')"
+if [[ -z "$CHILD_ID" ]]; then
+    echo "chat create did not print a child execution id: $SHELL_STDOUT" >&2
+    exit 1
+fi
+echo ">>> chat create returned child execution id: $CHILD_ID"
+SECONDS=0
+while true; do
+    if CHILD_PROJECTION="$(run_detail "$CHILD_ID")" && node -e "process.exit(JSON.parse(require('fs').readFileSync(0,'utf8')||'{}')?.name==='e2e-chat-child'?0:1)" <<<"$CHILD_PROJECTION" 2>/dev/null; then
+        break
+    fi
+    [[ $SECONDS -ge 30 ]] && { echo "child session did not start or report its --name: $CHILD_PROJECTION" >&2; exit 1; }
+    sleep 1
+done
+echo ">>> chat create E2E PASS: the self-referential child submit works and reports its --name"
+"$OBELISK" execution cancel -a "$E2E_API_URL" "$CHILD_ID" >/dev/null || true
+"$OBELISK" execution cancel -a "$E2E_API_URL" "$CHAT_SESSION_ID" >/dev/null || true
 
 EXEC_ID="$("$OBELISK" generate execution-id)"
 echo ">>> submitting $RUN_FFQN as $EXEC_ID"

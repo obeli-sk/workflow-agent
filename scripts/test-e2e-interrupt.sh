@@ -12,17 +12,20 @@
 #      turn on its own, verifying the turn ends deterministically and the
 #      session takes further input afterward.
 # Each suite runs against its own isolated, throwaway obelisk server.
+# Usage: test-e2e-interrupt.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
-e2e_init "interrupt-e2e" 28019 28094 "e2e-interrupt-token"
+BACKEND="${1:-rs}"
+e2e_init "interrupt-e2e-$BACKEND" 28019 28094 "e2e-interrupt-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28019"
 # server.toml's [secrets] requires every named var to exist; empty is fine.
 export MCP_SERVER_TOKEN=""
+export GITHUB_TOKEN=""
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"},{"id":"fake-loop","label":"Fake Loop","api_type":"openai-chat-completions"}]'
 export LLM_BASE_URL="http://127.0.0.1:28095"
 
@@ -34,7 +37,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"
+e2e_select_backend "$BACKEND"
 DEPLOY="$ROOT/.e2e-interrupt-deployment.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"

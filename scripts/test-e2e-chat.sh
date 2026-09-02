@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
+# Usage: test-e2e-chat.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
-e2e_init "chat-e2e" 28018 28093 "e2e-chat-token"
+BACKEND="${1:-rs}"
+e2e_init "chat-e2e-$BACKEND" 28018 28093 "e2e-chat-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28018"
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions","wire_model":"fake"}]'
@@ -13,7 +15,7 @@ export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-comple
 export MCP_SERVER_TOKEN=""
 export GITHUB_TOKEN=""
 
-e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"
+e2e_select_backend "$BACKEND"
 DEPLOY="$ROOT/.e2e-chat-deployment.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"

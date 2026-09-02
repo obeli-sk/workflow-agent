@@ -8,10 +8,12 @@
 #
 # Requires docker or podman. When neither is present the test SKIPs (exit 0) so
 # environments without a container runtime stay green; the skip is logged.
+# Usage: test-e2e-mcp.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
+BACKEND="${1:-rs}"
 
 # --- container runtime --------------------------------------------------------
 CRT=""
@@ -34,10 +36,12 @@ MCP_CONTAINER="wfa-e2e-mcp-$$"
 MCP_URL="http://127.0.0.1:${MCP_PORT}/mcp"
 SERVER_NAME="obelisk-e2e"
 
-e2e_init "mcp-e2e" 28116 28191 "e2e-mcp-token"
+e2e_init "mcp-e2e-$BACKEND" 28116 28191 "e2e-mcp-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28116"
 export AGENT_MODELS="[]"
+# server.toml's [secrets] requires every named var to exist; empty is fine.
+export GITHUB_TOKEN=""
 # The workflow discovers MCP servers from MCP_SERVERS_JSON (the config_discover
 # activity), overriding the manifest default so this run wires only the injected
 # obelisk-e2e server. Empty MCP_SERVER_TOKEN keeps the manifest's sample
@@ -78,7 +82,7 @@ until http_ok "http://127.0.0.1:${MCP_PORT}/" 2>/dev/null; do
 done
 
 # --- deployment: real manifest + one MCP block, keyless -----------------------
-e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"
+e2e_select_backend "$BACKEND"
 DEPLOY="$ROOT/.e2e-mcp-deployment.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 cat >> "$DEPLOY" <<EOF
