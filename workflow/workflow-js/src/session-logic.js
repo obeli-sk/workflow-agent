@@ -109,8 +109,27 @@ const USER_INPUT_SECTION =
     "to the UI, blocks, and returns the answer so you can continue in the same turn. Use it only when " +
     "the answer is required to proceed; to end the turn, reply in Markdown without a command.";
 
-export function renderSystemPrompt(systemPrompt, programs) {
-    return `${systemPrompt}\n\n# Shell\n\n${renderProgramHelp(programs)}\n${USER_INPUT_SECTION}\n\n${PACK_SYSTEM_PROMPT}\n`;
+// PORT: session.rs's inline "# Subagents" section (agent_loop's `format!`).
+const SUBAGENTS_SECTION =
+    "# Subagents\n\n" +
+    "Delegate self-contained work with `chat create [--name slug] PROMPT`; pass " +
+    "`--watch` (or call `chat watch ID`) to block until the child stops progressing: " +
+    "it reports final-response when it answers, step-limit when its step budget ran " +
+    "out, awaiting-answer when an ask-user is pending, shell-only when a scripted " +
+    "prompt finished, or a terminal state; the reported JSON already includes a " +
+    "`final` field with the child's finished reply, error, or pending question, so " +
+    "you rarely need a follow-up read. When you do, use `chat read ID --final` " +
+    "(just that outcome) rather than a full `chat read ID` (the whole transcript, " +
+    "far more tokens) unless you actually need the reasoning trail. Never poll a " +
+    "child with sleep loops. A child parked in step-limit resumes where it left " +
+    "off when you send it `chat send ID continue`; budget resets for the new turn.";
+
+// `selfSection` is chat.js's `selfSection(ownSession)` output (the "# This
+// session" paragraph); always included, matching session.rs's agent_loop,
+// which composes it into the system prompt unconditionally regardless of
+// whether a `chat` program is actually registered.
+export function renderSystemPrompt(systemPrompt, programs, selfSection) {
+    return `${systemPrompt}\n\n# Shell\n\n${renderProgramHelp(programs)}\n${USER_INPUT_SECTION}\n\n${SUBAGENTS_SECTION}\n\n${selfSection}\n\n${PACK_SYSTEM_PROMPT}\n`;
 }
 
 // PORT: workflow-rs/src/session.rs's `MOUNT_HEADER`/`MOUNT_FOOTER`.

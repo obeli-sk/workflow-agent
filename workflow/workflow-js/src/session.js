@@ -2,13 +2,14 @@
 //   func(prompt: string, model: option<string>, descriptor-ffqn: option<string>,
 //        effort: option<string>, name: option<string>) -> result<_, string>
 //
-// PORT (Phase 1 subset): workflow/workflow-rs/src/{agent,session}.rs. One
-// persistent Bash instance, a "session-events" notification join set (the
-// workflow self-stubs each event so it lands as a durably readable response),
-// and a "user" join set racing each LLM completion against an always-
-// outstanding user-injection offer. See docs/js-backend-migration.md for what
-// this phase intentionally leaves out (programs/MCP/mounts/chat/rename/
-// ask-user/per-script watch — session.rs's fuller feature set) and why.
+// PORT: workflow/workflow-rs/src/{agent,session}.rs. One persistent Bash
+// instance, a "session-events" notification join set (the workflow self-stubs
+// each event so it lands as a durably readable response), and a "user" join
+// set racing each LLM completion against an always-outstanding user-injection
+// offer. Also wires in programs/MCP/mounts (obelisk-pack.js/obelisk-program.js/
+// obelisk-mcp.js/obelisk-web.js), per-script interrupt/timeout (script-watch.js),
+// session rename, ask-user, and chat peer sessions (chat.js) — see
+// docs/js-backend-migration.md for phase-by-phase status and fidelity notes.
 //
 // WIT record/variant field and case names cross into JS as snake_case (not
 // camelCase — only function/interface names get kebab-to-camelCase); this was
@@ -22,6 +23,7 @@ import { discover } from "obelisk-agent:config/config";
 import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
 import { askUserSubmit, injectionSubmit, recordOutputSubmit, sessionRenamedSubmit } from "obelisk-agent:stub-obelisk-ext/stub";
 import { recordOutputStub, sessionRenamedStub } from "obelisk-agent:stub-obelisk-stub/stub";
+import { runCancellableSubmit } from "obelisk-agent:workflow-js-obelisk-ext/workflow";
 import { Bash } from "../../../vendor/just-bash/src/bash.js";
 import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
 import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
@@ -29,6 +31,7 @@ import * as obeliskMcp from "../../../vendor/just-bash/src/obelisk-mcp.js";
 import * as obeliskWeb from "../../../vendor/just-bash/src/obelisk-web.js";
 import { createHost } from "./host.js";
 import { arm as armScriptWatch } from "./script-watch.js";
+import * as chat from "./chat.js";
 import {
     BASH_TOOLS_JSON,
     EMPTY_REPLY_NUDGE,
@@ -67,6 +70,10 @@ const SESSION_EVENTS_JOIN_SET = "session-events";
 const SESSION_NAME_JOIN_SET = "session-name";
 const ASK_USER_FFQN = "obelisk-agent:stub/stub.ask-user";
 const NATIVE_CALL_FFQN = "obelisk-control:tools/native.call";
+// The operator-configured program whose registration gets wrapped with
+// chat.js's caller-aware subcommands (current/rename/create/watch). PORT:
+// chat.rs's CHAT_PROGRAM_FFQN.
+const CHAT_PROGRAM_FFQN = "obelisk-agent:programs/program.chat";
 
 export default function runCancellable(prompt, model, descriptorFfqn, effort, name) {
     try {
@@ -242,10 +249,17 @@ function loadSessionConfig() {
 // configured MCP server (MCP_SERVERS_JSON) and the `mount` listing command.
 // Each handler owns its own host (matching session.rs's `host()` closure
 // pattern: one RealHost-equivalent per registration, not shared mutable
-// state) since `createHost()` is stateless and cheap.
-function registerProgramsAndMcp(bash, config) {
+// state) since `createHost()` is stateless and cheap. The program whose ffqn
+// is CHAT_PROGRAM_FFQN is wrapped so caller-aware subcommands
+// (current/rename/create/watch) are answered by this session itself (PORT:
+// session.rs's per-program loop).
+function registerProgramsAndMcp(bash, config, ownSession, notifications, submitFn) {
     for (const program of config.programs) {
-        bash.registerCommand(program.name, obeliskProgram.commandHandler(program.name, program.ffqn, createHost()));
+        const plainHandler = obeliskProgram.commandHandler(program.name, program.ffqn, createHost());
+        const handler = program.ffqn === CHAT_PROGRAM_FFQN
+            ? chat.commandHandler(plainHandler, ownSession, notifications, submitFn)
+            : plainHandler;
+        bash.registerCommand(program.name, handler);
     }
 
     const mcpRegistry = config.mcpServers.map(({ name, ffqn }) => ({ name, ffqn }));
@@ -475,9 +489,19 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
 
     const config = loadSessionConfig();
     const maxSteps = config.maxSteps;
-    registerProgramsAndMcp(bash, config);
+    // A session created with a slug label (`chat create --name`) starts
+    // already renamed; anything else arrives unnamed. PORT: session.rs's
+    // own_session construction (chat::ChatSelf::new).
+    const ownSession = new chat.ChatSelf(obelisk.executionIdCurrent(), model, effort, name || null);
+    // PORT: chat.rs's create_child's workflow_ext::run_cancellable_submit
+    // call, with the descriptor-ffqn positional argument fixed to null
+    // (matching Rust's `None`) since a child session always uses the default
+    // descriptor.
+    const submitFn = (joinSet, childPrompt, childModel, childEffort, childName) =>
+        runCancellableSubmit(joinSet, childPrompt, childModel, null, childEffort, childName);
+    registerProgramsAndMcp(bash, config, ownSession, notifications, submitFn);
 
-    const system = renderSystemPrompt(systemPrompt, config.programs);
+    const system = renderSystemPrompt(systemPrompt, config.programs, chat.selfSection(ownSession));
 
     let pendingShell = openingShellScript(prompt);
     let messages = pendingShell === null && prompt.trim() ? [userText(prompt.trim())] : [];

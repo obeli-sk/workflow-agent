@@ -104,16 +104,24 @@ test("renderProgramHelp lists each program, with or without a description", () =
     assert.ok(text.includes("  jira\n"));
 });
 
-test("renderSystemPrompt composes the base prompt, shell help, user-input section, and pack prompt in order", () => {
-    const text = renderSystemPrompt("Base instructions.", [{ name: "curl", ffqn: "x", description: "fetch" }]);
+test("renderSystemPrompt composes the base prompt, shell help, user-input, subagents, self, and pack sections in order", () => {
+    const text = renderSystemPrompt(
+        "Base instructions.",
+        [{ name: "curl", ffqn: "x", description: "fetch" }],
+        "# This session\n\nself section text\n",
+    );
     const baseAt = text.indexOf("Base instructions.");
     const shellAt = text.indexOf("# Shell");
     const helpAt = text.indexOf("registers these external commands");
     const userInputAt = text.indexOf("# User input");
     const askUserAt = text.indexOf("ask-user");
+    const subagentsAt = text.indexOf("# Subagents");
+    const chatCreateAt = text.indexOf("chat create [--name slug]");
+    const selfAt = text.indexOf("self section text");
     const packAt = text.indexOf(PACK_SYSTEM_PROMPT);
     assert.ok(
-        baseAt < shellAt && shellAt < helpAt && helpAt < userInputAt && userInputAt < askUserAt && askUserAt < packAt,
+        baseAt < shellAt && shellAt < helpAt && helpAt < userInputAt && userInputAt < askUserAt &&
+        askUserAt < subagentsAt && subagentsAt < chatCreateAt && chatCreateAt < selfAt && selfAt < packAt,
         text,
     );
 });
