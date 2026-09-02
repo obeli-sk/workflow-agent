@@ -1,7 +1,8 @@
 # JS-only workflow backend: migration notes
 
-Status: **in progress** (Phases 0-6 done and verified — see the checklist and
-command tracker below; Phase 7 — test parity — is next). This doc
+Status: **all planned phases (0-7) done and verified** — see the checklist
+and command tracker below for what shipped, and "Open questions / gotchas to
+revisit" for the coverage gaps left as deliberate follow-ups. This doc
 tracks design decisions and progress for the JS-alternative workflow backend
 so another agent can resume without re-deriving the research. Update it
 after every phase.
@@ -497,8 +498,21 @@ core subset session.rs exercises day to day.
       `listBothBackends`-aware rewrite of its `list` tests, plus a new test
       for the `--top-level` `WORKFLOW_FFQN` override) and `just verify` are
       green. README gained a short "switching backends" note.
-- [ ] Phase 7: test parity (`node --test` unit tests, e2e suites against both
-      backends, CI).
+- [x] Phase 7: test parity. `node --test` coverage grew alongside every
+      phase (497 cases: 397 `vendor/just-bash` + 70 `workflow/workflow-js` +
+      30 `activity/chat.test.js` + the pre-existing `webhook`/`shared` suites
+      test-js already ran); a sibling e2e script
+      (`scripts/test-e2e-agent-workflow-js.sh`, 6 scenarios) covers the JS
+      backend the way `test-e2e-agent-workflow.sh` covers Rust, per the
+      original plan's "add sibling `*-js.sh` scripts" option.
+      `.github/workflows/check.yml` gained a `js` job running `just test-js`
+      (previously CI had no unit-test step for any of the JS code in this
+      repo at all — webhook/activity/shared included, not just the new
+      workflow backend); the JS backend e2e script was already wired into
+      the `e2e` job from an earlier phase. See "Open questions" below for
+      the specific coverage gaps left as deliberate follow-ups (ask-user and
+      interrupt-actually-firing e2e, and CI wiring for the chat/interrupt/mcp
+      e2e suites, a pre-existing gap unrelated to this migration).
 
 ## Command parity tracker (Phase 2)
 
@@ -599,3 +613,15 @@ natively (small algorithms) rather than vendoring the npm package's source.
   positional params). Since this is a fresh hand-port (not a copy of the old
   JS), write it correct the first time per `just-bash-rs`'s current behavior;
   no need to "re-break then fix."
+- Remaining e2e gaps, not blocking (call out if picked up later): `ask-user`
+  itself has no JS e2e coverage (needs an external actor to write the answer,
+  e.g. a webhook call simulating the UI); an actual operator interrupt or
+  per-script timeout *firing* mid-script has no JS e2e coverage either (the
+  existing scenarios exercise the watch being armed and closed cleanly, not
+  the signal actually landing — same gap noted for the Rust suite in
+  `test-e2e-interrupt.sh`, which the JS backend has no equivalent of yet).
+  Also unwired: CI has no step for `test-e2e-chat.sh`/`test-e2e-interrupt.sh`/
+  `test-e2e-mcp.sh` at all (pre-existing gap, predates the JS-backend work —
+  only `test-e2e-bash-workflow.sh`/`test-e2e-agent-workflow.sh`/
+  `test-e2e-agent-workflow-js.sh`/`test-e2e-redeploy.sh` run in
+  `.github/workflows/check.yml`'s `e2e` job).
