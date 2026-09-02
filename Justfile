@@ -1,5 +1,14 @@
 serve:
-  obelisk server run -d deployment.toml --server-config server.toml 
+  obelisk server run -d deployment.toml --server-config server.toml
+
+# Same as `serve`, but new sessions schedule against the JS workflow backend
+# (workflow/workflow-js) instead of the Rust default. Both backends are
+# always deployed side by side; this only changes WORKFLOW_FFQN for the
+# webhook/activity that schedule new sessions (see
+# docs/js-backend-migration.md). Existing sessions and the sidebar are
+# unaffected either way.
+serve-js:
+  WORKFLOW_FFQN=obelisk-agent:workflow-js/workflow.run-cancellable obelisk server run -d deployment.toml --server-config server.toml
 
 serve-target:
   obelisk server run --server-config server-target.toml 

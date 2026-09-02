@@ -42,9 +42,9 @@ Obelisk and Rust (wasm32) toolchain. The workflow is a native Rust component
 `deployment.toml` also always deploys a full-parity JS alternative
 (`workflow/workflow-js`, a hand-written, dependency-free `just-bash`
 interpreter that ships as its own readable source, no compile/bundle step).
-Rust is the default; set `WORKFLOW_FFQN` to
-`obelisk-agent:workflow-js/workflow.run-cancellable` before `just serve` to
-schedule new sessions against the JS backend instead - no rebuild or
+Rust is the default; run `just serve-js` instead of `just serve` (or set
+`WORKFLOW_FFQN` to `obelisk-agent:workflow-js/workflow.run-cancellable`
+yourself) to schedule new sessions against the JS backend instead - no rebuild or
 redeploy needed either way. The sidebar always lists sessions from both
 backends regardless of which one is active. See
 [`docs/js-backend-migration.md`](docs/js-backend-migration.md) for why this
