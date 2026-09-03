@@ -53,22 +53,99 @@ pub enum WebEntryKind {
 /// Largest lazy blob the VFS will materialize into workflow memory.
 pub const MAX_LAZY_FETCH_BYTES: u64 = 1024 * 1024;
 
-/// Content-addressed metadata for an unmodified mounted file.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LazyFileRef {
-    pub digest: String,
-    pub size: u64,
+/// A validated `sha256:<hex>` content digest: this server's own CAS
+/// addressing scheme. The type is the guarantee - a value of this type is
+/// always safe to reuse as a `content_digest` or a CAS blob-loader key, so no
+/// caller ever has to guess that fact back out of a string (see
+/// `LazyOrigin`, which is where the CAS-vs-foreign distinction actually gets
+/// decided, once, at registration time).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Sha256Digest(String);
+
+impl Sha256Digest {
+    /// Parse a `sha256:...` string. Deliberately only a prefix check, not a
+    /// strict-shape one (see `valid_sha256_digest` for that stricter check,
+    /// used where the string comes from an untrusted source instead):
+    /// callers use short placeholder digests like `sha256:1` in tests, and a
+    /// malformed real one is still caught downstream. `None` for any other
+    /// scheme, e.g. a git blob's own SHA-1, which is never prefixed this way.
+    pub fn parse(digest: &str) -> Option<Self> {
+        digest
+            .starts_with("sha256:")
+            .then(|| Self(digest.to_string()))
+    }
+
+    /// This server's real sha256 of `bytes`.
+    pub fn of_content(bytes: &[u8]) -> Self {
+        Self(format!("sha256:{}", crate::commands::sha256_hex(bytes)))
+    }
+
+    /// The full `sha256:<hex>` string, e.g. for a manifest's `content_digest`
+    /// field or a CAS blob-loader lookup key.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The bare hex, with no `sha256:` prefix, e.g. for `sha256sum`'s output
+    /// format.
+    pub fn hex(&self) -> &str {
+        self.0.strip_prefix("sha256:").unwrap_or(&self.0)
+    }
 }
 
-/// True if `digest` is a real `sha256:<64 hex>` CAS digest. `LazyFileRef.digest`
-/// is trustworthy as a `content_digest` only when this holds: deployment
-/// mounts and MCP resources are always CAS-addressed this way, but a web/git
-/// mount's `digest` is the remote's own content hash in its own scheme (e.g. a
-/// GitHub blob's 40-hex git SHA-1), which a caller must not reuse as-is.
+impl std::fmt::Display for Sha256Digest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// True if `digest` is a real `sha256:<64 hex>` CAS digest - a strict check
+/// (unlike `Sha256Digest::parse`'s prefix-only one), for validating a string
+/// that comes from an untrusted source (e.g. an MCP server's own claimed
+/// resource digest) before trusting it at all.
 pub fn valid_sha256_digest(digest: &str) -> bool {
     digest
         .strip_prefix("sha256:")
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+/// Where a mounted file's remote identity comes from, decided once at
+/// registration time so nothing downstream has to guess by inspecting a
+/// string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LazyOrigin {
+    /// This server's own CAS (a deployment mount or an MCP resource):
+    /// `sha256` is both the file's real content digest and the key the
+    /// installed loader fetches its bytes by.
+    Cas(Sha256Digest),
+    /// A foreign remote (e.g. a GitHub/web mount), identified by whatever
+    /// opaque string that remote uses for its own change detection (e.g. a
+    /// git blob's own SHA-1). Not this server's sha256, and not used to
+    /// fetch - the installed loader fetches by its own closed-over remote
+    /// path instead (see `WebFileLoader`). This server's real sha256 for the
+    /// content, if ever computed locally, lives in
+    /// `Vfs::content_digest_cache`, never here.
+    Foreign(String),
+}
+
+impl LazyOrigin {
+    /// The string to hand a `BlobLoader`: the real sha256 for a CAS origin
+    /// (which fetches by digest), or the foreign scheme's own opaque string
+    /// for a foreign origin (whose loader ignores it and fetches by its own
+    /// closed-over remote path instead - see `WebFileLoader`).
+    fn loader_key(&self) -> &str {
+        match self {
+            LazyOrigin::Cas(digest) => digest.as_str(),
+            LazyOrigin::Foreign(key) => key.as_str(),
+        }
+    }
+}
+
+/// Content-addressed metadata for an unmodified mounted file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LazyFileRef {
+    pub origin: LazyOrigin,
+    pub size: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,8 +238,10 @@ pub struct Vfs {
     /// bytes twice. Cleared by any write to that path (`write_file`,
     /// `append_file`, `remove`), mirroring how `pending`/`lazy_cache` are
     /// invalidated on write. A `pending` file already carries its own cached
-    /// digest via `LazyFileRef` and never enters this map.
-    content_digest_cache: RefCell<BTreeMap<String, String>>,
+    /// digest via `LazyFileRef` and never enters this map, except a
+    /// `Foreign`-origin one for which the real sha256 was separately computed
+    /// (see `copy_file`, which carries this cache over to a copy's new path).
+    content_digest_cache: RefCell<BTreeMap<String, Sha256Digest>>,
 }
 
 impl std::fmt::Debug for Vfs {
@@ -216,7 +295,7 @@ impl Vfs {
 
     /// A previously cached content digest for an eager file at `path`, if
     /// `cache_content_digest` was called for it since its last write.
-    pub fn cached_content_digest(&self, path: &str) -> Option<String> {
+    pub fn cached_content_digest(&self, path: &str) -> Option<Sha256Digest> {
         self.content_digest_cache
             .borrow()
             .get(&self.resolve(path))
@@ -227,10 +306,10 @@ impl Vfs {
     /// `path`, so a later `cached_content_digest` call skips rehashing. The
     /// caller is responsible for `digest` actually matching the file's
     /// current bytes; a subsequent write to `path` invalidates the entry.
-    pub fn cache_content_digest(&self, path: &str, digest: &str) {
+    pub fn cache_content_digest(&self, path: &str, digest: Sha256Digest) {
         self.content_digest_cache
             .borrow_mut()
-            .insert(self.resolve(path), digest.to_string());
+            .insert(self.resolve(path), digest);
     }
 
     /// Register a one-shot deferred mount rooted at `root`. The tree is not
@@ -357,11 +436,20 @@ impl Vfs {
     /// when it is within `MAX_LAZY_FETCH_BYTES`. Overwrites content at `path`,
     /// including a previously fetched/cached body (so `deployment refresh` can
     /// re-point a file at a new digest and discard the stale bytes).
+    ///
+    /// `digest` must be `sha256:...` (this server's own CAS): this is the only
+    /// scheme a `register_lazy` caller ever has, so a non-conforming string
+    /// here is a caller bug, not a runtime possibility to handle gracefully.
     pub fn register_lazy(&mut self, path: &str, digest: &str, size: u64) {
-        self.register_lazy_inner(path, digest, size, None);
+        let origin =
+            LazyOrigin::Cas(Sha256Digest::parse(digest).unwrap_or_else(|| {
+                panic!("register_lazy digest must be sha256:..., got {digest:?}")
+            }));
+        self.register_lazy_origin(path, origin, size, None);
     }
 
     /// Register a lazy file whose bytes come from a mount-specific loader.
+    /// Same `digest` requirement as `register_lazy`.
     pub fn register_lazy_with_loader(
         &mut self,
         path: &str,
@@ -369,13 +457,22 @@ impl Vfs {
         size: u64,
         loader: Rc<dyn BlobLoader>,
     ) {
-        self.register_lazy_inner(path, digest, size, Some(loader));
+        let origin = LazyOrigin::Cas(Sha256Digest::parse(digest).unwrap_or_else(|| {
+            panic!("register_lazy_with_loader digest must be sha256:..., got {digest:?}")
+        }));
+        self.register_lazy_origin(path, origin, size, Some(loader));
     }
 
-    fn register_lazy_inner(
+    /// Register a lazy file with a pre-built `origin`, preserving whether
+    /// it's this server's own CAS or a foreign remote. Used by `copy_file`'s
+    /// reference-copy fast path so copying a foreign-origin (e.g.
+    /// git-mounted) file stays foreign at the new path, never silently
+    /// reinterpreted as a trusted CAS digest by `register_lazy`'s stricter
+    /// convenience wrapper.
+    fn register_lazy_origin(
         &mut self,
         path: &str,
-        digest: &str,
+        origin: LazyOrigin,
         size: u64,
         loader: Option<Rc<dyn BlobLoader>>,
     ) {
@@ -396,13 +493,24 @@ impl Vfs {
         if let Some(parent) = Self::parent(&path) {
             self.ensure_dirs(&parent);
         }
-        self.pending.borrow_mut().insert(
-            path,
-            LazyFileRef {
-                digest: digest.to_string(),
-                size,
-            },
-        );
+        self.pending
+            .borrow_mut()
+            .insert(path, LazyFileRef { origin, size });
+    }
+
+    /// Test-only: register a `Foreign`-origin lazy file directly (as a real
+    /// git/web mount's listing would, via `register_web_lazy`), without
+    /// standing up a full `DirProvider`/mount harness. Production code never
+    /// mints a `Foreign` origin any other way.
+    #[cfg(test)]
+    pub fn register_lazy_foreign_for_test(
+        &self,
+        path: &str,
+        foreign_digest: &str,
+        size: u64,
+        loader: Rc<dyn BlobLoader>,
+    ) {
+        self.register_web_lazy(path, foreign_digest.to_string(), size, loader);
     }
 
     fn register_web_lazy(&self, path: &str, digest: String, size: u64, loader: Rc<dyn BlobLoader>) {
@@ -410,9 +518,13 @@ impl Vfs {
         self.mounted_loaders
             .borrow_mut()
             .insert(path.to_string(), loader);
-        self.pending
-            .borrow_mut()
-            .insert(path.to_string(), LazyFileRef { digest, size });
+        self.pending.borrow_mut().insert(
+            path.to_string(),
+            LazyFileRef {
+                origin: LazyOrigin::Foreign(digest),
+                size,
+            },
+        );
     }
 
     /// Set or clear a file's execute bit (`chmod`). The path is resolved
@@ -604,13 +716,13 @@ impl Vfs {
             .get(&path)
             .or(self.loader.as_ref())
             .ok_or_else(|| FileReadError::Unavailable(path.clone()))?
-            .load(&reference.digest)
+            .load(reference.origin.loader_key())
             .map_err(|_| FileReadError::Unavailable(path.clone()))?;
         if bytes.len() as u64 > MAX_LAZY_FETCH_BYTES {
             return Err(FileReadError::TooLarge {
                 path,
                 reference: LazyFileRef {
-                    digest: reference.digest.clone(),
+                    origin: reference.origin.clone(),
                     size: bytes.len() as u64,
                 },
             });
@@ -669,22 +781,32 @@ impl Vfs {
     }
 
     /// Copy a single file from `src` to `dest`. A lazily-mounted, unmodified
-    /// (`pending`) source copies *by reference*: `dest` is registered lazy with
-    /// the same content digest, so nothing is fetched from the CAS (a component
-    /// WASM blob can be tens of MB, and the copy is meant to be as cheap as the
-    /// mount). A modified or eager source copies its bytes. Returns false if
-    /// `src` is not a readable file (a directory or a missing/unfetchable path);
-    /// `cp`/`mv` walk directories themselves.
+    /// (`pending`) source copies *by reference*: `dest` is registered lazy
+    /// with the same origin (preserving whether it's this server's CAS or a
+    /// foreign remote - see `register_lazy_origin`), so nothing is fetched (a
+    /// component WASM blob can be tens of MB, and the copy is meant to be as
+    /// cheap as the mount). Any already-cached fetched bytes and computed
+    /// sha256 for `src` carry over to `dest` too, since the content is
+    /// guaranteed identical - a copy of a file that was already hashed or read
+    /// must not pay for either again. A modified or eager source copies its
+    /// bytes. Returns false if `src` is not a readable file (a directory or a
+    /// missing/unfetchable path); `cp`/`mv` walk directories themselves.
     pub fn copy_file(&mut self, src: &str, dest: &str) -> bool {
         let src = self.resolve(src);
         let reference = self.pending.borrow().get(&src).cloned();
         if let Some(reference) = reference {
             let loader = self.mounted_loaders.borrow().get(&src).cloned();
-            match loader {
-                Some(loader) => {
-                    self.register_lazy_with_loader(dest, &reference.digest, reference.size, loader)
-                }
-                None => self.register_lazy(dest, &reference.digest, reference.size),
+            let cached_digest = self.content_digest_cache.borrow().get(&src).cloned();
+            let cached_bytes = self.lazy_cache.borrow().get(&src).cloned();
+            let dest = self.resolve(dest);
+            self.register_lazy_origin(&dest, reference.origin, reference.size, loader);
+            if let Some(digest) = cached_digest {
+                self.content_digest_cache
+                    .borrow_mut()
+                    .insert(dest.clone(), digest);
+            }
+            if let Some(bytes) = cached_bytes {
+                self.lazy_cache.borrow_mut().insert(dest, bytes);
             }
             return true;
         }
@@ -862,20 +984,20 @@ mod tests {
         fs.write_file("/a.txt", b"hello").unwrap();
         assert_eq!(fs.cached_content_digest("/a.txt"), None);
 
-        fs.cache_content_digest("/a.txt", "sha256:1");
+        fs.cache_content_digest("/a.txt", Sha256Digest::parse("sha256:1").unwrap());
         assert_eq!(
             fs.cached_content_digest("/a.txt"),
-            Some("sha256:1".to_string())
+            Some(Sha256Digest::parse("sha256:1").unwrap())
         );
 
         // A write to the same path (new content) must drop the stale entry.
         fs.write_file("/a.txt", b"changed").unwrap();
         assert_eq!(fs.cached_content_digest("/a.txt"), None);
 
-        fs.cache_content_digest("/a.txt", "sha256:2");
+        fs.cache_content_digest("/a.txt", Sha256Digest::parse("sha256:2").unwrap());
         assert_eq!(
             fs.cached_content_digest("/a.txt"),
-            Some("sha256:2".to_string())
+            Some(Sha256Digest::parse("sha256:2").unwrap())
         );
         fs.remove("/a.txt", false).unwrap();
         fs.write_file("/a.txt", b"changed").unwrap();
@@ -1087,6 +1209,48 @@ mod tests {
     }
 
     #[test]
+    fn copying_a_lazy_file_carries_over_its_cached_digest_and_bytes() {
+        // Regression: a `cp` of a git/web-mounted file whose real sha256 and
+        // fetched bytes were already established for the SOURCE path (e.g. by
+        // an earlier sha256sum or deployment-submit call) must not force the
+        // copy to refetch and rehash from scratch - the content is guaranteed
+        // identical.
+        let provider = Rc::new(FakeProvider {
+            listings: BTreeMap::from([("".to_string(), vec![file("AGENTS.md", 3)])]),
+            files: BTreeMap::from([("AGENTS.md".to_string(), b"abc".to_vec())]),
+            lists: RefCell::new(Vec::new()),
+            reads: RefCell::new(Vec::new()),
+        });
+        let mut fs = Vfs::new();
+        fs.register_web_mount("/workspace/components", "", provider.clone());
+        fs.readdir("/workspace/components");
+
+        fs.read_file("/workspace/components/AGENTS.md");
+        let digest = Sha256Digest::of_content(b"abc");
+        fs.cache_content_digest("/workspace/components/AGENTS.md", digest.clone());
+        assert_eq!(&*provider.reads.borrow(), &["AGENTS.md".to_string()]);
+
+        assert!(fs.copy_file("/workspace/components/AGENTS.md", "/AGENTS.md"));
+        assert!(
+            matches!(
+                fs.lazy_file_ref("/AGENTS.md"),
+                Some(LazyFileRef {
+                    origin: LazyOrigin::Foreign(_),
+                    ..
+                })
+            ),
+            "a copy of a foreign-origin file must stay foreign-origin"
+        );
+        assert_eq!(fs.cached_content_digest("/AGENTS.md"), Some(digest));
+        assert_eq!(fs.read_file("/AGENTS.md").as_deref(), Some(&b"abc"[..]));
+        assert_eq!(
+            &*provider.reads.borrow(),
+            &["AGENTS.md".to_string()],
+            "the copy must not refetch bytes already cached for the source"
+        );
+    }
+
+    #[test]
     fn missing_loader_or_failed_fetch_reads_as_absent() {
         let mut fs = Vfs::new();
         fs.register_lazy("/dep/a.txt", "sha256:a", 1);
@@ -1118,7 +1282,7 @@ mod tests {
             Err(FileReadError::TooLarge {
                 path: "/dep/component.wasm".to_string(),
                 reference: LazyFileRef {
-                    digest: "sha256:big".to_string(),
+                    origin: LazyOrigin::Cas(Sha256Digest::parse("sha256:big").unwrap()),
                     size: MAX_LAZY_FETCH_BYTES + 1,
                 },
             })
@@ -1284,7 +1448,7 @@ mod tests {
         assert_eq!(
             fs.lazy_file_ref("/workspace/components/README.md"),
             Some(LazyFileRef {
-                digest: "git:README.md".to_string(),
+                origin: LazyOrigin::Foreign("git:README.md".to_string()),
                 size: 5,
             })
         );

@@ -3,6 +3,7 @@
 
 import { ok, fail, unknownOption } from "./core.js";
 import { utf8Encode, utf8Decode } from "../utf8.js";
+import { isCasNamespacedDigest } from "../fs.js";
 
 const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -262,6 +263,30 @@ export function sha256Hex(bytes) {
     return state.map((w) => w.toString(16).padStart(8, "0")).join("");
 }
 
+// The bare-hex sha256 of the file currently at `path`, computed at most once
+// per unchanged state (see `Vfs.cacheContentDigest`): a `pending` file whose
+// own digest is already CAS-namespaced (`sha256:...`, e.g. a deployment
+// mount) is trusted with no I/O at all; otherwise (a foreign digest, such as
+// a git/web mount's own hash, or eager content) the content digest cache is
+// consulted before falling back to reading the bytes - fetching a lazy file
+// at most once via the existing lazy read cache - and hashing them, after
+// which the result is cached for next time. Returns null if the file is
+// missing.
+// PORT: fs.rs's `content_sha256_hex`.
+function contentSha256Hex(interp, path) {
+    const lazy = interp.vfs.lazyFileRef(path);
+    if (lazy && isCasNamespacedDigest(lazy.digest)) {
+        return lazy.digest.slice("sha256:".length);
+    }
+    const cached = interp.vfs.cachedContentDigest(path);
+    if (cached !== null) return cached.slice("sha256:".length);
+    if (!interp.vfs.isFile(path)) return null;
+    const bytes = utf8Encode(interp.vfs.readFile(path));
+    const hex = sha256Hex(bytes);
+    interp.vfs.cacheContentDigest(path, `sha256:${hex}`);
+    return hex;
+}
+
 export function sha256sumCommand(interp, args, stdin) {
     const files = [];
     for (let i = 1; i < args.length; i++) {
@@ -274,9 +299,9 @@ export function sha256sumCommand(interp, args, stdin) {
 
     let stdout = "", stderr = "", exitCode = 0;
     for (const file of files) {
-        const bytes = readFileBytes(interp, file, stdin);
-        if (bytes === null) { stderr += `sha256sum: ${file}: No such file or directory\n`; exitCode = 1; continue; }
-        stdout += `${sha256Hex(bytes)}  ${file}\n`;
+        const hex = file === "-" ? sha256Hex(utf8Encode(stdin)) : contentSha256Hex(interp, interp.resolvePath(file));
+        if (hex === null) { stderr += `sha256sum: ${file}: No such file or directory\n`; exitCode = 1; continue; }
+        stdout += `${hex}  ${file}\n`;
     }
     return { stdout, stderr, exitCode };
 }

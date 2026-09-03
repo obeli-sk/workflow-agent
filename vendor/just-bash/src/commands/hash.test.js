@@ -54,3 +54,40 @@ test("sha256sum known vectors and local file", () => {
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  /f.txt\n",
     );
 });
+
+test("sha256sum uses a CAS-namespaced lazy digest without fetching", () => {
+    const bash = new Bash({ cwd: "/workspace" });
+    let fetched = false;
+    bash.vfs.setBlobLoader(() => { fetched = true; throw new Error("must not fetch"); });
+    bash.vfs.registerLazy(
+        "/huge.wasm",
+        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        Number.MAX_SAFE_INTEGER,
+    );
+
+    assert.equal(
+        bash.exec("sha256sum /huge.wasm").stdout,
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  /huge.wasm\n",
+    );
+    assert.equal(fetched, false);
+});
+
+test("sha256sum of a foreign-digest pending file hashes once and caches", () => {
+    // A git/web mount's own digest (e.g. GitHub's 40-hex blob SHA-1) is not
+    // our CAS's sha256, so sha256sum must not trust it as-is like the
+    // CAS-namespaced case above - it must fetch and hash the real bytes. But
+    // that fetch+hash should still happen at most once: the second call must
+    // neither refetch nor rehash.
+    const bash = new Bash({ cwd: "/workspace" });
+    let fetches = 0;
+    bash.vfs.setBlobLoader(() => { fetches++; return "abc"; });
+    bash.vfs.registerLazy("/AGENTS.md", "a9993e364706816aba3e25717850c26c9cd0d89d", 3);
+
+    const expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    assert.equal(bash.exec("sha256sum /AGENTS.md").stdout, `${expected}  /AGENTS.md\n`);
+    assert.equal(fetches, 1);
+    assert.equal(bash.vfs.cachedContentDigest("/AGENTS.md"), `sha256:${expected}`);
+
+    assert.equal(bash.exec("sha256sum /AGENTS.md").stdout, `${expected}  /AGENTS.md\n`);
+    assert.equal(fetches, 1, "content must not be fetched twice");
+});

@@ -132,6 +132,34 @@ test("copyFile of a lazy file copies the reference without fetching", () => {
     assert.deepEqual(loader.loads, ["sha256:a"]);
 });
 
+test("copying a lazy file carries over its cached digest and bytes", () => {
+    // Regression: a `cp` of a git/web-mounted file whose real sha256 and
+    // fetched bytes were already established for the SOURCE path (e.g. by an
+    // earlier sha256sum or deployment-submit call) must not force the copy to
+    // refetch and rehash from scratch - the content is guaranteed identical.
+    const provider = fakeProvider({
+        listings: { "": [{ name: "AGENTS.md", kind: "file", digest: "git:a", size: 3 }] },
+        files: { "AGENTS.md": "abc" },
+    });
+    const fs = new Vfs();
+    fs.registerWebMount("/workspace/components", "", provider);
+    fs.readdir("/workspace/components");
+
+    fs.readFile("/workspace/components/AGENTS.md");
+    fs.cacheContentDigest("/workspace/components/AGENTS.md", "sha256:abc123");
+    assert.deepEqual(provider.reads, ["AGENTS.md"]);
+
+    fs.copyFile("/workspace/components/AGENTS.md", "/AGENTS.md");
+    assert.equal(fs.isPending("/AGENTS.md"), true);
+    assert.equal(fs.cachedContentDigest("/AGENTS.md"), "sha256:abc123");
+    assert.equal(fs.readFile("/AGENTS.md"), "abc");
+    assert.deepEqual(
+        provider.reads,
+        ["AGENTS.md"],
+        "the copy must not refetch bytes already cached for the source",
+    );
+});
+
 test("content digest cache is invalidated by a write or a remove", () => {
     const fs = new Vfs();
     fs.writeFile("/a.txt", "hello");
