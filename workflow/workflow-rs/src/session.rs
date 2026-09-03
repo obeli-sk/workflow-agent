@@ -994,7 +994,8 @@ pub fn agent_loop(
                         call.name, call.id
                     ));
                     let started_at = host_now_ms();
-                    let block = dispatch_bash(call, &mut bash, &notifications, turn_index, agent_steps);
+                    let block =
+                        dispatch_bash(call, &mut bash, &notifications, turn_index, agent_steps);
                     let duration_milliseconds = elapsed_milliseconds(started_at, host_now_ms());
                     log_line(&format!(
                         "turn={turn_index} step={agent_steps} tool finish: {}({}) in {duration_milliseconds}ms",
@@ -1135,7 +1136,16 @@ fn apply_session_input(
             // `shell-output` carries the script and result, so the webui echoes
             // the command and shows its output from this single event.
             let started_at = host_now_ms();
-            let result = exec_shell(notifications, turn_index, "direct", &id, bash, &script, &stdin, None)?;
+            let result = exec_shell(
+                notifications,
+                turn_index,
+                "direct",
+                &id,
+                bash,
+                &script,
+                &stdin,
+                None,
+            )?;
             let duration_milliseconds = elapsed_milliseconds(started_at, host_now_ms());
             let record = ShellOutputEvent {
                 id,

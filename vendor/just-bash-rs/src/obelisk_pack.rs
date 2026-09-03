@@ -912,7 +912,9 @@ fn table_like_keys(table: &dyn TableLike) -> Vec<String> {
 /// bytes `deployment_sources` transmits, so the server's re-hash matches.
 fn owned_source_digest(fs: &Vfs, path: &str, log: fn(&str)) -> Option<String> {
     if let Some(lazy) = fs.lazy_file_ref(path) {
-        log(&format!("owned_source_digest({path}): unchanged, reusing cached digest"));
+        log(&format!(
+            "owned_source_digest({path}): unchanged, reusing cached digest"
+        ));
         return Some(lazy.digest);
     }
     let bytes = fs.read_file(path)?;
@@ -922,7 +924,9 @@ fn owned_source_digest(fs: &Vfs, path: &str, log: fn(&str)) -> Option<String> {
         content.len()
     ));
     let digest = format!("sha256:{}", sha256_hex(content.as_bytes()));
-    log(&format!("owned_source_digest({path}): hashed, digest={digest}"));
+    log(&format!(
+        "owned_source_digest({path}): hashed, digest={digest}"
+    ));
     Some(digest)
 }
 
