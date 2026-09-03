@@ -286,7 +286,11 @@ function executeDeployment(interp, action, args, host) {
         return ok(`${mountResultJson(refreshed)}\n`);
     }
     if (action === "check") {
-        const { dir, file } = resolveDeploymentManifest(interp, firstPositional(args, []));
+        // Unlike `submit`, `check` has no real-obelisk counterpart to match,
+        // so it keeps its own PATH-optional convenience: default to
+        // ./deployment.toml in the cwd.
+        const positional = firstPositional(args, []);
+        const { dir, file } = resolveDeploymentManifest(interp, positional !== undefined && positional !== "" ? positional : "./deployment.toml");
         const manifest = readManifest(interp.vfs, dir, file);
         const sources = deploymentSources(interp.vfs, dir, manifest);
         const payload = { directory: dir, manifest_bytes: utf8Encode(manifest).length, owned_sources: sources };
@@ -415,19 +419,15 @@ export function deploymentSources(fs, dir, manifest) {
 // Resolve the manifest to read from a positional argument: `{dir, file}`,
 // `dir` being the base for every relative path *inside* the manifest
 // (component/wit locations) and `file` the manifest's own name within it.
-// Accepts a path to the manifest file itself (obelisk's `submit PATH`; its
-// parent is the directory) - any filename, not just the literal
+// PATH is always a path to the manifest file itself, matching real obelisk
+// (its `submit`/`enqueue`/`apply`/`verify` all take a literal file path, no
+// directory fallback) - but any filename, not just the literal
 // "deployment.toml" (this repo's own deployment.js.toml/deployment.rs.toml
-// are exactly this case) - a directory (defaults to "deployment.toml"
-// inside it), or nothing (defaults to the cwd). Which of the two PATH is
-// must be settled by checking the VFS, not by string-matching the name:
-// obelisk itself accepts any manifest filename here.
+// are exactly this case). Callers that allow PATH to be omitted must supply
+// their own default value before calling; `required()` rejects an absent one.
 function resolveDeploymentManifest(interp, value) {
-    const raw = value !== undefined && value !== "" ? value : ".";
-    const resolved = interp.resolvePath(raw);
-    return interp.vfs.isFile(resolved)
-        ? { dir: parentDir(resolved), file: basename(resolved) }
-        : { dir: resolved, file: "deployment.toml" };
+    const resolved = interp.resolvePath(required(value, "PATH-TO-DEPLOYMENT.TOML"));
+    return { dir: parentDir(resolved), file: basename(resolved) };
 }
 
 function parentDir(path) {
@@ -687,13 +687,13 @@ const callHelp =
     "Usage: obelisk call FFQN [PARAMS_JSON]\n       obelisk call FFQN -- PARAM...\n\nCall a deployed function and print its result. Pass parameters as one JSON array\nin WIT parameter order, or after `--` as positional values (each parsed as JSON\nwhen valid, otherwise as a string). With neither, parameters are read from stdin,\ndefaulting to `[]`.\n";
 
 const deploymentHelp =
-    "Usage: obelisk deployment <subcommand>\n\nInspect, edit, submit, and activate deployments. Edits under\n/workspace/deployment/current are local until `submit` or `apply`.\n\nSubcommands:\n  current                   Print the active deployment ID.\n  refresh                   Re-fetch the active deployment, discarding local edits.\n  check [PATH]              Report a deployment's manifest and locally-edited sources.\n  submit [PATH] [OPTIONS]   Store the edited deployment as a new inactive deployment.\n  switch ID [OPTIONS]       Activate a stored deployment (verified on next server restart).\n  apply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\nRun `obelisk deployment <subcommand> --help` for a subcommand's options.\n";
+    "Usage: obelisk deployment <subcommand>\n\nInspect, edit, submit, and activate deployments. Edits under\n/workspace/deployment/current are local until `submit` or `apply`.\n\nSubcommands:\n  current                   Print the active deployment ID.\n  refresh                   Re-fetch the active deployment, discarding local edits.\n  check [PATH]              Report a deployment's manifest and locally-edited sources.\n  submit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\n  switch ID [OPTIONS]       Activate a stored deployment (verified on next server restart).\n  apply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\nRun `obelisk deployment <subcommand> --help` for a subcommand's options.\n";
 
 const deploymentSubmitHelp =
-    "Usage: obelisk deployment submit [OPTIONS] [PATH-TO-DEPLOYMENT.TOML]\n\nStore the edited deployment as a new inactive deployment and print its ID. PATH\nis the deployment.toml to submit, or the directory containing it; it defaults to\n./deployment.toml. Digests are recomputed from the files, so leave them out.\n\nOptions:\n      --description TEXT               Human-readable description for the new deployment.\n      --allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n                                       (alias: --allow-unavailable-runtime-config)\n";
+    "Usage: obelisk deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML\n\nStore the edited deployment as a new inactive deployment and print its ID. PATH\nis the path to the deployment TOML file to submit (any filename - not just the\nliteral \"deployment.toml\"); it must be a file, not a directory, matching real\nobelisk. Digests are recomputed from the files, so leave them out.\n\nOptions:\n      --description TEXT               Human-readable description for the new deployment.\n      --allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n                                       (alias: --allow-unavailable-runtime-config)\n";
 
 const deploymentCheckHelp =
-    "Usage: obelisk deployment check [PATH-TO-DEPLOYMENT.TOML]\n\nReport a deployment's manifest size and the owned sources edited locally (the\nfiles a submit would upload). PATH is the deployment.toml, or its directory; it\ndefaults to ./deployment.toml.\n";
+    "Usage: obelisk deployment check [PATH-TO-DEPLOYMENT.TOML]\n\nReport a deployment's manifest size and the owned sources edited locally (the\nfiles a submit would upload). PATH is the path to the deployment TOML file (any\nfilename); it must be a file, not a directory, and defaults to ./deployment.toml.\n";
 
 const deploymentSwitchHelp =
     "Usage: obelisk deployment switch [OPTIONS] ID\n\nMark a stored deployment active; it is verified and applied on the next server\nrestart.\n\nOptions:\n      --allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n                                       (alias: --allow-unavailable-runtime-config)\n";
