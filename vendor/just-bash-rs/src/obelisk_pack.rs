@@ -431,8 +431,8 @@ fn execute_deployment(
             Ok(ok(format!("{}\n", mount_result_json(&refreshed))))
         }
         "check" => {
-            let dir = resolve_deployment_dir(interp, first_positional(args, &[]));
-            let manifest = read_manifest(&interp.fs, &dir)?;
+            let (dir, file) = resolve_deployment_manifest(interp, first_positional(args, &[]));
+            let manifest = read_manifest(&interp.fs, &dir, &file)?;
             let sources = deployment_sources(&interp.fs, &dir, &manifest);
             let payload = json!({
                 "directory": dir,
@@ -448,8 +448,9 @@ fn execute_deployment(
             // The PATH is positional, so skip flags (and `--description`'s value)
             // when finding it; otherwise `submit --description X` reads `X`, or
             // even `--description` itself, as the deployment directory.
-            let dir = resolve_deployment_dir(interp, first_positional(args, &["--description"]));
-            let manifest = read_manifest(&interp.fs, &dir)?;
+            let (dir, file) =
+                resolve_deployment_manifest(interp, first_positional(args, &["--description"]));
+            let manifest = read_manifest(&interp.fs, &dir, &file)?;
             let manifest =
                 manifest_with_generated_files(&interp.fs, &dir, &manifest, interp.log_debug)?;
             // Expand the digest-free view back to what the server stores: every
@@ -997,16 +998,23 @@ fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<String> {
     files
 }
 
-/// Resolve the directory holding `deployment.toml` from a positional argument.
-/// Accepts a path to the `deployment.toml` file itself (obelisk's `submit PATH`;
-/// its parent is the directory), a directory, or nothing (defaults to the cwd).
-fn resolve_deployment_dir(interp: &Interpreter, value: Option<&str>) -> String {
+/// Resolve the manifest to read from a positional argument: `(dir, file)`,
+/// `dir` being the base for every relative path *inside* the manifest
+/// (component/wit locations) and `file` the manifest's own name within it.
+/// Accepts a path to the manifest file itself (obelisk's `submit PATH`; its
+/// parent is the directory) -- any filename, not just the literal
+/// "deployment.toml" (this repo's own deployment.js.toml/deployment.rs.toml
+/// are exactly this case) -- a directory (defaults to "deployment.toml"
+/// inside it), or nothing (defaults to the cwd). Which of the two PATH is
+/// must be settled by checking the VFS, not by string-matching the name:
+/// obelisk itself accepts any manifest filename here.
+fn resolve_deployment_manifest(interp: &Interpreter, value: Option<&str>) -> (String, String) {
     let value = value.filter(|s| !s.is_empty()).unwrap_or(".");
     let resolved = normalize_path(&interp.cwd, value);
-    if basename(&resolved) == "deployment.toml" {
-        parent_dir(&resolved)
+    if interp.fs.is_file(&resolved) {
+        (parent_dir(&resolved), basename(&resolved))
     } else {
-        resolved
+        (resolved, "deployment.toml".to_string())
     }
 }
 
@@ -1043,8 +1051,8 @@ fn flag_runtime_config(args: &[String]) -> bool {
     flag(args, "--allow-missing-runtime-config") || flag(args, "--allow-unavailable-runtime-config")
 }
 
-fn read_manifest(fs: &Vfs, dir: &str) -> Result<String, String> {
-    let path = format!("{dir}/deployment.toml");
+fn read_manifest(fs: &Vfs, dir: &str, file: &str) -> Result<String, String> {
+    let path = format!("{dir}/{file}");
     fs.read_file(&path)
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .ok_or_else(|| format!("{path}: No such file or directory"))
@@ -2476,6 +2484,31 @@ content_digest = \"sha256:1\"\n\
         // The file's parent directory supplies the deployment id.
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
         assert_eq!(params[4], "dep-1");
+    }
+
+    #[test]
+    fn deployment_submit_accepts_a_manifest_not_literally_named_deployment_toml() {
+        // Regression: PATH resolution used to string-match the basename
+        // against the literal "deployment.toml", so any other manifest name
+        // (this repo's own deployment.js.toml/deployment.rs.toml convention)
+        // was treated as a directory and `<dir>/deployment.toml` didn't
+        // exist there, failing with a misleading "No such file or
+        // directory" instead of reading the file that was actually passed.
+        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
+        let mut i = interp("/workspace/workflow-agent");
+        i.fs.write_file(
+            "/workspace/workflow-agent/deployment.js.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "deployment.js.toml"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
     }
 
     #[test]

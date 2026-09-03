@@ -742,6 +742,21 @@ test("deployment submit accepts a path to the toml file itself", () => {
     assert.equal(JSON.parse(host.calls[0][1])[4], "dep-1");
 });
 
+test("deployment submit accepts a manifest not literally named deployment.toml", () => {
+    // Regression: PATH resolution used to string-match the basename against
+    // the literal "deployment.toml", so any other manifest name (this
+    // repo's own deployment.js.toml/deployment.rs.toml convention) was
+    // treated as a directory and `<dir>/deployment.toml` didn't exist
+    // there, failing with a misleading "No such file or directory" instead
+    // of reading the file that was actually passed.
+    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
+    const i = interp("/workspace/workflow-agent");
+    i.vfs.writeFile("/workspace/workflow-agent/deployment.js.toml", manifest);
+    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"));
+    const out = executeObelisk(i, words("deployment submit deployment.js.toml"), "", host);
+    assert.equal(out.exitCode, 0, out.stderr);
+});
+
 test("deployment submit skips unmodified lazy sources", () => {
     const manifest = [
         "[[workflow_wasm]]",

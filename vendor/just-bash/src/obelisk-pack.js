@@ -286,8 +286,8 @@ function executeDeployment(interp, action, args, host) {
         return ok(`${mountResultJson(refreshed)}\n`);
     }
     if (action === "check") {
-        const dir = resolveDeploymentDir(interp, firstPositional(args, []));
-        const manifest = readManifest(interp.vfs, dir);
+        const { dir, file } = resolveDeploymentManifest(interp, firstPositional(args, []));
+        const manifest = readManifest(interp.vfs, dir, file);
         const sources = deploymentSources(interp.vfs, dir, manifest);
         const payload = { directory: dir, manifest_bytes: utf8Encode(manifest).length, owned_sources: sources };
         return ok(`${prettyJson(payload)}\n`);
@@ -296,8 +296,8 @@ function executeDeployment(interp, action, args, host) {
         // The PATH is positional, so skip flags (and `--description`'s
         // value) when finding it; otherwise `submit --description X` reads
         // `X`, or even `--description` itself, as the deployment directory.
-        const dir = resolveDeploymentDir(interp, firstPositional(args, ["--description"]));
-        const manifest = readManifest(interp.vfs, dir);
+        const { dir, file } = resolveDeploymentManifest(interp, firstPositional(args, ["--description"]));
+        const manifest = readManifest(interp.vfs, dir, file);
         const prepared = manifestWithGeneratedFiles(interp.vfs, dir, manifest);
         // Expand the digest-free view back to what the server stores: every
         // `content_digest`, `component_files` value, and `backtrace.sources`
@@ -412,14 +412,22 @@ export function deploymentSources(fs, dir, manifest) {
     return files;
 }
 
-// Resolve the directory holding `deployment.toml` from a positional
-// argument. Accepts a path to the `deployment.toml` file itself (obelisk's
-// `submit PATH`; its parent is the directory), a directory, or nothing
-// (defaults to the cwd).
-function resolveDeploymentDir(interp, value) {
+// Resolve the manifest to read from a positional argument: `{dir, file}`,
+// `dir` being the base for every relative path *inside* the manifest
+// (component/wit locations) and `file` the manifest's own name within it.
+// Accepts a path to the manifest file itself (obelisk's `submit PATH`; its
+// parent is the directory) - any filename, not just the literal
+// "deployment.toml" (this repo's own deployment.js.toml/deployment.rs.toml
+// are exactly this case) - a directory (defaults to "deployment.toml"
+// inside it), or nothing (defaults to the cwd). Which of the two PATH is
+// must be settled by checking the VFS, not by string-matching the name:
+// obelisk itself accepts any manifest filename here.
+function resolveDeploymentManifest(interp, value) {
     const raw = value !== undefined && value !== "" ? value : ".";
     const resolved = interp.resolvePath(raw);
-    return basename(resolved) === "deployment.toml" ? parentDir(resolved) : resolved;
+    return interp.vfs.isFile(resolved)
+        ? { dir: parentDir(resolved), file: basename(resolved) }
+        : { dir: resolved, file: "deployment.toml" };
 }
 
 function parentDir(path) {
@@ -451,8 +459,8 @@ function flagRuntimeConfig(args) {
     return flag(args, "--allow-missing-runtime-config") || flag(args, "--allow-unavailable-runtime-config");
 }
 
-function readManifest(fs, dir) {
-    const path = `${dir}/deployment.toml`;
+function readManifest(fs, dir, file) {
+    const path = `${dir}/${file}`;
     if (!fs.exists(path)) throw `${path}: No such file or directory`;
     return fs.readFile(path);
 }
