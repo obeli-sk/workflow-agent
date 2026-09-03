@@ -244,7 +244,11 @@ mod tests {
                 .ok()
                 .and_then(|v| v.as_array().and_then(|a| a.first().cloned()))
                 .and_then(|v| v.as_str().map(str::to_string));
-            assert_ne!(method.as_deref(), Some("read"), "cp -r must not fetch file content");
+            assert_ne!(
+                method.as_deref(),
+                Some("read"),
+                "cp -r must not fetch file content"
+            );
             self.reads
                 .get(params_json)
                 .cloned()

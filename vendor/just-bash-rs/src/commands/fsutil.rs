@@ -1190,14 +1190,26 @@ mod tests {
         let loader = Rc::new(RecordingLoader(RefCell::new(Vec::new())));
         let mut bash = fresh();
         bash.fs_mut().set_blob_loader(loader.clone());
-        bash.fs_mut().register_lazy("/dep/current/a.wasm", "sha256:a", 10);
-        bash.fs_mut().register_lazy("/dep/current/sub/b.wasm", "sha256:b", 20);
+        bash.fs_mut()
+            .register_lazy("/dep/current/a.wasm", "sha256:a", 10);
+        bash.fs_mut()
+            .register_lazy("/dep/current/sub/b.wasm", "sha256:b", 20);
 
         let r = run(&mut bash, "cp -r /dep/current /dep/work");
         assert_eq!(r.exit_code, 0, "stderr: {}", r.stderr);
-        assert!(bash.fs().is_pending("/dep/work/a.wasm"), "a.wasm should be pending");
-        assert!(bash.fs().is_pending("/dep/work/sub/b.wasm"), "sub/b.wasm should be pending");
-        assert!(loader.0.borrow().is_empty(), "recursive cp must not fetch blobs, fetched: {:?}", loader.0.borrow());
+        assert!(
+            bash.fs().is_pending("/dep/work/a.wasm"),
+            "a.wasm should be pending"
+        );
+        assert!(
+            bash.fs().is_pending("/dep/work/sub/b.wasm"),
+            "sub/b.wasm should be pending"
+        );
+        assert!(
+            loader.0.borrow().is_empty(),
+            "recursive cp must not fetch blobs, fetched: {:?}",
+            loader.0.borrow()
+        );
     }
 
     #[test]
