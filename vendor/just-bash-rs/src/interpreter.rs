@@ -126,6 +126,9 @@ pub struct Interpreter {
     /// The only producer today is `run_pending_process_subs` feeding a
     /// `>(script)`'s captured content to `script`.
     injected_stdin: Option<String>,
+    /// Stdin supplied to the compound command currently being evaluated. A
+    /// `read` in its body consumes this buffer across loop iterations.
+    pub stdin_binding: Option<Rc<RefCell<String>>>,
 }
 
 /// A pending `break N` / `continue N`: how many enclosing loops to unwind.
@@ -260,6 +263,7 @@ impl Interpreter {
             proc_sub_counter: 0,
             pending_output_subs: Vec::new(),
             injected_stdin: None,
+            stdin_binding: None,
         }
     }
 
@@ -443,7 +447,12 @@ impl Interpreter {
         // The only source of injected stdin today is a `>(script)` process
         // substitution feeding its placeholder's content to `script`'s first
         // pipeline; ordinary pipelines just get "".
-        let mut stdin = self.injected_stdin.take().unwrap_or_default();
+        let mut stdin = self.injected_stdin.take().unwrap_or_else(|| {
+            self.stdin_binding
+                .as_ref()
+                .map(|binding| binding.borrow().clone())
+                .unwrap_or_default()
+        });
         let mut exit_code = 0;
         // `set -o pipefail`: the pipeline's status is the last non-zero
         // command's, not just the final command's.
@@ -479,7 +488,7 @@ impl Interpreter {
     fn run_command(&mut self, command: &Command, stdin: String) -> CommandOutput {
         match command {
             Command::Simple(cmd) => self.run_simple(cmd, stdin),
-            Command::Compound(cmd) => self.run_compound(cmd),
+            Command::Compound(cmd) => self.run_compound(cmd, stdin),
             Command::Arith(expr) => self.run_arith_command(expr),
         }
     }
@@ -503,10 +512,12 @@ impl Interpreter {
 
     /// Run a compound command, capturing its stdout so it composes in a pipeline
     /// like any other command. Its stderr still flows straight to the shell's
-    /// stderr. Stdin into a compound command is not threaded yet (no `read`).
-    fn run_compound(&mut self, cmd: &CompoundCommand) -> CommandOutput {
+    /// stderr.
+    fn run_compound(&mut self, cmd: &CompoundCommand, stdin: String) -> CommandOutput {
         let mark = self.out.mark();
+        let saved_stdin = self.stdin_binding.replace(Rc::new(RefCell::new(stdin)));
         self.exec_compound(cmd);
+        self.stdin_binding = saved_stdin;
         let stdout = self.out.take_stdout_since(mark);
         CommandOutput {
             stdout,
@@ -624,6 +635,7 @@ impl Interpreter {
             }
             CompoundCommand::While { cond, body, until } => {
                 self.last_exit = 0;
+                let mut loop_exit = 0;
                 loop {
                     if self.halted() || matches!(self.poll_loop_control(), Some(true)) {
                         break;
@@ -638,13 +650,14 @@ impl Interpreter {
                         cond_code == 0
                     };
                     if enter && self.loop_control.is_none() {
-                        self.run_block(body, true);
+                        loop_exit = self.run_block(body, true);
                     }
                     self.loop_depth -= 1;
                     if !enter || matches!(self.poll_loop_control(), Some(true)) {
                         break;
                     }
                 }
+                self.last_exit = loop_exit;
             }
             CompoundCommand::Case { subject, arms } => {
                 self.last_exit = 0;

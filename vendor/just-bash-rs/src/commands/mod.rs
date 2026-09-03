@@ -32,7 +32,7 @@ mod xargs;
 
 #[rustfmt::skip]
 const BUILTINS: &[&str] = &[
-    "echo", "pwd", "cd", "true", "false", ":", "export", "unset", "cat", "mkdir", "ls", "stat",
+    "echo", "pwd", "cd", "true", "false", ":", "export", "unset", "read", "cat", "mkdir", "ls", "stat",
     "rm", "touch", "test", "[", "grep", "egrep", "fgrep", "sed", "wc", "sort", "uniq", "head",
     "tail", "cut", "tr", "printf", "xargs", "find", "basename", "dirname", "jq", "awk", "date",
     "expr", "sleep", "timeout", "time", "seq", "tee", "which", "env", "printenv", "whoami",
@@ -61,6 +61,62 @@ fn fail(stderr: String, exit_code: i32) -> CommandOutput {
         stderr,
         exit_code,
     }
+}
+
+fn builtin_read(interp: &mut Interpreter, args: &[String], stdin: String) -> CommandOutput {
+    if stdin.is_empty() {
+        return fail(String::new(), 1);
+    }
+    let (flags, names) = split_flags(args);
+    let targets = if names.is_empty() {
+        vec!["REPLY"]
+    } else {
+        names.into_iter().map(String::as_str).collect()
+    };
+    let (line, remainder, complete) = match stdin.find('\n') {
+        Some(newline) => (&stdin[..newline], &stdin[newline + 1..], true),
+        None => (stdin.as_str(), "", false),
+    };
+    if let Some(binding) = &interp.stdin_binding {
+        *binding.borrow_mut() = remainder.to_string();
+    }
+    let value = if flags.contains('r') {
+        line.to_string()
+    } else {
+        unescape_read_line(line)
+    };
+    let fields: Vec<&str> = value
+        .split([' ', '\t'])
+        .filter(|field| !field.is_empty())
+        .collect();
+    for (index, name) in targets.iter().enumerate() {
+        let value = if index + 1 == targets.len() {
+            fields[index..].join(" ")
+        } else {
+            fields.get(index).copied().unwrap_or_default().to_string()
+        };
+        interp.env.insert((*name).to_string(), value);
+    }
+    if complete {
+        ok(String::new())
+    } else {
+        fail(String::new(), 1)
+    }
+}
+
+fn unescape_read_line(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// The shared "unknown option" diagnostic upstream's `unknownOption` helper
@@ -94,6 +150,7 @@ pub fn dispatch(
         "cd" => builtin_cd(interp, rest),
         "export" => builtin_export(interp, rest),
         "unset" => builtin_unset(interp, rest),
+        "read" => builtin_read(interp, rest, stdin),
         "cat" => builtin_cat(interp, rest, stdin),
         "mkdir" => builtin_mkdir(interp, rest),
         "ls" => builtin_ls(interp, rest),
