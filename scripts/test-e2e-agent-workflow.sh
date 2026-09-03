@@ -194,13 +194,21 @@ done
 echo ">>> shell-only E2E PASS: curl was registered and invoked without starting the agent"
 
 echo ">>> running the obelisk/mount custom commands"
-run_shell_turn "shell-e2e-2" "mount && cat /workspace/apps/components/README.md && echo --- && obelisk functions list --help"
+# The components mount's ref resolves lazily, on its first ls/cat, not at
+# `mount` time: the first `mount` (before anything touches the tree) shows
+# the requested ref (@main); only the second, after the `cat`, shows the
+# commit it pinned to.
+run_shell_turn "shell-e2e-2" "mount && cat /workspace/apps/components/README.md && mount && echo --- && obelisk functions list --help"
 if [[ "$SHELL_STDOUT" != *"Network-backed mounts"* ]]; then
     echo "mount command did not print the expected header: $SHELL_STDOUT" >&2
     exit 1
 fi
+if [[ "$SHELL_STDOUT" != *"obeli-sk/components@main"* ]]; then
+    echo "mount command did not show the unresolved ref before first access: $SHELL_STDOUT" >&2
+    exit 1
+fi
 if [[ ! "$SHELL_STDOUT" =~ obeli-sk/components@[0-9a-f]{40} ]]; then
-    echo "mount command did not show the resolved components commit: $SHELL_STDOUT" >&2
+    echo "mount command did not show the resolved components commit after first access: $SHELL_STDOUT" >&2
     exit 1
 fi
 if [[ "$SHELL_STDOUT" != *"# Obelisk Components"* ]]; then
