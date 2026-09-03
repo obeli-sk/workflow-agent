@@ -65,11 +65,13 @@ test-js:
 
 # All end-to-end suites, each against its own isolated, throwaway obelisk server.
 # See scripts/test-e2e-*.sh; the mcp suite SKIPs when no docker/podman is on PATH.
-# agent-workflow/chat/interrupt/mcp/redeploy run against both the Rust and JS
-# session-workflow backends (same FFQN, see docs/js-backend-migration.md);
-# replay-parity additionally proves a session survives switching between them
-# mid-flight. bash-workflow tests the unrelated standalone bash-rs workflow,
-# backend-agnostic.
+# agent-workflow/chat/interrupt/mcp/redeploy/target-deploy run against both the
+# Rust and JS session-workflow backends (same FFQN, see
+# docs/js-backend-migration.md); target-deploy proves the agent can redeploy a
+# separate target Obelisk instance without ever hot-swapping its own driving
+# deployment (see the script's header comment for why that self-swap design
+# was replaced). bash-workflow tests the unrelated standalone bash-rs
+# workflow, backend-agnostic.
 test-e2e:
   ./scripts/test-e2e-bash-workflow.sh
   ./scripts/test-e2e-agent-workflow.sh rs
@@ -82,6 +84,5 @@ test-e2e:
   ./scripts/test-e2e-interrupt.sh js
   ./scripts/test-e2e-mcp.sh rs
   ./scripts/test-e2e-mcp.sh js
-  # Expected-red pending an Obelisk-side fix; `-` keeps `just test`/`test-e2e`
-  # green locally too. See the script's header comment.
-  -./scripts/test-e2e-replay-parity.sh
+  ./scripts/test-e2e-target-deploy.sh rs
+  ./scripts/test-e2e-target-deploy.sh js

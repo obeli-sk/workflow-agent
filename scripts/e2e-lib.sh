@@ -10,6 +10,7 @@ e2e_init() {
     E2E_TMP="$(mktemp -d -t "${suite}-XXXXXX")"
     E2E_API_URL="http://127.0.0.1:${api_port}"
     E2E_SERVER_PID=""
+    E2E_TARGET_SERVER_PID=""
     E2E_DEPLOYMENTS=()
 
     export OBELISK__API__TOKEN="$token"
@@ -35,6 +36,19 @@ e2e_cleanup() {
         while kill -0 "$E2E_SERVER_PID" 2>/dev/null; do
             if [[ $waited -ge 5 ]]; then
                 kill -SIGKILL "$E2E_SERVER_PID" 2>/dev/null || true
+                break
+            fi
+            sleep 1
+            ((waited += 1)) || true
+        done
+    fi
+    if [[ -n "$E2E_TARGET_SERVER_PID" ]]; then
+        echo ">>> stopping isolated target obelisk server (pid $E2E_TARGET_SERVER_PID)"
+        kill -SIGINT "$E2E_TARGET_SERVER_PID" 2>/dev/null || true
+        local waited=0
+        while kill -0 "$E2E_TARGET_SERVER_PID" 2>/dev/null; do
+            if [[ $waited -ge 5 ]]; then
+                kill -SIGKILL "$E2E_TARGET_SERVER_PID" 2>/dev/null || true
                 break
             fi
             sleep 1
@@ -130,6 +144,49 @@ e2e_start_server() {
         if [[ $waited -ge $timeout_seconds ]]; then
             echo "timeout waiting for server; log:" >&2
             sed -n '1,300p' "$E2E_TMP/server.log" >&2
+            return 1
+        fi
+        sleep 1
+        ((waited += 1)) || true
+    done
+}
+
+# Starts a second, genuinely separate obelisk instance for suites that need
+# to prove a redeploy against a real *target* rather than self-hosting (see
+# scripts/test-e2e-target-deploy.sh): `--empty --no-auth`, no server config
+# (the target has no secrets/outbound_http needs of its own for a plain
+# generated JS activity). Sets E2E_TARGET_API_URL; caller wires
+# TARGET_OBELISK_* env vars to point the source session's `obelisk` command
+# and deployment mount at it before starting the source server.
+e2e_start_target_server() {
+    local api_port="$1"
+    local external_port="$2"
+    local timeout_seconds="${3:-90}"
+
+    E2E_TARGET_API_URL="http://127.0.0.1:${api_port}"
+    echo ">>> starting ISOLATED EMPTY target obelisk server on ${E2E_TARGET_API_URL} (sqlite: ${E2E_TMP}/target-obelisk-sqlite)"
+    # --no-auth refuses to start if a token is set; unset the source
+    # server's exported token for this one subprocess only.
+    env -u OBELISK__API__TOKEN -u OBELISK_API_TOKEN \
+    OBELISK__API__LISTENING_ADDR="127.0.0.1:${api_port}" \
+    OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}" \
+    OBELISK__WEBUI__ENABLED=false \
+    OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/target-obelisk-sqlite" \
+        "$OBELISK" server run --empty --no-auth \
+        > "$E2E_TMP/target-server.log" 2>&1 &
+    E2E_TARGET_SERVER_PID=$!
+
+    echo ">>> waiting for the target server to become ready"
+    local waited=0
+    until "$OBELISK" component list -a "$E2E_TARGET_API_URL" >/dev/null 2>&1; do
+        if ! kill -0 "$E2E_TARGET_SERVER_PID" 2>/dev/null; then
+            echo "target server exited early; log:" >&2
+            sed -n '1,300p' "$E2E_TMP/target-server.log" >&2
+            return 1
+        fi
+        if [[ $waited -ge $timeout_seconds ]]; then
+            echo "timeout waiting for target server; log:" >&2
+            sed -n '1,300p' "$E2E_TMP/target-server.log" >&2
             return 1
         fi
         sleep 1

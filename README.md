@@ -47,13 +47,18 @@ exact same FFQN as the Rust workflow in `deployment.rs.toml`
 deployment choice, not a per-request switch: only one of the two files is
 ever the active deployment. Rust is the default (`just serve`, an alias for
 `just serve-rs`); run `just serve-js` to start the server on the JS
-deployment instead. Since both sides export the same FFQN, a running server
-can hot-switch between them with `obelisk deployment apply
-deployment.js.toml` (or back with `deployment.rs.toml`) and every in-flight
-session keeps running, replayed under
-the new implementation - proven by `scripts/test-e2e-replay-parity.sh`. See
-[`docs/js-backend-migration.md`](docs/js-backend-migration.md) for why this
-exists and its current status.
+deployment instead. Switching a server between them with `obelisk deployment
+apply` is safe for new sessions (both sides start from a clean slate), but
+**not** for a session already in flight: hot-swapping a *running* execution's
+own component between two different language implementations of itself is
+inherently risky (Obelisk's JS workflow runtime doesn't yet track
+`requested_ffqn` on generic `join-next` calls the way Rust's typed bindings
+do, so an in-flight auto-upgrade replay under JS fails nondeterminism-checked
+and strands the session), and is not how workflow-agent redeploys in general
+anyway - it always targets a separate `TARGET_OBELISK` instance, never
+itself (see `scripts/test-e2e-target-deploy.sh`, and "Target instance"
+below). See [`docs/js-backend-migration.md`](docs/js-backend-migration.md)
+for why the JS backend exists and its current status.
 
 Then open http://localhost:9090 (the external/webhook listener; `server.toml`
 keeps the built-in default). Create an empty session to use the shell directly,

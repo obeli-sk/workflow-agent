@@ -643,6 +643,33 @@ core subset session.rs exercises day to day.
       at the documented, expected point (turn 2, rs → js), not earlier or
       for a different reason — confirmed by re-running it after each fix
       and diffing full event traces, not just reading the top-level pass/fail.
+      - **Update, later session**: `test-e2e-replay-parity.sh` was replaced
+        by `scripts/test-e2e-target-deploy.sh`, not fixed. Its premise was
+        wrong, not just its outcome: it hot-swapped a *running* session's own
+        component between two different language implementations of itself
+        via `deployment apply` on the same server. Any same-instance hot
+        redeploy is risky by construction (the driving FFQN, or the
+        deployment-apply tooling itself, might not even exist in the
+        swapped-in manifest) and isn't how workflow-agent redeploys anyway —
+        it always targets a separate `TARGET_OBELISK` instance, never
+        itself. Full trace inspection (`t_execution_log`, a preserved
+        isolated sqlite dir) confirmed the failure mode is exactly the
+        `requested_ffqn` gap described above, but manifests worse than "a
+        replay error": Obelisk's auto-upgrade path (`workflow_worker.rs`'s
+        `auto_upgrade_locked`) catches the resulting `NondeterminismDetected`
+        as a soft failure, marks the new (JS) digest `incompatible_digest`,
+        and leaves the execution `pending_at` on its old (Rust) digest — but
+        `deployment apply` had already torn down the Rust executor, so
+        nothing is left to ever pick it back up. A silent stuck session, not
+        a clean error. `test-e2e-target-deploy.sh` proves the thing
+        workflow-agent actually needs (author + submit + apply a deployment
+        against a separate target, verified independently against the
+        target's own API) without exercising that unsafe self-swap. The
+        underlying Obelisk-core gap (JS's generic `join-next` not tracking
+        `requested_ffqn`, unlike Rust's typed extension-import bindings) is
+        still real and still worth fixing for genuine hot-upgrade scenarios
+        (e.g. redeploying a *target* instance that has its own in-flight JS
+        workflows), just no longer this repo's CI's concern to track red.
 
 ## Command parity tracker (Phase 2)
 
@@ -747,17 +774,29 @@ natively (small algorithms) rather than vendoring the npm package's source.
   timeout-firing, and chat/interrupt/mcp CI wiring are all covered now that
   the e2e scripts are backend-parametrized and run against both `rs` and
   `js` in CI's `e2e` matrix job.
-- **Cross-backend replay is blocked on an Obelisk core limitation, not a
-  workflow-agent bug** (Phase 8): Obelisk's JS workflow runtime's
-  `*-await-next` extension-import proxy (`create_ext_await_next_proxy` in
+- **Cross-backend hot-swap of a live session is an Obelisk core limitation,
+  and also not a thing workflow-agent should do** (Phase 8, revisited later):
+  Obelisk's JS workflow runtime's `*-await-next` extension-import proxy
+  (`create_ext_await_next_proxy` in
   `crates/workflow-js-runtime/src/workflow_js_runtime.rs`) doesn't track
   `requested_ffqn` the way Rust's `wit-bindgen`-generated typed bindings do,
-  so a session that ran a turn under the Rust backend cannot yet replay
-  under the JS one (`scripts/test-e2e-replay-parity.sh` fails at turn 2,
-  documented as expected-red, `continue-on-error: true` in CI). Revisit once
-  Obelisk ships equivalent typed join-next-child tracking for JS workflows —
-  at that point the fixes already in `session.js` (the `recordOutputAwaitNext`/
-  `sessionRenamedAwaitNext` typed imports) should make the test pass with no
-  further workflow-agent changes; if it doesn't, re-run the same
-  full-trace-diff technique documented in the Phase 8 checklist entry above
-  to find what's still different.
+  so a session that ran a turn under the Rust backend cannot replay under
+  the JS one via `deployment apply` on the same server. The original
+  `scripts/test-e2e-replay-parity.sh` exercised exactly that self-swap to
+  prove it (documented as expected-red, `continue-on-error: true` in CI);
+  it has since been **replaced**, not fixed, by
+  `scripts/test-e2e-target-deploy.sh`, which proves the thing workflow-agent
+  actually relies on — authoring and redeploying a *separate* target
+  instance — without the unsafe same-instance hot-swap (see that script's
+  header comment and the Phase 8 checklist entry's "Update" note above for
+  the full trace-diff finding: the swap doesn't just fail to replay, it
+  strands the session, since Obelisk's auto-upgrade path tears down the old
+  executor before discovering the new one can't replay it). The
+  `requested_ffqn` gap itself is still open and still worth an Obelisk-core
+  fix for real hot-upgrade scenarios (e.g. a *target* instance upgrading its
+  own in-flight JS workflows), just no longer gated behind workflow-agent's
+  CI. The typed-import fixes already in `session.js`
+  (`recordOutputAwaitNext`/`sessionRenamedAwaitNext`) stay as-is — they are
+  the semantically correct calls and cost nothing — but proving they close
+  the gap needs a test against Obelisk's own JS workflow runtime (that repo,
+  not this one), not a workflow-agent e2e script.
