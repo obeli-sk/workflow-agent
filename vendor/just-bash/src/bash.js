@@ -5,7 +5,7 @@
 
 import { Vfs, FsError } from "./fs.js";
 import { parseScript, ParseError } from "./parser.js";
-import { Interpreter, OutputLog, ExitSignal, WatchInterrupt, ShellError } from "./interpreter.js";
+import { Interpreter, OutputLog, ExitSignal, WatchInterrupt, ShellError, stringSource } from "./interpreter.js";
 import { ShellExpansionError } from "./expansion.js";
 import { ArithError } from "./arithmetic.js";
 import { dispatch, BUILTIN_NAMES } from "./commands/index.js";
@@ -80,7 +80,7 @@ export class Bash {
         let exitCode = 0;
         try {
             interp.runStatements(ast.statements, {
-                0: { kind: "string", text: stdin },
+                0: stringSource(stdin),
                 1: { kind: "log", tag: "stdout" },
                 2: { kind: "log", tag: "stderr" },
             });

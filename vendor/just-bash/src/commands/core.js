@@ -109,6 +109,14 @@ export const core = {
         if (stdin === "") return fail("", 1);
         const nl = stdin.indexOf("\n");
         const line = nl === -1 ? stdin : stdin.slice(0, nl);
+        // Consume the line (+ its newline) off the live binding: a `while
+        // read` loop condition re-resolves the same `stdinBinding` every
+        // iteration, so without this it would see the same first line
+        // forever and never terminate (see interpreter.js's `invoke`).
+        const binding = interp.stdinBinding;
+        if (binding && binding.ref) {
+            binding.ref.text = nl === -1 ? "" : stdin.slice(nl + 1);
+        }
         const targets = names.length ? names : ["REPLY"];
         const raw = flags.has("r") ? line : line.replace(/\\(.)/g, "$1");
         const fields = raw.split(/[ \t]+/).filter((f, i, arr) => !(f === "" && arr.length > 1));
@@ -263,7 +271,7 @@ function sourceCommand(interp, args, stdin, io) {
     const ast = parseScript(interp.vfs.readFile(path));
     const savedPositional = interp.positionalParams;
     if (args.length > 2) interp.positionalParams = args.slice(2);
-    const capture = { 0: { kind: "string", text: "" }, 1: { kind: "buffer", ref: { data: "" } }, 2: { kind: "buffer", ref: { data: "" } } };
+    const capture = { 0: { kind: "string", ref: { text: "" } }, 1: { kind: "buffer", ref: { data: "" } }, 2: { kind: "buffer", ref: { data: "" } } };
     try {
         interp.runStatements(ast.statements, capture);
     } finally {

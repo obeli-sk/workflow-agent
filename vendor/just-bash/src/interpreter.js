@@ -57,8 +57,11 @@ function bufferSink() {
 function discardSink() {
     return { kind: "discard" };
 }
+// `ref` is mutable so `read` can consume a line and leave the remainder for
+// the next `read` against the same stdin (a `while read` loop condition
+// re-resolves this same binding every iteration; see `resolveStdinText`).
 function stringSource(text) {
-    return { kind: "string", text };
+    return { kind: "string", ref: { text } };
 }
 
 export class Interpreter {
@@ -168,10 +171,18 @@ export class Interpreter {
     }
 
     resolveStdinText(source) {
-        if (source.kind === "string") return source.text;
+        if (source.kind === "string") return source.ref.text;
         if (source.kind === "file-read") {
-            if (!this.vfs.isFile(source.path)) throw new ShellError(`bash: ${source.path}: No such file or directory`);
-            return this.vfs.readFile(source.path);
+            // Lazily read once and cache in a mutable ref, same shape as the
+            // "string" case above, so a `while read -r line; do ...; done <
+            // file` loop's repeated re-resolution of this same binding sees
+            // the remainder `read` left behind instead of re-reading the
+            // whole file (and its first line) forever.
+            if (!source.ref) {
+                if (!this.vfs.isFile(source.path)) throw new ShellError(`bash: ${source.path}: No such file or directory`);
+                source.ref = { text: this.vfs.readFile(source.path) };
+            }
+            return source.ref.text;
         }
         return "";
     }
@@ -308,6 +319,14 @@ export class Interpreter {
         if (!name) return { stdout: "", stderr: "", exitCode: 0 };
         const isCustom = this.custom.has(name);
         const ctx = this.logContext ? `${this.logContext} ` : "";
+        // Exposed for `read` (core.js) to consume its line off the live
+        // binding, so a second `read` against the same pipe/redirect (a
+        // `while read` loop condition, most commonly) sees the remainder
+        // instead of the same unconsumed content forever. `bindings` is
+        // absent for direct sub-invocations that capture output programmatically
+        // (xargs.js/timeutil.js's wrapped commands), which never threaded fd
+        // bindings in the first place.
+        this.stdinBinding = bindings ? bindings[0] : null;
         this.invocationSeq += 1;
         this.invocationDepth += 1;
         const seq = this.invocationSeq;

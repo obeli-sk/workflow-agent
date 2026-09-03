@@ -58,6 +58,12 @@ test("while and break/continue", () => {
     assert.equal(r.stdout, "1\n3\n");
 });
 
+test("while read consumes each piped line instead of looping on the first forever", () => {
+    const r = run(`printf 'a\\nb\\nc\\n' | while read -r line; do echo "got:$line"; done`);
+    assert.equal(r.stdout, "got:a\ngot:b\ngot:c\n");
+    assert.equal(r.exitCode, 0);
+});
+
 test("case statement", () => {
     const r = run(`
         for x in apple banana cherry; do
