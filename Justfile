@@ -60,13 +60,15 @@ test-js:
 
 # All end-to-end suites, each against its own isolated, throwaway obelisk server.
 # See scripts/test-e2e-*.sh; the mcp suite SKIPs when no docker/podman is on PATH.
-# agent-workflow/chat/interrupt/mcp/redeploy/target-deploy run against both the
-# Rust and JS session-workflow backends (same FFQN, see
+# agent-workflow/chat/interrupt/mcp/redeploy/target-deploy/deploy-outside-root
+# run against both the Rust and JS session-workflow backends (same FFQN, see
 # docs/js-backend-migration.md); target-deploy proves the agent can redeploy a
 # separate target Obelisk instance without ever hot-swapping its own driving
 # deployment (see the script's header comment for why that self-swap design
-# was replaced). bash-workflow tests the unrelated standalone bash-rs
-# workflow, backend-agnostic.
+# was replaced). deploy-outside-root proves a manifest that does not live
+# under DEPLOYMENT_ROOT/<id> (any filename, any location) still submits and
+# applies cleanly against the target. bash-workflow tests the unrelated
+# standalone bash-rs workflow, backend-agnostic.
 test-e2e:
   ./scripts/test-e2e-bash-workflow.sh
   ./scripts/test-e2e-agent-workflow.sh rs
@@ -81,3 +83,5 @@ test-e2e:
   ./scripts/test-e2e-mcp.sh js
   ./scripts/test-e2e-target-deploy.sh rs
   ./scripts/test-e2e-target-deploy.sh js
+  ./scripts/test-e2e-deploy-outside-root.sh rs
+  ./scripts/test-e2e-deploy-outside-root.sh js
