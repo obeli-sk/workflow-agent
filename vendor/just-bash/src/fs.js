@@ -320,8 +320,22 @@ export class Vfs {
     // List a web directory once, recording its children into the overlay. A
     // listing error still marks the directory expanded so a failed fetch is
     // not retried on every access.
+    //
+    // `dir` only shows up in `web.dirs` once its own parent has been listed
+    // (registerWebMount seeds just the mount root); a cold access to a path
+    // several levels below the root - nothing under it ever `ls`'d - would
+    // otherwise see `dir` as unknown and silently no-op here, misreporting
+    // "not found" for a file that genuinely exists remotely. Recurse up to
+    // the nearest already-known ancestor first so every level between it and
+    // `dir` gets listed on demand, one real filesystem call at a time.
     _ensureExpanded(dir) {
-        if (this.web.expanded.has(dir) || !this.web.dirs.has(dir)) return;
+        if (this.web.expanded.has(dir)) return;
+        if (!this.web.dirs.has(dir)) {
+            const parent = dirname(dir);
+            if (parent === dir) return;
+            this._ensureExpanded(parent);
+            if (!this.web.dirs.has(dir)) return;
+        }
         const remote = this._webRemote(dir);
         if (!remote) return;
         let entries = [];

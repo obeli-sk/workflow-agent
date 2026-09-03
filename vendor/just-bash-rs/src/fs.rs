@@ -386,11 +386,30 @@ impl Vfs {
     /// List a web directory once, recording subdirectories into the overlay and
     /// files as lazy references. A listing error still marks the directory
     /// expanded so a failed fetch is not retried on every access.
+    ///
+    /// `dir` only shows up in `web.dirs` once its own parent has been listed
+    /// (`register_web_mount` seeds just the mount root); a cold access to a
+    /// path several levels below the root -- nothing under it ever `ls`'d --
+    /// would otherwise see `dir` as unknown and silently no-op here,
+    /// misreporting "not found" for a file that genuinely exists remotely.
+    /// Recurse up to the nearest already-known ancestor first so every level
+    /// between it and `dir` gets listed on demand, one real filesystem call
+    /// at a time.
     fn ensure_expanded(&self, dir: &str) {
         {
             let web = self.web.borrow();
-            if web.expanded.contains(dir) || !web.dirs.contains(dir) {
+            if web.expanded.contains(dir) {
                 return;
+            }
+            if !web.dirs.contains(dir) {
+                drop(web);
+                let Some(parent) = Self::parent(dir) else {
+                    return;
+                };
+                self.ensure_expanded(&parent);
+                if !self.web.borrow().dirs.contains(dir) {
+                    return;
+                }
             }
         }
         let Some((index, remote)) = self.web_remote(dir) else {
@@ -1476,6 +1495,72 @@ mod tests {
             Some(&b"abc"[..])
         );
         assert_eq!(&*provider.reads.borrow(), &["obelisk/deployment.toml"]);
+    }
+
+    #[test]
+    fn read_file_of_a_lazily_mounted_file_succeeds_on_the_first_call() {
+        // Regression: read_file_checked used to expand the parent (registering
+        // the file, exactly like is_file does) but a stale pre-expansion read
+        // of `pending` meant the very first read of a file whose directory
+        // nothing had listed yet could still misreport "not found". This
+        // guards the JS port's equivalent bug from resurfacing here too.
+        let provider = Rc::new(FakeProvider {
+            listings: BTreeMap::from([("".to_string(), vec![file("descriptor.js", 3)])]),
+            files: BTreeMap::from([("descriptor.js".to_string(), b"abc".to_vec())]),
+            lists: RefCell::new(Vec::new()),
+            reads: RefCell::new(Vec::new()),
+        });
+        let mut fs = Vfs::new();
+        fs.register_web_mount("/workspace/components", "", provider.clone());
+
+        assert_eq!(
+            fs.read_file("/workspace/components/descriptor.js")
+                .as_deref(),
+            Some(&b"abc"[..])
+        );
+        assert_eq!(&*provider.lists.borrow(), &["".to_string()]);
+    }
+
+    #[test]
+    fn a_cold_multiple_levels_deep_path_resolves_without_listing_every_intermediate_dir_by_hand() {
+        // Regression: a directory only shows up in `web.dirs` once its own
+        // parent has been listed (`register_web_mount` seeds just the mount
+        // root), so `ensure_expanded` used to no-op on a directory nothing
+        // had ever listed a level up from -- accessing a path three levels
+        // below a mount's root cold (as `obelisk deployment submit` does on
+        // a manifest reference, or `ls` on a single deep file) always
+        // misreported "not found" even though the file existed, until every
+        // intermediate directory had first been listed by hand, bottom-up.
+        let provider = Rc::new(FakeProvider {
+            listings: BTreeMap::from([
+                ("".to_string(), vec![dir("packs")]),
+                ("packs".to_string(), vec![dir("obelisk-control")]),
+                (
+                    "packs/obelisk-control".to_string(),
+                    vec![file("descriptor.js", 3)],
+                ),
+            ]),
+            files: BTreeMap::from([(
+                "packs/obelisk-control/descriptor.js".to_string(),
+                b"abc".to_vec(),
+            )]),
+            lists: RefCell::new(Vec::new()),
+            reads: RefCell::new(Vec::new()),
+        });
+        let mut fs = Vfs::new();
+        fs.register_web_mount("/workspace/workflow-agent", "", provider.clone());
+
+        let path = "/workspace/workflow-agent/packs/obelisk-control/descriptor.js";
+        assert!(fs.is_file(path));
+        assert_eq!(fs.read_file(path).as_deref(), Some(&b"abc"[..]));
+        assert_eq!(
+            &*provider.lists.borrow(),
+            &[
+                "".to_string(),
+                "packs".to_string(),
+                "packs/obelisk-control".to_string()
+            ]
+        );
     }
 
     #[test]

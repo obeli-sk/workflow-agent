@@ -324,6 +324,32 @@ test("readFile of a lazily-mounted file succeeds on the first call, without a pr
     assert.deepEqual(provider.lists, [""]);
 });
 
+test("a cold, multiple-levels-deep path resolves without ls-ing every intermediate directory by hand", () => {
+    // Regression: a directory only shows up in web.dirs once its own parent
+    // has been listed (registerWebMount seeds just the mount root), so
+    // _ensureExpanded used to no-op on a directory nothing had ever listed a
+    // level up from - accessing a path three levels below a mount's root
+    // cold (as `obelisk deployment submit` does on a manifest reference,
+    // or `ls` on a single deep file) always misreported "not found" even
+    // though the file existed, until every intermediate directory had first
+    // been ls'd by hand, bottom-up, one level at a time.
+    const provider = fakeProvider({
+        listings: {
+            "": [{ name: "packs", kind: "dir" }],
+            packs: [{ name: "obelisk-control", kind: "dir" }],
+            "packs/obelisk-control": [{ name: "descriptor.js", kind: "file", digest: "git:d", size: 3 }],
+        },
+        files: { "packs/obelisk-control/descriptor.js": "abc" },
+    });
+    const fs = new Vfs();
+    fs.registerWebMount("/workspace/workflow-agent", "", provider);
+
+    const path = "/workspace/workflow-agent/packs/obelisk-control/descriptor.js";
+    assert.equal(fs.isFile(path), true);
+    assert.equal(fs.readFile(path), "abc");
+    assert.deepEqual(provider.lists, ["", "packs", "packs/obelisk-control"]);
+});
+
 test("writing over a web-mounted file shadows the remote copy with no fetch", () => {
     const provider = fakeProvider({
         listings: { "": [{ name: "notes.md", kind: "file", digest: "git:notes", size: 6 }] },
