@@ -529,14 +529,26 @@ export class Vfs {
     // (pending) source copies *by reference*: `to` is registered lazy with
     // the same content digest and loader, so nothing is fetched (a component
     // WASM blob can be tens of MB, and the copy is meant to be as cheap as
-    // the mount). A modified or eager source copies its bytes.
+    // the mount). Any already-fetched bytes and already-computed content
+    // digest for `from` carry over to `to` too, since the content is
+    // guaranteed identical - a copy of a file that was already read or hashed
+    // must not pay for either again. A modified or eager source copies its
+    // bytes.
     // PORT: fs.rs's `copy_file`.
     copyFile(from, to) {
-        const node = this.lookup(this.resolve(from));
+        const fromResolved = this.resolve(from);
+        const node = this.lookup(fromResolved);
         if (node && node.type === "file" && node.pending) {
             const { digest, size } = node.pending;
             if (node.loader) this.registerLazyWithLoader(to, digest, size, node.loader);
             else this.registerLazy(to, digest, size);
+            if (node.content !== null) {
+                this.lookup(this.resolve(to)).content = node.content;
+            }
+            const cachedDigest = this.contentDigestCache.get(fromResolved);
+            if (cachedDigest !== undefined) {
+                this.cacheContentDigest(to, cachedDigest);
+            }
             return;
         }
         const content = this.readFile(from);
