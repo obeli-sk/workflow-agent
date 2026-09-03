@@ -276,31 +276,14 @@ function loadSessionConfig(executionId, backend, effort, name) {
         maxSteps: config.max_steps,
         programs: config.programs ?? [],
         mcpServers: config.mcp_servers ?? [],
-        apps: resolveAppRefs(config.apps ?? []),
+        // Each app's `ref` (usually a branch) is resolved to a commit SHA
+        // lazily, by obeliskWeb.mount, on the app's first `ls`/`cat` (see
+        // mountPacks) - not here, so a session that never touches a mount
+        // never pays for the resolve-ref round trip.
+        apps: config.apps ?? [],
         webhookUrl: config.webhook_url ?? "",
         promptTail: config.prompt_tail,
     };
-}
-
-// Resolve each ref before its lazy mount, keeping later session reads immutable.
-function resolveAppRefs(apps) {
-    const host = createHost();
-    return apps.map((app) => {
-        const raw = host.callJson(
-            APPS_MOUNT_FFQN,
-            JSON.stringify(["resolve-ref", JSON.stringify({ owner: app.owner, repo: app.repo, ref: app.ref })]),
-        );
-        let ref;
-        try {
-            ref = JSON.parse(raw ?? "null");
-        } catch (e) {
-            throw `could not decode commit for ${app.owner}/${app.repo}@${app.ref}: ${String(e)}`;
-        }
-        if (typeof ref !== "string" || !/^[0-9a-f]{40}$/i.test(ref)) {
-            throw `could not resolve ${app.owner}/${app.repo}@${app.ref} to a commit SHA`;
-        }
-        return { ...app, ref };
-    });
 }
 
 // ----- programs / MCP servers / mounts (PORT: session.rs's agent_loop setup) -----
@@ -364,8 +347,12 @@ function mountPacks(bash, config) {
     const fs = bash.fs();
     fs.setBlobLoader(obeliskPack.blobLoader(createHost()));
     obeliskPack.registerDeferredMount(fs, createHost());
-    for (const { name, owner, repo, ref } of config.apps) {
-        obeliskWeb.mount(fs, createHost(), APPS_MOUNT_FFQN, `/workspace/apps/${name}`, { owner, repo, ref });
+    for (const app of config.apps) {
+        // Pass the live app object (not a copy) so `obelisk-web.js` writing
+        // `resolvedRef` onto it, once the mount is first used, is visible to
+        // `renderMountOutput`/`mountCommandHandler` below, which share this
+        // same `config.apps` array.
+        obeliskWeb.mount(fs, createHost(), APPS_MOUNT_FFQN, `/workspace/apps/${app.name}`, app);
     }
     for (const { name, ffqn } of config.mcpServers) {
         obeliskMcp.registerDeferredMount(fs, createHost(), createHost(), ffqn, `/workspace/mcp/${name}`);

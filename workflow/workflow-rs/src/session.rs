@@ -87,7 +87,11 @@ const MOUNT_FOOTER: &str = "Avoid tree, find, and recursive grep (grep -r / fgre
 
 /// An `APPS_JSON`-configured GitHub repo tree mounted at
 /// `/workspace/apps/<name>` (see `App`/`obelisk_web::mount`). `description`
-/// is surfaced in the system prompt (`render_app_help`).
+/// is surfaced in the system prompt (`render_app_help`). `git_ref` is the
+/// requested ref (usually a branch); `resolved` fills in with the commit SHA
+/// it pinned to the first time the mount is actually used (shared with the
+/// live `obelisk_web::GithubMount`, so `mount`/`render_mount` can report it
+/// without forcing the resolution themselves).
 #[derive(Clone)]
 struct App {
     name: String,
@@ -95,6 +99,7 @@ struct App {
     repo: String,
     git_ref: String,
     description: String,
+    resolved: Rc<RefCell<Option<String>>>,
 }
 
 /// The `mount` shell command: list the session's network-backed mount points and
@@ -130,9 +135,14 @@ fn render_mount(
 ) -> String {
     let mut text = String::from(MOUNT_HEADER);
     for app in apps {
+        let git_ref = app
+            .resolved
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| app.git_ref.clone());
         text.push_str(&format!(
             "  /workspace/apps/{}          example app, read-only ({}/{}@{})\n",
-            app.name, app.owner, app.repo, app.git_ref
+            app.name, app.owner, app.repo, git_ref
         ));
     }
     if !webhook_url.is_empty() {
@@ -199,39 +209,6 @@ fn discover_session_config(
         .call_json(CONFIG_DISCOVER_FFQN, &params)?
         .ok_or_else(|| "session config activity returned no value".to_string())?;
     parse_session_config(&json)
-}
-
-fn resolve_app_refs(apps: &mut [App], host: &mut dyn ObeliskHost) -> Result<(), String> {
-    for app in apps {
-        let requested_ref = app.git_ref.clone();
-        let repo = json!({
-            "owner": app.owner,
-            "repo": app.repo,
-            "ref": requested_ref,
-        })
-        .to_string();
-        let params = json!(["resolve-ref", repo]).to_string();
-        let raw = host.call_json(APPS_MOUNT_FFQN, &params)?.ok_or_else(|| {
-            format!(
-                "commit lookup returned no value for {}/{}@{}",
-                app.owner, app.repo, requested_ref
-            )
-        })?;
-        let sha = serde_json::from_str::<String>(&raw).map_err(|error| {
-            format!(
-                "could not decode commit for {}/{}@{}: {error}",
-                app.owner, app.repo, requested_ref
-            )
-        })?;
-        if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(format!(
-                "could not resolve {}/{}@{} to a commit SHA",
-                app.owner, app.repo, requested_ref
-            ));
-        }
-        app.git_ref = sha;
-    }
-    Ok(())
 }
 
 fn parse_session_config(json: &str) -> Result<SessionConfig, String> {
@@ -412,6 +389,7 @@ fn parse_apps(value: &Value) -> Result<Vec<App>, String> {
                 repo: repo.to_string(),
                 git_ref: git_ref.to_string(),
                 description: description.to_string(),
+                resolved: Rc::new(RefCell::new(None)),
             })
         })
         .collect()
@@ -700,14 +678,13 @@ pub fn agent_loop(
         Some(name.clone())
     };
     let execution_id = workflow_support::execution_id_current().id;
-    let mut config = discover_session_config(
+    let config = discover_session_config(
         &mut host(),
         &execution_id,
         &model,
         &effort,
         initial_name.as_deref(),
     )?;
-    resolve_app_refs(&mut config.apps, &mut host())?;
     let max_steps = config.max_steps;
     let programs = config.programs;
     let mcp_servers = config.mcp_servers;
@@ -881,18 +858,21 @@ pub fn agent_loop(
             // Reference trees for authoring: each APPS_JSON-configured GitHub
             // repo listed and fetched lazily on first `ls`/`cat` (obelisk_web),
             // one deployed activity backing every mount. Read-only;
-            // registration itself makes no network call.
+            // registration itself makes no network call, and `app.git_ref`
+            // (usually a branch) is only resolved to a frozen commit SHA on
+            // that first `ls`/`cat`, into `app.resolved`.
             for app in &apps {
                 obelisk_web::mount(
                     bash.fs_mut(),
                     Box::new(host()),
-                    "obelisk-agent:mounts/apps.request",
+                    APPS_MOUNT_FFQN,
                     &format!("/workspace/apps/{}", app.name),
                     obelisk_web::RepoRef {
                         owner: app.owner.clone(),
                         repo: app.repo.clone(),
                         git_ref: app.git_ref.clone(),
                     },
+                    app.resolved.clone(),
                 );
             }
             // Each MCP server's resources mount lazily too: registering a
@@ -1767,6 +1747,7 @@ mod tests {
                 repo: "components".to_string(),
                 git_ref: "main".to_string(),
                 description: "reusable Rust activities".to_string(),
+                resolved: Rc::new(RefCell::new(None)),
             },
             App {
                 name: "webui".to_string(),
@@ -1774,6 +1755,7 @@ mod tests {
                 repo: "webui".to_string(),
                 git_ref: "main".to_string(),
                 description: String::new(),
+                resolved: Rc::new(RefCell::new(None)),
             },
         ];
         let help = render_app_help(&apps);
@@ -1820,6 +1802,7 @@ mod tests {
             repo: "components".to_string(),
             git_ref: "main".to_string(),
             description: "".to_string(),
+            resolved: Rc::new(RefCell::new(None)),
         }];
         let out = render_mount(&apps, &servers, "http://127.0.0.1:9290", &mut host);
         // Every entry (header, apps, webhook URL, MCP) is indented two spaces consistently.
@@ -1846,6 +1829,38 @@ mod tests {
         );
         // Only the first line of a multi-line error is shown.
         assert!(!out.contains("trace line"), "{out}");
+    }
+
+    #[test]
+    fn mount_shows_requested_ref_until_resolved_then_the_pinned_sha() {
+        struct FakeHost;
+        impl ObeliskHost for FakeHost {
+            fn call_json(&mut self, _: &str, _: &str) -> Result<Option<String>, String> {
+                Ok(None)
+            }
+        }
+        let app = App {
+            name: "components".to_string(),
+            owner: "obeli-sk".to_string(),
+            repo: "components".to_string(),
+            git_ref: "main".to_string(),
+            description: "".to_string(),
+            resolved: Rc::new(RefCell::new(None)),
+        };
+        let apps = vec![app.clone()];
+        let mut host = FakeHost;
+        // Before the mount is ever touched, the requested ref (not a SHA) shows.
+        let out = render_mount(&apps, &[], "", &mut host);
+        assert!(out.contains("(obeli-sk/components@main)"), "{out}");
+
+        // Once the shared cell fills in (as `obelisk_web::GithubMount` would
+        // on first `ls`/`cat`), the same `App` reports the pinned commit.
+        *app.resolved.borrow_mut() = Some("0123456789abcdef0123456789abcdef01234567".to_string());
+        let out = render_mount(&apps, &[], "", &mut host);
+        assert!(
+            out.contains("(obeli-sk/components@0123456789abcdef0123456789abcdef01234567)"),
+            "{out}"
+        );
     }
 
     #[test]
