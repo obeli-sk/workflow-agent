@@ -208,7 +208,7 @@ jobs:
       - name: agent workflow e2e
         run: nix develop --command ./scripts/test-e2e-agent-workflow.sh ${{ matrix.backend }}
         env:
-          GITHUB_TOKEN: ""
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MCP_SERVER_TOKEN: ""
 
       - name: chat e2e

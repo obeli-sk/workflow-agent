@@ -166,7 +166,7 @@ exec.lock_expiry.seconds = 30
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET"]
-request_url_regex = "^GET https://api\\.github\\.com/repos/${GH_OWNER:-obeli-sk}/[^/]+/contents"
+request_url_regex = "^GET https://api\\.github\\.com/repos/${GH_OWNER:-obeli-sk}/[^/]+/(contents|commits/)"
 secrets = ["GITHUB_TOKEN"]
 replace_in = ["headers"]
 

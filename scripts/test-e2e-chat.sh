@@ -23,7 +23,10 @@ e2e_start_server "$DEPLOY"
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 CHAT_FFQN="obelisk-agent:programs/program.chat"
 run_detail() {
-    curl --fail --silent --show-error "http://127.0.0.1:28093/api/runs/$1" 2>&1
+    local detail
+    detail="$(curl --fail --silent "http://127.0.0.1:28093/api/runs/$1")" || return 1
+    node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"))' <<<"$detail" >/dev/null 2>&1 || return 1
+    printf '%s\n' "$detail"
 }
 
 # Invoke the chat program directly (one activity execution) and print its
@@ -46,6 +49,20 @@ chat_direct() {
         [[ $SECONDS -ge 30 ]] && { echo "chat direct call did not finish: $params" >&2; return 1; }
         sleep 1
     done
+}
+
+# Retry only read-only commands after a transient self-hosted API reset.
+chat_readonly() {
+    local params="$1" attempt=0 result
+    while (( attempt < 4 )); do
+        if result="$(chat_direct "$params")"; then
+            printf '%s\n' "$result"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    return 1
 }
 
 # Run one shell turn in a live session and print the shell command's stdout.
@@ -137,9 +154,9 @@ while true; do
 done
 
 echo ">>> the named child knows its slug and its parent"
-STATE_NAMED="$(chat_direct "[\"\",[\"state\",\"$BASH_CHILD_ID\"]]")"
+STATE_NAMED="$(chat_readonly "[\"\",[\"state\",\"$BASH_CHILD_ID\"]]")"
 node scripts/e2e-json.js check-state-name e2e-child <<<"$STATE_NAMED"
-READ_SYS="$(chat_direct "[\"\",[\"read\",\"$BASH_CHILD_ID\",\"--system\"]]")"
+READ_SYS="$(chat_readonly "[\"\",[\"read\",\"$BASH_CHILD_ID\",\"--system\"]]")"
 grep -q "# This session" <<<"$READ_SYS"
 grep -q "child session by $PARENT_ID" <<<"$READ_SYS"
 
@@ -160,7 +177,7 @@ node scripts/e2e-json.js check-runs-parent "$PARENT_ID" "$CHILD_ID" <<<"$RUNS"
 node scripts/e2e-json.js check-runs-parent "$PARENT_ID" "$BASH_CHILD_ID" <<<"$RUNS"
 
 echo ">>> chat list shows both sessions"
-LIST_OUT="$(chat_direct '["",["list","--json"]]')"
+LIST_OUT="$(chat_readonly '["",["list","--json"]]')"
 grep -q "$CHILD_ID" <<<"$LIST_OUT"
 grep -q "e2e-slug" <<<"$LIST_OUT"
 
@@ -189,7 +206,7 @@ while true; do
 done
 
 echo ">>> chat read renders the injected turn"
-READ_OUT="$(chat_direct "[\"\",[\"read\",\"$CHILD_ID\"]]")"
+READ_OUT="$(chat_readonly "[\"\",[\"read\",\"$CHILD_ID\"]]")"
 grep -q "\[turn 0\] user: hello from e2e" <<<"$READ_OUT"
 grep -q "backend fake" <<<"$READ_OUT"
 
