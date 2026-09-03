@@ -62,7 +62,7 @@ function stringSource(text) {
 }
 
 export class Interpreter {
-    constructor({ vfs, cwd, env, now, sleep, customCommands, dispatchBuiltin, commandNames, log }) {
+    constructor({ vfs, cwd, env, now, sleep, customCommands, dispatchBuiltin, commandNames, log, logContext }) {
         this.vfs = vfs;
         this.cwd = cwd;
         this.vars = new Map(Object.entries(env ?? {}));
@@ -76,6 +76,7 @@ export class Interpreter {
         this.dispatchBuiltin = dispatchBuiltin;
         this.commandNames = commandNames ?? [];
         this.rootLog = log;
+        this.logContext = logContext ?? null;
         this.opts = { errexit: false, nounset: false, pipefail: false, xtrace: false };
         // Host-installed abort watcher (watch.js's duck-typed ScriptWatch),
         // installed by `Bash#exec` for the duration of one script.
@@ -87,6 +88,11 @@ export class Interpreter {
         // the interrupted command was the script's last statement).
         this.interrupted = null;
         this.aliases = new Map();
+        // Diagnostics only (see `invoke`): a monotonic count of every command
+        // dispatched this exec() run, and the current recursion depth (command
+        // substitution, `sh -c`, etc. re-enter `invoke` while already inside one).
+        this.invocationSeq = 0;
+        this.invocationDepth = 0;
     }
 
     // Durable boundary check (PORT: interpreter.rs's `halted()`), called at
@@ -300,12 +306,23 @@ export class Interpreter {
     invoke(args, stdin, bindings) {
         const name = args[0];
         if (!name) return { stdout: "", stderr: "", exitCode: 0 };
-        if (this.custom.has(name)) {
-            const result = this.custom.get(name)(this, args, stdin);
+        const isCustom = this.custom.has(name);
+        const ctx = this.logContext ? `${this.logContext} ` : "";
+        this.invocationSeq += 1;
+        this.invocationDepth += 1;
+        const seq = this.invocationSeq;
+        const depth = this.invocationDepth;
+        console.debug(`${ctx}bash step start: seq=${seq} depth=${depth} [${isCustom ? "custom" : "builtin"}] ${JSON.stringify(args)}`);
+        let result;
+        if (isCustom) {
+            result = this.custom.get(name)(this, args, stdin);
             this.pollWatchAfterCustomCommand();
-            return result;
+        } else {
+            result = this.dispatchBuiltin(this, args, stdin);
         }
-        return this.dispatchBuiltin(this, args, stdin);
+        console.debug(`${ctx}bash step done: seq=${seq} depth=${depth} [${isCustom ? "custom" : "builtin"}] ${name} exitCode=${result.exitCode}`);
+        this.invocationDepth -= 1;
+        return result;
     }
 
     resolvePath(path) {

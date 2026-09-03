@@ -47,6 +47,10 @@ pub struct BashOptions {
     /// scheduler and must not block); the workflow overrides this with the
     /// durable Obelisk `sleep(in(...))` host activity (see `session.rs`).
     pub sleep_ms: fn(u64),
+    /// Debug-log one line, called around every command dispatch (see
+    /// `Interpreter::try_run_simple`). Defaults to a no-op; the workflow
+    /// overrides this with `obelisk:log/log`'s `debug` (see `session.rs`).
+    pub log_debug: fn(&str),
 }
 
 impl Default for BashOptions {
@@ -57,6 +61,7 @@ impl Default for BashOptions {
             limits: ExecutionLimits::default(),
             now_ms: fixed_epoch,
             sleep_ms: no_sleep,
+            log_debug: no_log,
         }
     }
 }
@@ -66,6 +71,8 @@ fn fixed_epoch() -> i64 {
 }
 
 fn no_sleep(_ms: u64) {}
+
+fn no_log(_msg: &str) {}
 
 /// Per-`exec` inputs: the piped stdin and the working directory for this call.
 #[derive(Debug, Clone, Default)]

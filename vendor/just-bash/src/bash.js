@@ -21,6 +21,14 @@ export class Bash {
         this.sleepMs = options.sleepMs ?? (() => {});
         this.custom = new Map();
         this.watcher = null;
+        this.logContext = null;
+    }
+
+    // Free-text tag (e.g. "turn=3 id=toolu_..." ) prefixed onto this session's
+    // per-command "bash step" debug logs, so a live tracing stream can be
+    // correlated back to a turn/tool call without cross-referencing separately.
+    setLogContext(text) {
+        this.logContext = text ?? null;
     }
 
     fs() {
@@ -66,6 +74,7 @@ export class Bash {
             dispatchBuiltin: dispatch,
             commandNames: BUILTIN_NAMES,
             log,
+            logContext: this.logContext,
         });
         interp.watcher = this.watcher;
         let exitCode = 0;

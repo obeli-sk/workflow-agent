@@ -99,6 +99,18 @@ pub struct Interpreter {
     /// Durably sleeps for the given milliseconds, used by `sleep`. See
     /// `BashOptions::sleep_ms`.
     pub sleep_ms: fn(u64),
+    /// Debug-log one line, called around every command dispatch. See
+    /// `BashOptions::log_debug`.
+    pub log_debug: fn(&str),
+    /// Free-text tag prefixed onto each `log_debug` line for this script run.
+    /// See `Bash::set_log_context`.
+    pub log_context: Option<String>,
+    /// Diagnostics only (see `try_run_simple`'s dispatch site): a monotonic
+    /// count of every command dispatched this `exec()` run, and the current
+    /// recursion depth (command substitution etc. re-enter dispatch while
+    /// already inside one).
+    invocation_seq: u64,
+    invocation_depth: u32,
     /// Host-registered commands (see `custom_command.rs`), moved in from
     /// `Bash` for this run and moved back out afterward.
     pub custom_commands: CustomCommands,
@@ -212,6 +224,10 @@ impl OutputLog {
 /// workflow installs a durable sleep, see `BashOptions::sleep_ms`).
 fn no_sleep(_ms: u64) {}
 
+/// Default `log_debug`: discards the line (the workflow installs
+/// `obelisk:log/log`'s `debug`, see `BashOptions::log_debug`).
+fn no_log(_msg: &str) {}
+
 impl Interpreter {
     pub fn new(
         env: BTreeMap<String, String>,
@@ -236,6 +252,10 @@ impl Interpreter {
             fs,
             now_ms,
             sleep_ms: no_sleep,
+            log_debug: no_log,
+            log_context: None,
+            invocation_seq: 0,
+            invocation_depth: 0,
             custom_commands,
             proc_sub_counter: 0,
             pending_output_subs: Vec::new(),
@@ -890,7 +910,26 @@ impl Interpreter {
                 .ensure_mounted_for(&commands::normalize_path(&cwd, arg));
         }
 
+        let is_custom = self.custom_commands.contains(&args[0]);
+        let kind = if is_custom { "custom" } else { "builtin" };
+        let ctx = self
+            .log_context
+            .as_deref()
+            .map(|c| format!("{c} "))
+            .unwrap_or_default();
+        self.invocation_seq += 1;
+        self.invocation_depth += 1;
+        let seq = self.invocation_seq;
+        let depth = self.invocation_depth;
+        (self.log_debug)(&format!(
+            "{ctx}bash step start: seq={seq} depth={depth} [{kind}] {args:?}"
+        ));
         let mut result = commands::dispatch(self, &args, stdin, scoped);
+        (self.log_debug)(&format!(
+            "{ctx}bash step done: seq={seq} depth={depth} [{kind}] {} exit_code={}",
+            args[0], result.exit_code
+        ));
+        self.invocation_depth -= 1;
         self.route_output(&mut result, &dests);
         Ok(result)
     }

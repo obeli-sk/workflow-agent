@@ -38,6 +38,10 @@ pub struct Bash {
     /// Per-script abort watcher (see `watch.rs`); same reasoning as
     /// `custom_commands` for why it lives outside `BashOptions`.
     watch: Option<Rc<RefCell<dyn crate::watch::ScriptWatch>>>,
+    /// Free-text tag (e.g. "turn=3 id=toolu_...") prefixed onto this session's
+    /// per-command "bash step" debug logs, so a live tracing stream can be
+    /// correlated back to a turn/tool call without cross-referencing separately.
+    log_context: Option<String>,
 }
 
 impl Bash {
@@ -57,7 +61,13 @@ impl Bash {
             positional: Vec::new(),
             custom_commands: CustomCommands::new(),
             watch: None,
+            log_context: None,
         }
+    }
+
+    /// Set (or clear, with `None`) this session's per-command log context tag.
+    pub fn set_log_context(&mut self, context: Option<String>) {
+        self.log_context = context;
     }
 
     /// Install the abort watcher observed at durable boundaries (after custom
@@ -125,6 +135,8 @@ impl Bash {
             custom_commands,
         );
         interp.sleep_ms = self.options.sleep_ms;
+        interp.log_debug = self.options.log_debug;
+        interp.log_context = self.log_context.clone();
         interp.options = self.shell_options;
         interp.positional = std::mem::take(&mut self.positional);
         interp.watch = self.watch.take();
