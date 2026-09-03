@@ -117,6 +117,40 @@ test("appendFile materializes a pending file's bytes before appending, then clea
     assert.deepEqual(loader.loads, ["sha256:log"]);
 });
 
+test("copyFile of a lazy file copies the reference without fetching", () => {
+    const fs = new Vfs();
+    const loader = countingLoader({ "sha256:a": "hello" });
+    fs.setBlobLoader(loader);
+    fs.registerLazy("/dep/a.txt", "sha256:a", 5);
+
+    fs.copyFile("/dep/a.txt", "/dep/b.txt");
+    assert.equal(loader.loads.length, 0, "copy must not fetch the source");
+    assert.equal(fs.isPending("/dep/b.txt"), true);
+    assert.deepEqual(fs.lazyFileRef("/dep/b.txt"), { digest: "sha256:a", size: 5 });
+
+    assert.equal(fs.readFile("/dep/b.txt"), "hello");
+    assert.deepEqual(loader.loads, ["sha256:a"]);
+});
+
+test("content digest cache is invalidated by a write or a remove", () => {
+    const fs = new Vfs();
+    fs.writeFile("/a.txt", "hello");
+    assert.equal(fs.cachedContentDigest("/a.txt"), null);
+
+    fs.cacheContentDigest("/a.txt", "sha256:1");
+    assert.equal(fs.cachedContentDigest("/a.txt"), "sha256:1");
+
+    // A write to the same path (new content) must drop the stale entry.
+    fs.writeFile("/a.txt", "changed");
+    assert.equal(fs.cachedContentDigest("/a.txt"), null);
+
+    fs.cacheContentDigest("/a.txt", "sha256:2");
+    assert.equal(fs.cachedContentDigest("/a.txt"), "sha256:2");
+    fs.remove("/a.txt");
+    fs.writeFile("/a.txt", "changed");
+    assert.equal(fs.cachedContentDigest("/a.txt"), null);
+});
+
 test("oversized lazy file reports TOO_LARGE without ever calling the loader", () => {
     const fs = new Vfs();
     const loader = countingLoader({ "sha256:big": "x".repeat(8) });

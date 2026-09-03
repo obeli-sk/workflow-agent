@@ -48,6 +48,19 @@ export function basename(path) {
 // PORT: fs.rs's MAX_LAZY_FETCH_BYTES.
 export const MAX_LAZY_FETCH_BYTES = 1024 * 1024;
 
+// True if `digest` is namespaced in our own CAS scheme (`sha256:...`). A
+// `lazyFileRef().digest` is only trustworthy as a `content_digest` when this
+// holds: deployment mounts and MCP resources are always CAS-addressed this
+// way, but a git/web mount's digest is the remote's own foreign hash (e.g. a
+// GitHub blob's 40-hex git SHA-1, no `sha256:` prefix at all) and must not be
+// reused as one. Deliberately a prefix check, not a strict-shape one: plenty
+// of tests use short placeholder digests like `sha256:1`, and a malformed
+// real one is still caught later by the server's own verify step.
+// PORT: fs.rs's `is_cas_namespaced_digest`.
+export function isCasNamespacedDigest(digest) {
+    return digest.startsWith("sha256:");
+}
+
 function dirNode() {
     return { type: "dir", children: new Map() };
 }
@@ -85,6 +98,28 @@ export class Vfs {
         // One-shot deferred mounts: [{ root, populate }]. See
         // `registerDeferredMount`/`ensureMountedFor`.
         this.deferred = [];
+        // Content digest computed for an eager (non-pending) file, keyed by
+        // resolved path, so a caller that hashes a file's bytes (e.g.
+        // deployment submit's `content_digest` pinning) never rehashes the
+        // same unchanged bytes twice. Cleared by any write to that path
+        // (`writeFile`, `remove`). A `pending` file already carries its own
+        // cached digest via `lazyFileRef` and never enters this map.
+        // PORT: fs.rs's `content_digest_cache`.
+        this.contentDigestCache = new Map();
+    }
+
+    // A previously cached content digest for an eager file at `path`, if
+    // `cacheContentDigest` was called for it since its last write, or null.
+    cachedContentDigest(path) {
+        return this.contentDigestCache.get(this.resolve(path)) ?? null;
+    }
+
+    // Remember `digest` as the content digest of the eager file currently at
+    // `path`, so a later `cachedContentDigest` call skips rehashing. The
+    // caller is responsible for `digest` actually matching the file's
+    // current bytes; a subsequent write to `path` invalidates the entry.
+    cacheContentDigest(path, digest) {
+        this.contentDigestCache.set(this.resolve(path), digest);
     }
 
     // Install the loader that fetches bounded `pending` files on first read
@@ -392,6 +427,7 @@ export class Vfs {
         if (existing && existing.type === "dir") throw new FsError(`Is a directory: ${path}`, "EISDIR");
         const dir = this._ensureDir(dirname(p));
         dir.children.set(basename(p), fileNode(content));
+        this.contentDigestCache.delete(p);
     }
 
     // Materializes a pending file's existing bytes before appending, so the
@@ -454,9 +490,13 @@ export class Vfs {
                 for (const e of [...this.executable]) {
                     if (e === p || e.startsWith(prefix)) this.executable.delete(e);
                 }
+                for (const d of [...this.contentDigestCache.keys()]) {
+                    if (d === p || d.startsWith(prefix)) this.contentDigestCache.delete(d);
+                }
             }
             parent.children.delete(name);
             this.executable.delete(p);
+            this.contentDigestCache.delete(p);
             return;
         }
         // Web-mounted directories live only in the overlay.
@@ -485,7 +525,20 @@ export class Vfs {
         }
     }
 
+    // Copy a single file from `from` to `to`. A lazily-mounted, unmodified
+    // (pending) source copies *by reference*: `to` is registered lazy with
+    // the same content digest and loader, so nothing is fetched (a component
+    // WASM blob can be tens of MB, and the copy is meant to be as cheap as
+    // the mount). A modified or eager source copies its bytes.
+    // PORT: fs.rs's `copy_file`.
     copyFile(from, to) {
+        const node = this.lookup(this.resolve(from));
+        if (node && node.type === "file" && node.pending) {
+            const { digest, size } = node.pending;
+            if (node.loader) this.registerLazyWithLoader(to, digest, size, node.loader);
+            else this.registerLazy(to, digest, size);
+            return;
+        }
         const content = this.readFile(from);
         this.writeFile(to, content);
     }

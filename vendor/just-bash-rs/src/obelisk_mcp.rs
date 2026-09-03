@@ -21,7 +21,7 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 
 use crate::custom_command::CustomCommandHandler;
-use crate::fs::{BlobLoader, Vfs};
+use crate::fs::{BlobLoader, Vfs, valid_sha256_digest};
 use crate::interpreter::CommandOutput;
 use crate::obelisk_pack::ObeliskHost;
 
@@ -143,12 +143,6 @@ fn parse_resource(resource: &Value) -> Result<ResourceRef, String> {
         digest: digest.to_string(),
         size,
     })
-}
-
-fn valid_sha256_digest(digest: &str) -> bool {
-    digest
-        .strip_prefix("sha256:")
-        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 /// The VFS-relative path for a resource URI: everything after

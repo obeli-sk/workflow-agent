@@ -229,4 +229,69 @@ mod tests {
                 .contains("no usable name")
         );
     }
+
+    /// Like `FakeHost`, but panics on any `read` call instead of returning an
+    /// error, so a wrongly-eager `cp -r` fails loudly instead of silently
+    /// swallowing a failed fetch (`copy_tree` ignores `copy_file`'s result).
+    struct PanicsOnReadHost {
+        reads: BTreeMap<String, String>,
+    }
+
+    impl ObeliskHost for PanicsOnReadHost {
+        fn call_json(&mut self, ffqn: &str, params_json: &str) -> Result<Option<String>, String> {
+            let _ = ffqn;
+            let method = serde_json::from_str::<Value>(params_json)
+                .ok()
+                .and_then(|v| v.as_array().and_then(|a| a.first().cloned()))
+                .and_then(|v| v.as_str().map(str::to_string));
+            assert_ne!(
+                method.as_deref(),
+                Some("read"),
+                "cp -r must not fetch file content"
+            );
+            self.reads
+                .get(params_json)
+                .cloned()
+                .map(Some)
+                .ok_or_else(|| format!("no fixture for {params_json}"))
+        }
+    }
+
+    #[test]
+    fn recursive_cp_of_a_nested_mount_fetches_nothing() {
+        let ffqn = "obelisk-agent:mounts/apps.request";
+        let host = PanicsOnReadHost {
+            reads: BTreeMap::from([
+                (
+                    args("list", ""),
+                    ok_arm(json!([
+                        {"name": "sub", "type": "dir"},
+                        {"name": "README.md", "type": "file", "sha": "git:readme", "size": 5}
+                    ])),
+                ),
+                (
+                    args("list", "sub"),
+                    ok_arm(json!([
+                        {"name": "a.txt", "type": "file", "sha": "git:a", "size": 3}
+                    ])),
+                ),
+            ]),
+        };
+        let mut bash = crate::bash::Bash::new(crate::types::BashOptions::default());
+        mount(
+            bash.fs_mut(),
+            Box::new(host),
+            ffqn,
+            "/workspace/components",
+            test_repo(),
+        );
+
+        let r = bash.exec(
+            "cp -r /workspace/components /workspace/dest",
+            crate::types::ExecOptions::default(),
+        );
+        assert_eq!(r.exit_code, 0, "stderr: {}", r.stderr);
+        assert!(bash.fs().is_pending("/workspace/dest/README.md"));
+        assert!(bash.fs().is_pending("/workspace/dest/sub/a.txt"));
+    }
 }
