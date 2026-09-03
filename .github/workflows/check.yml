@@ -234,31 +234,8 @@ jobs:
           GITHUB_TOKEN: ""
           MCP_SERVER_TOKEN: ""
 
-  # Expected-red pending an Obelisk-side fix (see the script's header comment
-  # and docs/js-backend-migration.md): kept running, non-blocking, so it
-  # starts passing (and this job can lose its continue-on-error) automatically
-  # once Obelisk's JS workflow runtime gains typed join-next-child tracking.
-  e2e-replay-parity:
-    name: End-to-end replay parity (rs <-> js)
-    runs-on: ubuntu-24.04
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
-        with:
-          ref: ${{ github.event.inputs.ref }} # Use the ref if provided, otherwise defaults to the current branch/commit
-
-      - uses: nixbuild/nix-quick-install-action@v34
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          nix_conf: |
-            extra-substituters = https://obeli-sk.cachix.org
-            extra-trusted-public-keys = obeli-sk.cachix.org-1:31iM9GWSEhAXvvuTWQ7CvAcwvgRzsuJ9yJghywSd3Jw=
-
-      - name: Populate the nix store
-        run: nix develop --command echo
-
-      - name: replay-parity e2e
-        run: nix develop --command ./scripts/test-e2e-replay-parity.sh
+      - name: target deploy e2e
+        run: nix develop --command ./scripts/test-e2e-target-deploy.sh ${{ matrix.backend }}
         env:
           GITHUB_TOKEN: ""
           MCP_SERVER_TOKEN: ""
