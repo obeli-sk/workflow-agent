@@ -271,9 +271,14 @@ async function callOpenAIResponses(cfg, system, messages, tools, toolNames, leve
 // non-2xx status other than 429 is a hard error (Obelisk retries per max_retries).
 async function postRaw(url, headers, body) {
     let resp;
+    const startedAt = Date.now();
     console.debug(`Fetching from ${url}`);
     try { resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) }); }
-    catch (e) { throw `LLM request failed: ${String(e)}`; }   // network error -> transient retry
+    catch (e) {
+        console.debug(`Fetch from ${url} failed after ${Date.now() - startedAt}ms: ${String(e)}`);
+        throw `LLM request failed: ${String(e)}`;   // network error -> transient retry
+    }
+    console.debug(`Fetch from ${url} finished in ${Date.now() - startedAt}ms, status=${resp.status}`);
 
     if (resp.status === 429) {
         const text = await safeText(resp);
