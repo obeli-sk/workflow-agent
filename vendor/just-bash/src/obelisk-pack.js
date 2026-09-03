@@ -308,7 +308,7 @@ function executeDeployment(interp, action, args, host) {
         // table, each digest recomputed from the file's current bytes (an
         // unchanged file keeps its CAS digest, a changed one is re-hashed).
         const expanded = manifestWithDigests(interp.vfs, dir, prepared);
-        const deploymentId = basename(dir) === "current" ? "" : basename(dir);
+        const deploymentId = deploymentIdFromDir(dir);
         const description = option(args, "--description", "Submitted from workflow-agent VFS");
         const allowMissing = flagRuntimeConfig(args);
         return submitDeployment(interp.vfs, host, dir, expanded, description, allowMissing, deploymentId);
@@ -433,6 +433,21 @@ function resolveDeploymentManifest(interp, value) {
 function parentDir(path) {
     const idx = path.lastIndexOf("/");
     return idx <= 0 ? "/" : path.slice(0, idx);
+}
+
+// A deployment checked out for editing lives at DEPLOYMENT_ROOT/<id>, named
+// after its own real ID ("current" for the freshly-checked-out active one,
+// which resolves to a fresh server-assigned ID on submit) - only that
+// specific layout's basename is a meaningful deployment_id. Submitting
+// straight from anywhere else (e.g. a source-repo checkout) has no such
+// convention: treating an unrelated directory's basename as an ID sends the
+// server something like "workflow-agent" and fails with "invalid
+// deployment_id: wrong prefix", so leave it empty there for the server to
+// assign a fresh one, exactly like a brand-new "current" submission.
+function deploymentIdFromDir(dir) {
+    if (!dir.startsWith(`${DEPLOYMENT_ROOT}/`)) return "";
+    const name = basename(dir);
+    return name === "current" ? "" : name;
 }
 
 // The first positional argument, skipping flags. A flag named in

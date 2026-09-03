@@ -465,11 +465,7 @@ fn execute_deployment(
             // table, each digest recomputed from the file's current bytes (an
             // unchanged file keeps its CAS digest, a changed one is re-hashed).
             let manifest = manifest_with_digests(&interp.fs, &dir, &manifest, interp.log_debug);
-            let deployment_id = if basename(&dir) == "current" {
-                String::new()
-            } else {
-                basename(&dir)
-            };
+            let deployment_id = deployment_id_from_dir(&dir);
             let description =
                 option(args, "--description", "Submitted from workflow-agent VFS").to_string();
             let allow_missing = flag_runtime_config(args);
@@ -1026,6 +1022,27 @@ fn parent_dir(path: &str) -> String {
     match path.rsplit_once('/') {
         Some(("", _)) | None => "/".to_string(),
         Some((parent, _)) => parent.to_string(),
+    }
+}
+
+/// A deployment checked out for editing lives at DEPLOYMENT_ROOT/<id>, named
+/// after its own real ID ("current" for the freshly-checked-out active one,
+/// which resolves to a fresh server-assigned ID on submit) -- only that
+/// specific layout's basename is a meaningful deployment_id. Submitting
+/// straight from anywhere else (e.g. a source-repo checkout) has no such
+/// convention: treating an unrelated directory's basename as an ID sends the
+/// server something like "workflow-agent" and fails with "invalid
+/// deployment_id: wrong prefix", so leave it empty there for the server to
+/// assign a fresh one, exactly like a brand-new "current" submission.
+fn deployment_id_from_dir(dir: &str) -> String {
+    if !dir.starts_with(&format!("{DEPLOYMENT_ROOT}/")) {
+        return String::new();
+    }
+    let name = basename(dir);
+    if name == "current" {
+        String::new()
+    } else {
+        name
     }
 }
 
@@ -2579,6 +2596,35 @@ content_digest = \"sha256:1\"\n\
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+    }
+
+    #[test]
+    fn deployment_submit_outside_the_deployment_root_sends_an_empty_deployment_id() {
+        // Regression: the deployment_id was always the manifest's parent
+        // directory's basename (unless literally "current"), a convention
+        // that only holds for DEPLOYMENT_ROOT/<id> checkouts. Submitting
+        // straight from a source-repo checkout like
+        // /workspace/workflow-agent/deployment.js.toml sent "workflow-agent"
+        // as the deployment_id, which the server rejects with "invalid
+        // deployment_id: wrong prefix in `workflow-agent`, expected prefix
+        // `Dep_`" instead of letting it assign a fresh one.
+        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
+        let mut i = interp("/workspace/workflow-agent");
+        i.fs.write_file(
+            "/workspace/workflow-agent/deployment.js.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "deployment.js.toml"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        assert_eq!(params[4], "");
     }
 
     #[test]
