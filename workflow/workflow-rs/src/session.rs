@@ -10,10 +10,10 @@
 //! Simplifications versus the JS version (see design doc for the full list):
 //! - No `Shell{bash, cwd}` wrapper: `Bash::exec` already persists `cwd`
 //!   internally (`bash.rs`), so this port threads a plain `&mut Bash`.
-//! - No `console.log` tracing: this WIT world imports no logging interface
-//!   (native components in this codebase don't wire one; see
-//!   `demo-stargazers`'s workflow-rs), so the turn/step/dispatch/rate-limit
-//!   log lines have no Rust equivalent and are dropped.
+//! - `console.log` tracing now has a Rust equivalent: `obelisk:log/log`'s
+//!   `debug` (imported in `wit/impl.wit`), mirroring the turn/step/dispatch
+//!   lines session.js emits via `console.debug`; also wired into
+//!   `just_bash_rs::BashOptions::log_debug` for per-command step logs.
 //! - No explicit `joinSet.close()` / `finally`: a WIT `join-set` resource
 //!   closes on `Drop`, so turn rotation and the session-wide notification join
 //!   sets falling out of scope already do the equivalent cleanup.
@@ -33,6 +33,7 @@ use just_bash_rs::{obelisk_mcp, obelisk_pack, obelisk_program, obelisk_web};
 
 use crate::chat;
 
+use crate::generated::obelisk::log::log::debug as log_line;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
 use crate::generated::obelisk_agent::llm::chat::CompletionResult;
@@ -644,6 +645,7 @@ pub fn agent_loop(
         // `maxExecutionTimeMs` to infinity.
         now_ms: host_now_ms,
         sleep_ms: host_sleep_ms,
+        log_debug: log_line,
         ..Default::default()
     });
     bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(host())));
@@ -787,6 +789,9 @@ pub fn agent_loop(
     publish_agent_status(&notifications, should_call_llm, turn_index)?;
 
     loop {
+        log_line(&format!(
+            "turn={turn_index} step={agent_steps} should_call_llm={should_call_llm}"
+        ));
         session.turn_index = turn_index;
         notifications.set_turn_index(turn_index);
         if should_call_llm && agent_steps >= max_steps {
@@ -984,9 +989,17 @@ pub fn agent_loop(
             if !calls.is_empty() {
                 let mut result_blocks = Vec::with_capacity(calls.len());
                 for call in &calls {
+                    log_line(&format!(
+                        "turn={turn_index} step={agent_steps} tool start: {}({})",
+                        call.name, call.id
+                    ));
                     let started_at = host_now_ms();
-                    let block = dispatch_bash(call, &mut bash, &notifications, turn_index);
+                    let block = dispatch_bash(call, &mut bash, &notifications, turn_index, agent_steps);
                     let duration_milliseconds = elapsed_milliseconds(started_at, host_now_ms());
+                    log_line(&format!(
+                        "turn={turn_index} step={agent_steps} tool finish: {}({}) in {duration_milliseconds}ms",
+                        call.name, call.id
+                    ));
                     notifications.notify(
                         SESSION_EVENTS_JOIN_SET,
                         &SessionEvent::ToolResult(ToolResultEvent {
@@ -1042,6 +1055,7 @@ fn dispatch_bash(
     bash: &mut Bash,
     notifications: &Notifications,
     turn_index: u64,
+    step: u32,
 ) -> ToolResultBlock {
     if call.name != "bash" {
         return tool_error(&call.id, &format!("unknown tool: {}", call.name));
@@ -1066,6 +1080,7 @@ fn dispatch_bash(
     let result = match exec_shell(
         notifications,
         turn_index,
+        &step.to_string(),
         &call.id,
         bash,
         script,
@@ -1120,7 +1135,7 @@ fn apply_session_input(
             // `shell-output` carries the script and result, so the webui echoes
             // the command and shows its output from this single event.
             let started_at = host_now_ms();
-            let result = exec_shell(notifications, turn_index, &id, bash, &script, &stdin, None)?;
+            let result = exec_shell(notifications, turn_index, "direct", &id, bash, &script, &stdin, None)?;
             let duration_milliseconds = elapsed_milliseconds(started_at, host_now_ms());
             let record = ShellOutputEvent {
                 id,
@@ -1179,6 +1194,7 @@ fn append_shell_exchange(messages: &mut Vec<Value>, record: &ShellOutputEvent, s
 fn exec_shell(
     notifications: &Notifications,
     turn_index: u64,
+    step: &str,
     id: &str,
     bash: &mut Bash,
     script: &str,
@@ -1199,7 +1215,15 @@ fn exec_shell(
             interrupted: None,
         });
     }
+    log_line(&format!(
+        "exec_shell({id}) turn={turn_index} step={step} arming script watch, script={:?}",
+        script.chars().take(200).collect::<String>()
+    ));
     let guard = ScriptWatchGuard::arm(timeout_ms);
+    log_line(&format!(
+        "exec_shell({id}) watch armed, offer={}",
+        guard.offer_execution_id()
+    ));
     notifications.notify(
         SESSION_EVENTS_JOIN_SET,
         &SessionEvent::ShellStarted(ShellStartedEvent {
@@ -1209,6 +1233,8 @@ fn exec_shell(
         }),
     )?;
     bash.set_script_watch(Some(guard.watcher()));
+    bash.set_log_context(Some(format!("turn={turn_index} step={step} id={id}")));
+    log_line(&format!("exec_shell({id}) bash.exec starting"));
     let result = bash.exec(
         script,
         ExecOptions {
@@ -1216,7 +1242,12 @@ fn exec_shell(
             cwd: None,
         },
     );
+    log_line(&format!(
+        "exec_shell({id}) bash.exec finished, exit_code={}",
+        result.exit_code
+    ));
     bash.set_script_watch(None);
+    bash.set_log_context(None);
     drop(guard);
     Ok(result)
 }
@@ -1263,6 +1294,11 @@ fn call_llm_with_user(
         let request_message_count = messages.len();
         let messages_json = serde_json::to_string(messages).expect("json");
         let started_at = host_now_ms();
+        log_line(&format!(
+            "turn={} llm.completion submit (messages={request_message_count}, messages_json.len={})",
+            session.turn_index,
+            messages_json.len()
+        ));
         let completion_execution_id = llm_ext::completion_submit(
             session.join_set.as_ref().expect("turn join set is open"),
             system,
@@ -1286,14 +1322,30 @@ fn call_llm_with_user(
                 match llm_ext::completion_get(&completion_execution_id)
                     .map_err(|e| format!("{e:?}"))?
                 {
-                    Ok(completion) => break Some(completion),
-                    Err(e) => return Ok(LlmOutcome::Failed(format!("llm.completion failed: {e}"))),
+                    Ok(completion) => {
+                        log_line(&format!(
+                            "turn={} llm.completion received",
+                            session.turn_index
+                        ));
+                        break Some(completion);
+                    }
+                    Err(e) => {
+                        log_line(&format!(
+                            "turn={} llm.completion failed: {e}",
+                            session.turn_index
+                        ));
+                        return Ok(LlmOutcome::Failed(format!("llm.completion failed: {e}")));
+                    }
                 }
             } else if completed_id == session.injection_execution_id.id {
                 let event = session_ext::injection_get(&session.injection_execution_id)
                     .map_err(|e| format!("{e:?}"))?
                     .map_err(|e| format!("session injection failed: {e}"))?;
                 if matches!(event, SessionInput::Interrupt(_)) {
+                    log_line(&format!(
+                        "turn={} llm.completion interrupted",
+                        session.turn_index
+                    ));
                     // Closing this turn's join set cancels the outstanding
                     // completion immediately. The outer loop opens the next
                     // turn's uniquely named set after recording the stop.
@@ -1389,6 +1441,11 @@ fn open_session(turn_index: u64, notifications: &Notifications) -> Result<Sessio
 }
 
 fn advance_turn(session: &mut Session, notifications: &Notifications) -> Result<u64, String> {
+    log_line(&format!(
+        "turn={} advancing to turn={}",
+        session.turn_index,
+        session.turn_index + 1
+    ));
     if let Some(join_set) = session.join_set.take() {
         drop(join_set);
     }

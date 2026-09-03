@@ -357,18 +357,25 @@ function mountPacks(bash, config) {
 // input path and the model tool dispatch (`dispatchBash`) - `timeoutMs` is
 // only ever non-null from the latter (a direct-shell turn from the composer
 // has no timeout argument to parse).
-function execShell(bash, notifications, id, turnIndex, script, stdin, timeoutMs) {
+function execShell(bash, notifications, id, turnIndex, step, script, stdin, timeoutMs) {
     if (containsBackgroundStatement(script)) {
         const message = "bash: background jobs with `&` are not supported in durable sessions\n";
         return { output: [{ fd: "stderr", text: message }], exitCode: 2, interrupted: null };
     }
+    console.debug(`execShell(${id}) turn=${turnIndex} step=${step} arming script watch, script=${JSON.stringify(script.slice(0, 200))}`);
     const guard = armScriptWatch(timeoutMs ?? null);
+    console.debug(`execShell(${id}) watch armed, offer=${guard.offerExecutionId}`);
     notifications.notify({ shell_started: { id, offer_id: guard.offerExecutionId, turn_index: turnIndex } });
     bash.setScriptWatch(guard.watcher());
+    bash.setLogContext(`turn=${turnIndex} step=${step} id=${id}`);
     try {
-        return bash.exec(script, { stdin });
+        console.debug(`execShell(${id}) bash.exec starting`);
+        const result = bash.exec(script, { stdin });
+        console.debug(`execShell(${id}) bash.exec finished, exitCode=${result.exitCode}`);
+        return result;
     } finally {
         bash.setScriptWatch(null);
+        bash.setLogContext(null);
         guard.close();
     }
 }
@@ -379,7 +386,7 @@ function applySessionInput(event, turnIndex, shellCompletesTurn, notifications, 
     if (event.shell) {
         const { id, script, stdin = "" } = event.shell;
         const startedAt = hostNowMs();
-        const result = execShell(bash, notifications, id, turnIndex, script, stdin, null);
+        const result = execShell(bash, notifications, id, turnIndex, "direct", script, stdin, null);
         const durationMilliseconds = elapsedMilliseconds(startedAt, hostNowMs());
         const record = {
             id, script, result: shellResultOf(result), turn_index: turnIndex,
@@ -409,6 +416,7 @@ function openSession(turnIndex, notifications) {
 }
 
 function advanceTurn(session, notifications) {
+    console.debug(`turn=${session.turnIndex} advancing to turn=${session.turnIndex + 1}`);
     if (session.joinSet) session.joinSet.close();
     const turnIndex = session.turnIndex + 1;
     session.joinSet = obelisk.createJoinSet({ name: `user-${turnIndex}` });
@@ -449,6 +457,7 @@ function callLlmWithUser(session, system, messages, model, effort, bash, notific
         const requestMessageCount = messages.length;
         const messagesJson = JSON.stringify(messages);
         const startedAt = hostNowMs();
+        console.debug(`turn=${session.turnIndex} llm.completion submit (messages=${requestMessageCount}, messagesJson.length=${messagesJson.length})`);
         const completionId = completionSubmit(session.joinSet, system, messagesJson, BASH_TOOLS_JSON, model, effort);
 
         let completion;
@@ -463,7 +472,11 @@ function callLlmWithUser(session, system, messages, model, effort, bash, notific
             }
             const completedId = session.joinSet.lastId;
             if (completedId === completionId) {
-                if (failed) return { kind: "failed", message: `llm.completion failed: ${errorMessage(failed)}` };
+                if (failed) {
+                    console.debug(`turn=${session.turnIndex} llm.completion failed: ${errorMessage(failed)}`);
+                    return { kind: "failed", message: `llm.completion failed: ${errorMessage(failed)}` };
+                }
+                console.debug(`turn=${session.turnIndex} llm.completion received`);
                 completion = value;
                 break;
             } else if (completedId === session.injectionId) {
@@ -473,6 +486,7 @@ function callLlmWithUser(session, system, messages, model, effort, bash, notific
                     // Closing this turn's join set cancels the outstanding
                     // completion immediately. The outer loop opens the next
                     // turn's uniquely named set after recording the stop.
+                    console.debug(`turn=${session.turnIndex} llm.completion interrupted`);
                     session.joinSet.close();
                     session.joinSet = null;
                     completion = null;
@@ -512,7 +526,7 @@ function callLlmWithUser(session, system, messages, model, effort, bash, notific
 
 // ----- bash tool dispatch -----
 
-function dispatchBash(call, bash, notifications, turnIndex) {
+function dispatchBash(call, bash, notifications, turnIndex, step) {
     if (call.name !== "bash") return toolError(call.id, `unknown tool: ${call.name}`);
     const script = typeof call.input?.script === "string" ? call.input.script : "";
     if (!script.trim()) return toolError(call.id, "script is required");
@@ -523,7 +537,7 @@ function dispatchBash(call, bash, notifications, turnIndex) {
     } catch (error) {
         return toolError(call.id, typeof error === "string" ? error : String(error));
     }
-    const result = execShell(bash, notifications, call.id, turnIndex, script, stdin, timeoutMs);
+    const result = execShell(bash, notifications, call.id, turnIndex, step, script, stdin, timeoutMs);
     return toolOk(call.id, shellResultOf(result));
 }
 
@@ -587,6 +601,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     publishAgentStatus(notifications, shouldCallLlm, turnIndex);
 
     while (true) {
+        console.debug(`turn=${turnIndex} step=${agentSteps} shouldCallLlm=${shouldCallLlm}`);
         session.turnIndex = turnIndex;
         notifications.setTurnIndex(turnIndex);
         if (shouldCallLlm && agentSteps >= maxSteps) {
@@ -662,9 +677,11 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
             if (calls.length > 0) {
                 const resultBlocks = [];
                 for (const call of calls) {
+                    console.debug(`turn=${turnIndex} step=${agentSteps} tool start: ${call.name}(${call.id})`);
                     const startedAt = hostNowMs();
-                    const block = dispatchBash(call, bash, notifications, turnIndex);
+                    const block = dispatchBash(call, bash, notifications, turnIndex, agentSteps);
                     const durationMilliseconds = elapsedMilliseconds(startedAt, hostNowMs());
+                    console.debug(`turn=${turnIndex} step=${agentSteps} tool finish: ${call.name}(${call.id}) ok=${block.ok} in ${durationMilliseconds}ms`);
                     notifications.notify({
                         tool_result: {
                             id: call.id,

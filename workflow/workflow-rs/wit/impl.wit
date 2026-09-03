@@ -9,4 +9,5 @@ world any {
   import obelisk-agent:tools/webapi;
   import obelisk-agent:config/config;
   import obelisk:workflow/workflow-support@6.0.0;
+  import obelisk:log/log@1.0.0;
 }
