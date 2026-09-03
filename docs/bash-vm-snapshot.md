@@ -36,53 +36,6 @@ and no WIT interface models "a VM" as a resource; the bash tool is purely an
 LLM tool-call convention matched by string name
 (`BASH_TOOLS_JSON`/`dispatch_bash`, `session.rs:77,1054`).
 
-## Prerequisite (separate, independently shippable): pointer-ify git mounts
-
-Deployment/CAS-mounted files already avoid eager content copies via a lazy
-pointer: `LazyFileRef{digest, size}` registered through `Vfs::register_lazy`
-(`vendor/just-bash-rs/src/fs.rs:57-116`), populated from real
-`sha256:...` CAS digests in `obelisk_pack.rs::refresh_deployment_mount`
-(lines 89-151). MCP resource mounts follow the same pattern via
-`register_lazy_with_loader` (`obelisk_mcp.rs::mount_resources`, lines
-176-195).
-
-Git/GitHub mounts (`obelisk_web.rs`'s `GithubMount`, wired from
-`session.rs:822-865` for `APPS_JSON`-configured apps) are already lazy at the
-directory-listing and file-byte level (`Vfs::ensure_expanded`,
-`fs.rs:262-289`; `Vfs::read_web_file`, `fs.rs:292-333`) — no eager `Vec<u8>`
-copy into `Vfs::files` happens. But they are a structurally separate path
-from the CAS pointer mechanism: bytes are cached in a `WebState.cache`
-overlay, not registered via `register_lazy`/`pending`, and no real content
-digest is carried through at all. The GitHub Contents API's blob `sha` is
-fetched but discarded at the activity boundary
-(`activity/github-contents.js::list()`, lines 50-61 return only
-`{name, type, size}`); `WebEntryKind::File` (`fs.rs:47-51`) and
-`obelisk_web.rs::parse_entry` (lines 95-112) likewise carry only a size, no
-digest field exists.
-
-To make git-mounted trees pointer-friendly for snapshotting (see below):
-
-- `activity/github-contents.js::list()` — include the Contents API's `sha`
-  per entry in the emitted JSON.
-- `obelisk_web.rs::parse_entry` / `fs.rs::WebEntryKind::File` — carry a
-  `digest` alongside `size`.
-- `fs.rs::ensure_expanded` — register each discovered file via
-  `register_lazy_with_loader` (mirroring `obelisk_mcp::mount_resources`)
-  instead of (or in addition to) `WebState.files`.
-- `fs.rs::read_web_file` — can then be retired/merged into the existing
-  `pending`/`lazy_cache` read path (`register_lazy_inner`, `fs.rs:360-389`).
-
-The one structural wrinkle: git mounts discover their tree shape
-incrementally (`list()` per directory, on first `ls` under that directory),
-unlike deployment/MCP mounts which fetch one full file index up front.
-`register_lazy_with_loader` already registers one file at a time, so this is
-additive at the `ensure_expanded`/`parse_entry` layer, not a redesign of the
-core lazy-registration primitives in `fs.rs`.
-
-This task stands on its own — it shrinks snapshot size for any session that
-touches a git-mounted app/repo regardless of which VM-execution model below
-is chosen, and should be done first.
-
 ## Core design
 
 ### 1. Bash execution becomes an activity call
@@ -170,10 +123,9 @@ currently-running script on interrupt).
 
 Files need content + sha256 for anything genuinely modified or created
 during the session, but must stay pointer-only (digest + size, no bytes) for
-content-addressed/immutable mounts — the deployment/CAS mount already works
-this way (`LazyFileRef{digest,size}`, §Prerequisite), and git/GitHub mounts
-should be brought in line with the same representation as a prerequisite to
-this work. cwd and env are small scalars/maps and can always be carried in
+content-addressed/immutable mounts — deployment/CAS and git/GitHub mounts
+already use this representation (`LazyFileRef{digest,size}`). cwd and env are
+small scalars/maps and can always be carried in
 full, in and out of every call — no diffing needed there (this generalizes
 the earlier "make CWD an input and output, box in UI" framing: an explicit
 value threaded through calls, not implicit state).

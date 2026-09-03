@@ -44,7 +44,7 @@ export function basename(path) {
     return norm.slice(norm.lastIndexOf("/") + 1);
 }
 
-// Largest lazy (pending or web-mounted) file this VFS will materialize.
+// Largest lazy file this VFS will materialize.
 // PORT: fs.rs's MAX_LAZY_FETCH_BYTES.
 export const MAX_LAZY_FETCH_BYTES = 1024 * 1024;
 
@@ -78,11 +78,10 @@ export class Vfs {
         // Web mounts (lazily-listed remote directory trees): { root, base,
         // provider }. See `registerWebMount`.
         this.mounts = [];
-        // Overlay for web mounts, materialized on access, mirroring fs.rs's
-        // WebState: `expanded` marks directories already listed, `dirs`/
-        // `files` are children discovered by a listing, `cache` holds
-        // fetched file bytes.
-        this.web = { expanded: new Set(), dirs: new Set(), files: new Map(), cache: new Map() };
+        // Overlay for web mounts, materialized on access. Files discovered
+        // there are registered in the ordinary lazy-file tree so their
+        // content pointers survive snapshots.
+        this.web = { expanded: new Set(), dirs: new Set() };
         // One-shot deferred mounts: [{ root, populate }]. See
         // `registerDeferredMount`/`ensureMountedFor`.
         this.deferred = [];
@@ -259,7 +258,7 @@ export class Vfs {
     // Mount a lazily-listed remote directory tree at `root`, sourced from
     // `provider` at remote path `base`. `provider` is `{ list(remotePath),
     // read(remotePath) }`: `list` returns
-    // `Array<{name, kind: "dir"} | {name, kind: "file", size}>` and is called
+    // `Array<{name, kind: "dir"} | {name, kind: "file", digest, size}>` and is called
     // at most once per directory (only when something under it is actually
     // accessed); `read` returns the file's content and is called at most
     // once per file, cached after.
@@ -302,30 +301,13 @@ export class Vfs {
         for (const entry of entries) {
             const child = `${dir}/${entry.name}`;
             if (entry.kind === "dir") this.web.dirs.add(child);
-            else this.web.files.set(child, entry.size);
+            else {
+                const remotePath = this._webRemote(child)?.remote;
+                this.registerLazyWithLoader(child, entry.digest, entry.size, () =>
+                    remote.mount.provider.read(remotePath),
+                );
+            }
         }
-    }
-
-    // Fetch a web-mounted file's bytes on first read, size-capped and cached.
-    _readWebFile(path) {
-        if (this.web.cache.has(path)) return this.web.cache.get(path);
-        if (path !== "/") this._ensureExpanded(dirname(path));
-        const size = this.web.files.get(path);
-        if (size === undefined) throw new FsError(`No such file or directory: ${path}`, "ENOENT");
-        if (size > MAX_LAZY_FETCH_BYTES) throw new FsError(`File too large: ${path}`, "TOO_LARGE", { size });
-        const remote = this._webRemote(path);
-        if (!remote) throw new FsError(`No such file or directory: ${path}`, "ENOENT");
-        let content;
-        try {
-            content = remote.mount.provider.read(remote.remote);
-        } catch {
-            throw new FsError(`Read unavailable: ${path}`, "READ_UNAVAILABLE");
-        }
-        if (content.length > MAX_LAZY_FETCH_BYTES) {
-            throw new FsError(`File too large: ${path}`, "TOO_LARGE", { size: content.length });
-        }
-        this.web.cache.set(path, content);
-        return content;
     }
 
     exists(path) {
@@ -348,15 +330,15 @@ export class Vfs {
         const p = this.resolve(path);
         const node = this.lookup(p);
         if (node && node.type === "file") return true;
-        if (this.web.files.has(p)) return true;
         if (p !== "/") {
             this._ensureExpanded(dirname(p));
-            return this.web.files.has(p);
+            const expanded = this.lookup(p);
+            return !!expanded && expanded.type === "file";
         }
         return false;
     }
 
-    // Read a file's content. A bounded `pending` (or web-mounted) file is
+    // Read a file's content. A bounded `pending` file is
     // fetched on first read and cached; the pending flag itself is left
     // untouched by a read (only a write clears it, see `writeFile`). A file
     // over MAX_LAZY_FETCH_BYTES, or a failed fetch, throws an `FsError` with
@@ -373,7 +355,8 @@ export class Vfs {
             }
             return node.content ?? "";
         }
-        return this._readWebFile(p);
+        if (p !== "/") this._ensureExpanded(dirname(p));
+        throw new FsError(`No such file or directory: ${path}`, "ENOENT");
     }
 
     _fetchPending(path, node) {
@@ -411,8 +394,8 @@ export class Vfs {
         dir.children.set(basename(p), fileNode(content));
     }
 
-    // Materializes a pending (or web-mounted) file's existing bytes before
-    // appending, so the fetched content is preserved rather than replaced by
+    // Materializes a pending file's existing bytes before appending, so the
+    // fetched content is preserved rather than replaced by
     // the appended tail; the resulting write clears the pending flag, same
     // as any other `writeFile`.
     appendFile(path, content) {
@@ -430,22 +413,19 @@ export class Vfs {
         const isTreeDir = !!node && node.type === "dir";
         const isWebDir = this.web.dirs.has(dir);
         if (!isTreeDir && !isWebDir) {
-            if (this.web.files.has(dir)) throw new FsError(`Not a directory: ${path}`, "ENOTDIR");
             throw new FsError(`No such file or directory: ${path}`, "ENOENT");
         }
         this._ensureExpanded(dir);
         const names = new Set();
-        if (isTreeDir) {
-            for (const name of node.children.keys()) names.add(name);
+        const expandedTreeDir = this.lookup(dir);
+        if (expandedTreeDir && expandedTreeDir.type === "dir") {
+            for (const name of expandedTreeDir.children.keys()) names.add(name);
         }
         for (const link of this.symlinks.keys()) {
             if (dirname(link) === dir) names.add(basename(link));
         }
         for (const d of this.web.dirs) {
             if (d !== dir && dirname(d) === dir) names.add(basename(d));
-        }
-        for (const f of this.web.files.keys()) {
-            if (dirname(f) === dir) names.add(basename(f));
         }
         return [...names].sort();
     }
@@ -479,19 +459,12 @@ export class Vfs {
             this.executable.delete(p);
             return;
         }
-        // Web-mounted entries live only in the overlay.
-        if (this.web.files.has(p)) {
-            this.web.files.delete(p);
-            this.web.cache.delete(p);
-            return;
-        }
+        // Web-mounted directories live only in the overlay.
         if (this.web.dirs.has(p)) {
             if (!recursive) throw new FsError(`Is a directory: ${path}`, "EISDIR");
             const prefix = `${p}/`;
             for (const d of [...this.web.dirs]) if (d === p || d.startsWith(prefix)) this.web.dirs.delete(d);
             for (const e of [...this.web.expanded]) if (e === p || e.startsWith(prefix)) this.web.expanded.delete(e);
-            for (const f of [...this.web.files.keys()]) if (f.startsWith(prefix)) this.web.files.delete(f);
-            for (const c of [...this.web.cache.keys()]) if (c.startsWith(prefix)) this.web.cache.delete(c);
             return;
         }
         throw new FsError(`No such file or directory: ${path}`, "ENOENT");

@@ -12,7 +12,7 @@
 // APPS_JSON registry lists:
 //
 //   "list" -> params {owner, repo, ref, path: remotePath}, result a JSON
-//             array of {name, type: "file"|"dir", size} entries.
+//             array of {name, type: "file"|"dir", sha, size} entries.
 //   "read" -> params {owner, repo, ref, path: remotePath}, result the file's
 //             raw text body (not JSON - a plain string result).
 //
@@ -72,7 +72,8 @@ function parseEntry(entry) {
     if (entry?.type === "dir") return { name, kind: "dir" };
     if (entry?.type === "file") {
         const size = typeof entry.size === "number" ? entry.size : 0;
-        return { name, kind: "file", size };
+        if (typeof entry.sha !== "string" || !entry.sha) throw `mount file ${name} has no content digest`;
+        return { name, kind: "file", digest: entry.sha, size };
     }
     throw `mount entry ${name} has unknown type ${JSON.stringify(entry?.type)}`;
 }

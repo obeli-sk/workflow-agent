@@ -30,7 +30,7 @@ test("lists and reads through the transport, lazily", () => {
         [args("list", "")]: JSON.stringify(
             JSON.stringify([
                 { name: "obelisk", type: "dir" },
-                { name: "README.md", type: "file", size: 5 },
+                { name: "README.md", type: "file", sha: "git:readme", size: 5 },
             ]),
         ),
         // "read"'s ok arm is the raw file body (a plain string result), so the
@@ -43,6 +43,10 @@ test("lists and reads through the transport, lazily", () => {
 
     assert.equal(host.calls.length, 0, "mounting itself makes no network call");
     assert.deepEqual(fs.readdir("/workspace/components"), ["README.md", "obelisk"]);
+    assert.deepEqual(fs.lazyFileRef("/workspace/components/README.md"), {
+        digest: "git:readme",
+        size: 5,
+    });
     assert.equal(fs.readFile("/workspace/components/README.md"), "# Components\nnot json {");
 });
 

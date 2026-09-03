@@ -9,7 +9,7 @@
 //! lists. Two methods back the mount:
 //!
 //!   * `list`  -> params `{ "owner", "repo", "ref", "path": "<remote path>" }`,
-//!     result a JSON array of `{ "name", "type": "file"|"dir", "size" }`
+//!     result a JSON array of `{ "name", "type": "file"|"dir", "sha", "size" }`
 //!     entries.
 //!   * `read`  -> params `{ "owner", "repo", "ref", "path": "<remote path>" }`,
 //!     result the file's raw text body.
@@ -101,6 +101,12 @@ fn parse_entry(entry: &Value) -> Result<WebEntry, String> {
     let kind = match entry.get("type").and_then(Value::as_str) {
         Some("dir") => WebEntryKind::Dir,
         Some("file") => WebEntryKind::File {
+            digest: entry
+                .get("sha")
+                .and_then(Value::as_str)
+                .filter(|sha| !sha.is_empty())
+                .ok_or_else(|| format!("mount file {name} has no content digest"))?
+                .to_string(),
             size: entry.get("size").and_then(Value::as_u64).unwrap_or(0),
         },
         other => return Err(format!("mount entry {name} has unknown type {other:?}")),
@@ -178,7 +184,7 @@ mod tests {
                     args("list", ""),
                     ok_arm(json!([
                         {"name": "obelisk", "type": "dir"},
-                        {"name": "README.md", "type": "file", "size": 5}
+                        {"name": "README.md", "type": "file", "sha": "git:readme", "size": 5}
                     ])),
                 ),
                 // `read`'s ok arm is the raw file body (a plain string result),
