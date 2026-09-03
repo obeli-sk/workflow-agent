@@ -31,6 +31,7 @@
 import { sha256Hex } from "./commands/hash.js";
 import { utf8Encode } from "./utf8.js";
 import { DEPLOYMENT_TEMPLATE } from "./obelisk-deployment-template.js";
+import { isCasNamespacedDigest } from "./fs.js";
 
 const READ_BLOB_FFQN = "obelisk-agent:tools/webapi.deployment-read-blob";
 const SUBMIT_FFQN = "obelisk-agent:tools/webapi.deployment-submit";
@@ -392,14 +393,20 @@ function arraysEqual(a, b) {
 // `manifestWithDigests` re-pins its existing digest and `submitDeployment`
 // never uploads it (the "upload only what the server is missing" contract).
 // Skipping unmodified files keeps a redeploy from touching every component,
-// notably the multi-MB workflow and activity WASM.
+// notably the multi-MB workflow and activity WASM. A `pending` file with a
+// foreign (non-CAS) digest, e.g. copied in from a git/web mount and never
+// locally edited, is *not* skipped: its bytes were never uploaded here under
+// that digest, so it must go out like a modified file (see
+// `ownedSourceDigest`).
 export function deploymentSources(fs, dir, manifest) {
     const files = [];
     for (const location of ownedSourceLocations(manifest)) {
         const path = `${dir}/${location}`;
         // A local write clears the pending flag; a mere read does not. So a
-        // file still pending is unmodified and already in the CAS - skip it.
-        if (fs.isPending(path)) continue;
+        // file still pending with a real CAS digest is unmodified and
+        // already uploaded - skip it.
+        const lazy = fs.lazyFileRef(path);
+        if (lazy && isCasNamespacedDigest(lazy.digest)) continue;
         if (fs.exists(path)) files.push(location);
     }
     return files;
@@ -1052,10 +1059,15 @@ export function ownedSourceLocations(manifest) {
 // unchanged file is still a lazy `pending` VFS entry and keeps its CAS
 // digest; a changed or newly created file is re-hashed from the same
 // string content `submitDeployment` transmits, so the server's re-hash
-// matches. Returns null if the file is missing (or unreadable).
+// matches. Returns null if the file is missing (or unreadable). A `pending`
+// file whose digest isn't CAS-namespaced (e.g. a git/web mount's own foreign
+// hash) is treated like a modified file instead: its bytes were never
+// uploaded to this server's CAS under that digest, so it must be fetched and
+// rehashed here rather than have the foreign hash reused as a bogus
+// `content_digest`.
 function ownedSourceDigest(fs, path) {
     const lazy = fs.lazyFileRef(path);
-    if (lazy) {
+    if (lazy && isCasNamespacedDigest(lazy.digest)) {
         console.debug(`ownedSourceDigest(${path}): unchanged, reusing cached digest`);
         return lazy.digest;
     }

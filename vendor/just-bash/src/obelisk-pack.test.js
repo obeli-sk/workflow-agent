@@ -794,6 +794,33 @@ test("deployment submit sends only locally modified sources", () => {
     assert.deepEqual(JSON.parse(host.calls[1][1])[1], [{ path: "a.js", digest: aDigest, content: "new-a" }]);
 });
 
+test("deployment submit rehashes and uploads a pending file with a foreign digest", () => {
+    // Simulates a file copied in unmodified from a git/web mount: it is still
+    // `pending` (never locally edited), but its digest is the remote's own
+    // foreign hash (here a 40-hex git blob SHA-1), not this server's CAS
+    // sha256. Submit must not reuse that foreign digest as `content_digest`,
+    // nor skip the file as "already uploaded" - it must be fetched, rehashed,
+    // and sent like any other new/modified source.
+    const manifest = ["[[workflow_js]]", 'location = "a.js"', 'content_digest = "sha256:a"'].join("\n") + "\n";
+    const gitSha = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3";
+    const i = interp();
+    i.vfs.setBlobLoader(fixtureLoader({ [gitSha]: "test" }));
+    i.vfs.writeFile("/workspace/deployment/current/deployment.toml", manifest);
+    i.vfs.registerLazy("/workspace/deployment/current/a.js", gitSha, 4);
+
+    const realDigest = sha256("test");
+    const host = fakeHost()
+        .withErr("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify({ permanent_missing_files: [{ path: "a.js", digest: realDigest }] }))
+        .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(host.calls.length, 2);
+    const preflight = JSON.parse(host.calls[0][1]);
+    assert.equal(preflight[0], `[[workflow_js]]\nlocation = "a.js"\ncontent_digest = "${realDigest}"\n`);
+    const retry = JSON.parse(host.calls[1][1]);
+    assert.deepEqual(retry[1], [{ path: "a.js", digest: realDigest, content: "test" }]);
+});
+
 test("deployment submit pins a digest for a new component with no content_digest line", () => {
     const manifest = ['[[activity_js]]', 'name = "program_http"', 'location = "activity/http.js"'].join("\n") + "\n";
     const i = interp();

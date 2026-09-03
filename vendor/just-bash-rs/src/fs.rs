@@ -60,6 +60,17 @@ pub struct LazyFileRef {
     pub size: u64,
 }
 
+/// True if `digest` is a real `sha256:<64 hex>` CAS digest. `LazyFileRef.digest`
+/// is trustworthy as a `content_digest` only when this holds: deployment
+/// mounts and MCP resources are always CAS-addressed this way, but a web/git
+/// mount's `digest` is the remote's own content hash in its own scheme (e.g. a
+/// GitHub blob's 40-hex git SHA-1), which a caller must not reuse as-is.
+pub fn valid_sha256_digest(digest: &str) -> bool {
+    digest
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileReadError {
     NotFound(String),

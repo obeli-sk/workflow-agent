@@ -906,12 +906,31 @@ fn table_like_keys(table: &dyn TableLike) -> Vec<String> {
     table.iter().map(|(key, _)| key.to_string()).collect()
 }
 
+/// A digest is only trustworthy as a `content_digest` if it's namespaced in
+/// our own CAS scheme (`sha256:...`). This is deliberately a prefix check,
+/// not a strict-shape one (see `fs::valid_sha256_digest` for that): plenty of
+/// tests here use short placeholder digests like `sha256:1`, and a malformed
+/// real one is still caught later by the server's own verify step. What this
+/// guards against is a *foreign* scheme slipping through unprefixed, e.g. a
+/// git/web mount's own hash (GitHub's 40-hex blob SHA-1, no `sha256:` prefix
+/// at all).
+fn is_cas_namespaced_digest(digest: &str) -> bool {
+    digest.starts_with("sha256:")
+}
+
 /// The `content_digest` for a deployment-owned source at submit time: an
 /// unchanged file is still a lazy `pending` VFS entry and keeps its CAS digest;
 /// a changed or newly created file is re-hashed from the same lossy-decoded
-/// bytes `deployment_sources` transmits, so the server's re-hash matches.
+/// bytes `deployment_sources` transmits, so the server's re-hash matches. A
+/// `pending` file whose digest isn't CAS-namespaced (e.g. a git/web mount's
+/// own foreign hash) is treated like a modified file instead: its bytes were
+/// never uploaded to this server's CAS under that digest, so it must be
+/// fetched and rehashed here rather than have the foreign hash reused as a
+/// bogus `content_digest`.
 fn owned_source_digest(fs: &Vfs, path: &str, log: fn(&str)) -> Option<String> {
-    if let Some(lazy) = fs.lazy_file_ref(path) {
+    if let Some(lazy) = fs.lazy_file_ref(path)
+        && is_cas_namespaced_digest(&lazy.digest)
+    {
         log(&format!(
             "owned_source_digest({path}): unchanged, reusing cached digest"
         ));
@@ -936,14 +955,22 @@ fn owned_source_digest(fs: &Vfs, path: &str, log: fn(&str)) -> Option<String> {
 /// `manifest_with_digests` re-pins its existing digest and `submit_deployment`
 /// never uploads it (the "upload only what the server is missing" contract).
 /// Skipping unmodified files keeps a redeploy from touching every component,
-/// notably the multi-MB workflow and activity WASM.
+/// notably the multi-MB workflow and activity WASM. A `pending` file with a
+/// foreign (non-CAS) digest, e.g. copied in from a git/web mount and never
+/// locally edited, is *not* skipped: its bytes were never uploaded here under
+/// that digest, so it must go out like a modified file (see
+/// `owned_source_digest`).
 fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<String> {
     let mut files = Vec::new();
     for location in owned_source_locations(manifest) {
         let path = format!("{dir}/{location}");
         // A local write clears the pending flag; a mere read does not. So a file
-        // still pending is unmodified and already in the CAS - skip it.
-        if fs.is_pending(&path) {
+        // still pending with a real CAS digest is unmodified and already
+        // uploaded - skip it.
+        if fs
+            .lazy_file_ref(&path)
+            .is_some_and(|lazy| is_cas_namespaced_digest(&lazy.digest))
+        {
             continue;
         }
         if fs.exists(&path) {
@@ -2531,6 +2558,61 @@ content_digest = \"sha256:1\"\n\
         assert_eq!(
             retry[1],
             json!([{"path": "a.js", "digest": a_digest, "content": "new-a"}])
+        );
+    }
+
+    #[test]
+    fn deployment_submit_rehashes_and_uploads_a_pending_file_with_a_foreign_digest() {
+        // Simulates a file copied in unmodified from a git/web mount: it is
+        // still `pending` (never locally edited), but its digest is the
+        // remote's own foreign hash (here a 40-hex git blob SHA-1), not this
+        // server's CAS sha256. Submit must not reuse that foreign digest as
+        // `content_digest`, nor skip the file as "already uploaded" - it must
+        // be fetched, rehashed, and sent like any other new/modified source.
+        let manifest = concat!(
+            "[[workflow_js]]\n",
+            "location = \"a.js\"\n",
+            "content_digest = \"sha256:a\"\n",
+        );
+        let git_sha = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3";
+        let mut i = interp("/workspace");
+        i.fs.set_blob_loader(FixtureLoader::rc(&[(git_sha, b"test")]));
+        i.fs.write_file(
+            "/workspace/deployment/current/deployment.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        i.fs
+            .register_lazy("/workspace/deployment/current/a.js", git_sha, 4);
+
+        let real_digest = format!("sha256:{}", sha256_hex(b"test"));
+        let mut host = FakeHost::new()
+            .with_err(
+                SUBMIT_FFQN,
+                &format!(
+                    r#"{{"permanent_missing_files":[{{"path":"a.js","digest":"{real_digest}"}}]}}"#
+                ),
+            )
+            .with(SUBMIT_FFQN, "\"Dep_x\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+        assert_eq!(host.calls.len(), 2);
+        let preflight: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        assert_eq!(
+            preflight[0],
+            format!(
+                "[[workflow_js]]\nlocation = \"a.js\"\ncontent_digest = \"{real_digest}\"\n"
+            )
+        );
+        let retry: Value = serde_json::from_str(&host.calls[1].1).unwrap();
+        assert_eq!(
+            retry[1],
+            json!([{"path": "a.js", "digest": real_digest, "content": "test"}])
         );
     }
 

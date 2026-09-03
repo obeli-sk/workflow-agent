@@ -48,6 +48,19 @@ export function basename(path) {
 // PORT: fs.rs's MAX_LAZY_FETCH_BYTES.
 export const MAX_LAZY_FETCH_BYTES = 1024 * 1024;
 
+// True if `digest` is namespaced in our own CAS scheme (`sha256:...`). A
+// `lazyFileRef().digest` is only trustworthy as a `content_digest` when this
+// holds: deployment mounts and MCP resources are always CAS-addressed this
+// way, but a git/web mount's digest is the remote's own foreign hash (e.g. a
+// GitHub blob's 40-hex git SHA-1, no `sha256:` prefix at all) and must not be
+// reused as one. Deliberately a prefix check, not a strict-shape one: plenty
+// of tests use short placeholder digests like `sha256:1`, and a malformed
+// real one is still caught later by the server's own verify step.
+// PORT: fs.rs's `is_cas_namespaced_digest`.
+export function isCasNamespacedDigest(digest) {
+    return digest.startsWith("sha256:");
+}
+
 function dirNode() {
     return { type: "dir", children: new Map() };
 }
