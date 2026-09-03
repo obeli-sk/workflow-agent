@@ -69,7 +69,7 @@ test("lists a directory and maps entry types", async () => {
             [
                 url("content/js"),
                 jsonOk([
-                    { name: "index.md", type: "file", size: 12 },
+                    { name: "index.md", type: "file", sha: "blob-index", size: 12 },
                     { name: "examples", type: "dir" },
                     // Symlinks surface as directories; the listing payload
                     // carries no target text.
@@ -83,7 +83,7 @@ test("lists a directory and maps entry types", async () => {
         async (calls) => {
             const listing = JSON.parse(await call("list", "content/js"));
             assert.deepEqual(listing, [
-                { name: "index.md", type: "file", size: 12 },
+                { name: "index.md", type: "file", sha: "blob-index", size: 12 },
                 { name: "examples", type: "dir", size: 0 },
                 { name: "latest", type: "dir", size: 0 },
             ]);
@@ -98,12 +98,12 @@ test("listing the symlink path itself follows to the target directory", async ()
             [url("content/docs/latest"), jsonOk({ type: "symlink", target: "v0.41.3" })],
             [
                 url("content/docs/v0.41.3"),
-                jsonOk([{ name: "_index.md", type: "file", size: 64 }]),
+                jsonOk([{ name: "_index.md", type: "file", sha: "blob-index", size: 64 }]),
             ],
         ]),
         async (calls) => {
             const listing = JSON.parse(await call("list", "content/docs/latest"));
-            assert.deepEqual(listing, [{ name: "_index.md", type: "file", size: 64 }]);
+            assert.deepEqual(listing, [{ name: "_index.md", type: "file", sha: "blob-index", size: 64 }]);
             assert.deepEqual(
                 calls.map((c) => c.url),
                 [url("content/docs/latest"), url("content/docs/v0.41.3")],
@@ -121,12 +121,12 @@ test("listing through a symlinked component rewrites the path", async () => {
             [url("content/docs/latest"), jsonOk({ type: "symlink", target: "v0.41.3" })],
             [
                 url("content/docs/v0.41.3/concepts"),
-                jsonOk([{ name: "executions.md", type: "file", size: 9 }]),
+                jsonOk([{ name: "executions.md", type: "file", sha: "blob-executions", size: 9 }]),
             ],
         ]),
         async (calls) => {
             const listing = JSON.parse(await call("list", "content/docs/latest/concepts"));
-            assert.deepEqual(listing, [{ name: "executions.md", type: "file", size: 9 }]);
+            assert.deepEqual(listing, [{ name: "executions.md", type: "file", sha: "blob-executions", size: 9 }]);
             // Full-path miss, then component probes from the root, then the
             // confirming listing of the rewritten directory.
             assert.equal(calls.length, 6);
@@ -233,7 +233,7 @@ test("an explicit ref overrides the main default", async () => {
         new Map([
             [
                 `${API}?ref=v1`,
-                jsonOk([{ name: "README.md", type: "file", size: 5 }]),
+                jsonOk([{ name: "README.md", type: "file", sha: "blob-readme", size: 5 }]),
             ],
         ]),
         async () => {
@@ -243,7 +243,7 @@ test("an explicit ref overrides the main default", async () => {
                     JSON.stringify({ owner: "acme", repo: "tree", ref: "v1", path: "" }),
                 ),
             );
-            assert.deepEqual(listing, [{ name: "README.md", type: "file", size: 5 }]);
+            assert.deepEqual(listing, [{ name: "README.md", type: "file", sha: "blob-readme", size: 5 }]);
         },
     );
 });

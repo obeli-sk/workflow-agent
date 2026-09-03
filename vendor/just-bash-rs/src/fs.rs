@@ -47,7 +47,7 @@ pub struct WebEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WebEntryKind {
     Dir,
-    File { size: u64 },
+    File { digest: String, size: u64 },
 }
 
 /// Largest lazy blob the VFS will materialize into workflow memory.
@@ -79,17 +79,25 @@ struct WebMount {
     provider: Rc<dyn DirProvider>,
 }
 
-/// The read-path overlay for web mounts, materialized on access (like
-/// `lazy_cache`): `dirs`/`files` are children discovered by expanding a listed
-/// directory, `expanded` marks directories already listed, and `cache` holds
-/// fetched file bytes. Kept behind a `RefCell` so listing and reading stay
-/// `&self` calls, matching the rest of the read surface.
+/// The directory-shape overlay for web mounts, materialized on access:
+/// `dirs` are children discovered by expanding a listed directory and
+/// `expanded` marks directories already listed. File metadata and bodies use
+/// VFS's shared lazy-file mechanism, so snapshots retain content pointers.
 #[derive(Clone, Default, Debug)]
 struct WebState {
     expanded: BTreeSet<String>,
     dirs: BTreeSet<String>,
-    files: BTreeMap<String, u64>,
-    cache: BTreeMap<String, Vec<u8>>,
+}
+
+struct WebFileLoader {
+    provider: Rc<dyn DirProvider>,
+    remote_path: String,
+}
+
+impl BlobLoader for WebFileLoader {
+    fn load(&self, _digest: &str) -> Result<Vec<u8>, String> {
+        self.provider.read(&self.remote_path)
+    }
 }
 
 /// An in-memory tree of text files keyed by absolute, normalized path.
@@ -113,7 +121,7 @@ pub struct Vfs {
     /// path -> content reference. Populated by `register_lazy` so the mounted
     /// deployment tree lists (`ls`, `exists`, `is_file`) without any CAS
     /// round-trips; bounded files are pulled by `loader` on the first read.
-    pending: BTreeMap<String, LazyFileRef>,
+    pending: RefCell<BTreeMap<String, LazyFileRef>>,
     /// Bytes fetched for a `pending` entry, cached so each file is fetched at
     /// most once. Interior mutability keeps `read_file` a `&self` call, so the
     /// whole read-side command surface is unchanged by lazy loading.
@@ -122,7 +130,7 @@ pub struct Vfs {
     /// interpreter and unit tests), where nothing is ever `pending`.
     loader: Option<Rc<dyn BlobLoader>>,
     /// Path-specific loaders for mounts backed by a different blob source.
-    mounted_loaders: BTreeMap<String, Rc<dyn BlobLoader>>,
+    mounted_loaders: RefCell<BTreeMap<String, Rc<dyn BlobLoader>>>,
     /// Web mounts (lazily-listed remote directory trees), set at mount time and
     /// read-only after; the discovered structure lives in `web`.
     mounts: Vec<WebMount>,
@@ -145,10 +153,10 @@ impl std::fmt::Debug for Vfs {
             .field("dirs", &self.dirs)
             .field("symlinks", &self.symlinks)
             .field("executable", &self.executable)
-            .field("pending", &self.pending)
+            .field("pending", &self.pending.borrow())
             .field("lazy_cache", &self.lazy_cache)
             .field("loader", &self.loader.as_ref().map(|_| "..."))
-            .field("mounted_loaders", &self.mounted_loaders.keys())
+            .field("mounted_loaders", &self.mounted_loaders.borrow().keys())
             .field(
                 "web_mounts",
                 &self.mounts.iter().map(|m| &m.root).collect::<Vec<_>>(),
@@ -175,10 +183,10 @@ impl Vfs {
             dirs,
             symlinks: BTreeMap::new(),
             executable: BTreeSet::new(),
-            pending: BTreeMap::new(),
+            pending: RefCell::new(BTreeMap::new()),
             lazy_cache: RefCell::new(BTreeMap::new()),
             loader: None,
-            mounted_loaders: BTreeMap::new(),
+            mounted_loaders: RefCell::new(BTreeMap::new()),
             mounts: Vec::new(),
             web: RefCell::new(WebState::default()),
             deferred: Vec::new(),
@@ -222,8 +230,8 @@ impl Vfs {
 
     /// Mount a lazily-listed remote directory tree at `root`, sourced from
     /// `provider` at remote path `base`. The tree lists nothing until a
-    /// directory under `root` is first read (`ls`), and each file's bytes are
-    /// fetched on first read; see `WebState` and `DirProvider`.
+    /// directory under `root` is first read (`ls`), and each file is registered
+    /// as a lazy reference that fetches its bytes on first read.
     pub fn register_web_mount(&mut self, root: &str, base: &str, provider: Rc<dyn DirProvider>) {
         let root = Self::normalize(root);
         if let Some(parent) = Self::parent(&root) {
@@ -256,9 +264,9 @@ impl Vfs {
         None
     }
 
-    /// List a web directory once, recording its children (subdirs and files)
-    /// into the overlay. A listing error still marks the directory expanded so
-    /// a failed fetch is not retried on every access.
+    /// List a web directory once, recording subdirectories into the overlay and
+    /// files as lazy references. A listing error still marks the directory
+    /// expanded so a failed fetch is not retried on every access.
     fn ensure_expanded(&self, dir: &str) {
         {
             let web = self.web.borrow();
@@ -271,65 +279,32 @@ impl Vfs {
         };
         let provider = self.mounts[index].provider.clone();
         let entries = provider.list(&remote);
-        let mut web = self.web.borrow_mut();
-        web.expanded.insert(dir.to_string());
+        self.web.borrow_mut().expanded.insert(dir.to_string());
         if let Ok(entries) = entries {
             for entry in entries {
                 let child = format!("{dir}/{}", entry.name);
                 match entry.kind {
                     WebEntryKind::Dir => {
-                        web.dirs.insert(child);
+                        self.web.borrow_mut().dirs.insert(child);
                     }
-                    WebEntryKind::File { size } => {
-                        web.files.insert(child, size);
+                    WebEntryKind::File { digest, size } => {
+                        let remote_path = self
+                            .web_remote(&child)
+                            .map(|(_, remote)| remote)
+                            .unwrap_or_default();
+                        self.register_web_lazy(
+                            &child,
+                            digest,
+                            size,
+                            Rc::new(WebFileLoader {
+                                provider: provider.clone(),
+                                remote_path,
+                            }),
+                        );
                     }
                 }
             }
         }
-    }
-
-    /// Fetch a web-mounted file's bytes on first read, size-capped and cached.
-    fn read_web_file(&self, path: &str) -> Result<Vec<u8>, FileReadError> {
-        if let Some(bytes) = self.web.borrow().cache.get(path) {
-            return Ok(bytes.clone());
-        }
-        if let Some(parent) = Self::parent(path) {
-            self.ensure_expanded(&parent);
-        }
-        let size = match self.web.borrow().files.get(path).copied() {
-            Some(size) => size,
-            None => return Err(FileReadError::NotFound(path.to_string())),
-        };
-        if size > MAX_LAZY_FETCH_BYTES {
-            return Err(FileReadError::TooLarge {
-                path: path.to_string(),
-                reference: LazyFileRef {
-                    digest: String::new(),
-                    size,
-                },
-            });
-        }
-        let Some((index, remote)) = self.web_remote(path) else {
-            return Err(FileReadError::NotFound(path.to_string()));
-        };
-        let provider = self.mounts[index].provider.clone();
-        let bytes = provider
-            .read(&remote)
-            .map_err(|_| FileReadError::Unavailable(path.to_string()))?;
-        if bytes.len() as u64 > MAX_LAZY_FETCH_BYTES {
-            return Err(FileReadError::TooLarge {
-                path: path.to_string(),
-                reference: LazyFileRef {
-                    digest: String::new(),
-                    size: bytes.len() as u64,
-                },
-            });
-        }
-        self.web
-            .borrow_mut()
-            .cache
-            .insert(path.to_string(), bytes.clone());
-        Ok(bytes)
     }
 
     /// Install the loader that fetches bounded `pending` files on first read.
@@ -370,22 +345,34 @@ impl Vfs {
         self.lazy_cache.borrow_mut().remove(&path);
         match loader {
             Some(loader) => {
-                self.mounted_loaders.insert(path.clone(), loader);
+                self.mounted_loaders
+                    .borrow_mut()
+                    .insert(path.clone(), loader);
             }
             None => {
-                self.mounted_loaders.remove(&path);
+                self.mounted_loaders.borrow_mut().remove(&path);
             }
         }
         if let Some(parent) = Self::parent(&path) {
             self.ensure_dirs(&parent);
         }
-        self.pending.insert(
+        self.pending.borrow_mut().insert(
             path,
             LazyFileRef {
                 digest: digest.to_string(),
                 size,
             },
         );
+    }
+
+    fn register_web_lazy(&self, path: &str, digest: String, size: u64, loader: Rc<dyn BlobLoader>) {
+        self.lazy_cache.borrow_mut().remove(path);
+        self.mounted_loaders
+            .borrow_mut()
+            .insert(path.to_string(), loader);
+        self.pending
+            .borrow_mut()
+            .insert(path.to_string(), LazyFileRef { digest, size });
     }
 
     /// Set or clear a file's execute bit (`chmod`). The path is resolved
@@ -491,15 +478,12 @@ impl Vfs {
 
     pub fn is_file(&self, path: &str) -> bool {
         let path = self.resolve(path);
-        if self.files.contains_key(&path) || self.pending.contains_key(&path) {
-            return true;
-        }
-        if self.web.borrow().files.contains_key(&path) {
+        if self.files.contains_key(&path) || self.pending.borrow().contains_key(&path) {
             return true;
         }
         if let Some(parent) = Self::parent(&path) {
             self.ensure_expanded(&parent);
-            return self.web.borrow().files.contains_key(&path);
+            return self.pending.borrow().contains_key(&path);
         }
         false
     }
@@ -511,12 +495,12 @@ impl Vfs {
     /// edited (or freshly written) file returns false. Reading a pending file
     /// caches its bytes but leaves it pending, so a mere read stays unmodified.
     pub fn is_pending(&self, path: &str) -> bool {
-        self.pending.contains_key(&self.resolve(path))
+        self.pending.borrow().contains_key(&self.resolve(path))
     }
 
     /// The digest and authoritative byte length of an unmodified mounted file.
     pub fn lazy_file_ref(&self, path: &str) -> Option<LazyFileRef> {
-        self.pending.get(&self.resolve(path)).cloned()
+        self.pending.borrow().get(&self.resolve(path)).cloned()
     }
 
     /// Byte length from local bytes or mounted metadata, without fetching.
@@ -525,13 +509,13 @@ impl Vfs {
         if let Some(bytes) = self.files.get(&path) {
             return Some(bytes.len() as u64);
         }
-        if let Some(reference) = self.pending.get(&path) {
+        if let Some(reference) = self.pending.borrow().get(&path) {
             return Some(reference.size);
         }
         if let Some(parent) = Self::parent(&path) {
             self.ensure_expanded(&parent);
         }
-        self.web.borrow().files.get(&path).copied()
+        None
     }
 
     pub fn is_dir(&self, path: &str) -> bool {
@@ -560,8 +544,13 @@ impl Vfs {
         if let Some(bytes) = self.lazy_cache.borrow().get(&path) {
             return Ok(bytes.clone());
         }
-        let Some(reference) = self.pending.get(&path) else {
-            return self.read_web_file(&path);
+        if !self.pending.borrow().contains_key(&path)
+            && let Some(parent) = Self::parent(&path)
+        {
+            self.ensure_expanded(&parent);
+        };
+        let Some(reference) = self.pending.borrow().get(&path).cloned() else {
+            return Err(FileReadError::NotFound(path));
         };
         if reference.size > MAX_LAZY_FETCH_BYTES {
             return Err(FileReadError::TooLarge {
@@ -571,6 +560,7 @@ impl Vfs {
         }
         let bytes = self
             .mounted_loaders
+            .borrow()
             .get(&path)
             .or(self.loader.as_ref())
             .ok_or_else(|| FileReadError::Unavailable(path.clone()))?
@@ -606,8 +596,8 @@ impl Vfs {
             self.ensure_dirs(&parent);
         }
         // A truncating write discards any not-yet-fetched (or cached) lazy body.
-        self.pending.remove(&path);
-        self.mounted_loaders.remove(&path);
+        self.pending.borrow_mut().remove(&path);
+        self.mounted_loaders.borrow_mut().remove(&path);
         self.lazy_cache.borrow_mut().remove(&path);
         self.files.insert(path, data.to_vec());
         Ok(())
@@ -623,12 +613,12 @@ impl Vfs {
         }
         // Materialize a lazy file before appending so its fetched bytes are
         // preserved rather than replaced by the appended tail.
-        if self.pending.contains_key(&path) {
+        if self.pending.borrow().contains_key(&path) {
             let existing = self
                 .read_file_checked(&path)
                 .map_err(|_| FsError::ReadUnavailable(path.clone()))?;
-            self.pending.remove(&path);
-            self.mounted_loaders.remove(&path);
+            self.pending.borrow_mut().remove(&path);
+            self.mounted_loaders.borrow_mut().remove(&path);
             self.lazy_cache.borrow_mut().remove(&path);
             self.files.insert(path.clone(), existing);
         }
@@ -645,8 +635,10 @@ impl Vfs {
     /// `cp`/`mv` walk directories themselves.
     pub fn copy_file(&mut self, src: &str, dest: &str) -> bool {
         let src = self.resolve(src);
-        if let Some(reference) = self.pending.get(&src).cloned() {
-            match self.mounted_loaders.get(&src).cloned() {
+        let reference = self.pending.borrow().get(&src).cloned();
+        if let Some(reference) = reference {
+            let loader = self.mounted_loaders.borrow().get(&src).cloned();
+            match loader {
                 Some(loader) => {
                     self.register_lazy_with_loader(dest, &reference.digest, reference.size, loader)
                 }
@@ -698,7 +690,7 @@ impl Vfs {
             .files
             .keys()
             .chain(self.dirs.iter())
-            .chain(self.pending.keys())
+            .chain(self.pending.borrow().keys())
             .chain(self.symlinks.keys())
         {
             if entry == &dir {
@@ -711,7 +703,7 @@ impl Vfs {
             }
         }
         let web = self.web.borrow();
-        for entry in web.dirs.iter().chain(web.files.keys()) {
+        for entry in web.dirs.iter() {
             if entry == &dir {
                 continue;
             }
@@ -734,9 +726,9 @@ impl Vfs {
             return Ok(());
         }
         let path = self.resolve(path);
-        if self.files.remove(&path).is_some() || self.pending.remove(&path).is_some() {
+        if self.files.remove(&path).is_some() || self.pending.borrow_mut().remove(&path).is_some() {
             self.executable.remove(&path);
-            self.mounted_loaders.remove(&path);
+            self.mounted_loaders.borrow_mut().remove(&path);
             self.lazy_cache.borrow_mut().remove(&path);
             return Ok(());
         }
@@ -754,8 +746,10 @@ impl Vfs {
             self.executable
                 .retain(|k| k != &path && !k.starts_with(&prefix));
             self.pending
+                .borrow_mut()
                 .retain(|k, _| k != &path && !k.starts_with(&prefix));
             self.mounted_loaders
+                .borrow_mut()
                 .retain(|k, _| k != &path && !k.starts_with(&prefix));
             self.lazy_cache
                 .borrow_mut()
@@ -766,10 +760,6 @@ impl Vfs {
         // whole discovered subtree for a recursive directory removal.
         {
             let mut web = self.web.borrow_mut();
-            if web.files.remove(&path).is_some() {
-                web.cache.remove(&path);
-                return Ok(());
-            }
             if web.dirs.contains(&path) {
                 if !recursive {
                     return Err(FsError::IsDirectory(path));
@@ -778,8 +768,6 @@ impl Vfs {
                 web.dirs.retain(|k| k != &path && !k.starts_with(&prefix));
                 web.expanded
                     .retain(|k| k != &path && !k.starts_with(&prefix));
-                web.files.retain(|k, _| !k.starts_with(&prefix));
-                web.cache.retain(|k, _| !k.starts_with(&prefix));
                 return Ok(());
             }
         }
@@ -1113,7 +1101,10 @@ mod tests {
     fn file(name: &str, size: u64) -> WebEntry {
         WebEntry {
             name: name.to_string(),
-            kind: WebEntryKind::File { size },
+            kind: WebEntryKind::File {
+                digest: format!("git:{name}"),
+                size,
+            },
         }
     }
 
@@ -1218,6 +1209,13 @@ mod tests {
         assert_eq!(&*provider.lists.borrow(), &["".to_string()]);
         assert!(fs.is_dir("/workspace/components/obelisk"));
         assert!(fs.is_file("/workspace/components/README.md"));
+        assert_eq!(
+            fs.lazy_file_ref("/workspace/components/README.md"),
+            Some(LazyFileRef {
+                digest: "git:README.md".to_string(),
+                size: 5,
+            })
+        );
 
         // Descending fetches the child listing; re-listing the root is cached.
         assert_eq!(

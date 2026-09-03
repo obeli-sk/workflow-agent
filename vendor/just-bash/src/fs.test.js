@@ -200,9 +200,9 @@ test("web mount lists a directory lazily, calling list() once across repeated ac
         listings: {
             "": [
                 { name: "obelisk", kind: "dir" },
-                { name: "README.md", kind: "file", size: 5 },
+                { name: "README.md", kind: "file", digest: "git:readme", size: 5 },
             ],
-            obelisk: [{ name: "deployment.toml", kind: "file", size: 3 }],
+            obelisk: [{ name: "deployment.toml", kind: "file", digest: "git:deployment", size: 3 }],
         },
         files: {
             "README.md": "hello",
@@ -222,6 +222,10 @@ test("web mount lists a directory lazily, calling list() once across repeated ac
     assert.deepEqual(provider.lists, [""]);
     assert.equal(fs.isDir("/workspace/components/obelisk"), true);
     assert.equal(fs.isFile("/workspace/components/README.md"), true);
+    assert.deepEqual(fs.lazyFileRef("/workspace/components/README.md"), {
+        digest: "git:readme",
+        size: 5,
+    });
 
     // Repeated access to the already-expanded root does not list again.
     fs.readdir("/workspace/components");
@@ -241,7 +245,7 @@ test("web mount lists a directory lazily, calling list() once across repeated ac
 
 test("writing over a web-mounted file shadows the remote copy with no fetch", () => {
     const provider = fakeProvider({
-        listings: { "": [{ name: "notes.md", kind: "file", size: 6 }] },
+        listings: { "": [{ name: "notes.md", kind: "file", digest: "git:notes", size: 6 }] },
         files: { "notes.md": "remote" },
     });
     const fs = new Vfs();
@@ -254,7 +258,7 @@ test("writing over a web-mounted file shadows the remote copy with no fetch", ()
 
 test("oversized web file reports TOO_LARGE without ever calling read()", () => {
     const provider = fakeProvider({
-        listings: { "": [{ name: "big.bin", kind: "file", size: MAX_LAZY_FETCH_BYTES + 1 }] },
+        listings: { "": [{ name: "big.bin", kind: "file", digest: "git:big", size: MAX_LAZY_FETCH_BYTES + 1 }] },
         files: {},
     });
     const fs = new Vfs();

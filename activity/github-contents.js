@@ -6,7 +6,7 @@
 // issues one or more GitHub contents-API requests against the repo named in
 // params. Two methods:
 //
-//   list  params { owner, repo, ref, path } -> JSON array of { name, type: "file"|"dir", size }
+//   list  params { owner, repo, ref, path } -> JSON array of { name, type: "file"|"dir", sha, size }
 //   read  params { owner, repo, ref, path } -> the file's raw text body
 //   resolve-ref  params { owner, repo, ref } -> the commit SHA for ref
 //
@@ -72,7 +72,12 @@ async function list(repo, path) {
         .filter((entry) => entry && typeof entry.name === "string" && entry.name)
         .map((entry) => {
             if (entry.type === "file")
-                return { name: String(entry.name), type: "file", size: Number(entry.size) || 0 };
+                return {
+                    name: String(entry.name),
+                    type: "file",
+                    sha: typeof entry.sha === "string" ? entry.sha : "",
+                    size: Number(entry.size) || 0,
+                };
             // Real trees and symlinks alike surface as directories; reads and
             // listings through the link resolve because both follow links.
             return { name: String(entry.name), type: "dir", size: 0 };
