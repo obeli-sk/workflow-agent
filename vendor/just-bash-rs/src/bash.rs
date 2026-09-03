@@ -1075,6 +1075,17 @@ mod tests {
     }
 
     #[test]
+    fn while_read_consumes_each_piped_line() {
+        let mut bash = fresh();
+        let out = run(
+            &mut bash,
+            "printf 'location = \"one\"\\nlocation = \"two\"\\n' | sed 's/.*= \"//;s/\"//' | while read -r item; do echo $item; done",
+        );
+        assert_eq!(out.stdout, "one\ntwo\n");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
     fn until_loop_runs_until_condition_true() {
         let mut bash = fresh();
         run(&mut bash, "touch /workspace/flag");
