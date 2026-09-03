@@ -8,10 +8,11 @@
 // Supported: BEGIN{...}/END{...}, pattern-action pairs, bare pattern
 // (implicit {print}), bare {action} (implicit always-true pattern), /regex/
 // patterns (matched against $0), general expression patterns (comparisons on
-// fields/vars, NR/NF); fields $0..$NF (read and assign, including extending
-// past NF and truncating via NF=), FS (single-char literal or multi-char
-// ERE) / -F; print/printf, assignment incl. compound (+= -= *= /= %= ^=),
-// ++/-- (pre/post), arithmetic + - * / % ^ **, string concatenation
+// fields/vars, NR/NF), range patterns (pat1,pat2 — on, including a numeric
+// 0 end-pattern for "to EOF"); fields $0..$NF (read and assign, including
+// extending past NF and truncating via NF=), FS (single-char literal or
+// multi-char ERE) / -F; print/printf, assignment incl. compound (+= -= *= /=
+// %= ^=), ++/-- (pre/post), arithmetic + - * / % ^ **, string concatenation
 // (juxtaposition), comparisons (POSIX numeric-string rules), ~/!~, &&/||/!,
 // ternary ?:, if/else, while, do/while, classic for(;;),
 // break/continue/next/exit [code]; builtins length substr index split sub
@@ -23,9 +24,8 @@
 // Explicitly out of scope (skipped, not started, matching the Rust port):
 // user-defined functions (function name(...) {...}), getline, nextfile,
 // `for (k in arr)` / `delete arr[k]` / `(a, b) in arr` / SUBSEP multi-dim
-// keys / the `in` operator, range patterns (pat1,pat2), regex RS/multi-char
-// RS, output redirection (print > "file", | cmd), -f progfile, and
-// execution/allocation limits.
+// keys / the `in` operator, regex RS/multi-char RS, output redirection
+// (print > "file", | cmd), -f progfile, and execution/allocation limits.
 //
 // Regex flavor: awk regex is ERE, and JS RegExp is already ERE/PCRE-ish, so
 // (unlike sed/grep's BRE mode) there is no translateBre step here — only
@@ -301,7 +301,21 @@ class Parser {
     parseRule() {
         if (this.eatIdent("BEGIN")) return { pattern: { kind: "begin" }, action: this.parseBlock() };
         if (this.eatIdent("END")) return { pattern: { kind: "end" }, action: this.parseBlock() };
-        const pattern = this.peekPunct("{") ? { kind: "always" } : { kind: "expr", expr: this.parseExpr() };
+        let pattern;
+        if (this.peekPunct("{")) {
+            pattern = { kind: "always" };
+        } else {
+            const first = this.parseExpr();
+            // A comma between two patterns turns them into a range: the rule
+            // matches every record from one where `first` matches through
+            // (inclusive) the next one where `second` matches, re-arming once
+            // closed. `active` is mutated at runtime (see matchRangePattern),
+            // so each occurrence of the pattern in the program needs its own
+            // object even if the same rule is never re-parsed.
+            pattern = this.eatPunct(",")
+                ? { kind: "range", start: first, end: this.parseExpr(), active: false }
+                : { kind: "expr", expr: first };
+        }
         const action = this.peekPunct("{") ? this.parseBlock() : null;
         return { pattern, action };
     }
@@ -966,6 +980,22 @@ function evalExpr(ctx, expr) {
     }
 }
 
+// Range pattern (pat1,pat2): matches every record from one where `start`
+// matches through the next one (inclusive) where `end` matches, then
+// re-arms. `pattern.active` is the one piece of state a range pattern
+// carries between records, mutated in place on the parsed pattern object
+// (one per occurrence in the program, matching how real awk scopes it).
+function matchRangePattern(ctx, pattern) {
+    if (!pattern.active) {
+        if (!valueTruthy(evalExpr(ctx, pattern.start))) return false;
+        pattern.active = true;
+        if (valueTruthy(evalExpr(ctx, pattern.end))) pattern.active = false;
+        return true;
+    }
+    if (valueTruthy(evalExpr(ctx, pattern.end))) pattern.active = false;
+    return true;
+}
+
 function assign(ctx, target, value) {
     switch (target.kind) {
         case "var": ctx.setVar(target.name, value); return;
@@ -1479,14 +1509,14 @@ export function awkCommand(interp, args, stdin) {
                     } else if (rule.pattern.kind === "always") {
                         matched = true;
                     } else {
-                        let v;
                         try {
-                            v = evalExpr(ctx, rule.pattern.expr);
+                            matched = rule.pattern.kind === "range"
+                                ? matchRangePattern(ctx, rule.pattern)
+                                : valueTruthy(evalExpr(ctx, rule.pattern.expr));
                         } catch (e) {
                             if (e instanceof AwkError) return fail(`awk: ${e.message}\n`, 1);
                             throw e;
                         }
-                        matched = valueTruthy(v);
                     }
                     if (!matched) continue;
                     let flow;

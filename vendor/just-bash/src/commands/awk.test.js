@@ -127,6 +127,30 @@ test("NR-based expression pattern", () => {
     assert.equal(bash.exec("awk 'NR>1{print}' /test/l.txt").stdout, "line2\nline3\n");
 });
 
+test("range pattern with numeric 0 end matches to EOF", () => {
+    const bash = fresh();
+    bash.vfs.writeFile("/test/toml.txt", "a\n[[webhook]]\nx=1\n[[other]]\nz=3\n[[webhook]]\nb=2\n");
+    assert.equal(
+        bash.exec("awk '/\\[\\[webhook/,0' /test/toml.txt").stdout,
+        "[[webhook]]\nx=1\n[[other]]\nz=3\n[[webhook]]\nb=2\n",
+    );
+});
+
+test("range pattern closes on the end pattern and re-arms", () => {
+    const bash = fresh();
+    bash.vfs.writeFile("/test/range.txt", "x\nstart\na\nb\nend\ny\nstart\nc\nend\nz\n");
+    assert.equal(
+        bash.exec("awk '/start/,/end/' /test/range.txt").stdout,
+        "start\na\nb\nend\nstart\nc\nend\n",
+    );
+});
+
+test("range pattern where start and end match the same record closes immediately", () => {
+    const bash = fresh();
+    bash.vfs.writeFile("/test/one.txt", "x\ny\n");
+    assert.equal(bash.exec("awk '/x/,/x/' /test/one.txt").stdout, "x\n");
+});
+
 test("printf basic", () => {
     const r = fresh().exec("echo 'hello world' | awk '{printf \"%s!\\n\", $1}'");
     assert.equal(r.stdout, "hello!\n");
