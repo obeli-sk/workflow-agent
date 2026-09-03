@@ -1,8 +1,11 @@
 name: branch-protection
 
+# The branch-protection API needs a token with repo admin rights, which the
+# built-in GITHUB_TOKEN can never have (there is no "administration" scope
+# for it, unlike contents/pull-requests/etc.), so GH_TOKEN_ADMIN is used
+# below instead of secrets.GITHUB_TOKEN.
 permissions:
   contents: read
-  administration: write
 
 on:
   push:
@@ -44,4 +47,7 @@ jobs:
       - name: Sync branch protection for main
         run: nix develop --command ./scripts/sync-branch-protection.sh main
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Needs a PAT (fine-grained "Administration: write" on this repo,
+          # or classic `repo` scope); the default GITHUB_TOKEN can't manage
+          # branch protection.
+          GH_TOKEN: ${{ secrets.GH_TOKEN_ADMIN }}
