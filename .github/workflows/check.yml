@@ -145,16 +145,16 @@ jobs:
       - name: Populate the nix store
         run: nix develop --command echo
 
-      # deployment.toml's [[workflow_wasm]] points at the release artifact, so
+      # deployment.rs.toml's [[workflow_wasm]] points at the release artifact, so
       # build it before verifying.
       - name: Build the workflow component
         run: nix develop --command just build
 
-      - name: deployment.toml/deployment.js.toml parity
+      - name: deployment.rs.toml/deployment.js.toml parity
         run: nix develop --command ./scripts/check-deployment-toml-parity.sh
 
       - name: obelisk deployment verify (rs)
-        run: nix develop --command obelisk deployment verify -d deployment.toml -s server.toml --allow-unavailable-runtime-config
+        run: nix develop --command obelisk deployment verify -d deployment.rs.toml -s server.toml --allow-unavailable-runtime-config
 
       - name: obelisk deployment verify (js)
         run: nix develop --command obelisk deployment verify -d deployment.js.toml -s server.toml --allow-unavailable-runtime-config

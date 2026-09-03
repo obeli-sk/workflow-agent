@@ -14,7 +14,7 @@ import {
 
 // Both the Rust and JS workflow backends export this same FFQN (see
 // docs/js-backend-migration.md); which implementation actually runs it is a
-// deployment choice (deployment.toml vs deployment.js.toml), not something
+// deployment choice (deployment.rs.toml vs deployment.js.toml), not something
 // this file picks per request.
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 

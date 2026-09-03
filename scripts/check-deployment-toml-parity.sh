@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deployment.toml (Rust workflow backend) and deployment.js.toml (JS backend)
+# deployment.rs.toml (Rust workflow backend) and deployment.js.toml (JS backend)
 # export the same canonical FFQN and must be identical everywhere except their
 # marked workflow block (see docs/js-backend-migration.md and the "Workflow
 # (implementation-specific...)" comment in either file). This catches drift
@@ -24,11 +24,11 @@ RS_STRIPPED="$(mktemp)"
 JS_STRIPPED="$(mktemp)"
 trap 'rm -f "$RS_STRIPPED" "$JS_STRIPPED"' EXIT
 
-strip_workflow_block "$ROOT/deployment.toml" > "$RS_STRIPPED"
+strip_workflow_block "$ROOT/deployment.rs.toml" > "$RS_STRIPPED"
 strip_workflow_block "$ROOT/deployment.js.toml" > "$JS_STRIPPED"
 
 if ! diff -u "$RS_STRIPPED" "$JS_STRIPPED"; then
-    echo ">>> deployment.toml and deployment.js.toml diverged outside their workflow block (see diff above)" >&2
+    echo ">>> deployment.rs.toml and deployment.js.toml diverged outside their workflow block (see diff above)" >&2
     exit 1
 fi
-echo ">>> deployment.toml and deployment.js.toml are in sync outside their workflow block"
+echo ">>> deployment.rs.toml and deployment.js.toml are in sync outside their workflow block"

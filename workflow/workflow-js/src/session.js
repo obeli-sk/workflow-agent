@@ -1,5 +1,5 @@
 // obelisk-agent:workflow/workflow.run-cancellable (deployment.js.toml's JS
-// variant of the same canonical FFQN deployment.toml's Rust workflow exports)
+// variant of the same canonical FFQN deployment.rs.toml's Rust workflow exports)
 //   func(prompt: string, model: option<string>, descriptor-ffqn: option<string>,
 //        effort: option<string>, name: option<string>) -> result<_, string>
 //

@@ -550,9 +550,9 @@ wit = "wit"
 # dependency-free `just-bash` interpreter and session loop with full feature
 # parity with the Rust workflow (see docs/js-backend-migration.md). It exports
 # the same canonical `obelisk-agent:workflow/workflow.run-cancellable` FFQN as
-# `deployment.toml`'s `[[workflow_wasm]]` block. Only one of the two files is
+# `deployment.rs.toml`'s `[[workflow_wasm]]` block. Only one of the two files is
 # ever the active deployment at a time; deploying this one instead of
-# deployment.toml is how a workflow started under the Rust component keeps
+# deployment.rs.toml is how a workflow started under the Rust component keeps
 # running under this one (replay-compatible by construction, verified by
 # scripts/test-e2e-replay-parity.sh). Everything outside this workflow block
 # must stay identical between the two files, enforced by

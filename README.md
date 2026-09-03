@@ -16,7 +16,7 @@ type a command with a `$ ` prefix in the UI to run it yourself, e.g. `$ pwd`.
 
 External programs are Obelisk executions the workflow discovers at session start
 from an operator-owned registry (`PROGRAMS_JSON`), so adding one is a
-`deployment.toml` edit with no workflow rebuild; each entry's description is
+`deployment.rs.toml` edit with no workflow rebuild; each entry's description is
 surfaced in the system prompt. The one that ships, a GET-only `curl`, is an
 Obelisk activity. The per-turn model invocation limit comes out of the same
 registry read: `MAX_STEPS`, defaulting to `20`.
@@ -32,7 +32,7 @@ just build
 ln -sf models.local.json models.json      # pick a catalog
 export AGENT_MODELS="$(cat models.json)"   # or use direnv (.envrc-example)
 export LLM_BASE_URL=http://127.0.0.1:9190  # match the catalog's endpoint
-just serve                                 # obelisk server run -d deployment.toml
+just serve                                 # obelisk server run -d deployment.rs.toml
 ```
 
 Everything is pinned by the flake, so `nix develop` provides the matching
@@ -42,14 +42,15 @@ Obelisk and Rust (wasm32) toolchain. The workflow is a native Rust component
 There is a full-parity JS alternative (`workflow/workflow-js`, a hand-written,
 dependency-free `just-bash` interpreter that ships as its own readable
 source, no compile/bundle step) behind `deployment.js.toml`. It exports the
-exact same FFQN as the Rust workflow in `deployment.toml`
+exact same FFQN as the Rust workflow in `deployment.rs.toml`
 (`obelisk-agent:workflow/workflow.run-cancellable`), so which one runs is a
 deployment choice, not a per-request switch: only one of the two files is
-ever the active deployment. Rust is the default (`just serve`); run
-`just serve-js` to start the server on the JS deployment instead. Since both
-sides export the same FFQN, a running server can hot-switch between them
-with `obelisk deployment apply deployment.js.toml` (or back with
-`deployment.toml`) and every in-flight session keeps running, replayed under
+ever the active deployment. Rust is the default (`just serve`, an alias for
+`just serve-rs`); run `just serve-js` to start the server on the JS
+deployment instead. Since both sides export the same FFQN, a running server
+can hot-switch between them with `obelisk deployment apply
+deployment.js.toml` (or back with `deployment.rs.toml`) and every in-flight
+session keeps running, replayed under
 the new implementation - proven by `scripts/test-e2e-replay-parity.sh`. See
 [`docs/js-backend-migration.md`](docs/js-backend-migration.md) for why this
 exists and its current status.
@@ -273,7 +274,7 @@ Notes:
 
 A dependency-free sample server exposes tools, a prompt, and two resources.
 Start it with `just sample-mcp-server`; the sample's transport block in
-`deployment.toml`, its outbound-host grant in `server.toml`, and its
+`deployment.rs.toml`, its outbound-host grant in `server.toml`, and its
 `MCP_SERVERS_JSON` entry are already shipped and enabled, so just build and run
 as above. In a new empty session:
 

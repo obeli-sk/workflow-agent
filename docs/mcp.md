@@ -22,12 +22,12 @@ remembered across invocations (see `activity/mcp.js`).
   `mcp` command, and registers a deferred mount at `/workspace/mcp/<name>`.
 
 Because the workflow reads the server list at runtime, **adding a server needs no
-workflow rebuild**: edit `deployment.toml` alone.
+workflow rebuild**: edit `deployment.rs.toml` alone.
 
 ## Configuring a server
 
 1. Add a transport block (copy the `mcp_obelisk_local` sample in
-   `deployment.toml`), rename the server, and point `MCP_SERVER_URL` at it.
+   `deployment.rs.toml`), rename the server, and point `MCP_SERVER_URL` at it.
 2. Add the matching outbound-host grant in `server.toml`.
 3. Register it in the discovery registry by appending `{ name, ffqn }` to
    `MCP_SERVERS_JSON` (the `config_discover` block's env var, overridable from the

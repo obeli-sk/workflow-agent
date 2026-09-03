@@ -8,7 +8,7 @@ export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:5205"
 export TARGET_OBELISK_TOKEN="$OBELISK__API__TOKEN"
 # The target's webhook (external) listener; granted GET so the shell can curl
 # deployed webhook endpoints, and printed by `mount`. Defaults to 9290 in
-# server.toml/deployment.toml, matching server-target.toml.
+# server.toml/deployment.rs.toml, matching server-target.toml.
 export TARGET_OBELISK_WEBHOOK_URL="http://127.0.0.1:9290"
 
 # Pick a catalog + endpoint (README has the details):

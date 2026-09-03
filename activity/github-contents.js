@@ -22,7 +22,7 @@
 // tree or blob.
 //
 // The deployment's allowed_host grants GET on the GitHub contents API scoped
-// to one operator-configured owner (GH_OWNER in deployment.toml's
+// to one operator-configured owner (GH_OWNER in deployment.rs.toml's
 // request_url_regex); GITHUB_TOKEN is an optional secret the runtime swaps
 // into the Authorization header for a private repo or a higher rate limit.
 // Any HTTP or transport failure becomes the err arm (a throw).

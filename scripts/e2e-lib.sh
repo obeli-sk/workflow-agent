@@ -48,7 +48,7 @@ e2e_cleanup() {
 }
 
 # Selects which session-workflow implementation an e2e suite deploys: "rs"
-# (default, workflow/workflow-rs -> deployment.toml) or "js"
+# (default, workflow/workflow-rs -> deployment.rs.toml) or "js"
 # (workflow/workflow-js -> deployment.js.toml). Both export the identical
 # obelisk-agent:workflow/workflow.run-cancellable FFQN (see
 # docs/js-backend-migration.md), so callers never need to vary RUN_FFQN by
@@ -59,7 +59,7 @@ e2e_select_backend() {
     case "$backend" in
         rs)
             e2e_build_component "workflow/workflow-rs" "workflow_agent_rs.wasm"
-            E2E_DEPLOY_SRC="$ROOT/deployment.toml"
+            E2E_DEPLOY_SRC="$ROOT/deployment.rs.toml"
             ;;
         js)
             E2E_REL_WASM=""
@@ -94,7 +94,7 @@ e2e_build_component() {
 
 e2e_patch_workflow_manifest() {
     local output="$1"
-    local src="${E2E_DEPLOY_SRC:-$ROOT/deployment.toml}"
+    local src="${E2E_DEPLOY_SRC:-$ROOT/deployment.rs.toml}"
     E2E_DEPLOYMENTS+=("$output")
     if [[ -n "${E2E_REL_WASM:-}" ]]; then
         sed "s#^location = \"target/wasm32-unknown-unknown/release/workflow_agent_rs.wasm\"#location = \"${E2E_REL_WASM}\"#" \

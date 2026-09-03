@@ -1,5 +1,9 @@
-serve:
-  obelisk server run -d deployment.toml --server-config server.toml
+serve: serve-rs
+
+# Rust session-workflow backend (workflow/workflow-rs, deployment.rs.toml),
+# the default `serve` depends on.
+serve-rs:
+  obelisk server run -d deployment.rs.toml --server-config server.toml
 
 # Same session-workflow FFQN as `serve`, but backed by the JS workflow
 # (workflow/workflow-js, deployment.js.toml) instead of the Rust default (see
@@ -24,12 +28,12 @@ build:
   cd workflow/workflow-rs && cargo build --release
 
 verify: build
-  obelisk deployment verify --deployment deployment.toml --server-config server.toml --allow-unavailable-runtime-config
+  obelisk deployment verify --deployment deployment.rs.toml --server-config server.toml --allow-unavailable-runtime-config
   obelisk deployment verify --deployment deployment.js.toml --server-config server.toml --allow-unavailable-runtime-config
   ./scripts/check-deployment-toml-parity.sh
 
 fix: build
-  obelisk deployment verify --deployment deployment.toml --server-config server.toml --fix
+  obelisk deployment verify --deployment deployment.rs.toml --server-config server.toml --fix
   obelisk deployment verify --deployment deployment.js.toml --server-config server.toml --fix
 
 sync:

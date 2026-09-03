@@ -68,7 +68,7 @@ const DOCS_SECTION = [
 ].join(nl);
 
 // Docs indexes fetched once at session start and inlined into the prompt.
-// DOCS_URLS_JSON (deployment.toml; default: the current llms.txt for this
+// DOCS_URLS_JSON (deployment.rs.toml; default: the current llms.txt for this
 // Obelisk version) lists the indexes; fetching here keeps the doc set pinned
 // to the deployed Obelisk without hardcoding anything that could drift. Any
 // failed or oversized fetch degrades to a placeholder plus a warning returned
