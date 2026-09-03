@@ -18,9 +18,11 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike};
 
-use crate::commands::{normalize_path, sha256_hex};
+use crate::commands::normalize_path;
+#[cfg(test)]
+use crate::commands::sha256_hex;
 use crate::custom_command::CustomCommandHandler;
-use crate::fs::{BlobLoader, FsError, Vfs, is_cas_namespaced_digest};
+use crate::fs::{BlobLoader, FsError, LazyFileRef, LazyOrigin, Sha256Digest, Vfs};
 use crate::interpreter::{CommandOutput, Interpreter};
 
 const READ_BLOB_FFQN: &str = "obelisk-agent:tools/webapi.deployment-read-blob";
@@ -910,29 +912,31 @@ fn table_like_keys(table: &dyn TableLike) -> Vec<String> {
 /// unchanged file is still a lazy `pending` VFS entry and keeps its CAS digest;
 /// a changed or newly created file is re-hashed from the same lossy-decoded
 /// bytes `deployment_sources` transmits, so the server's re-hash matches. A
-/// `pending` file whose digest isn't CAS-namespaced (e.g. a git/web mount's
-/// own foreign hash) is treated like a modified file instead: its bytes were
-/// never uploaded to this server's CAS under that digest, so it must be
-/// fetched and rehashed here rather than have the foreign hash reused as a
-/// bogus `content_digest`. An eager file's hash is computed at most once per
-/// unchanged path: `fs`'s content-digest cache (invalidated on write) covers
-/// both a path appearing more than once in one manifest pass (e.g. as both a
-/// `location` and a `component_files` entry) and repeat submit/check/verify
-/// calls within the same session.
+/// `pending` file whose origin is `Foreign` (e.g. a git/web mount's own hash)
+/// is treated like a modified file instead: its bytes were never uploaded to
+/// this server's CAS under that hash, so it must be fetched and rehashed here
+/// rather than have the foreign hash reused as a bogus `content_digest`. An
+/// eager file's hash is computed at most once per unchanged path: `fs`'s
+/// content-digest cache (invalidated on write) covers both a path appearing
+/// more than once in one manifest pass (e.g. as both a `location` and a
+/// `component_files` entry) and repeat submit/check/verify calls within the
+/// same session.
 fn owned_source_digest(fs: &Vfs, path: &str, log: fn(&str)) -> Option<String> {
-    if let Some(lazy) = fs.lazy_file_ref(path)
-        && is_cas_namespaced_digest(&lazy.digest)
+    if let Some(LazyFileRef {
+        origin: LazyOrigin::Cas(digest),
+        ..
+    }) = fs.lazy_file_ref(path)
     {
         log(&format!(
             "owned_source_digest({path}): unchanged, reusing cached digest"
         ));
-        return Some(lazy.digest);
+        return Some(digest.as_str().to_string());
     }
     if let Some(digest) = fs.cached_content_digest(path) {
         log(&format!(
             "owned_source_digest({path}): unchanged since last hash, reusing cached digest"
         ));
-        return Some(digest);
+        return Some(digest.as_str().to_string());
     }
     let bytes = fs.read_file(path)?;
     let content = String::from_utf8_lossy(&bytes);
@@ -940,12 +944,12 @@ fn owned_source_digest(fs: &Vfs, path: &str, log: fn(&str)) -> Option<String> {
         "owned_source_digest({path}): hashing {} bytes (modified/new file)",
         content.len()
     ));
-    let digest = format!("sha256:{}", sha256_hex(content.as_bytes()));
+    let digest = Sha256Digest::of_content(content.as_bytes());
     log(&format!(
         "owned_source_digest({path}): hashed, digest={digest}"
     ));
-    fs.cache_content_digest(path, &digest);
-    Some(digest)
+    fs.cache_content_digest(path, digest.clone());
+    Some(digest.as_str().to_string())
 }
 
 /// The deployment-owned source paths a submit would carry: only those the
@@ -955,10 +959,9 @@ fn owned_source_digest(fs: &Vfs, path: &str, log: fn(&str)) -> Option<String> {
 /// never uploads it (the "upload only what the server is missing" contract).
 /// Skipping unmodified files keeps a redeploy from touching every component,
 /// notably the multi-MB workflow and activity WASM. A `pending` file with a
-/// foreign (non-CAS) digest, e.g. copied in from a git/web mount and never
-/// locally edited, is *not* skipped: its bytes were never uploaded here under
-/// that digest, so it must go out like a modified file (see
-/// `owned_source_digest`).
+/// `Foreign` origin, e.g. copied in from a git/web mount and never locally
+/// edited, is *not* skipped: its bytes were never uploaded here under that
+/// hash, so it must go out like a modified file (see `owned_source_digest`).
 fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<String> {
     let mut files = Vec::new();
     for location in owned_source_locations(manifest) {
@@ -966,10 +969,13 @@ fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<String> {
         // A local write clears the pending flag; a mere read does not. So a file
         // still pending with a real CAS digest is unmodified and already
         // uploaded - skip it.
-        if fs
-            .lazy_file_ref(&path)
-            .is_some_and(|lazy| is_cas_namespaced_digest(&lazy.digest))
-        {
+        if matches!(
+            fs.lazy_file_ref(&path),
+            Some(LazyFileRef {
+                origin: LazyOrigin::Cas(_),
+                ..
+            })
+        ) {
             continue;
         }
         if fs.exists(&path) {
@@ -2575,13 +2581,17 @@ content_digest = \"sha256:1\"\n\
         );
         let git_sha = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3";
         let mut i = interp("/workspace");
-        i.fs.set_blob_loader(FixtureLoader::rc(&[(git_sha, b"test")]));
         i.fs.write_file(
             "/workspace/deployment/current/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
-        i.fs.register_lazy("/workspace/deployment/current/a.js", git_sha, 4);
+        i.fs.register_lazy_foreign_for_test(
+            "/workspace/deployment/current/a.js",
+            git_sha,
+            4,
+            FixtureLoader::rc(&[(git_sha, b"test")]),
+        );
 
         let real_digest = format!("sha256:{}", sha256_hex(b"test"));
         let mut host = FakeHost::new()

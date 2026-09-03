@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::fs::{FileReadError, FsError};
+use crate::fs::{FileReadError, FsError, LazyOrigin};
 use crate::interpreter::{CommandOutput, Interpreter, LoopControl};
 
 mod awk;
@@ -512,10 +512,14 @@ fn builtin_cat(interp: &Interpreter, args: &[String], stdin: String) -> CommandO
             match interp.fs.read_file_checked(&path) {
                 Ok(bytes) => out.push_str(&String::from_utf8_lossy(&bytes)),
                 Err(FileReadError::TooLarge { reference, .. }) => {
+                    let digest = match &reference.origin {
+                        LazyOrigin::Cas(digest) => digest.as_str().to_string(),
+                        LazyOrigin::Foreign(key) => key.clone(),
+                    };
                     out.push_str(&format!(
                         "<{}, {}, {}>\n",
                         mime_for_path(arg),
-                        reference.digest,
+                        digest,
                         human_byte_size(reference.size)
                     ));
                     exit_code = 1;

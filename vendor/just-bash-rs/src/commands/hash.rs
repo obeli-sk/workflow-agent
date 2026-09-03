@@ -5,7 +5,7 @@
 //! `sha256sum [FILE]...`.
 
 use super::{fail, normalize_path, ok, read_concat};
-use crate::fs::{FileReadError, is_cas_namespaced_digest};
+use crate::fs::{FileReadError, LazyFileRef, LazyOrigin, Sha256Digest};
 use crate::interpreter::{CommandOutput, Interpreter};
 
 // ---------------------------------------------------------------------
@@ -434,20 +434,21 @@ fn content_sha256_hex(
     file: &str,
     stderr: &mut String,
 ) -> Option<String> {
-    if let Some(reference) = interp.fs.lazy_file_ref(path)
-        && is_cas_namespaced_digest(&reference.digest)
+    if let Some(LazyFileRef {
+        origin: LazyOrigin::Cas(digest),
+        ..
+    }) = interp.fs.lazy_file_ref(path)
     {
-        return reference.digest.strip_prefix("sha256:").map(str::to_owned);
+        return Some(digest.hex().to_string());
     }
     if let Some(cached) = interp.fs.cached_content_digest(path) {
-        return cached.strip_prefix("sha256:").map(str::to_owned);
+        return Some(cached.hex().to_string());
     }
     match interp.fs.read_file_checked(path) {
         Ok(bytes) => {
-            let hex = sha256_hex(&bytes);
-            interp
-                .fs
-                .cache_content_digest(path, &format!("sha256:{hex}"));
+            let digest = Sha256Digest::of_content(&bytes);
+            let hex = digest.hex().to_string();
+            interp.fs.cache_content_digest(path, digest);
             Some(hex)
         }
         Err(FileReadError::NotFound(_)) => {
@@ -471,7 +472,7 @@ mod tests {
     use std::rc::Rc;
 
     use crate::bash::Bash;
-    use crate::fs::BlobLoader;
+    use crate::fs::{BlobLoader, Sha256Digest};
     use crate::types::{BashOptions, ExecOptions, ExecResult};
 
     fn fresh() -> Bash {
@@ -603,10 +604,13 @@ mod tests {
         }
         let fetches = Rc::new(RefCell::new(0));
         let mut bash = fresh();
-        bash.fs_mut()
-            .set_blob_loader(Rc::new(CountingLoader(fetches.clone())));
-        bash.fs_mut()
-            .register_lazy("/AGENTS.md", "a9993e364706816aba3e25717850c26c9cd0d89d", 3);
+        let loader = Rc::new(CountingLoader(fetches.clone()));
+        bash.fs_mut().register_lazy_foreign_for_test(
+            "/AGENTS.md",
+            "a9993e364706816aba3e25717850c26c9cd0d89d",
+            3,
+            loader,
+        );
 
         let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
         assert_eq!(
@@ -616,7 +620,7 @@ mod tests {
         assert_eq!(*fetches.borrow(), 1);
         assert_eq!(
             bash.fs().cached_content_digest("/AGENTS.md"),
-            Some(format!("sha256:{expected}"))
+            Some(Sha256Digest::parse(&format!("sha256:{expected}")).unwrap())
         );
 
         assert_eq!(
