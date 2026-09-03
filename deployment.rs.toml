@@ -16,7 +16,7 @@ exec.lock_expiry.seconds = 30
 # system prompt; failed or oversized fetches degrade to placeholders plus a
 # `warnings` list the workflow surfaces to the user in the UI.
 env_vars = [
-  { key = "DOCS_URLS_JSON", value = "${DOCS_URLS_JSON:-[\"https://obeli.sk/docs/v${OBELISK_VERSION:-latest}/llms.txt/\"]}" },
+  { key = "DOCS_URLS_JSON", value = "${DOCS_URLS_JSON:-[\"https://obeli.sk/docs/${OBELISK_VERSION:-latest}/llms.txt/\"]}" },
 ]
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
@@ -77,9 +77,10 @@ exec.lock_expiry.seconds = 30
 # The session reads the Obelisk docs through the GET-only curl program instead
 # of a GitHub contents mount. Two pieces:
 #
-#   * OBELISK_VERSION pins the doc set to the target runtime's version. Empty
-#     falls back to `latest`. Set it from the flake lock when pinning matters
-#     (https://obeli.sk/docs/v${OBELISK_VERSION}/llms.txt/).
+#   * OBELISK_VERSION pins the doc set to the target runtime's version (e.g.
+#     "v0.41.3", matching the site's versioned doc directories). Empty falls
+#     back to `latest`. Set it from the flake lock when pinning matters
+#     (https://obeli.sk/docs/${OBELISK_VERSION}/llms.txt/).
 #   * DOCS_URLS_JSON lists llms.txt-style indexes; the descriptor inlines their
 #     URLs into the system prompt at session start and the model fetches them
 #     (and any detail page they reference) through the curl program.
