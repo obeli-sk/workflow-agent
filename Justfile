@@ -34,13 +34,6 @@ verify: build-rs
   obelisk deployment verify --deployment deployment.js.toml --server-config server.toml --allow-unavailable-runtime-config
   ./scripts/check-deployment-toml-parity.sh
 
-fix: build-rs
-  obelisk deployment verify --deployment deployment.rs.toml --server-config server.toml --fix
-  obelisk deployment verify --deployment deployment.js.toml --server-config server.toml --fix
-
-sync:
-  obelisk deployment get $(obelisk deployment active) --force
-
 # Test everything: unit tests plus all end-to-end suites.
 test: test-rs test-js test-e2e
 
