@@ -110,7 +110,10 @@ export const fsutil = {
             const srcPath = interp.resolvePath(s);
             const target = destIsDir ? `${destPath}/${srcPath.split("/").pop()}` : destPath;
             if (interp.vfs.isDir(srcPath)) {
-                if (!flags.has("r") && !flags.has("R")) return fail(`cp: -r not specified; omitting directory '${s}'\n`, 1);
+                // `-a` (archive) is `-dR --preserve=all` upstream; the vfs has
+                // no symlinks/timestamps to preserve, so recursive is the only
+                // bit that matters here.
+                if (!flags.has("r") && !flags.has("R") && !flags.has("a")) return fail(`cp: -r not specified; omitting directory '${s}'\n`, 1);
                 copyDir(interp.vfs, srcPath, target);
             } else if (interp.vfs.isFile(srcPath)) {
                 interp.vfs.copyFile(srcPath, target);

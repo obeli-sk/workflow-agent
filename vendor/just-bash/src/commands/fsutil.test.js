@@ -1,5 +1,6 @@
 // Tests for the six fsutil.js commands ported after the other ls/cat/cp/mv/
-// etc. builtins: chmod/readlink/ln/file/du/tree. See fsutil.js's doc comments
+// etc. builtins: chmod/readlink/ln/file/du/tree, plus a few cp cases (that
+// group otherwise has no dedicated test file). See fsutil.js's doc comments
 // for exactly how each is simplified against a VFS with no permission bits,
 // no symlinks, and no mtime. Cases mirror
 // vendor/just-bash-rs/src/commands/fsutil.rs's own `#[cfg(test)] mod tests`.
@@ -49,6 +50,34 @@ test("ln creates a hard link by copying content", () => {
     const r = bash.exec("ln /a.txt /b.txt");
     assert.equal(r.exitCode, 0);
     assert.equal(bash.vfs.readFile("/b.txt"), "hello");
+});
+
+test("cp of a directory without -r is refused", () => {
+    const bash = fresh();
+    bash.vfs.mkdirp("/dir");
+    const r = bash.exec("cp /dir /dest");
+    assert.equal(r.exitCode, 1);
+    assert.match(r.stderr, /-r not specified/);
+});
+
+test("cp -r copies a directory tree", () => {
+    const bash = fresh();
+    bash.vfs.writeFile("/dir/a.txt", "a");
+    bash.vfs.writeFile("/dir/sub/b.txt", "b");
+    const r = bash.exec("cp -r /dir /dest");
+    assert.equal(r.exitCode, 0);
+    assert.equal(bash.vfs.readFile("/dest/a.txt"), "a");
+    assert.equal(bash.vfs.readFile("/dest/sub/b.txt"), "b");
+});
+
+test("cp -a (archive) implies recursive", () => {
+    const bash = fresh();
+    bash.vfs.writeFile("/dir/a.txt", "a");
+    bash.vfs.writeFile("/dir/sub/b.txt", "b");
+    const r = bash.exec("cp -a /dir /dest");
+    assert.equal(r.exitCode, 0);
+    assert.equal(bash.vfs.readFile("/dest/a.txt"), "a");
+    assert.equal(bash.vfs.readFile("/dest/sub/b.txt"), "b");
 });
 
 test("ln on a missing target errors", () => {
