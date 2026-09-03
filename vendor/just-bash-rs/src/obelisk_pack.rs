@@ -448,12 +448,13 @@ fn execute_deployment(
             // even `--description` itself, as the deployment directory.
             let dir = resolve_deployment_dir(interp, first_positional(args, &["--description"]));
             let manifest = read_manifest(&interp.fs, &dir)?;
-            let manifest = manifest_with_generated_files(&interp.fs, &dir, &manifest)?;
+            let manifest =
+                manifest_with_generated_files(&interp.fs, &dir, &manifest, interp.log_debug)?;
             // Expand the digest-free view back to what the server stores: every
             // `content_digest`, `component_files` value, and `backtrace.sources`
             // table, each digest recomputed from the file's current bytes (an
             // unchanged file keeps its CAS digest, a changed one is re-hashed).
-            let manifest = manifest_with_digests(&interp.fs, &dir, &manifest);
+            let manifest = manifest_with_digests(&interp.fs, &dir, &manifest, interp.log_debug);
             let deployment_id = if basename(&dir) == "current" {
                 String::new()
             } else {
@@ -679,7 +680,7 @@ fn simplify_manifest(manifest: &str) -> String {
 
 /// Inverse of `simplify_manifest`: re-pin each `content_digest`, `component_files`
 /// value, and `backtrace.sources` table from the file's current bytes (a missing file is left as-is).
-fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str) -> String {
+fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str, log: fn(&str)) -> String {
     let Ok(mut doc) = manifest.parse::<DocumentMut>() else {
         return manifest.to_string();
     };
@@ -690,7 +691,7 @@ fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str) -> String {
             .map(str::to_string);
         if let Some(location) = location
             && !location.starts_with("oci://")
-            && let Some(digest) = owned_source_digest(fs, &format!("{dir}/{location}"))
+            && let Some(digest) = owned_source_digest(fs, &format!("{dir}/{location}"), log)
         {
             table.insert("content_digest", toml_edit::value(digest));
         }
@@ -702,7 +703,7 @@ fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str) -> String {
                 if key.starts_with("oci://") {
                     continue;
                 }
-                if let Some(digest) = owned_source_digest(fs, &format!("{dir}/{key}")) {
+                if let Some(digest) = owned_source_digest(fs, &format!("{dir}/{key}"), log) {
                     files.insert(&key, toml_edit::value(digest));
                 }
             }
@@ -716,7 +717,7 @@ fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str) -> String {
                 if path.starts_with("oci://") {
                     continue;
                 }
-                let Some(digest) = owned_source_digest(fs, &format!("{dir}/{path}")) else {
+                let Some(digest) = owned_source_digest(fs, &format!("{dir}/{path}"), log) else {
                     continue;
                 };
                 let mut inline = InlineTable::new();
@@ -731,7 +732,12 @@ fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str) -> String {
 
 /// Rebuild metadata that the native CLI derives from authored WIT directories
 /// and JavaScript module imports.
-fn manifest_with_generated_files(fs: &Vfs, dir: &str, manifest: &str) -> Result<String, String> {
+fn manifest_with_generated_files(
+    fs: &Vfs,
+    dir: &str,
+    manifest: &str,
+    log: fn(&str),
+) -> Result<String, String> {
     let mut doc = manifest
         .parse::<DocumentMut>()
         .map_err(|err| format!("cannot parse deployment manifest as TOML: {err}"))?;
@@ -744,7 +750,7 @@ fn manifest_with_generated_files(fs: &Vfs, dir: &str, manifest: &str) -> Result<
             if let Some(root) = table.get("wit").and_then(Item::as_str) {
                 for path in recursive_files(fs, &format!("{dir}/{root}"), root)? {
                     if path.ends_with(".wit") {
-                        add_generated_ref(&mut refs, fs, dir, &path);
+                        add_generated_ref(&mut refs, fs, dir, &path, log);
                     }
                 }
             }
@@ -758,7 +764,7 @@ fn manifest_with_generated_files(fs: &Vfs, dir: &str, manifest: &str) -> Result<
                 let graph = collect_js_graph(fs, dir, entry)?;
                 if graph.len() > 1 {
                     for path in graph {
-                        add_generated_ref(&mut refs, fs, dir, &path);
+                        add_generated_ref(&mut refs, fs, dir, &path, log);
                     }
                 }
             }
@@ -774,7 +780,7 @@ fn manifest_with_generated_files(fs: &Vfs, dir: &str, manifest: &str) -> Result<
                     if let Some(path) = path
                         && !path.starts_with("oci://")
                     {
-                        add_generated_ref(&mut refs, fs, dir, path);
+                        add_generated_ref(&mut refs, fs, dir, path, log);
                     }
                 }
             }
@@ -796,8 +802,14 @@ fn manifest_with_generated_files(fs: &Vfs, dir: &str, manifest: &str) -> Result<
     Ok(doc.to_string())
 }
 
-fn add_generated_ref(refs: &mut BTreeMap<String, String>, fs: &Vfs, dir: &str, path: &str) {
-    if let Some(digest) = owned_source_digest(fs, &format!("{dir}/{path}")) {
+fn add_generated_ref(
+    refs: &mut BTreeMap<String, String>,
+    fs: &Vfs,
+    dir: &str,
+    path: &str,
+    log: fn(&str),
+) {
+    if let Some(digest) = owned_source_digest(fs, &format!("{dir}/{path}"), log) {
         refs.insert(path.to_string(), digest);
     }
 }
@@ -898,13 +910,20 @@ fn table_like_keys(table: &dyn TableLike) -> Vec<String> {
 /// unchanged file is still a lazy `pending` VFS entry and keeps its CAS digest;
 /// a changed or newly created file is re-hashed from the same lossy-decoded
 /// bytes `deployment_sources` transmits, so the server's re-hash matches.
-fn owned_source_digest(fs: &Vfs, path: &str) -> Option<String> {
+fn owned_source_digest(fs: &Vfs, path: &str, log: fn(&str)) -> Option<String> {
     if let Some(lazy) = fs.lazy_file_ref(path) {
+        log(&format!("owned_source_digest({path}): unchanged, reusing cached digest"));
         return Some(lazy.digest);
     }
     let bytes = fs.read_file(path)?;
     let content = String::from_utf8_lossy(&bytes);
-    Some(format!("sha256:{}", sha256_hex(content.as_bytes())))
+    log(&format!(
+        "owned_source_digest({path}): hashing {} bytes (modified/new file)",
+        content.len()
+    ));
+    let digest = format!("sha256:{}", sha256_hex(content.as_bytes()));
+    log(&format!("owned_source_digest({path}): hashed, digest={digest}"));
+    Some(digest)
 }
 
 /// The deployment-owned source paths a submit would carry: only those the
@@ -2673,7 +2692,10 @@ content_digest = \"sha256:1\"\n\
             shell = shell,
             rs = rs,
         );
-        assert_eq!(manifest_with_digests(&i.fs, dir, collapsed), expected);
+        assert_eq!(
+            manifest_with_digests(&i.fs, dir, collapsed, |_| {}),
+            expected
+        );
     }
 
     #[test]

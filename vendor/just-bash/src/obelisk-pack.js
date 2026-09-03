@@ -1055,14 +1055,21 @@ export function ownedSourceLocations(manifest) {
 // matches. Returns null if the file is missing (or unreadable).
 function ownedSourceDigest(fs, path) {
     const lazy = fs.lazyFileRef(path);
-    if (lazy) return lazy.digest;
+    if (lazy) {
+        console.debug(`ownedSourceDigest(${path}): unchanged, reusing cached digest`);
+        return lazy.digest;
+    }
     let content;
     try {
         content = fs.readFile(path);
     } catch {
         return null;
     }
-    return `sha256:${sha256Hex(utf8Encode(content))}`;
+    const bytes = utf8Encode(content);
+    console.debug(`ownedSourceDigest(${path}): hashing ${bytes.length} bytes (modified/new file)`);
+    const digest = `sha256:${sha256Hex(bytes)}`;
+    console.debug(`ownedSourceDigest(${path}): hashed, digest=${digest}`);
+    return digest;
 }
 
 // The absolute offset right after the last non-blank, non-comment line
