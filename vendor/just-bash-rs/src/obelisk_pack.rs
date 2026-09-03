@@ -2582,8 +2582,7 @@ content_digest = \"sha256:1\"\n\
             manifest.as_bytes(),
         )
         .unwrap();
-        i.fs
-            .register_lazy("/workspace/deployment/current/a.js", git_sha, 4);
+        i.fs.register_lazy("/workspace/deployment/current/a.js", git_sha, 4);
 
         let real_digest = format!("sha256:{}", sha256_hex(b"test"));
         let mut host = FakeHost::new()
@@ -2605,9 +2604,7 @@ content_digest = \"sha256:1\"\n\
         let preflight: Value = serde_json::from_str(&host.calls[0].1).unwrap();
         assert_eq!(
             preflight[0],
-            format!(
-                "[[workflow_js]]\nlocation = \"a.js\"\ncontent_digest = \"{real_digest}\"\n"
-            )
+            format!("[[workflow_js]]\nlocation = \"a.js\"\ncontent_digest = \"{real_digest}\"\n")
         );
         let retry: Value = serde_json::from_str(&host.calls[1].1).unwrap();
         assert_eq!(
