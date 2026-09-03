@@ -38,10 +38,13 @@ export { ScriptWatchGuard };
 // join sets have no such conflict to sidestep in the first place: each call
 // gets its own ordinal, unique by construction.
 export function arm(timeoutMs) {
+    console.debug(`script-watch arm: creating join set, timeoutMs=${timeoutMs}`);
     const joinSet = obelisk.createJoinSet();
     const offerExecutionId = interruptSubmit(joinSet);
+    console.debug(`script-watch arm: interrupt offer submitted, offerExecutionId=${offerExecutionId}`);
     const watchdogDelayId = timeoutMs === null || timeoutMs === undefined
         ? null
         : joinSet.submitDelay({ milliseconds: timeoutMs });
+    if (watchdogDelayId !== null) console.debug(`script-watch arm: watchdog delay submitted, watchdogDelayId=${watchdogDelayId}`);
     return new ScriptWatchGuard(joinSet, offerExecutionId, watchdogDelayId);
 }

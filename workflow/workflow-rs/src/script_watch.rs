@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use just_bash_rs::{InterruptKind, ScriptWatch, SharedScriptWatch};
 
+use crate::generated::obelisk::log::log::debug as log_line;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{
     self, DelayId, JoinNextTryError, JoinSet, ResponseId, ScheduleAt,
@@ -35,11 +36,24 @@ impl ScriptWatchGuard {
     /// Submit the interrupt offer, plus the watchdog when `timeout_ms` is set,
     /// onto a fresh join set.
     pub fn arm(timeout_ms: Option<u64>) -> Self {
+        log_line(&format!(
+            "script-watch arm: creating join set, timeout_ms={timeout_ms:?}"
+        ));
         let join_set = workflow_support::join_set_create();
         let offer = session_ext::interrupt_submit(&join_set);
+        log_line(&format!(
+            "script-watch arm: interrupt offer submitted, offer_execution_id={}",
+            offer.id
+        ));
         let watchdog = timeout_ms.map(|ms| {
             workflow_support::submit_delay(&join_set, ScheduleAt::In(Duration::Milliseconds(ms)))
         });
+        if let Some(delay) = &watchdog {
+            log_line(&format!(
+                "script-watch arm: watchdog delay submitted, watchdog_delay_id={}",
+                delay.id
+            ));
+        }
         Self {
             core: Rc::new(RefCell::new(WatchCore {
                 join_set: Some(join_set),
