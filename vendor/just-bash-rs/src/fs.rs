@@ -71,6 +71,18 @@ pub fn valid_sha256_digest(digest: &str) -> bool {
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
+/// A digest is only trustworthy as a file's real content digest if it's
+/// namespaced in our own CAS scheme (`sha256:...`). This is deliberately a
+/// prefix check, not a strict-shape one (see `valid_sha256_digest` for that):
+/// callers use short placeholder digests like `sha256:1` in tests, and a
+/// malformed real one is still caught downstream. What this guards against is
+/// a *foreign* scheme slipping through unprefixed, e.g. a git/web mount's own
+/// hash (GitHub's 40-hex blob SHA-1, no `sha256:` prefix at all) - trusting
+/// that as this file's sha256 would be wrong both in format and in value.
+pub fn is_cas_namespaced_digest(digest: &str) -> bool {
+    digest.starts_with("sha256:")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileReadError {
     NotFound(String),

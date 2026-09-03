@@ -20,7 +20,7 @@ use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike};
 
 use crate::commands::{normalize_path, sha256_hex};
 use crate::custom_command::CustomCommandHandler;
-use crate::fs::{BlobLoader, FsError, Vfs};
+use crate::fs::{BlobLoader, FsError, Vfs, is_cas_namespaced_digest};
 use crate::interpreter::{CommandOutput, Interpreter};
 
 const READ_BLOB_FFQN: &str = "obelisk-agent:tools/webapi.deployment-read-blob";
@@ -904,18 +904,6 @@ fn normalize_deployment_path(path: &str) -> Result<String, String> {
 /// A `TableLike`'s keys, materialized so a caller can mutate entries by key while iterating.
 fn table_like_keys(table: &dyn TableLike) -> Vec<String> {
     table.iter().map(|(key, _)| key.to_string()).collect()
-}
-
-/// A digest is only trustworthy as a `content_digest` if it's namespaced in
-/// our own CAS scheme (`sha256:...`). This is deliberately a prefix check,
-/// not a strict-shape one (see `fs::valid_sha256_digest` for that): plenty of
-/// tests here use short placeholder digests like `sha256:1`, and a malformed
-/// real one is still caught later by the server's own verify step. What this
-/// guards against is a *foreign* scheme slipping through unprefixed, e.g. a
-/// git/web mount's own hash (GitHub's 40-hex blob SHA-1, no `sha256:` prefix
-/// at all).
-fn is_cas_namespaced_digest(digest: &str) -> bool {
-    digest.starts_with("sha256:")
 }
 
 /// The `content_digest` for a deployment-owned source at submit time: an

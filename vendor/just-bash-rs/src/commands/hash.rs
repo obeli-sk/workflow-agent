@@ -5,7 +5,7 @@
 //! `sha256sum [FILE]...`.
 
 use super::{fail, normalize_path, ok, read_concat};
-use crate::fs::FileReadError;
+use crate::fs::{FileReadError, is_cas_namespaced_digest};
 use crate::interpreter::{CommandOutput, Interpreter};
 
 // ---------------------------------------------------------------------
@@ -406,24 +406,7 @@ pub fn sha256sum(interp: &Interpreter, args: &[String], stdin: String) -> Comman
             Some(sha256_hex(stdin.as_bytes()))
         } else {
             let path = normalize_path(&interp.cwd, &file);
-            if let Some(reference) = interp.fs.lazy_file_ref(&path) {
-                reference.digest.strip_prefix("sha256:").map(str::to_owned)
-            } else {
-                match interp.fs.read_file_checked(&path) {
-                    Ok(bytes) => Some(sha256_hex(&bytes)),
-                    Err(FileReadError::NotFound(_)) => {
-                        stderr.push_str(&format!("sha256sum: {file}: No such file or directory\n"));
-                        None
-                    }
-                    Err(FileReadError::TooLarge { .. }) => unreachable!(
-                        "unmodified lazy files use their stored digest without reading bytes"
-                    ),
-                    Err(FileReadError::Unavailable(_)) => {
-                        stderr.push_str(&format!("sha256sum: {file}: File body is unavailable\n"));
-                        None
-                    }
-                }
-            }
+            content_sha256_hex(interp, &path, &file, &mut stderr)
         };
         match digest {
             Some(digest) => stdout.push_str(&format!("{digest}  {file}\n")),
@@ -434,6 +417,51 @@ pub fn sha256sum(interp: &Interpreter, args: &[String], stdin: String) -> Comman
         stdout,
         stderr,
         exit_code,
+    }
+}
+
+/// The bare-hex sha256 of the file currently at `path`, computed at most once
+/// per unchanged state (see `Vfs::cache_content_digest`): a `pending` file
+/// whose own digest is already CAS-namespaced (`sha256:...`, e.g. a
+/// deployment mount) is trusted with no I/O at all; otherwise (a foreign
+/// digest, such as a git/web mount's own hash, or eager content) the content
+/// digest cache is consulted before falling back to reading the bytes -
+/// fetching a lazy file at most once via the existing lazy read cache - and
+/// hashing them, after which the result is cached for next time.
+fn content_sha256_hex(
+    interp: &Interpreter,
+    path: &str,
+    file: &str,
+    stderr: &mut String,
+) -> Option<String> {
+    if let Some(reference) = interp.fs.lazy_file_ref(path)
+        && is_cas_namespaced_digest(&reference.digest)
+    {
+        return reference.digest.strip_prefix("sha256:").map(str::to_owned);
+    }
+    if let Some(cached) = interp.fs.cached_content_digest(path) {
+        return cached.strip_prefix("sha256:").map(str::to_owned);
+    }
+    match interp.fs.read_file_checked(path) {
+        Ok(bytes) => {
+            let hex = sha256_hex(&bytes);
+            interp
+                .fs
+                .cache_content_digest(path, &format!("sha256:{hex}"));
+            Some(hex)
+        }
+        Err(FileReadError::NotFound(_)) => {
+            stderr.push_str(&format!("sha256sum: {file}: No such file or directory\n"));
+            None
+        }
+        Err(FileReadError::TooLarge { .. }) => {
+            stderr.push_str(&format!("sha256sum: {file}: File too large to hash\n"));
+            None
+        }
+        Err(FileReadError::Unavailable(_)) => {
+            stderr.push_str(&format!("sha256sum: {file}: File body is unavailable\n"));
+            None
+        }
     }
 }
 
@@ -557,5 +585,44 @@ mod tests {
             "d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed  /huge.wasm\n"
         );
         assert!(!*fetched.borrow());
+    }
+
+    #[test]
+    fn sha256sum_of_a_foreign_digest_pending_file_hashes_once_and_caches() {
+        // A git/web mount's own digest (e.g. GitHub's 40-hex blob SHA-1) is
+        // not our CAS's sha256, so sha256sum must not trust it as-is like the
+        // lazy-digest case above - it must fetch and hash the real bytes.
+        // But that fetch+hash should still happen at most once: the second
+        // call must neither refetch nor rehash.
+        struct CountingLoader(Rc<RefCell<u32>>);
+        impl BlobLoader for CountingLoader {
+            fn load(&self, _digest: &str) -> Result<Vec<u8>, String> {
+                *self.0.borrow_mut() += 1;
+                Ok(b"abc".to_vec())
+            }
+        }
+        let fetches = Rc::new(RefCell::new(0));
+        let mut bash = fresh();
+        bash.fs_mut()
+            .set_blob_loader(Rc::new(CountingLoader(fetches.clone())));
+        bash.fs_mut()
+            .register_lazy("/AGENTS.md", "a9993e364706816aba3e25717850c26c9cd0d89d", 3);
+
+        let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(
+            run(&mut bash, "sha256sum /AGENTS.md").stdout,
+            format!("{expected}  /AGENTS.md\n")
+        );
+        assert_eq!(*fetches.borrow(), 1);
+        assert_eq!(
+            bash.fs().cached_content_digest("/AGENTS.md"),
+            Some(format!("sha256:{expected}"))
+        );
+
+        assert_eq!(
+            run(&mut bash, "sha256sum /AGENTS.md").stdout,
+            format!("{expected}  /AGENTS.md\n")
+        );
+        assert_eq!(*fetches.borrow(), 1, "content must not be fetched twice");
     }
 }
