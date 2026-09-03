@@ -926,7 +926,11 @@ fn is_cas_namespaced_digest(digest: &str) -> bool {
 /// own foreign hash) is treated like a modified file instead: its bytes were
 /// never uploaded to this server's CAS under that digest, so it must be
 /// fetched and rehashed here rather than have the foreign hash reused as a
-/// bogus `content_digest`.
+/// bogus `content_digest`. An eager file's hash is computed at most once per
+/// unchanged path: `fs`'s content-digest cache (invalidated on write) covers
+/// both a path appearing more than once in one manifest pass (e.g. as both a
+/// `location` and a `component_files` entry) and repeat submit/check/verify
+/// calls within the same session.
 fn owned_source_digest(fs: &Vfs, path: &str, log: fn(&str)) -> Option<String> {
     if let Some(lazy) = fs.lazy_file_ref(path)
         && is_cas_namespaced_digest(&lazy.digest)
@@ -935,6 +939,12 @@ fn owned_source_digest(fs: &Vfs, path: &str, log: fn(&str)) -> Option<String> {
             "owned_source_digest({path}): unchanged, reusing cached digest"
         ));
         return Some(lazy.digest);
+    }
+    if let Some(digest) = fs.cached_content_digest(path) {
+        log(&format!(
+            "owned_source_digest({path}): unchanged since last hash, reusing cached digest"
+        ));
+        return Some(digest);
     }
     let bytes = fs.read_file(path)?;
     let content = String::from_utf8_lossy(&bytes);
@@ -946,6 +956,7 @@ fn owned_source_digest(fs: &Vfs, path: &str, log: fn(&str)) -> Option<String> {
     log(&format!(
         "owned_source_digest({path}): hashed, digest={digest}"
     ));
+    fs.cache_content_digest(path, &digest);
     Some(digest)
 }
 

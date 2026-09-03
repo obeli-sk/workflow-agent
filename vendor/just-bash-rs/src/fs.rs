@@ -155,6 +155,14 @@ pub struct Vfs {
     /// `FnOnce`) so `Vfs` stays `Clone`; an entry is removed before running,
     /// guaranteeing it fires at most once.
     deferred: Vec<(String, DeferredMount)>,
+    /// Content digest computed for an eager (non-pending) file, keyed by
+    /// resolved path, so a caller that hashes a file's bytes (e.g. deployment
+    /// submit's `content_digest` pinning) never rehashes the same unchanged
+    /// bytes twice. Cleared by any write to that path (`write_file`,
+    /// `append_file`, `remove`), mirroring how `pending`/`lazy_cache` are
+    /// invalidated on write. A `pending` file already carries its own cached
+    /// digest via `LazyFileRef` and never enters this map.
+    content_digest_cache: RefCell<BTreeMap<String, String>>,
 }
 
 impl std::fmt::Debug for Vfs {
@@ -181,6 +189,7 @@ impl std::fmt::Debug for Vfs {
                     .map(|(root, _)| root)
                     .collect::<Vec<_>>(),
             )
+            .field("content_digest_cache", &self.content_digest_cache.borrow())
             .finish()
     }
 }
@@ -201,7 +210,27 @@ impl Vfs {
             mounts: Vec::new(),
             web: RefCell::new(WebState::default()),
             deferred: Vec::new(),
+            content_digest_cache: RefCell::new(BTreeMap::new()),
         }
+    }
+
+    /// A previously cached content digest for an eager file at `path`, if
+    /// `cache_content_digest` was called for it since its last write.
+    pub fn cached_content_digest(&self, path: &str) -> Option<String> {
+        self.content_digest_cache
+            .borrow()
+            .get(&self.resolve(path))
+            .cloned()
+    }
+
+    /// Remember `digest` as the content digest of the eager file currently at
+    /// `path`, so a later `cached_content_digest` call skips rehashing. The
+    /// caller is responsible for `digest` actually matching the file's
+    /// current bytes; a subsequent write to `path` invalidates the entry.
+    pub fn cache_content_digest(&self, path: &str, digest: &str) {
+        self.content_digest_cache
+            .borrow_mut()
+            .insert(self.resolve(path), digest.to_string());
     }
 
     /// Register a one-shot deferred mount rooted at `root`. The tree is not
@@ -610,6 +639,7 @@ impl Vfs {
         self.pending.borrow_mut().remove(&path);
         self.mounted_loaders.borrow_mut().remove(&path);
         self.lazy_cache.borrow_mut().remove(&path);
+        self.content_digest_cache.borrow_mut().remove(&path);
         self.files.insert(path, data.to_vec());
         Ok(())
     }
@@ -633,6 +663,7 @@ impl Vfs {
             self.lazy_cache.borrow_mut().remove(&path);
             self.files.insert(path.clone(), existing);
         }
+        self.content_digest_cache.borrow_mut().remove(&path);
         self.files.entry(path).or_default().extend_from_slice(data);
         Ok(())
     }
@@ -741,6 +772,7 @@ impl Vfs {
             self.executable.remove(&path);
             self.mounted_loaders.borrow_mut().remove(&path);
             self.lazy_cache.borrow_mut().remove(&path);
+            self.content_digest_cache.borrow_mut().remove(&path);
             return Ok(());
         }
         if self.dirs.contains(&path) {
@@ -763,6 +795,9 @@ impl Vfs {
                 .borrow_mut()
                 .retain(|k, _| k != &path && !k.starts_with(&prefix));
             self.lazy_cache
+                .borrow_mut()
+                .retain(|k, _| k != &path && !k.starts_with(&prefix));
+            self.content_digest_cache
                 .borrow_mut()
                 .retain(|k, _| k != &path && !k.starts_with(&prefix));
             return Ok(());
@@ -819,6 +854,32 @@ mod tests {
         fs.append_file("/log", b"one\n").unwrap();
         fs.append_file("/log", b"two\n").unwrap();
         assert_eq!(fs.read_file("/log").as_deref(), Some(&b"one\ntwo\n"[..]));
+    }
+
+    #[test]
+    fn content_digest_cache_is_invalidated_by_a_write_or_a_remove() {
+        let mut fs = Vfs::new();
+        fs.write_file("/a.txt", b"hello").unwrap();
+        assert_eq!(fs.cached_content_digest("/a.txt"), None);
+
+        fs.cache_content_digest("/a.txt", "sha256:1");
+        assert_eq!(
+            fs.cached_content_digest("/a.txt"),
+            Some("sha256:1".to_string())
+        );
+
+        // A write to the same path (new content) must drop the stale entry.
+        fs.write_file("/a.txt", b"changed").unwrap();
+        assert_eq!(fs.cached_content_digest("/a.txt"), None);
+
+        fs.cache_content_digest("/a.txt", "sha256:2");
+        assert_eq!(
+            fs.cached_content_digest("/a.txt"),
+            Some("sha256:2".to_string())
+        );
+        fs.remove("/a.txt", false).unwrap();
+        fs.write_file("/a.txt", b"changed").unwrap();
+        assert_eq!(fs.cached_content_digest("/a.txt"), None);
     }
 
     #[test]

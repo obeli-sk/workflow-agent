@@ -98,6 +98,28 @@ export class Vfs {
         // One-shot deferred mounts: [{ root, populate }]. See
         // `registerDeferredMount`/`ensureMountedFor`.
         this.deferred = [];
+        // Content digest computed for an eager (non-pending) file, keyed by
+        // resolved path, so a caller that hashes a file's bytes (e.g.
+        // deployment submit's `content_digest` pinning) never rehashes the
+        // same unchanged bytes twice. Cleared by any write to that path
+        // (`writeFile`, `remove`). A `pending` file already carries its own
+        // cached digest via `lazyFileRef` and never enters this map.
+        // PORT: fs.rs's `content_digest_cache`.
+        this.contentDigestCache = new Map();
+    }
+
+    // A previously cached content digest for an eager file at `path`, if
+    // `cacheContentDigest` was called for it since its last write, or null.
+    cachedContentDigest(path) {
+        return this.contentDigestCache.get(this.resolve(path)) ?? null;
+    }
+
+    // Remember `digest` as the content digest of the eager file currently at
+    // `path`, so a later `cachedContentDigest` call skips rehashing. The
+    // caller is responsible for `digest` actually matching the file's
+    // current bytes; a subsequent write to `path` invalidates the entry.
+    cacheContentDigest(path, digest) {
+        this.contentDigestCache.set(this.resolve(path), digest);
     }
 
     // Install the loader that fetches bounded `pending` files on first read
@@ -405,6 +427,7 @@ export class Vfs {
         if (existing && existing.type === "dir") throw new FsError(`Is a directory: ${path}`, "EISDIR");
         const dir = this._ensureDir(dirname(p));
         dir.children.set(basename(p), fileNode(content));
+        this.contentDigestCache.delete(p);
     }
 
     // Materializes a pending file's existing bytes before appending, so the
@@ -467,9 +490,13 @@ export class Vfs {
                 for (const e of [...this.executable]) {
                     if (e === p || e.startsWith(prefix)) this.executable.delete(e);
                 }
+                for (const d of [...this.contentDigestCache.keys()]) {
+                    if (d === p || d.startsWith(prefix)) this.contentDigestCache.delete(d);
+                }
             }
             parent.children.delete(name);
             this.executable.delete(p);
+            this.contentDigestCache.delete(p);
             return;
         }
         // Web-mounted directories live only in the overlay.

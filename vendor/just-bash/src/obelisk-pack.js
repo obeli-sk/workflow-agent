@@ -1064,12 +1064,21 @@ export function ownedSourceLocations(manifest) {
 // hash) is treated like a modified file instead: its bytes were never
 // uploaded to this server's CAS under that digest, so it must be fetched and
 // rehashed here rather than have the foreign hash reused as a bogus
-// `content_digest`.
+// `content_digest`. An eager file's hash is computed at most once per
+// unchanged path: `fs`'s content-digest cache (invalidated on write) covers
+// both a path appearing more than once in one manifest pass (e.g. as both a
+// `location` and a `component_files` entry) and repeat submit/check/verify
+// calls within the same session.
 function ownedSourceDigest(fs, path) {
     const lazy = fs.lazyFileRef(path);
     if (lazy && isCasNamespacedDigest(lazy.digest)) {
         console.debug(`ownedSourceDigest(${path}): unchanged, reusing cached digest`);
         return lazy.digest;
+    }
+    const cached = fs.cachedContentDigest(path);
+    if (cached !== null) {
+        console.debug(`ownedSourceDigest(${path}): unchanged since last hash, reusing cached digest`);
+        return cached;
     }
     let content;
     try {
@@ -1081,6 +1090,7 @@ function ownedSourceDigest(fs, path) {
     console.debug(`ownedSourceDigest(${path}): hashing ${bytes.length} bytes (modified/new file)`);
     const digest = `sha256:${sha256Hex(bytes)}`;
     console.debug(`ownedSourceDigest(${path}): hashed, digest=${digest}`);
+    fs.cacheContentDigest(path, digest);
     return digest;
 }
 
