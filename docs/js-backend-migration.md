@@ -704,15 +704,15 @@ already-bounded scope, not full jq/full awk):
   `reduce`/`foreach`, `def`, `try/catch` beyond bare `?`, `path()`, `as $x |`
   binding, most `@format` strings, regex builtins, `input`/`inputs`.
 - `awk`: `BEGIN`/`END`, pattern-action pairs (bare pattern, bare action,
-  `/regex/`, expression), fields `$0..$NF` (read+assign+NF-truncate),
-  `FS`/`-F`, `print`/`printf`, full arithmetic/comparison/logical operators,
-  `if/else while do-while for break continue next exit`, the common builtin
-  functions (`length substr index split sub gsub gensub match toupper
-  tolower sprintf` + math), minimal single-dim arrays. Not implemented:
-  user-defined functions, `getline`, `nextfile`, `for (k in arr)`/`delete`,
-  multi-dim `SUBSEP` arrays, range patterns, output redirection, `-f
-  progfile` (`getline`/`function` are rejected with a clear parse error
-  rather than silently mishandled).
+  `/regex/`, expression, range `pat1,pat2`), fields `$0..$NF`
+  (read+assign+NF-truncate), `FS`/`-F`, `print`/`printf`, full
+  arithmetic/comparison/logical operators, `if/else while do-while for break
+  continue next exit`, the common builtin functions (`length substr index
+  split sub gsub gensub match toupper tolower sprintf` + math), minimal
+  single-dim arrays. Not implemented: user-defined functions, `getline`,
+  `nextfile`, `for (k in arr)`/`delete`, multi-dim `SUBSEP` arrays, output
+  redirection, `-f progfile` (`getline`/`function` are rejected with a clear
+  parse error rather than silently mishandled).
 
 291 `node --test` cases and the live e2e smoke test were green when Phase 2
 completed; see the Phase 3 checklist entry above for the current 389+13

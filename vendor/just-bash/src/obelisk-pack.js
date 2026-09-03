@@ -990,11 +990,20 @@ function collectJsGraph(fs, dir, entry) {
     return files;
 }
 
+// Not a real tokenizer (no comment/string awareness), same "practical
+// subset" tradeoff as the rest of this scanner. The `from` clause is bounded
+// to the actual import/export grammar (`*`, `* as ns`, `{ ... }`, or a bare
+// default identifier, optionally combined) rather than "any text", so an
+// unrelated `export`/`import` keyword earlier in the file (e.g. `export
+// default function foo() {...}`) can't lazily skip across the whole function
+// body — comments included — to latch onto the next `from "..."` in the
+// file.
 function moduleSpecifiers(source) {
     const found = [];
+    const clause = String.raw`(?:\*(?:\s+as\s+[\w$]+)?|\{[^{}]*\}|[\w$]+(?:\s*,\s*(?:\*\s+as\s+[\w$]+|\{[^{}]*\}))?)`;
     const patterns = [
         /\bimport\s*["']([^"']+)["']/g,
-        /\b(?:import|export)\s+[\s\S]*?\sfrom\s*["']([^"']+)["']/g,
+        new RegExp(String.raw`\b(?:import|export)\s+${clause}\s*from\s*["']([^"']+)["']`, "g"),
     ];
     for (const pattern of patterns) {
         let match;

@@ -866,6 +866,39 @@ test("deployment submit generates WIT and JS module component files", () => {
     }
 });
 
+test("deployment submit does not mistake a later comment for an export...from clause", () => {
+    // Regression: the `from` scanner used to lazily skip across an entire
+    // function body (including comments) looking for the next `from "..."`
+    // anywhere in the file, so `export default async function` paired with
+    // an unrelated later comment containing `from "..."` was misread as a
+    // bare module specifier.
+    const manifest = [
+        "[[activity_js]]",
+        'name = "chat"',
+        'ffqn = "test:pkg/api.run"',
+        'wit = "wit"',
+        'location = "src/index.js"',
+    ].join("\n") + "\n";
+    const i = interp();
+    i.vfs.writeFile("/workspace/deployment/current/deployment.toml", manifest);
+    i.vfs.writeFile(
+        "/workspace/deployment/current/src/index.js",
+        [
+            "export default async function chat(stdin, args) {",
+            "    return stdin;",
+            "}",
+            "",
+            "// Empty when it is still working, so callers can tell apart",
+            '// from "it finished with an empty message".',
+        ].join("\n"),
+    );
+    i.vfs.writeFile("/workspace/deployment/current/wit/world.wit", "package test:pkg; world api { export run: func(); }");
+
+    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    assert.equal(out.exitCode, 0, out.stderr);
+});
+
 test("deployment submit propagates a terminal (non-missing-files) error", () => {
     const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
     const i = interp();

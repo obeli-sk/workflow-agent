@@ -11,26 +11,27 @@
 //! Supported: `BEGIN{...}`/`END{...}`, pattern-action pairs, bare pattern
 //! (implicit `{print}`), bare `{action}` (implicit always-true pattern),
 //! `/regex/` patterns (matched against `$0`), general expression patterns
-//! (comparisons on fields/vars, `NR`/`NF`); fields `$0`..`$NF` (read and
-//! assign, including extending past `NF` and truncating via `NF=`), FS
-//! (single-char literal or multi-char ERE) / `-F`; `print`/`printf`,
-//! assignment incl. compound (`+= -= *= /= %= ^=`), `++`/`--` (pre/post),
-//! arithmetic `+ - * / % ^ **`, string concatenation (juxtaposition),
-//! comparisons (POSIX numeric-string rules), `~`/`!~`, `&&`/`||`/`!`,
-//! ternary `?:`, `if/else`, `while`, `do/while`, classic `for(;;)`,
-//! `break`/`continue`/`next`/`exit [code]`; builtins `length substr index
-//! split sub gsub gensub match toupper tolower sprintf sin cos atan2 exp log
-//! sqrt int rand srand`; built-in vars `NR NF FS OFS ORS RS FILENAME FNR
-//! RSTART RLENGTH`; minimal single-dimension arrays (`arr[key]`, only so
-//! `split()` and hand-rolled counters are useful — see skip list below);
-//! CLI flags `-F`/`-v`/`--help`.
+//! (comparisons on fields/vars, `NR`/`NF`), range patterns (`pat1,pat2` — on,
+//! including a numeric `0` end-pattern for "to EOF"); fields `$0`..`$NF`
+//! (read and assign, including extending past `NF` and truncating via
+//! `NF=`), FS (single-char literal or multi-char ERE) / `-F`;
+//! `print`/`printf`, assignment incl. compound (`+= -= *= /= %= ^=`),
+//! `++`/`--` (pre/post), arithmetic `+ - * / % ^ **`, string concatenation
+//! (juxtaposition), comparisons (POSIX numeric-string rules), `~`/`!~`,
+//! `&&`/`||`/`!`, ternary `?:`, `if/else`, `while`, `do/while`, classic
+//! `for(;;)`, `break`/`continue`/`next`/`exit [code]`; builtins `length
+//! substr index split sub gsub gensub match toupper tolower sprintf sin cos
+//! atan2 exp log sqrt int rand srand`; built-in vars `NR NF FS OFS ORS RS
+//! FILENAME FNR RSTART RLENGTH`; minimal single-dimension arrays (`arr[key]`,
+//! only so `split()` and hand-rolled counters are useful — see skip list
+//! below); CLI flags `-F`/`-v`/`--help`.
 //!
 //! Explicitly out of scope (skipped, not started): user-defined functions
 //! (`function name(...) {...}`), `getline`, `nextfile`, `for (k in arr)` /
 //! `delete arr[k]` / `(a, b) in arr` / SUBSEP multi-dim keys / the `in`
-//! operator, range patterns (`pat1,pat2`), regex `RS`/multi-char `RS`,
-//! output redirection (`print > "file"`, `| cmd`), `-f progfile`, and
-//! execution/allocation limits (upstream's resource-limit machinery).
+//! operator, regex `RS`/multi-char `RS`, output redirection (`print >
+//! "file"`, `| cmd`), `-f progfile`, and execution/allocation limits
+//! (upstream's resource-limit machinery).
 
 use std::collections::HashMap;
 
@@ -378,6 +379,12 @@ enum Pattern {
     Begin,
     End,
     Expr(Expr),
+    /// `pat1,pat2`: matches every record from one where `pat1` matches
+    /// through the next one (inclusive) where `pat2` matches, then re-arms.
+    /// The "currently inside the range" flag isn't part of the AST — it's
+    /// tracked per-rule alongside `Ctx` (see `range_active` in `awk`), since
+    /// `Rule`/`Pattern` are otherwise immutable once parsed.
+    Range(Expr, Expr),
 }
 
 struct Rule {
@@ -477,7 +484,13 @@ impl Parser {
         let pattern = if self.peek_punct("{") {
             Pattern::Always
         } else {
-            Pattern::Expr(self.parse_expr()?)
+            let first = self.parse_expr()?;
+            if self.eat_punct(",") {
+                let second = self.parse_expr()?;
+                Pattern::Range(first, second)
+            } else {
+                Pattern::Expr(first)
+            }
         };
         let action = if self.peek_punct("{") {
             Some(self.parse_block()?)
@@ -1408,6 +1421,33 @@ fn apply_numeric_op(op: &str, l: f64, r: f64) -> Result<f64, String> {
     })
 }
 
+/// Range pattern (`pat1,pat2`): matches every record from one where `start`
+/// matches through the next one (inclusive) where `end` matches, then
+/// re-arms. `active` is the one piece of state a range pattern carries
+/// between records, owned by the caller (one slot per occurrence in the
+/// program, matching how real awk scopes it).
+fn eval_range_pattern(
+    ctx: &mut Ctx,
+    start: &Expr,
+    end: &Expr,
+    active: &mut bool,
+) -> Result<bool, String> {
+    if !*active {
+        if !eval_expr(ctx, start)?.truthy() {
+            return Ok(false);
+        }
+        *active = true;
+        if eval_expr(ctx, end)?.truthy() {
+            *active = false;
+        }
+        return Ok(true);
+    }
+    if eval_expr(ctx, end)?.truthy() {
+        *active = false;
+    }
+    Ok(true)
+}
+
 fn assign(ctx: &mut Ctx, target: &Expr, value: Value) -> Result<(), String> {
     match target {
         Expr::Var(name) => {
@@ -2065,6 +2105,11 @@ pub fn awk(interp: &mut Interpreter, args: &[String], stdin: String) -> CommandO
                 .collect()
         };
 
+        // One persistent "inside the range" flag per rule, indexed alongside
+        // `rules` (only `Range` rules use theirs); it must outlive each
+        // record/file iteration since a range can stay open across both.
+        let mut range_active: Vec<bool> = vec![false; rules.len()];
+
         'outer: for (filename, content) in sources {
             let content = match content {
                 Ok(c) => c,
@@ -2076,7 +2121,7 @@ pub fn awk(interp: &mut Interpreter, args: &[String], stdin: String) -> CommandO
                 ctx.nr += 1;
                 ctx.fnr += 1;
                 ctx.set_record(record);
-                for rule in &rules {
+                for (i, rule) in rules.iter().enumerate() {
                     let matched = match &rule.pattern {
                         Pattern::Begin | Pattern::End => false,
                         Pattern::Always => true,
@@ -2084,6 +2129,12 @@ pub fn awk(interp: &mut Interpreter, args: &[String], stdin: String) -> CommandO
                             Ok(v) => v.truthy(),
                             Err(err) => return fail(format!("awk: {err}\n"), 1),
                         },
+                        Pattern::Range(start, end) => {
+                            match eval_range_pattern(&mut ctx, start, end, &mut range_active[i]) {
+                                Ok(m) => m,
+                                Err(err) => return fail(format!("awk: {err}\n"), 1),
+                            }
+                        }
                     };
                     if !matched {
                         continue;
@@ -2322,6 +2373,33 @@ mod tests {
             run(&mut bash2, "awk 'NR>1{print}' /data.txt").stdout,
             "line2\nline3\n"
         );
+    }
+
+    #[test]
+    fn range_pattern_with_numeric_zero_end_matches_to_eof() {
+        let mut bash = with_file(
+            "/toml.txt",
+            "a\n[[webhook]]\nx=1\n[[other]]\nz=3\n[[webhook]]\nb=2\n",
+        );
+        assert_eq!(
+            run(&mut bash, "awk '/\\[\\[webhook/,0' /toml.txt").stdout,
+            "[[webhook]]\nx=1\n[[other]]\nz=3\n[[webhook]]\nb=2\n"
+        );
+    }
+
+    #[test]
+    fn range_pattern_closes_on_end_pattern_and_rearms() {
+        let mut bash = with_file("/range.txt", "x\nstart\na\nb\nend\ny\nstart\nc\nend\nz\n");
+        assert_eq!(
+            run(&mut bash, "awk '/start/,/end/' /range.txt").stdout,
+            "start\na\nb\nend\nstart\nc\nend\n"
+        );
+    }
+
+    #[test]
+    fn range_pattern_start_and_end_on_same_record_closes_immediately() {
+        let mut bash = with_file("/one.txt", "x\ny\n");
+        assert_eq!(run(&mut bash, "awk '/x/,/x/' /one.txt").stdout, "x\n");
     }
 
     #[test]

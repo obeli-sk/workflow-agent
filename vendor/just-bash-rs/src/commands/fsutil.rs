@@ -57,7 +57,10 @@ pub fn cp(interp: &mut Interpreter, args: &[String]) -> CommandOutput {
     let mut operands: Vec<String> = Vec::new();
     for arg in args {
         match arg.as_str() {
-            "-r" | "-R" | "--recursive" => recursive = true,
+            // `-a` (archive) is `-dR --preserve=all` upstream; the `d`/preserve
+            // half is already a no-op here (Vfs has no symlinks/timestamps to
+            // preserve), so recursive is the only bit that matters.
+            "-r" | "-R" | "-a" | "--recursive" | "--archive" => recursive = true,
             "-n" | "--no-clobber" => no_clobber = true,
             "-v" | "--verbose" => verbose = true,
             "-p" | "--preserve" => {} // no-op: Vfs has no timestamps/metadata to preserve
@@ -65,7 +68,7 @@ pub fn cp(interp: &mut Interpreter, args: &[String]) -> CommandOutput {
             other if other.starts_with('-') && other.len() > 1 && other != "-" => {
                 for c in other[1..].chars() {
                     match c {
-                        'r' | 'R' => recursive = true,
+                        'r' | 'R' | 'a' => recursive = true,
                         'n' => no_clobber = true,
                         'v' => verbose = true,
                         'p' => {}
@@ -1175,6 +1178,23 @@ mod tests {
         bash.fs_mut().write_file("/dir/sub/b.txt", b"b").unwrap();
         let r = run(&mut bash, "cp -r /dir /dest");
         assert_eq!(r.exit_code, 0);
+        assert_eq!(
+            bash.fs().read_file("/dest/a.txt").as_deref(),
+            Some(&b"a"[..])
+        );
+        assert_eq!(
+            bash.fs().read_file("/dest/sub/b.txt").as_deref(),
+            Some(&b"b"[..])
+        );
+    }
+
+    #[test]
+    fn cp_archive_flag_implies_recursive() {
+        let mut bash = fresh();
+        bash.fs_mut().write_file("/dir/a.txt", b"a").unwrap();
+        bash.fs_mut().write_file("/dir/sub/b.txt", b"b").unwrap();
+        let r = run(&mut bash, "cp -a /dir /dest");
+        assert_eq!(r.exit_code, 0, "stderr: {}", r.stderr);
         assert_eq!(
             bash.fs().read_file("/dest/a.txt").as_deref(),
             Some(&b"a"[..])

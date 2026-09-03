@@ -872,10 +872,22 @@ fn collect_js_graph(fs: &Vfs, dir: &str, entry: &str) -> Result<Vec<String>, Str
     Ok(seen.into_iter().collect())
 }
 
+/// Not a real tokenizer (no comment/string awareness), same "practical
+/// subset" tradeoff as the rest of this scanner. The `from` clause is
+/// bounded to the actual import/export grammar (`*`, `* as ns`, `{ ... }`,
+/// or a bare default identifier, optionally combined) rather than "any
+/// text", so an unrelated `export`/`import` keyword earlier in the file
+/// (e.g. `export default fn foo() {...}` written as JS) can't lazily skip
+/// across the whole function body -- comments included -- to latch onto the
+/// next `from "..."` in the file.
 fn module_specifiers(source: &str) -> Vec<String> {
     let side_effect = regex::Regex::new(r#"\bimport\s*[\"']([^\"']+)[\"']"#).expect("regex");
-    let from = regex::Regex::new(r#"(?s)\b(?:import|export)\s+.*?\sfrom\s*[\"']([^\"']+)[\"']"#)
-        .expect("regex");
+    let clause =
+        r#"(?:\*(?:\s+as\s+[\w$]+)?|\{[^{}]*\}|[\w$]+(?:\s*,\s*(?:\*\s+as\s+[\w$]+|\{[^{}]*\}))?)"#;
+    let from = regex::Regex::new(&format!(
+        r#"\b(?:import|export)\s+{clause}\s*from\s*[\"']([^\"']+)[\"']"#
+    ))
+    .expect("regex");
     side_effect
         .captures_iter(source)
         .chain(from.captures_iter(source))
@@ -2723,6 +2735,53 @@ content_digest = \"sha256:1\"\n\
                 "{prepared}"
             );
         }
+    }
+
+    #[test]
+    fn deployment_submit_does_not_mistake_a_later_comment_for_an_export_from_clause() {
+        // Regression: the `from` scanner used to lazily skip across an entire
+        // function body (including comments) looking for the next `from
+        // "..."` anywhere in the file, so `export default async function`
+        // paired with an unrelated later comment containing `from "..."` was
+        // misread as a bare module specifier.
+        let manifest = concat!(
+            "[[activity_js]]\n",
+            "name = \"chat\"\n",
+            "ffqn = \"test:pkg/api.run\"\n",
+            "wit = \"wit\"\n",
+            "location = \"src/index.js\"\n",
+        );
+        let mut i = interp("/workspace");
+        let dir = "/workspace/deployment/current";
+        i.fs.write_file(&format!("{dir}/deployment.toml"), manifest.as_bytes())
+            .unwrap();
+        i.fs.write_file(
+            &format!("{dir}/src/index.js"),
+            concat!(
+                "export default async function chat(stdin, args) {\n",
+                "    return stdin;\n",
+                "}\n",
+                "\n",
+                "// Empty when it is still working, so callers can tell apart\n",
+                "// from \"it finished with an empty message\".\n",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        i.fs.write_file(
+            &format!("{dir}/wit/world.wit"),
+            b"package test:pkg; world api { export run: func(); }",
+        )
+        .unwrap();
+
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", dir]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
     }
 
     #[test]
