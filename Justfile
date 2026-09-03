@@ -1,8 +1,10 @@
 serve: serve-rs
 
 # Rust session-workflow backend (workflow/workflow-rs, deployment.rs.toml),
-# the default `serve` depends on.
-serve-rs:
+# the default `serve` depends on. Depends on `build-rs` so the server always
+# runs the wasm just compiled from the current source, never a stale one left
+# over from an earlier build.
+serve-rs: build-rs
   obelisk server run -d deployment.rs.toml --server-config server.toml
 
 # Same session-workflow FFQN as `serve`, but backed by the JS workflow
@@ -24,15 +26,15 @@ sample-mcp-server:
 # Build the native Rust workflow component (workflow/workflow-rs).
 # The generated wit/deps are committed; regenerate with scripts/generate-wit-deps.sh
 # after changing the source WIT.
-build:
+build-rs:
   cd workflow/workflow-rs && cargo build --release
 
-verify: build
+verify: build-rs
   obelisk deployment verify --deployment deployment.rs.toml --server-config server.toml --allow-unavailable-runtime-config
   obelisk deployment verify --deployment deployment.js.toml --server-config server.toml --allow-unavailable-runtime-config
   ./scripts/check-deployment-toml-parity.sh
 
-fix: build
+fix: build-rs
   obelisk deployment verify --deployment deployment.rs.toml --server-config server.toml --fix
   obelisk deployment verify --deployment deployment.js.toml --server-config server.toml --fix
 

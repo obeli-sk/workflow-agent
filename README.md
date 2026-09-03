@@ -25,10 +25,10 @@ registry read: `MAX_STEPS`, defaulting to `20`.
 
 ## Run
 
-Build the component, pick an LLM catalog, and start the server:
+Pick an LLM catalog and start the server; `just serve` depends on `build-rs`,
+so the component is always rebuilt from current source first:
 
 ```sh
-just build
 ln -sf models.local.json models.json      # pick a catalog
 export AGENT_MODELS="$(cat models.json)"   # or use direnv (.envrc-example)
 export LLM_BASE_URL=http://127.0.0.1:9190  # match the catalog's endpoint

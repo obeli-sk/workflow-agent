@@ -148,7 +148,7 @@ jobs:
       # deployment.rs.toml's [[workflow_wasm]] points at the release artifact, so
       # build it before verifying.
       - name: Build the workflow component
-        run: nix develop --command just build
+        run: nix develop --command just build-rs
 
       - name: deployment.rs.toml/deployment.js.toml parity
         run: nix develop --command ./scripts/check-deployment-toml-parity.sh

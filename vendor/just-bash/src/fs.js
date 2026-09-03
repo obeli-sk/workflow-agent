@@ -485,7 +485,20 @@ export class Vfs {
         }
     }
 
+    // Copy a single file from `from` to `to`. A lazily-mounted, unmodified
+    // (pending) source copies *by reference*: `to` is registered lazy with
+    // the same content digest and loader, so nothing is fetched (a component
+    // WASM blob can be tens of MB, and the copy is meant to be as cheap as
+    // the mount). A modified or eager source copies its bytes.
+    // PORT: fs.rs's `copy_file`.
     copyFile(from, to) {
+        const node = this.lookup(this.resolve(from));
+        if (node && node.type === "file" && node.pending) {
+            const { digest, size } = node.pending;
+            if (node.loader) this.registerLazyWithLoader(to, digest, size, node.loader);
+            else this.registerLazy(to, digest, size);
+            return;
+        }
         const content = this.readFile(from);
         this.writeFile(to, content);
     }

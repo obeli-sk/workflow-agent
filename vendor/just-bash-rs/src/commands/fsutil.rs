@@ -1186,6 +1186,21 @@ mod tests {
     }
 
     #[test]
+    fn cp_recursive_of_lazy_files_copies_references_without_fetching() {
+        let loader = Rc::new(RecordingLoader(RefCell::new(Vec::new())));
+        let mut bash = fresh();
+        bash.fs_mut().set_blob_loader(loader.clone());
+        bash.fs_mut().register_lazy("/dep/current/a.wasm", "sha256:a", 10);
+        bash.fs_mut().register_lazy("/dep/current/sub/b.wasm", "sha256:b", 20);
+
+        let r = run(&mut bash, "cp -r /dep/current /dep/work");
+        assert_eq!(r.exit_code, 0, "stderr: {}", r.stderr);
+        assert!(bash.fs().is_pending("/dep/work/a.wasm"), "a.wasm should be pending");
+        assert!(bash.fs().is_pending("/dep/work/sub/b.wasm"), "sub/b.wasm should be pending");
+        assert!(loader.0.borrow().is_empty(), "recursive cp must not fetch blobs, fetched: {:?}", loader.0.borrow());
+    }
+
+    #[test]
     fn cp_multiple_sources_need_dir_dest() {
         let mut bash = fresh();
         bash.fs_mut().write_file("/a.txt", b"a").unwrap();
