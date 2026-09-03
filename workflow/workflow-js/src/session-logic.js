@@ -106,7 +106,10 @@ export function renderAppHelp(apps) {
         "\n# Example apps\n\n" +
         "Read-only, mounted at /workspace/apps/<name>; each repo's own README.md has the full story:\n\n";
     for (const app of apps) {
-        text += app.description ? `- \`${app.name}\` - ${app.description}\n` : `- \`${app.name}\`\n`;
+        const source = `${app.owner}/${app.repo}@${app.ref}`;
+        text += app.description
+            ? `- \`${app.name}\` (${source}) - ${app.description}\n`
+            : `- \`${app.name}\` (${source})\n`;
     }
     text += "\n";
     return text;
@@ -135,8 +138,8 @@ const MOUNT_FOOTER =
 // stays a pure, host-agnostic renderer like every other helper in this file.
 export function renderMount(apps, mcpServers, webhookUrl, probe) {
     let text = MOUNT_HEADER;
-    for (const { name, owner, repo } of apps) {
-        text += `  /workspace/apps/${name}          example app, read-only (${owner}/${repo})\n`;
+    for (const { name, owner, repo, ref } of apps) {
+        text += `  /workspace/apps/${name}          example app, read-only (${owner}/${repo}@${ref})\n`;
     }
     if (webhookUrl) {
         text += `  ${webhookUrl}  target Obelisk webhooks (GET allowed via curl)\n`;

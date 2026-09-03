@@ -115,9 +115,8 @@ test("renderAppHelp lists each app as a markdown bullet, with or without a descr
         { name: "webui", owner: "obeli-sk", repo: "webui", ref: "main", description: "" },
     ]);
     assert.ok(text.includes("# Example apps"));
-    assert.ok(text.includes("- `components` - reusable Rust activities\n"));
-    // An app without a description is listed by its name alone.
-    assert.ok(text.includes("- `webui`\n"));
+    assert.ok(text.includes("- `components` (obeli-sk/components@main) - reusable Rust activities\n"));
+    assert.ok(text.includes("- `webui` (obeli-sk/webui@main)\n"));
 });
 
 test("renderSystemPrompt composes the base prompt, shell help, apps, and the prompt tail in order", () => {
@@ -136,7 +135,7 @@ test("renderSystemPrompt composes the base prompt, shell help, apps, and the pro
     const shellAt = text.indexOf("# Shell");
     const helpAt = text.indexOf("registers these external commands");
     const appsAt = text.indexOf("# Example apps");
-    const appEntryAt = text.indexOf("- `components` - reusable Rust activities");
+    const appEntryAt = text.indexOf("- `components` (obeli-sk/components@main) - reusable Rust activities");
     const userInputAt = text.indexOf("# User input");
     const askUserAt = text.indexOf("ask-user");
     const subagentsAt = text.indexOf("# Subagents");
@@ -163,7 +162,7 @@ test("renderMount lists apps and the webhook URL only when configured, and probe
 
     const withWebhook = renderMount(apps, servers, "http://target:8080", probe);
     assert.ok(withWebhook.includes("/workspace/apps/components  "));
-    assert.ok(withWebhook.includes("(obeli-sk/components)"));
+    assert.ok(withWebhook.includes("(obeli-sk/components@main)"));
     assert.ok(withWebhook.includes("http://target:8080  target Obelisk webhooks"));
     assert.ok(withWebhook.includes("/workspace/mcp/up  MCP server, read-only (responding)"));
     assert.ok(withWebhook.includes("/workspace/mcp/down  MCP server, read-only (not responding: connection refused)"));

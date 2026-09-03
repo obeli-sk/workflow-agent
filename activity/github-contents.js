@@ -8,6 +8,7 @@
 //
 //   list  params { owner, repo, ref, path } -> JSON array of { name, type: "file"|"dir", size }
 //   read  params { owner, repo, ref, path } -> the file's raw text body
+//   resolve-ref  params { owner, repo, ref } -> the commit SHA for ref
 //
 // `owner`/`repo` are required; `ref` defaults to "main". These come from the
 // session's APPS_JSON registry (activity/config-discover.js), not from fixed
@@ -35,16 +36,34 @@ const MAX_LINK_HOPS = 10;
 
 export default async function githubContents(method, paramsJson) {
     const m = typeof method === "string" ? method.trim() : "";
-    if (m !== "list" && m !== "read") throw `unknown method '${m}'`;
+    if (m !== "list" && m !== "read" && m !== "resolve-ref") throw `unknown method '${m}'`;
     const params = parseParams(paramsJson);
     const repo = {
         owner: requiredParam(params, "owner"),
         repo: requiredParam(params, "repo"),
         ref: typeof params.ref === "string" && params.ref ? params.ref : "main",
     };
+    if (m === "resolve-ref") return await resolveRef(repo);
     const path = typeof params.path === "string" ? normalize(params.path) : "";
     if (m === "list") return JSON.stringify(await list(repo, path));
     return await read(repo, path);
+}
+
+async function resolveRef(repo) {
+    const url = `${API_BASE}/repos/${repo.owner}/${repo.repo}/commits/${encodeURIComponent(repo.ref)}`;
+    const res = await requestUrl(url, JSON_ACCEPT);
+    if (!res.ok) throw httpError(res.status, `commit ${repo.ref}`, res.text);
+    let body;
+    try {
+        body = JSON.parse(res.text);
+    } catch (e) {
+        throw `commit response is not JSON: ${String(e)}`;
+    }
+    const sha = body?.sha;
+    if (typeof sha !== "string" || !/^[0-9a-f]{40}$/i.test(sha)) {
+        throw `commit response for ${repo.ref} has no commit SHA`;
+    }
+    return sha;
 }
 
 async function list(repo, path) {
@@ -147,6 +166,10 @@ async function request(repo, path, accept) {
     const encoded = encodePath(path);
     const suffix = encoded ? `/${encoded}` : "";
     const url = `${API_BASE}/repos/${repo.owner}/${repo.repo}/contents${suffix}?ref=${encodeURIComponent(repo.ref)}`;
+    return await requestUrl(url, accept);
+}
+
+async function requestUrl(url, accept) {
     const headers = {
         accept,
         "user-agent": "workflow-agent",

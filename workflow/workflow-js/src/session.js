@@ -276,10 +276,31 @@ function loadSessionConfig(executionId, backend, effort, name) {
         maxSteps: config.max_steps,
         programs: config.programs ?? [],
         mcpServers: config.mcp_servers ?? [],
-        apps: config.apps ?? [],
+        apps: resolveAppRefs(config.apps ?? []),
         webhookUrl: config.webhook_url ?? "",
         promptTail: config.prompt_tail,
     };
+}
+
+// Resolve each ref before its lazy mount, keeping later session reads immutable.
+function resolveAppRefs(apps) {
+    const host = createHost();
+    return apps.map((app) => {
+        const raw = host.callJson(
+            APPS_MOUNT_FFQN,
+            JSON.stringify(["resolve-ref", JSON.stringify({ owner: app.owner, repo: app.repo, ref: app.ref })]),
+        );
+        let ref;
+        try {
+            ref = JSON.parse(raw ?? "null");
+        } catch (e) {
+            throw `could not decode commit for ${app.owner}/${app.repo}@${app.ref}: ${String(e)}`;
+        }
+        if (typeof ref !== "string" || !/^[0-9a-f]{40}$/i.test(ref)) {
+            throw `could not resolve ${app.owner}/${app.repo}@${app.ref} to a commit SHA`;
+        }
+        return { ...app, ref };
+    });
 }
 
 // ----- programs / MCP servers / mounts (PORT: session.rs's agent_loop setup) -----

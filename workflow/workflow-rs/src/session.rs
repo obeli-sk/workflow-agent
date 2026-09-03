@@ -74,6 +74,7 @@ const SESSION_EVENTS_JOIN_SET: &str = "session-events";
 /// Renames ride here alone, never on `session-events`.
 const SESSION_NAME_JOIN_SET: &str = "session-name";
 const CONFIG_DISCOVER_FFQN: &str = "obelisk-agent:config/config.discover";
+const APPS_MOUNT_FFQN: &str = "obelisk-agent:mounts/apps.request";
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace. Control flow: if/elif/else, for, while, until, case, break, continue. Not supported: [[ ]], function definitions, arrays, background jobs.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"},"timeout":{"type":"string","description":"Optional wall-clock cap for this script (forms like 30s, 500ms, 5m, 1h30m). When it elapses the script stops at its next command boundary or sleep with exit code 124 and interrupted=\"timeout\"."}},"required":["script"]}}]"#;
 
 // `concat!` (not `\`-continuation) so each entry keeps its leading two-space
@@ -130,8 +131,8 @@ fn render_mount(
     let mut text = String::from(MOUNT_HEADER);
     for app in apps {
         text.push_str(&format!(
-            "  /workspace/apps/{}          example app, read-only ({}/{})\n",
-            app.name, app.owner, app.repo
+            "  /workspace/apps/{}          example app, read-only ({}/{}@{})\n",
+            app.name, app.owner, app.repo, app.git_ref
         ));
     }
     if !webhook_url.is_empty() {
@@ -198,6 +199,39 @@ fn discover_session_config(
         .call_json(CONFIG_DISCOVER_FFQN, &params)?
         .ok_or_else(|| "session config activity returned no value".to_string())?;
     parse_session_config(&json)
+}
+
+fn resolve_app_refs(apps: &mut [App], host: &mut dyn ObeliskHost) -> Result<(), String> {
+    for app in apps {
+        let requested_ref = app.git_ref.clone();
+        let repo = json!({
+            "owner": app.owner,
+            "repo": app.repo,
+            "ref": requested_ref,
+        })
+        .to_string();
+        let params = json!(["resolve-ref", repo]).to_string();
+        let raw = host.call_json(APPS_MOUNT_FFQN, &params)?.ok_or_else(|| {
+            format!(
+                "commit lookup returned no value for {}/{}@{}",
+                app.owner, app.repo, requested_ref
+            )
+        })?;
+        let sha = serde_json::from_str::<String>(&raw).map_err(|error| {
+            format!(
+                "could not decode commit for {}/{}@{}: {error}",
+                app.owner, app.repo, requested_ref
+            )
+        })?;
+        if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!(
+                "could not resolve {}/{}@{} to a commit SHA",
+                app.owner, app.repo, requested_ref
+            ));
+        }
+        app.git_ref = sha;
+    }
+    Ok(())
 }
 
 fn parse_session_config(json: &str) -> Result<SessionConfig, String> {
@@ -310,9 +344,15 @@ Read-only, mounted at /workspace/apps/<name>; each repo's own README.md has the 
     );
     for app in apps {
         if app.description.is_empty() {
-            text.push_str(&format!("- `{}`\n", app.name));
+            text.push_str(&format!(
+                "- `{}` ({}/{}@{})\n",
+                app.name, app.owner, app.repo, app.git_ref
+            ));
         } else {
-            text.push_str(&format!("- `{}` - {}\n", app.name, app.description));
+            text.push_str(&format!(
+                "- `{}` ({}/{}@{}) - {}\n",
+                app.name, app.owner, app.repo, app.git_ref, app.description
+            ));
         }
     }
     text.push('\n');
@@ -660,13 +700,14 @@ pub fn agent_loop(
         Some(name.clone())
     };
     let execution_id = workflow_support::execution_id_current().id;
-    let config = discover_session_config(
+    let mut config = discover_session_config(
         &mut host(),
         &execution_id,
         &model,
         &effort,
         initial_name.as_deref(),
     )?;
+    resolve_app_refs(&mut config.apps, &mut host())?;
     let max_steps = config.max_steps;
     let programs = config.programs;
     let mcp_servers = config.mcp_servers;
@@ -1734,11 +1775,15 @@ mod tests {
         let help = render_app_help(&apps);
         assert!(help.contains("# Example apps"), "{help}");
         assert!(
-            help.contains("\n- `components` - reusable Rust activities\n"),
+            help.contains(
+                "\n- `components` (obeli-sk/components@main) - reusable Rust activities\n"
+            ),
             "{help}"
         );
-        // An app without a description is listed by its name alone.
-        assert!(help.contains("\n- `webui`\n"), "{help}");
+        assert!(
+            help.contains("\n- `webui` (obeli-sk/webui@main)\n"),
+            "{help}"
+        );
         // With no apps, the section is omitted entirely.
         assert_eq!(render_app_help(&[]), "");
     }
@@ -1776,7 +1821,7 @@ mod tests {
         // Every entry (header, apps, webhook URL, MCP) is indented two spaces consistently.
         assert!(out.contains("\n  /workspace/deployment/current  "), "{out}");
         assert!(out.contains("\n  /workspace/apps/components  "), "{out}");
-        assert!(out.contains("(obeli-sk/components)"), "{out}");
+        assert!(out.contains("(obeli-sk/components@main)"), "{out}");
         assert!(
             out.contains("\n  http://127.0.0.1:9290  target Obelisk webhooks"),
             "{out}"

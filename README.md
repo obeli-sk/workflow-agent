@@ -176,7 +176,7 @@ in the request, not a fixed env var). A directory lists on first `ls` and a
 file's bytes fetch on first `cat`, one recorded activity call each. The
 default list mounts a handful of `obeli-sk` repos (`components`,
 `agent-backed-llm-server`, `demo-stargazers`, `demo-tutorial`,
-`obelisk-version-monitor`, and `workflow-agent` itself) at `main`, curated
+`obelisk-version-monitor`, and `workflow-agent` itself) from `main`, curated
 for authoring value: a JS repo is directly copy-and-adapt, a Rust one only
 makes the cut when it publishes reusable OCI components (`components`) or
 demonstrates a pattern worth rewriting to JS (`demo-stargazers`); override
@@ -187,9 +187,11 @@ export APPS_JSON='[{"name":"components","repo":"components","ref":"v0.3.0"}]'
 ```
 
 Each entry is `{name, repo}` plus optional `owner` (default `obeli-sk`),
-`ref` (default `main`), and `description` (default empty). The system
-prompt's "Example apps" section renders each entry as a one-line Markdown
-bullet (`- \`name\` - description`), so keep `description` to a short
+`ref` (default `main`), and `description` (default empty). At session startup,
+each ref resolves to its current commit SHA; that SHA becomes the immutable
+mount ref for the session and is shown in both the system prompt and `mount`.
+The system prompt's "Example apps" section renders each entry as a one-line
+Markdown bullet (`- \`name\` (owner/repo@commit) - description`), so keep `description` to a short
 "Lang: what it's for" phrase; a repo's own README.md is the place for
 detail. `GH_OWNER` (default `obeli-sk`) scopes the deployed
 activity's `allowed_host` boundary to one GitHub org/user; every mounted

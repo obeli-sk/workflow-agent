@@ -11,6 +11,7 @@ const API = "https://api.github.com/repos/acme/tree/contents";
 
 const JSON_ACCEPT = "application/vnd.github+json";
 const RAW_ACCEPT = "application/vnd.github.raw";
+const COMMIT_URL = "https://api.github.com/repos/acme/tree/commits/main";
 
 function jsonResponse(status, body) {
     return { ok: status >= 200 && status < 300, status, text: async () => body };
@@ -205,6 +206,15 @@ test("symlink cycles are cut off instead of hanging", async () => {
 
 test("unknown methods throw", async () => {
     await assert.rejects(githubContents("write", "{}"), /unknown method 'write'/);
+});
+
+test("resolves a mutable ref to its commit SHA", async () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    await withRoutes(new Map([[COMMIT_URL, jsonOk({ sha })]]), async (calls) => {
+        const actual = await githubContents("resolve-ref", JSON.stringify({ owner: "acme", repo: "tree", ref: "main" }));
+        assert.equal(actual, sha);
+        assert.deepEqual(calls, [{ url: COMMIT_URL, accept: JSON_ACCEPT }]);
+    });
 });
 
 test("a missing owner or repo param throws", async () => {
