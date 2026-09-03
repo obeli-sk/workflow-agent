@@ -32,6 +32,8 @@
           commonDeps = with pkgs; [
             just
             rustToolchain
+            jq
+            yq-go # for scripts/sync-branch-protection.sh
           ];
           withObelisk = commonDeps ++ [ obelisk.packages.${system}.default ];
         in
