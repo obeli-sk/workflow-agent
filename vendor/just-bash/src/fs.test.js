@@ -305,6 +305,25 @@ test("web mount lists a directory lazily, calling list() once across repeated ac
     assert.deepEqual(provider.reads, ["obelisk/deployment.toml"]);
 });
 
+test("readFile of a lazily-mounted file succeeds on the first call, without a prior ls/readdir", () => {
+    // Regression: readFile used to call _ensureExpanded (which registers the
+    // file as a lazy pending node, exactly like isFile does) but then throw
+    // ENOENT unconditionally instead of re-checking the lookup afterward -
+    // so the very first readFile of a file whose directory nothing had
+    // listed yet always misreported "No such file or directory", even
+    // though the file existed and a second call (after any ls of that
+    // directory) would have succeeded.
+    const provider = fakeProvider({
+        listings: { "": [{ name: "descriptor.js", kind: "file", digest: "git:d", size: 3 }] },
+        files: { "descriptor.js": "abc" },
+    });
+    const fs = new Vfs();
+    fs.registerWebMount("/workspace/components", "", provider);
+
+    assert.equal(fs.readFile("/workspace/components/descriptor.js"), "abc");
+    assert.deepEqual(provider.lists, [""]);
+});
+
 test("writing over a web-mounted file shadows the remote copy with no fetch", () => {
     const provider = fakeProvider({
         listings: { "": [{ name: "notes.md", kind: "file", digest: "git:notes", size: 6 }] },

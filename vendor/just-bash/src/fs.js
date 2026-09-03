@@ -381,7 +381,18 @@ export class Vfs {
     // absent content, so callers can tell the two apart.
     readFile(path) {
         const p = this.resolve(path);
-        const node = this.lookup(p);
+        let node = this.lookup(p);
+        // A lazy web-mounted file isn't in the tree until its parent
+        // directory has been listed once (see _ensureExpanded); without
+        // this re-lookup, the very first readFile of such a file - one
+        // whose directory a preceding ls/readdir hasn't already expanded -
+        // always misreported ENOENT even though the expansion it triggers
+        // registers the file for every call after this one. Matches isFile's
+        // existing expand-then-recheck pattern.
+        if (!node && p !== "/") {
+            this._ensureExpanded(dirname(p));
+            node = this.lookup(p);
+        }
         if (node && node.type === "dir") throw new FsError(`Is a directory: ${path}`, "EISDIR");
         if (node && node.type === "file") {
             if (node.pending) {
@@ -390,7 +401,6 @@ export class Vfs {
             }
             return node.content ?? "";
         }
-        if (p !== "/") this._ensureExpanded(dirname(p));
         throw new FsError(`No such file or directory: ${path}`, "ENOENT");
     }
 
