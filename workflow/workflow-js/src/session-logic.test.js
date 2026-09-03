@@ -174,6 +174,16 @@ test("renderMount lists apps and the webhook URL only when configured, and probe
     assert.ok(!withoutWebhook.includes("target Obelisk webhooks"));
 });
 
+test("renderMount shows the pinned commit once an app's mount has resolved one", () => {
+    const apps = [{ name: "components", owner: "obeli-sk", repo: "components", ref: "main" }];
+    const out = renderMount(apps, [], "", () => null);
+    assert.ok(out.includes("(obeli-sk/components@main)"), out);
+
+    apps[0].resolvedRef = "0123456789abcdef0123456789abcdef01234567";
+    const pinned = renderMount(apps, [], "", () => null);
+    assert.ok(pinned.includes("(obeli-sk/components@0123456789abcdef0123456789abcdef01234567)"), pinned);
+});
+
 test("validateSlug enforces the kebab-case shape", () => {
     assert.equal(validateSlug("deploy-triage"), null);
     assert.equal(validateSlug("a"), null);

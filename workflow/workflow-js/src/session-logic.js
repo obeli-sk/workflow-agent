@@ -136,10 +136,14 @@ const MOUNT_FOOTER =
 // doesn't (session.js supplies a real `host.callJson` probe; tests supply a
 // fake) - kept a plain function argument rather than a `host` object so this
 // stays a pure, host-agnostic renderer like every other helper in this file.
+// Each app shows `resolvedRef` (the commit its mount pinned to on first
+// `ls`/`cat`, set by obelisk-web.js's `mount`) once present, falling back to
+// the still-unresolved requested `ref` otherwise.
 export function renderMount(apps, mcpServers, webhookUrl, probe) {
     let text = MOUNT_HEADER;
-    for (const { name, owner, repo, ref } of apps) {
-        text += `  /workspace/apps/${name}          example app, read-only (${owner}/${repo}@${ref})\n`;
+    for (const { name, owner, repo, ref, resolvedRef } of apps) {
+        const gitRef = resolvedRef ?? ref;
+        text += `  /workspace/apps/${name}          example app, read-only (${owner}/${repo}@${gitRef})\n`;
     }
     if (webhookUrl) {
         text += `  ${webhookUrl}  target Obelisk webhooks (GET allowed via curl)\n`;

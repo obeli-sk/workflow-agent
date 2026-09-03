@@ -15,18 +15,29 @@ function fakeHost(fixtures) {
     };
 }
 
-const TEST_REPO = { owner: "obeli-sk", repo: "components", ref: "main" };
+const RESOLVED_SHA = "0123456789abcdef0123456789abcdef01234567";
+
+function testRepo() {
+    // A fresh object per test: `mount` mutates `resolvedRef` onto it in
+    // place, so tests must not share one across cases.
+    return { owner: "obeli-sk", repo: "components", ref: "main" };
+}
+
+function resolveArgs() {
+    return JSON.stringify(["resolve-ref", JSON.stringify({ owner: "obeli-sk", repo: "components", ref: "main" })]);
+}
 
 function args(method, path) {
     return JSON.stringify([
         method,
-        JSON.stringify({ owner: "obeli-sk", repo: "components", ref: "main", path }),
+        JSON.stringify({ owner: "obeli-sk", repo: "components", ref: RESOLVED_SHA, path }),
     ]);
 }
 
-test("lists and reads through the transport, lazily", () => {
+test("lists and reads through the transport, lazily, pinning the ref on first use", () => {
     const ffqn = "obelisk-agent:mounts/apps.request";
     const host = fakeHost({
+        [resolveArgs()]: JSON.stringify(RESOLVED_SHA),
         [args("list", "")]: JSON.stringify(
             JSON.stringify([
                 { name: "obelisk", type: "dir" },
@@ -39,15 +50,23 @@ test("lists and reads through the transport, lazily", () => {
         [args("read", "README.md")]: JSON.stringify("# Components\nnot json {"),
     });
     const fs = new Vfs();
-    mount(fs, host, ffqn, "/workspace/components", TEST_REPO);
+    const repo = testRepo();
+    mount(fs, host, ffqn, "/workspace/components", repo);
 
     assert.equal(host.calls.length, 0, "mounting itself makes no network call");
+    assert.equal(repo.resolvedRef, undefined, "mounting itself must not resolve the ref");
+
     assert.deepEqual(fs.readdir("/workspace/components"), ["README.md", "obelisk"]);
+    assert.equal(repo.resolvedRef, RESOLVED_SHA, "the ref pins onto the shared repo object");
     assert.deepEqual(fs.lazyFileRef("/workspace/components/README.md"), {
         digest: "git:readme",
         size: 5,
     });
     assert.equal(fs.readFile("/workspace/components/README.md"), "# Components\nnot json {");
+
+    // The ref resolves exactly once, even across the list and the read.
+    const resolveCalls = host.calls.filter(([, params]) => params.startsWith('["resolve-ref"'));
+    assert.equal(resolveCalls.length, 1);
 });
 
 test("an unknown entry type fails the listing silently, like any other list() error", () => {
@@ -57,9 +76,10 @@ test("an unknown entry type fails the listing silently, like any other list() er
     // directory lists empty rather than raising through readdir.
     const ffqn = "obelisk-agent:mounts/apps.request";
     const host = fakeHost({
+        [resolveArgs()]: JSON.stringify(RESOLVED_SHA),
         [args("list", "")]: JSON.stringify(JSON.stringify([{ name: "weird", type: "symlink" }])),
     });
     const fs = new Vfs();
-    mount(fs, host, ffqn, "/workspace/components", TEST_REPO);
+    mount(fs, host, ffqn, "/workspace/components", testRepo());
     assert.deepEqual(fs.readdir("/workspace/components"), []);
 });

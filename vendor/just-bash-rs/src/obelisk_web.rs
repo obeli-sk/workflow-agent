@@ -18,6 +18,13 @@
 //! github-contents.js`); this module only adapts it to the VFS `DirProvider`
 //! seam so `ls` lists a directory on first access and `cat` fetches a file's
 //! bytes on first read. See the plan in the repo README / design notes.
+//!
+//! `repo.git_ref` is a requested ref (usually a branch), which can move
+//! mid-session. The first `list`/`read` call resolves it to a commit SHA via
+//! the same transport's `resolve-ref` method and freezes that SHA in
+//! `resolved` (shared with the caller, e.g. for the `mount` listing) for
+//! every subsequent call, so the tree stays consistent for the rest of the
+//! session without paying for a resolution the mount never uses.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -27,8 +34,9 @@ use serde_json::{Value, json};
 use crate::fs::{DirProvider, Vfs, WebEntry, WebEntryKind};
 use crate::obelisk_pack::ObeliskHost;
 
-/// Identifies the GitHub repo (and ref) a mount browses; sent as fixed extra
-/// params alongside `path` on every `list`/`read` call.
+/// Identifies the GitHub repo (and requested ref) a mount browses; sent as
+/// fixed extra params alongside `path` on every `list`/`read` call, after
+/// `git_ref` has been pinned to a commit SHA (see module docs).
 #[derive(Clone)]
 pub struct RepoRef {
     pub owner: String,
@@ -43,6 +51,11 @@ struct GithubMount {
     host: RefCell<Box<dyn ObeliskHost>>,
     ffqn: String,
     repo: RepoRef,
+    /// The commit SHA `repo.git_ref` resolved to, filled in by the first
+    /// `list`/`read` call. Shared with the caller so it can report whether
+    /// (and to what) this mount has pinned, without forcing the resolution
+    /// itself.
+    resolved: Rc<RefCell<Option<String>>>,
 }
 
 impl DirProvider for GithubMount {
@@ -73,10 +86,11 @@ impl GithubMount {
     /// that single layer yields the activity's own return value (a JSON array
     /// for `list`, a raw file body for `read`).
     fn call(&self, method: &str, remote_path: &str) -> Result<String, String> {
+        let git_ref = self.pinned_ref()?;
         let params = json!({
             "owner": self.repo.owner,
             "repo": self.repo.repo,
-            "ref": self.repo.git_ref,
+            "ref": git_ref,
             "path": remote_path,
         })
         .to_string();
@@ -89,6 +103,46 @@ impl GithubMount {
             },
             None => Ok(String::new()),
         }
+    }
+
+    /// Resolve `repo.git_ref` to a commit SHA on first use, caching it in
+    /// `resolved` so this mount stays frozen at that commit for the rest of
+    /// the session.
+    fn pinned_ref(&self) -> Result<String, String> {
+        if let Some(sha) = self.resolved.borrow().clone() {
+            return Ok(sha);
+        }
+        let params = json!({
+            "owner": self.repo.owner,
+            "repo": self.repo.repo,
+            "ref": self.repo.git_ref,
+        })
+        .to_string();
+        let args = json!(["resolve-ref", params]).to_string();
+        let raw = self
+            .host
+            .borrow_mut()
+            .call_json(&self.ffqn, &args)?
+            .ok_or_else(|| {
+                format!(
+                    "commit lookup returned no value for {}/{}@{}",
+                    self.repo.owner, self.repo.repo, self.repo.git_ref
+                )
+            })?;
+        let sha = serde_json::from_str::<String>(&raw).map_err(|error| {
+            format!(
+                "could not decode commit for {}/{}@{}: {error}",
+                self.repo.owner, self.repo.repo, self.repo.git_ref
+            )
+        })?;
+        if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!(
+                "could not resolve {}/{}@{} to a commit SHA",
+                self.repo.owner, self.repo.repo, self.repo.git_ref
+            ));
+        }
+        *self.resolved.borrow_mut() = Some(sha.clone());
+        Ok(sha)
     }
 }
 
@@ -119,11 +173,22 @@ fn parse_entry(entry: &Value) -> Result<WebEntry, String> {
 
 /// Mount the transport `ffqn` as a lazily-listed tree at `mount_dir`, browsing
 /// `repo`. The whole remote repo is shown at its root (`base` is empty).
-pub fn mount(fs: &mut Vfs, host: Box<dyn ObeliskHost>, ffqn: &str, mount_dir: &str, repo: RepoRef) {
+/// `repo.git_ref` is resolved to a commit SHA on first access and cached into
+/// `resolved`, not at mount time, so registering a mount that the session
+/// never touches makes no network call.
+pub fn mount(
+    fs: &mut Vfs,
+    host: Box<dyn ObeliskHost>,
+    ffqn: &str,
+    mount_dir: &str,
+    repo: RepoRef,
+    resolved: Rc<RefCell<Option<String>>>,
+) {
     let provider = Rc::new(GithubMount {
         host: RefCell::new(host),
         ffqn: ffqn.to_string(),
         repo,
+        resolved,
     });
     fs.register_web_mount(mount_dir.trim_end_matches('/'), "", provider);
 }
@@ -136,7 +201,7 @@ mod tests {
 
     struct FakeHost {
         reads: BTreeMap<String, String>,
-        calls: RefCell<Vec<(String, String)>>,
+        calls: Rc<RefCell<Vec<(String, String)>>>,
     }
 
     impl ObeliskHost for FakeHost {
@@ -158,6 +223,8 @@ mod tests {
         serde_json::to_string(&payload.to_string()).unwrap()
     }
 
+    const RESOLVED_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
     fn test_repo() -> RepoRef {
         RepoRef {
             owner: "obeli-sk".to_string(),
@@ -166,10 +233,18 @@ mod tests {
         }
     }
 
+    fn resolve_args() -> String {
+        json!([
+            "resolve-ref",
+            json!({ "owner": "obeli-sk", "repo": "components", "ref": "main" }).to_string()
+        ])
+        .to_string()
+    }
+
     fn args(method: &str, path: &str) -> String {
         json!([
             method,
-            json!({ "owner": "obeli-sk", "repo": "components", "ref": "main", "path": path })
+            json!({ "owner": "obeli-sk", "repo": "components", "ref": RESOLVED_SHA, "path": path })
                 .to_string()
         ])
         .to_string()
@@ -178,8 +253,10 @@ mod tests {
     #[test]
     fn lists_and_reads_through_the_transport() {
         let ffqn = "obelisk-agent:mounts/apps.request";
+        let calls = Rc::new(RefCell::new(Vec::new()));
         let host = FakeHost {
             reads: BTreeMap::from([
+                (resolve_args(), serde_json::to_string(RESOLVED_SHA).unwrap()),
                 (
                     args("list", ""),
                     ok_arm(json!([
@@ -196,26 +273,42 @@ mod tests {
                     serde_json::to_string("# Components\nnot json {").unwrap(),
                 ),
             ]),
-            calls: RefCell::new(Vec::new()),
+            calls: calls.clone(),
         };
         let mut fs = Vfs::new();
+        let resolved = Rc::new(RefCell::new(None));
         mount(
             &mut fs,
             Box::new(host),
             ffqn,
             "/workspace/components",
             test_repo(),
+            resolved.clone(),
         );
+        assert!(
+            resolved.borrow().is_none(),
+            "mounting itself must not resolve the ref"
+        );
+        assert!(calls.borrow().is_empty(), "mounting itself makes no call");
 
         assert_eq!(
             fs.readdir("/workspace/components"),
             Some(vec!["README.md".to_string(), "obelisk".to_string()])
         );
+        assert_eq!(resolved.borrow().as_deref(), Some(RESOLVED_SHA));
         assert!(fs.is_dir("/workspace/components/obelisk"));
         assert_eq!(
             fs.read_file("/workspace/components/README.md").as_deref(),
             Some(&b"# Components\nnot json {"[..])
         );
+
+        // The ref resolves exactly once, even across the list and the read.
+        let resolve_calls = calls
+            .borrow()
+            .iter()
+            .filter(|(_, params)| params.starts_with("[\"resolve-ref\""))
+            .count();
+        assert_eq!(resolve_calls, 1);
     }
 
     #[test]
@@ -262,6 +355,7 @@ mod tests {
         let ffqn = "obelisk-agent:mounts/apps.request";
         let host = PanicsOnReadHost {
             reads: BTreeMap::from([
+                (resolve_args(), serde_json::to_string(RESOLVED_SHA).unwrap()),
                 (
                     args("list", ""),
                     ok_arm(json!([
@@ -284,6 +378,7 @@ mod tests {
             ffqn,
             "/workspace/components",
             test_repo(),
+            Rc::new(RefCell::new(None)),
         );
 
         let r = bash.exec(

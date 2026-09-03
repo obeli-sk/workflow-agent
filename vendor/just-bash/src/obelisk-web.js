@@ -11,16 +11,26 @@
 // not baked into the activity, so a session can mount as many repos as its
 // APPS_JSON registry lists:
 //
+//   "resolve-ref" -> params {owner, repo, ref}, result the commit SHA `ref`
+//             resolves to (a plain string result).
 //   "list" -> params {owner, repo, ref, path: remotePath}, result a JSON
 //             array of {name, type: "file"|"dir", sha, size} entries.
 //   "read" -> params {owner, repo, ref, path: remotePath}, result the file's
 //             raw text body (not JSON - a plain string result).
 //
+// `repo.ref` is a requested ref (usually a branch), which can move
+// mid-session. The first `list`/`read` call resolves it to a commit SHA via
+// `resolve-ref` and caches it onto `repo.resolvedRef`, freezing every later
+// call (and anything reading the same `repo` object, e.g. the `mount`
+// listing) at that commit for the rest of the session.
+//
 // `host` is duck-typed as `{ callJson(ffqn, paramsJson) -> string|null }`
 // (throws on error); see obelisk-program.js's header comment for why.
 
-// `repo` is `{owner, repo, ref}`, the fixed extra params sent alongside `path`
-// on every list/read call.
+// `repo` is `{owner, repo, ref}` (extra fields are ignored), the fixed extra
+// params sent alongside `path` on every list/read call; mutated in place with
+// `resolvedRef` once the ref pins to a commit, so callers holding the same
+// object (e.g. the app registry backing the `mount` listing) see it too.
 export function mount(fs, host, ffqn, mountDir, repo) {
     const provider = {
         list(remotePath) {
@@ -47,10 +57,11 @@ export function mount(fs, host, ffqn, mountDir, repo) {
 // arrives quoted; peeling that single layer yields the activity's own string
 // (a JSON array's text for "list", a raw file body for "read").
 function call(host, ffqn, method, remotePath, repo) {
+    const gitRef = pinnedRef(host, ffqn, repo);
     const params = JSON.stringify({
         owner: repo.owner,
         repo: repo.repo,
-        ref: repo.ref,
+        ref: gitRef,
         path: remotePath,
     });
     const args = JSON.stringify([method, params]);
@@ -62,6 +73,27 @@ function call(host, ffqn, method, remotePath, repo) {
     } catch {
         return raw;
     }
+}
+
+// Resolve `repo.ref` to a commit SHA on first use, caching it onto
+// `repo.resolvedRef` so this mount stays frozen at that commit for the rest
+// of the session.
+function pinnedRef(host, ffqn, repo) {
+    if (repo.resolvedRef) return repo.resolvedRef;
+    const params = JSON.stringify({ owner: repo.owner, repo: repo.repo, ref: repo.ref });
+    const args = JSON.stringify(["resolve-ref", params]);
+    const raw = host.callJson(ffqn, args);
+    let sha;
+    try {
+        sha = JSON.parse(raw ?? "null");
+    } catch (e) {
+        throw `could not decode commit for ${repo.owner}/${repo.repo}@${repo.ref}: ${String(e)}`;
+    }
+    if (typeof sha !== "string" || !/^[0-9a-f]{40}$/i.test(sha)) {
+        throw `could not resolve ${repo.owner}/${repo.repo}@${repo.ref} to a commit SHA`;
+    }
+    repo.resolvedRef = sha;
+    return sha;
 }
 
 function parseEntry(entry) {
