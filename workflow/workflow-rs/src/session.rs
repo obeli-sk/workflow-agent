@@ -763,6 +763,7 @@ pub fn agent_loop(
 
     let shell_help = render_program_help(&programs);
     let app_help = render_app_help(&apps);
+    let startup_mount = render_mount(&apps, &mcp_servers, &config.webhook_url, &mut host());
     // Everything after "# Example apps" (user input, subagents, deployment
     // authoring, and "# This session") comes from config-discover.js,
     // single-sourced there given this execution's identity so this backend
@@ -773,6 +774,9 @@ pub fn agent_loop(
 # Shell\n\n\
 {shell_help}\n\
 {app_help}\
+# Mounts at session start\n\n\
+```text\n\
+{startup_mount}```\n\n\
 {prompt_tail}"
     );
 

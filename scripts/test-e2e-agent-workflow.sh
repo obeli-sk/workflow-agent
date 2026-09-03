@@ -17,10 +17,11 @@ export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28016"
 # server.toml's [secrets] requires every named var to exist; empty is fine.
 export MCP_SERVER_TOKEN=""
-export GITHUB_TOKEN=""
+export GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 export AGENT_MODELS="[]"
 
 e2e_select_backend "$BACKEND"
+export APPS_JSON='[{"name":"components","repo":"components","description":"E2E GitHub mount"}]'
 DEPLOY="$ROOT/.e2e-agent-deployment.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
@@ -193,13 +194,17 @@ done
 echo ">>> shell-only E2E PASS: curl was registered and invoked without starting the agent"
 
 echo ">>> running the obelisk/mount custom commands"
-run_shell_turn "shell-e2e-2" "mount && echo --- && obelisk functions list --help"
+run_shell_turn "shell-e2e-2" "mount && cat /workspace/apps/components/README.md && echo --- && obelisk functions list --help"
 if [[ "$SHELL_STDOUT" != *"Network-backed mounts"* ]]; then
     echo "mount command did not print the expected header: $SHELL_STDOUT" >&2
     exit 1
 fi
-if [[ "$SHELL_STDOUT" != *"/workspace/apps/components"* ]]; then
-    echo "mount command did not list the components app mount: $SHELL_STDOUT" >&2
+if [[ ! "$SHELL_STDOUT" =~ obeli-sk/components@[0-9a-f]{40} ]]; then
+    echo "mount command did not show the resolved components commit: $SHELL_STDOUT" >&2
+    exit 1
+fi
+if [[ "$SHELL_STDOUT" != *"# Obelisk Components"* ]]; then
+    echo "GitHub components mount did not read README.md: $SHELL_STDOUT" >&2
     exit 1
 fi
 if [[ "$SHELL_STDOUT" != *"Usage: obelisk functions"* ]]; then

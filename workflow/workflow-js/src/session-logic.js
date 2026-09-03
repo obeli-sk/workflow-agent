@@ -120,8 +120,8 @@ export function renderAppHelp(apps) {
 // discover() (PORT-OF-RECORD there), single-sourced given this execution's
 // identity so this backend and workflow-rs's session.rs don't hand-duplicate
 // any of that text.
-export function renderSystemPrompt(systemPrompt, programs, apps, promptTail) {
-    return `${systemPrompt}\n\n# Shell\n\n${renderProgramHelp(programs)}\n${renderAppHelp(apps)}${promptTail}`;
+export function renderSystemPrompt(systemPrompt, programs, apps, mountOutput, promptTail) {
+    return `${systemPrompt}\n\n# Shell\n\n${renderProgramHelp(programs)}\n${renderAppHelp(apps)}# Mounts at session start\n\n\`\`\`text\n${mountOutput}\`\`\`\n\n${promptTail}`;
 }
 
 // PORT: workflow-rs/src/session.rs's `MOUNT_HEADER`/`MOUNT_FOOTER`.

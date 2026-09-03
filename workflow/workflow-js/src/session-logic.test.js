@@ -129,6 +129,7 @@ test("renderSystemPrompt composes the base prompt, shell help, apps, and the pro
         "Base instructions.",
         [{ name: "curl", ffqn: "x", description: "fetch" }],
         [{ name: "components", owner: "obeli-sk", repo: "components", ref: "main", description: "reusable Rust activities" }],
+        "Network-backed mounts\n  /workspace/apps/components  example app, read-only (obeli-sk/components@0123456789abcdef0123456789abcdef01234567)\n",
         promptTail,
     );
     const baseAt = text.indexOf("Base instructions.");
@@ -136,6 +137,8 @@ test("renderSystemPrompt composes the base prompt, shell help, apps, and the pro
     const helpAt = text.indexOf("registers these external commands");
     const appsAt = text.indexOf("# Example apps");
     const appEntryAt = text.indexOf("- `components` (obeli-sk/components@main) - reusable Rust activities");
+    const mountsAt = text.indexOf("# Mounts at session start");
+    const pinnedMountAt = text.indexOf("components@0123456789abcdef0123456789abcdef01234567");
     const userInputAt = text.indexOf("# User input");
     const askUserAt = text.indexOf("ask-user");
     const subagentsAt = text.indexOf("# Subagents");
@@ -145,7 +148,7 @@ test("renderSystemPrompt composes the base prompt, shell help, apps, and the pro
     const selfTextAt = text.indexOf("self section text");
     assert.ok(
         baseAt < shellAt && shellAt < helpAt && helpAt < appsAt && appsAt < appEntryAt &&
-        appEntryAt < userInputAt && userInputAt < askUserAt &&
+        appEntryAt < mountsAt && mountsAt < pinnedMountAt && pinnedMountAt < userInputAt && userInputAt < askUserAt &&
         askUserAt < subagentsAt && subagentsAt < chatCreateAt && chatCreateAt < packAt &&
         packAt < selfAt && selfAt < selfTextAt,
         text,

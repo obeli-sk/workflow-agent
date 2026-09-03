@@ -336,18 +336,22 @@ function registerProgramsAndMcp(bash, config, ownSession, notifications, submitF
 // and live-probe each MCP server's reachability (PORT: session.rs's
 // `mount_command`/`render_mount`).
 function mountCommandHandler(apps, mcpServers, webhookUrl) {
-    return (_interp, _args, _stdin) => {
-        const host = createHost();
-        const probe = (ffqn) => {
-            try {
-                host.callJson(ffqn, '["tools/list","{}"]');
-                return null;
-            } catch (e) {
-                return typeof e === "string" ? e : String(e?.message ?? e);
-            }
-        };
-        return { stdout: renderMount(apps, mcpServers, webhookUrl, probe), stderr: "", exitCode: 0 };
+    return (_interp, _args, _stdin) => ({
+        stdout: renderMountOutput(apps, mcpServers, webhookUrl), stderr: "", exitCode: 0,
+    });
+}
+
+function renderMountOutput(apps, mcpServers, webhookUrl) {
+    const host = createHost();
+    const probe = (ffqn) => {
+        try {
+            host.callJson(ffqn, '["tools/list","{}"]');
+            return null;
+        } catch (e) {
+            return typeof e === "string" ? e : String(e?.message ?? e);
+        }
     };
+    return renderMount(apps, mcpServers, webhookUrl, probe);
 }
 
 // Registers the deployment tree, each APPS_JSON-configured read-only repo
@@ -593,7 +597,8 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
         runCancellableSubmit(joinSet, childPrompt, childModel, null, childEffort, childName);
     registerProgramsAndMcp(bash, config, ownSession, notifications, submitFn);
 
-    const system = renderSystemPrompt(systemPrompt, config.programs, config.apps, config.promptTail);
+    const startupMount = renderMountOutput(config.apps, config.mcpServers, config.webhookUrl);
+    const system = renderSystemPrompt(systemPrompt, config.programs, config.apps, startupMount, config.promptTail);
 
     let pendingShell = openingShellScript(prompt);
     let messages = pendingShell === null && prompt.trim() ? [userText(prompt.trim())] : [];
