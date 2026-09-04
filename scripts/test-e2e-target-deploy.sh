@@ -74,7 +74,7 @@ AUTHOR_SCRIPT="$(printf '%s\n' \
     "printf '%s\\n' 'import { value } from \"./lib.js\"; export default function run() { return value; }' > $AUTHOR_DIR/src/index.js" \
     "printf '%s\\n' 'export const value = \"target-deploy-ok\";' > $AUTHOR_DIR/src/lib.js" \
     "printf '%s\\n' 'package test:generated; interface api { run: func() -> result<string>; } world impl { export api; }' > $AUTHOR_DIR/wit/world.wit" \
-    "obelisk deployment submit --allow-missing-runtime-config $AUTHOR_DIR" \
+    "obelisk deployment submit --allow-missing-runtime-config $AUTHOR_DIR/deployment.toml" \
     "obelisk deployment apply $AUTHORED_ID")"
 
 # A `$`-prefixed opening prompt runs immediately as a direct shell script,

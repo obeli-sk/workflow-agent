@@ -59,7 +59,7 @@ AUTHOR_SCRIPT="$(printf '%s\n' \
     "printf '%s\\n' 'import { value } from \"./lib.js\"; export default function run() { return value; }' > $AUTHOR_DIR/src/index.js" \
     "printf '%s\\n' 'export const value = { ok: \"ok\" };' > $AUTHOR_DIR/src/lib.js" \
     "printf '%s\\n' 'package test:generated; interface api { run: func() -> result<string>; } world impl { export api; }' > $AUTHOR_DIR/wit/world.wit" \
-    "obelisk deployment submit --allow-missing-runtime-config $AUTHOR_DIR")"
+    "obelisk deployment submit --allow-missing-runtime-config $AUTHOR_DIR/deployment.toml")"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 PARAMS="$(node -e 'process.stdout.write(JSON.stringify(["$" + process.argv[1], null, null, null, null]))' "$AUTHOR_SCRIPT")"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" "$PARAMS"

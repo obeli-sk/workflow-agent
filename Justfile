@@ -59,14 +59,25 @@ test-js:
   node --test $(find workflow/workflow-js/src -name '*.test.js')
 
 # All end-to-end suites, each against its own isolated, throwaway obelisk server.
-# See scripts/test-e2e-*.sh; the mcp suite SKIPs when no docker/podman is on PATH.
-# agent-workflow/chat/interrupt/mcp/redeploy/target-deploy run against both the
-# Rust and JS session-workflow backends (same FFQN, see
-# docs/js-backend-migration.md); target-deploy proves the agent can redeploy a
-# separate target Obelisk instance without ever hot-swapping its own driving
-# deployment (see the script's header comment for why that self-swap design
-# was replaced). bash-workflow tests the unrelated standalone bash-rs
-# workflow, backend-agnostic.
+# See scripts/test-e2e-*.sh; the mcp suite SKIPs when no docker/podman is on
+# PATH, and github-mount-deploy SKIPs when GITHUB_TOKEN is unset (so this
+# recipe stays hermetic by default while picking both up automatically
+# wherever the prerequisite is available).
+# agent-workflow/chat/interrupt/mcp/redeploy/target-deploy/deploy-outside-root/
+# github-mount-deploy run against both the Rust and JS session-workflow
+# backends (same FFQN, see docs/js-backend-migration.md); target-deploy
+# proves the agent can redeploy a separate target Obelisk instance without
+# ever hot-swapping its own driving deployment (see the script's header
+# comment for why that self-swap design was replaced). deploy-outside-root
+# proves a manifest that does not live under DEPLOYMENT_ROOT/<id> (any
+# filename, any location) still submits and applies cleanly against the
+# target, using freshly-authored files. github-mount-deploy is the real,
+# network-dependent counterpart: it submits this app's own real
+# deployment.js.toml fetched cold through the actual GitHub-backed apps
+# mount, reproducing the ensure_expanded lazy-mount regression end to end
+# (deploy-outside-root's synthetic files never touch that mount at all).
+# bash-workflow tests the unrelated standalone bash-rs workflow,
+# backend-agnostic.
 test-e2e:
   ./scripts/test-e2e-bash-workflow.sh
   ./scripts/test-e2e-agent-workflow.sh rs
@@ -81,3 +92,7 @@ test-e2e:
   ./scripts/test-e2e-mcp.sh js
   ./scripts/test-e2e-target-deploy.sh rs
   ./scripts/test-e2e-target-deploy.sh js
+  ./scripts/test-e2e-deploy-outside-root.sh rs
+  ./scripts/test-e2e-deploy-outside-root.sh js
+  ./scripts/test-e2e-github-mount-deploy.sh rs
+  ./scripts/test-e2e-github-mount-deploy.sh js

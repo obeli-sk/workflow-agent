@@ -431,8 +431,15 @@ fn execute_deployment(
             Ok(ok(format!("{}\n", mount_result_json(&refreshed))))
         }
         "check" => {
-            let dir = resolve_deployment_dir(interp, first_positional(args, &[]));
-            let manifest = read_manifest(&interp.fs, &dir)?;
+            // Unlike `submit`, `check` has no real-obelisk counterpart to
+            // match, so it keeps its own PATH-optional convenience: default
+            // to ./deployment.toml in the cwd.
+            let positional = first_positional(args, &[]);
+            let positional = positional
+                .filter(|s| !s.is_empty())
+                .unwrap_or("./deployment.toml");
+            let (dir, file) = resolve_deployment_manifest(interp, Some(positional))?;
+            let manifest = read_manifest(&interp.fs, &dir, &file)?;
             let sources = deployment_sources(&interp.fs, &dir, &manifest);
             let payload = json!({
                 "directory": dir,
@@ -448,8 +455,9 @@ fn execute_deployment(
             // The PATH is positional, so skip flags (and `--description`'s value)
             // when finding it; otherwise `submit --description X` reads `X`, or
             // even `--description` itself, as the deployment directory.
-            let dir = resolve_deployment_dir(interp, first_positional(args, &["--description"]));
-            let manifest = read_manifest(&interp.fs, &dir)?;
+            let (dir, file) =
+                resolve_deployment_manifest(interp, first_positional(args, &["--description"]))?;
+            let manifest = read_manifest(&interp.fs, &dir, &file)?;
             let manifest =
                 manifest_with_generated_files(&interp.fs, &dir, &manifest, interp.log_debug)?;
             // Expand the digest-free view back to what the server stores: every
@@ -457,11 +465,7 @@ fn execute_deployment(
             // table, each digest recomputed from the file's current bytes (an
             // unchanged file keeps its CAS digest, a changed one is re-hashed).
             let manifest = manifest_with_digests(&interp.fs, &dir, &manifest, interp.log_debug);
-            let deployment_id = if basename(&dir) == "current" {
-                String::new()
-            } else {
-                basename(&dir)
-            };
+            let deployment_id = deployment_id_from_dir(&dir);
             let description =
                 option(args, "--description", "Submitted from workflow-agent VFS").to_string();
             let allow_missing = flag_runtime_config(args);
@@ -997,23 +1001,48 @@ fn deployment_sources(fs: &Vfs, dir: &str, manifest: &str) -> Vec<String> {
     files
 }
 
-/// Resolve the directory holding `deployment.toml` from a positional argument.
-/// Accepts a path to the `deployment.toml` file itself (obelisk's `submit PATH`;
-/// its parent is the directory), a directory, or nothing (defaults to the cwd).
-fn resolve_deployment_dir(interp: &Interpreter, value: Option<&str>) -> String {
-    let value = value.filter(|s| !s.is_empty()).unwrap_or(".");
-    let resolved = normalize_path(&interp.cwd, value);
-    if basename(&resolved) == "deployment.toml" {
-        parent_dir(&resolved)
-    } else {
-        resolved
-    }
+/// Resolve the manifest to read from a positional argument: `(dir, file)`,
+/// `dir` being the base for every relative path *inside* the manifest
+/// (component/wit locations) and `file` the manifest's own name within it.
+/// PATH is always a path to the manifest file itself, matching real obelisk
+/// (its `submit`/`enqueue`/`apply`/`verify` all take a literal file path, no
+/// directory fallback) -- but any filename, not just the literal
+/// "deployment.toml" (this repo's own deployment.js.toml/deployment.rs.toml
+/// are exactly this case). Callers that allow PATH to be omitted must supply
+/// their own default value before calling; `required()` rejects an absent one.
+fn resolve_deployment_manifest(
+    interp: &Interpreter,
+    value: Option<&str>,
+) -> Result<(String, String), String> {
+    let resolved = normalize_path(&interp.cwd, required(value, "PATH-TO-DEPLOYMENT.TOML")?);
+    Ok((parent_dir(&resolved), basename(&resolved)))
 }
 
 fn parent_dir(path: &str) -> String {
     match path.rsplit_once('/') {
         Some(("", _)) | None => "/".to_string(),
         Some((parent, _)) => parent.to_string(),
+    }
+}
+
+/// A deployment checked out for editing lives at DEPLOYMENT_ROOT/<id>, named
+/// after its own real ID ("current" for the freshly-checked-out active one,
+/// which resolves to a fresh server-assigned ID on submit) -- only that
+/// specific layout's basename is a meaningful deployment_id. Submitting
+/// straight from anywhere else (e.g. a source-repo checkout) has no such
+/// convention: treating an unrelated directory's basename as an ID sends the
+/// server something like "workflow-agent" and fails with "invalid
+/// deployment_id: wrong prefix", so leave it empty there for the server to
+/// assign a fresh one, exactly like a brand-new "current" submission.
+fn deployment_id_from_dir(dir: &str) -> String {
+    if !dir.starts_with(&format!("{DEPLOYMENT_ROOT}/")) {
+        return String::new();
+    }
+    let name = basename(dir);
+    if name == "current" {
+        String::new()
+    } else {
+        name
     }
 }
 
@@ -1043,11 +1072,20 @@ fn flag_runtime_config(args: &[String]) -> bool {
     flag(args, "--allow-missing-runtime-config") || flag(args, "--allow-unavailable-runtime-config")
 }
 
-fn read_manifest(fs: &Vfs, dir: &str) -> Result<String, String> {
-    let path = format!("{dir}/deployment.toml");
-    fs.read_file(&path)
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .ok_or_else(|| format!("{path}: No such file or directory"))
+fn read_manifest(fs: &Vfs, dir: &str, file: &str) -> Result<String, String> {
+    let path = format!("{dir}/{file}");
+    if let Some(bytes) = fs.read_file(&path) {
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    // `Vfs::read_file` returns a bare `None` for both "missing" and "this is
+    // a directory" (unlike the JS port's `FsError`), so distinguish them
+    // here to match real obelisk's own I/O error (`read_to_string` on a
+    // directory) instead of a misleading ENOENT.
+    if fs.is_dir(&path) {
+        Err(format!("{path}: Is a directory"))
+    } else {
+        Err(format!("{path}: No such file or directory"))
+    }
 }
 
 fn json_call(
@@ -1378,7 +1416,7 @@ Subcommands:\n\
   current                   Print the active deployment ID.\n\
   refresh                   Re-fetch the active deployment, discarding local edits.\n\
   check [PATH]              Report a deployment's manifest and locally-edited sources.\n\
-  submit [PATH] [OPTIONS]   Store the edited deployment as a new inactive deployment.\n\
+  submit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\n\
   switch ID [OPTIONS]       Activate a stored deployment (verified on next server restart).\n\
   apply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\
 \n\
@@ -1387,11 +1425,12 @@ Run `obelisk deployment <subcommand> --help` for a subcommand's options.\n"
 }
 
 fn deployment_submit_help() -> String {
-    "Usage: obelisk deployment submit [OPTIONS] [PATH-TO-DEPLOYMENT.TOML]\n\
+    "Usage: obelisk deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML\n\
 \n\
 Store the edited deployment as a new inactive deployment and print its ID. PATH\n\
-is the deployment.toml to submit, or the directory containing it; it defaults to\n\
-./deployment.toml. Digests are recomputed from the files, so leave them out.\n\
+is the path to the deployment TOML file to submit (any filename -- not just the\n\
+literal \"deployment.toml\"); it must be a file, not a directory, matching real\n\
+obelisk. Digests are recomputed from the files, so leave them out.\n\
 \n\
 Options:\n\
       --description TEXT               Human-readable description for the new deployment.\n\
@@ -1404,8 +1443,8 @@ fn deployment_check_help() -> String {
     "Usage: obelisk deployment check [PATH-TO-DEPLOYMENT.TOML]\n\
 \n\
 Report a deployment's manifest size and the owned sources edited locally (the\n\
-files a submit would upload). PATH is the deployment.toml, or its directory; it\n\
-defaults to ./deployment.toml.\n"
+files a submit would upload). PATH is the path to the deployment TOML file (any\n\
+filename); it must be a file, not a directory, and defaults to ./deployment.toml.\n"
         .to_string()
 }
 
@@ -2332,7 +2371,11 @@ content_digest = \"sha256:1\"\n\
         let mut host = FakeHost::new();
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "check", "/workspace/deployment/dep-1"]),
+            &words(&[
+                "deployment",
+                "check",
+                "/workspace/deployment/dep-1/deployment.toml",
+            ]),
             "",
             &mut host,
         );
@@ -2381,7 +2424,11 @@ content_digest = \"sha256:1\"\n\
             .with(SUBMIT_FFQN, "\"Dep_new\"");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", "/workspace/deployment/dep-1"]),
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/deployment/dep-1/deployment.toml",
+            ]),
             "",
             &mut host,
         );
@@ -2418,7 +2465,11 @@ content_digest = \"sha256:1\"\n\
         let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
         execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/deployment/current/deployment.toml",
+            ]),
             "",
             &mut host,
         );
@@ -2428,10 +2479,10 @@ content_digest = \"sha256:1\"\n\
 
     #[test]
     fn deployment_submit_options_do_not_shadow_the_path() {
-        // Regression: `submit --description wh` used to read `--description` as
-        // the deployment directory (`.../current/--description/deployment.toml`).
+        // Regression: `submit --description wh <path>` used to read
+        // `--description`'s value as PATH instead of skipping over it.
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
-        let mut i = interp("/workspace/deployment/current");
+        let mut i = interp("/workspace");
         i.fs.write_file(
             "/workspace/deployment/current/deployment.toml",
             manifest.as_bytes(),
@@ -2440,16 +2491,60 @@ content_digest = \"sha256:1\"\n\
         let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", "--description", "wh"]),
+            &words(&[
+                "deployment",
+                "submit",
+                "--description",
+                "wh",
+                "/workspace/deployment/current/deployment.toml",
+            ]),
             "",
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
-        // Description forwarded; PATH defaulted to the cwd (`current`), so the
-        // deployment id is empty.
         assert_eq!(params[2], "wh");
         assert_eq!(params[4], "");
+    }
+
+    #[test]
+    fn deployment_submit_without_a_path_is_a_clear_error_not_a_silent_default() {
+        // Real obelisk's `submit` requires an explicit file path; unlike
+        // `check` (an agent-only convenience with no real-CLI counterpart),
+        // it does not default to ./deployment.toml.
+        let mut i = interp("/workspace/deployment/current");
+        i.fs.write_file(
+            "/workspace/deployment/current/deployment.toml",
+            b"[[activity_wasm]]\n",
+        )
+        .unwrap();
+        let mut host = FakeHost::new();
+        let out = execute_obelisk(&mut i, &words(&["deployment", "submit"]), "", &mut host);
+        assert_eq!(out.exit_code, 2);
+        assert!(
+            out.stderr.contains("PATH-TO-DEPLOYMENT.TOML is required"),
+            "{}",
+            out.stderr
+        );
+    }
+
+    #[test]
+    fn deployment_submit_rejects_a_directory_matching_real_obelisk() {
+        let mut i = interp("/workspace");
+        i.fs.write_file(
+            "/workspace/deployment/current/deployment.toml",
+            b"[[activity_wasm]]\n",
+        )
+        .unwrap();
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stderr.contains("Is a directory"), "{}", out.stderr);
     }
 
     #[test]
@@ -2476,6 +2571,60 @@ content_digest = \"sha256:1\"\n\
         // The file's parent directory supplies the deployment id.
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
         assert_eq!(params[4], "dep-1");
+    }
+
+    #[test]
+    fn deployment_submit_accepts_a_manifest_not_literally_named_deployment_toml() {
+        // Regression: PATH resolution used to string-match the basename
+        // against the literal "deployment.toml", so any other manifest name
+        // (this repo's own deployment.js.toml/deployment.rs.toml convention)
+        // was treated as a directory and `<dir>/deployment.toml` didn't
+        // exist there, failing with a misleading "No such file or
+        // directory" instead of reading the file that was actually passed.
+        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
+        let mut i = interp("/workspace/workflow-agent");
+        i.fs.write_file(
+            "/workspace/workflow-agent/deployment.js.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "deployment.js.toml"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+    }
+
+    #[test]
+    fn deployment_submit_outside_the_deployment_root_sends_an_empty_deployment_id() {
+        // Regression: the deployment_id was always the manifest's parent
+        // directory's basename (unless literally "current"), a convention
+        // that only holds for DEPLOYMENT_ROOT/<id> checkouts. Submitting
+        // straight from a source-repo checkout like
+        // /workspace/workflow-agent/deployment.js.toml sent "workflow-agent"
+        // as the deployment_id, which the server rejects with "invalid
+        // deployment_id: wrong prefix in `workflow-agent`, expected prefix
+        // `Dep_`" instead of letting it assign a fresh one.
+        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
+        let mut i = interp("/workspace/workflow-agent");
+        i.fs.write_file(
+            "/workspace/workflow-agent/deployment.js.toml",
+            manifest.as_bytes(),
+        )
+        .unwrap();
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit", "deployment.js.toml"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        assert_eq!(params[4], "");
     }
 
     #[test]
@@ -2512,7 +2661,11 @@ content_digest = \"sha256:1\"\n\
         let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/deployment/current/deployment.toml",
+            ]),
             "",
             &mut host,
         );
@@ -2562,7 +2715,11 @@ content_digest = \"sha256:1\"\n\
             .with(SUBMIT_FFQN, "\"Dep_x\"");
         execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/deployment/current/deployment.toml",
+            ]),
             "",
             &mut host,
         );
@@ -2616,7 +2773,11 @@ content_digest = \"sha256:1\"\n\
             .with(SUBMIT_FFQN, "\"Dep_x\"");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/deployment/current/deployment.toml",
+            ]),
             "",
             &mut host,
         );
@@ -2665,7 +2826,11 @@ content_digest = \"sha256:1\"\n\
             .with(SUBMIT_FFQN, "\"Dep_x\"");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/deployment/current/deployment.toml",
+            ]),
             "",
             &mut host,
         );
@@ -2715,9 +2880,10 @@ content_digest = \"sha256:1\"\n\
         .unwrap();
 
         let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        let manifest_path = format!("{dir}/deployment.toml");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", dir]),
+            &words(&["deployment", "submit", &manifest_path]),
             "",
             &mut host,
         );
@@ -2775,9 +2941,10 @@ content_digest = \"sha256:1\"\n\
         .unwrap();
 
         let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        let manifest_path = format!("{dir}/deployment.toml");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", dir]),
+            &words(&["deployment", "submit", &manifest_path]),
             "",
             &mut host,
         );
@@ -2878,7 +3045,11 @@ content_digest = \"sha256:1\"\n\
             .with(SUBMIT_FFQN, "\"Dep_x\"");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/deployment/current/deployment.toml",
+            ]),
             "",
             &mut host,
         );
@@ -2907,7 +3078,11 @@ content_digest = \"sha256:1\"\n\
         );
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/deployment/current/deployment.toml",
+            ]),
             "",
             &mut host,
         );
@@ -2940,7 +3115,11 @@ content_digest = \"sha256:1\"\n\
             .with_err(SUBMIT_FFQN, missing);
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/deployment/current/deployment.toml",
+            ]),
             "",
             &mut host,
         );

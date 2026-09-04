@@ -671,7 +671,7 @@ test("deployment check reports the manifest size and owned sources", () => {
     const i = interp();
     i.vfs.writeFile("/workspace/deployment/dep-1/deployment.toml", manifest);
     i.vfs.writeFile("/workspace/deployment/dep-1/a.wasm", "bytes");
-    const out = executeObelisk(i, words("deployment check /workspace/deployment/dep-1"), "", fakeHost());
+    const out = executeObelisk(i, words("deployment check /workspace/deployment/dep-1/deployment.toml"), "", fakeHost());
     assert.equal(out.exitCode, 0, out.stderr);
     const parsed = JSON.parse(out.stdout);
     assert.equal(parsed.directory, "/workspace/deployment/dep-1");
@@ -696,7 +696,7 @@ test("deployment submit preflights, then attaches the missing blob", () => {
     const host = fakeHost()
         .withErr("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify({ permanent_missing_files: [{ path: "a.wasm", digest }] }))
         .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"));
-    const out = executeObelisk(i, words("deployment submit /workspace/deployment/dep-1"), "", host);
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/dep-1/deployment.toml"), "", host);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.match(out.stdout, /Dep_new/);
 
@@ -716,20 +716,40 @@ test("deployment submit from current sends an empty deployment id", () => {
     const i = interp();
     i.vfs.writeFile("/workspace/deployment/current/deployment.toml", manifest);
     const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    executeObelisk(i, words("deployment submit /workspace/deployment/current/deployment.toml"), "", host);
     assert.equal(JSON.parse(host.calls[0][1])[4], "");
 });
 
 test("deployment submit options do not shadow the path", () => {
     const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
-    const i = interp("/workspace/deployment/current");
+    const i = interp();
     i.vfs.writeFile("/workspace/deployment/current/deployment.toml", manifest);
     const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = executeObelisk(i, words("deployment submit --description wh"), "", host);
+    const out = executeObelisk(i, words("deployment submit --description wh /workspace/deployment/current/deployment.toml"), "", host);
     assert.equal(out.exitCode, 0, out.stderr);
     const params = JSON.parse(host.calls[0][1]);
     assert.equal(params[2], "wh");
     assert.equal(params[4], "");
+});
+
+test("deployment submit without a PATH is a clear error, not a silent default", () => {
+    // Real obelisk's `submit` requires an explicit file path; unlike `check`
+    // (an agent-only convenience with no real-CLI counterpart), it does not
+    // default to ./deployment.toml.
+    const i = interp("/workspace/deployment/current");
+    i.vfs.writeFile("/workspace/deployment/current/deployment.toml", "[[activity_wasm]]\n");
+    const out = executeObelisk(i, words("deployment submit"), "", fakeHost());
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /PATH-TO-DEPLOYMENT\.TOML is required/);
+});
+
+test("deployment submit rejects a directory, matching real obelisk", () => {
+    const i = interp();
+    i.vfs.writeFile("/workspace/deployment/current/deployment.toml", "[[activity_wasm]]\n");
+    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /Is a directory/);
 });
 
 test("deployment submit accepts a path to the toml file itself", () => {
@@ -740,6 +760,39 @@ test("deployment submit accepts a path to the toml file itself", () => {
     const out = executeObelisk(i, words("deployment submit /workspace/deployment/dep-1/deployment.toml"), "", host);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(JSON.parse(host.calls[0][1])[4], "dep-1");
+});
+
+test("deployment submit accepts a manifest not literally named deployment.toml", () => {
+    // Regression: PATH resolution used to string-match the basename against
+    // the literal "deployment.toml", so any other manifest name (this
+    // repo's own deployment.js.toml/deployment.rs.toml convention) was
+    // treated as a directory and `<dir>/deployment.toml` didn't exist
+    // there, failing with a misleading "No such file or directory" instead
+    // of reading the file that was actually passed.
+    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
+    const i = interp("/workspace/workflow-agent");
+    i.vfs.writeFile("/workspace/workflow-agent/deployment.js.toml", manifest);
+    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"));
+    const out = executeObelisk(i, words("deployment submit deployment.js.toml"), "", host);
+    assert.equal(out.exitCode, 0, out.stderr);
+});
+
+test("deployment submit outside the deployment root sends an empty deployment id", () => {
+    // Regression: the deployment_id was always the manifest's parent
+    // directory's basename (unless literally "current"), a convention that
+    // only holds for DEPLOYMENT_ROOT/<id> checkouts. Submitting straight
+    // from a source-repo checkout like
+    // /workspace/workflow-agent/deployment.js.toml sent "workflow-agent" as
+    // the deployment_id, which the server rejects with "invalid
+    // deployment_id: wrong prefix in `workflow-agent`, expected prefix
+    // `Dep_`" instead of letting it assign a fresh one.
+    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
+    const i = interp("/workspace/workflow-agent");
+    i.vfs.writeFile("/workspace/workflow-agent/deployment.js.toml", manifest);
+    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"));
+    const out = executeObelisk(i, words("deployment submit deployment.js.toml"), "", host);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(JSON.parse(host.calls[0][1])[4], "");
 });
 
 test("deployment submit skips unmodified lazy sources", () => {
@@ -758,7 +811,7 @@ test("deployment submit skips unmodified lazy sources", () => {
     i.vfs.registerLazy("/workspace/deployment/current/src/lib.rs", "sha256:2", 11);
 
     const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current/deployment.toml"), "", host);
     assert.equal(out.exitCode, 0, out.stderr);
     // Preflight only: unchanged lazy sources keep their CAS digest, so the
     // manifest round-trips unchanged and nothing is attached.
@@ -788,7 +841,7 @@ test("deployment submit sends only locally modified sources", () => {
     const host = fakeHost()
         .withErr("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify({ permanent_missing_files: [{ path: "a.js", digest: aDigest }] }))
         .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    executeObelisk(i, words("deployment submit /workspace/deployment/current/deployment.toml"), "", host);
     assert.equal(host.calls.length, 2);
     assert.deepEqual(JSON.parse(host.calls[0][1])[1], []);
     assert.deepEqual(JSON.parse(host.calls[1][1])[1], [{ path: "a.js", digest: aDigest, content: "new-a" }]);
@@ -812,7 +865,7 @@ test("deployment submit rehashes and uploads a pending file with a foreign diges
     const host = fakeHost()
         .withErr("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify({ permanent_missing_files: [{ path: "a.js", digest: realDigest }] }))
         .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current/deployment.toml"), "", host);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(host.calls.length, 2);
     const preflight = JSON.parse(host.calls[0][1]);
@@ -831,7 +884,7 @@ test("deployment submit pins a digest for a new component with no content_digest
     const host = fakeHost()
         .withErr("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify({ permanent_missing_files: [{ path: "activity/http.js", digest }] }))
         .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current/deployment.toml"), "", host);
     assert.equal(out.exitCode, 0, out.stderr);
     const preflight = JSON.parse(host.calls[0][1]);
     assert.equal(
@@ -858,7 +911,7 @@ test("deployment submit generates WIT and JS module component files", () => {
     i.vfs.writeFile("/workspace/deployment/current/wit/deps/dep/dep.wit", "package test:dep; interface unused {}");
 
     const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current/deployment.toml"), "", host);
     assert.equal(out.exitCode, 0, out.stderr);
     const prepared = JSON.parse(host.calls[0][1])[0];
     for (const path of ["src/index.js", "src/lib.js", "wit/world.wit", "wit/deps/dep/dep.wit"]) {
@@ -895,7 +948,7 @@ test("deployment submit does not mistake a later comment for an export...from cl
     i.vfs.writeFile("/workspace/deployment/current/wit/world.wit", "package test:pkg; world api { export run: func(); }");
 
     const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current/deployment.toml"), "", host);
     assert.equal(out.exitCode, 0, out.stderr);
 });
 
@@ -904,7 +957,7 @@ test("deployment submit propagates a terminal (non-missing-files) error", () => 
     const i = interp();
     i.vfs.writeFile("/workspace/deployment/current/deployment.toml", manifest);
     const host = fakeHost().withErr("obelisk-agent:tools/webapi.deployment-submit", "deployment cannot be submitted: unexpected files: x");
-    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current/deployment.toml"), "", host);
     assert.equal(out.exitCode, 2);
     assert.match(out.stderr, /unexpected files/);
     assert.equal(host.calls.length, 1);
@@ -919,7 +972,7 @@ test("deployment submit stops instead of looping forever when a blob stays missi
     const host = fakeHost()
         .withErr("obelisk-agent:tools/webapi.deployment-submit", missing)
         .withErr("obelisk-agent:tools/webapi.deployment-submit", missing);
-    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current"), "", host);
+    const out = executeObelisk(i, words("deployment submit /workspace/deployment/current/deployment.toml"), "", host);
     assert.equal(out.exitCode, 2);
     assert.match(out.stderr, /still missing/);
     assert.equal(host.calls.length, 2);
