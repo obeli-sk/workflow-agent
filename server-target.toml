@@ -4,7 +4,63 @@ external.listening_addr = "127.0.0.1:9290"
 
 database.sqlite.directory = "${DATA_DIR}/target-obelisk-sqlite"
 
+[secrets]
+LLM_API_KEY = { env = "LLM_API_KEY" }
+OBELISK_API_TOKEN = { env = "OBELISK_API_TOKEN" }
+# The target Obelisk the agent deploys to/controls; defaults to the agent's own
+# token for the self-host case (see .envrc-example, README recursion warning).
+TARGET_OBELISK_TOKEN = { env = "TARGET_OBELISK_TOKEN" }
+# Set to empty value for the testing mcp server
+MCP_SERVER_TOKEN = { env = "MCP_SERVER_TOKEN" }
+# Optional: raises the GitHub API rate limit for the /workspace/components
+# mount from the shared 60 req/h anonymous IP pool to 5000 req/h. Leave unset
+# for occasional use.
+GITHUB_TOKEN = { env = "GITHUB_TOKEN" }
+
+# Allow reading documentation
 [[outbound_http.allowed_host]]
-pattern = "*://*"
+pattern = "https://obeli.sk"
 methods = ["GET"]
 
+# Agent's own instance: webhook UI reads of the agent's own sessions plus the
+# pause/unpause/cancel/stub control of them.
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "POST", "PUT"]
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+request_url_regex = "^GET http[s]?://[^/]+/v1/(executions(/[^/]+(/(status|events|responses|logs))?)?|deployments/[^/]+|deployment-id|files/[^/]+)$|^POST http[s]?://[^/]+/v1/executions$|^PUT http[s]?://[^/]+/v1/executions/[^/]+/(pause|unpause|cancel|stub)$"
+
+# Target instance: the control/deploy tools and the VFS deployment mount.
+[[outbound_http.allowed_host]]
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "POST", "PUT"]
+secrets = ["TARGET_OBELISK_TOKEN"]
+replace_in = ["headers"]
+
+# Target instance webhooks
+[[outbound_http.allowed_host]]
+pattern = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}"
+methods = ["GET"]
+
+# GitHub contents API for mount points. Read only PAT for public repos is enough.
+[[outbound_http.allowed_host]]
+pattern = "https://api.github.com"
+methods = ["GET"]
+secrets = ["GITHUB_TOKEN"]
+replace_in = ["headers"]
+
+# LLM server
+[[outbound_http.allowed_host]]
+pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+methods = ["POST"]
+request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
+secrets = ["LLM_API_KEY"]
+replace_in = ["headers"]
+
+# MCP servers
+[[outbound_http.allowed_host]]
+pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
+methods = ["POST"]
+secrets = ["MCP_SERVER_TOKEN"]
+replace_in = ["headers"]
