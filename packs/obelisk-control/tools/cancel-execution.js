@@ -14,7 +14,7 @@ async function cancel_execution_impl(executionId) {
     if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/cancel`,
-        { method: "PUT", headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
+        { method: "PUT", headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK_API_TOKEN"]}` } },
     );
     if (resp.ok) return { ok: true, execution_id: executionId, action: "cancel", already: false };
     if (await isTerminal(base, executionId)) {
@@ -36,7 +36,7 @@ async function isTerminal(base, executionId) {
     try {
         const resp = await fetch(
             `${base}/v1/executions/${encodeURIComponent(executionId)}/status`,
-            { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
+            { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK_API_TOKEN"]}` } },
         );
         if (!resp.ok) return false;
         const body = await resp.json();
