@@ -8,3 +8,4 @@ target-e2e
 .e2e-deployment.toml
 .e2e-agent-deployment.toml
 .e2e-redeploy-deployment.toml
+.target-obelisk-sqlite

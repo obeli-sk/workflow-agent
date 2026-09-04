@@ -1,7 +1,3 @@
-[[outbound_http.allowed_host]]
-pattern = "https://obeli.sk"
-methods = ["GET"]
-
 [secrets]
 LLM_API_KEY = { env = "LLM_API_KEY" }
 OBELISK_API_TOKEN = { env = "OBELISK_API_TOKEN" }
@@ -15,11 +11,63 @@ MCP_SERVER_TOKEN = { env = "MCP_SERVER_TOKEN" }
 # for occasional use.
 GITHUB_TOKEN = { env = "GITHUB_TOKEN" }
 
-# Agent's own instance: webhook UI reads of the agent's own sessions plus the
-# pause/unpause/cancel/stub control of them.
+# Allow reading documentation
+[[outbound_http.allowed_host]]
+pattern = "https://obeli.sk"
+methods = ["GET"]
+
+# Agent's own instance. Coverage requires each entry's request_url_regex to be
+# byte-identical (post env-substitution) to the component's own declaration in
+# deployment.{js,rs}.toml, so these mirror those entries one-for-one rather
+# than being consolidated into one broader grant.
+
+# program_chat: peer session discovery/create + stub fulfilment.
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "POST", "PUT"]
+methods = ["GET", "PUT", "POST"]
+request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions|PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub$|POST ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# tool_pause_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/pause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# tool_unpause_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/unpause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# tool_cancel_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/cancel|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# tool_stub_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# ui-api webhook: read-only polling (statuses, responses, events, logs,
+# deployments, files) run as direct fetches instead of one child activity
+# per call.
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/)"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
@@ -30,22 +78,19 @@ methods = ["GET", "POST", "PUT"]
 secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
-# Target instance webhooks: lets the shell's GET-only curl smoke-test deployed
-# webhook endpoints directly; the same URL is printed by `mount`.
+# Target instance webhooks
 [[outbound_http.allowed_host]]
 pattern = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}"
 methods = ["GET"]
 
-# Reference mount: GitHub contents API for /workspace/components. The
-# per-repo path scope is enforced by the activity's own allowed_host regex;
-# this coarse operator grant is host-wide (like the OBELISK/TARGET grants
-# above).
+# GitHub contents API for mount points. Read only PAT for public repos is enough.
 [[outbound_http.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET"]
 secrets = ["GITHUB_TOKEN"]
 replace_in = ["headers"]
 
+# LLM server
 [[outbound_http.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
@@ -53,13 +98,7 @@ request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completio
 secrets = ["LLM_API_KEY"]
 replace_in = ["headers"]
 
-# --- MCP servers (stateless) --------------------------------------------------
-# One outbound-host grant per MCP server, paired with its deployment.rs.toml
-# activity block (see docs/mcp.md). For an authenticated server, name the secret
-# MCP_SERVER_TOKEN (the fixed placeholder activity/mcp.js reads) and source it
-# from any host env var. Omit the secret entirely for a keyless server.
-#
-#
+# MCP servers
 [[outbound_http.allowed_host]]
 pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
 methods = ["POST"]
