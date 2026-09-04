@@ -191,6 +191,8 @@ while true; do
     sleep 1
 done
 
+e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
+
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null 2>&1 || true
 
 echo ">>> shell turn output:"

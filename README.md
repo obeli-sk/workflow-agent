@@ -47,16 +47,15 @@ exact same FFQN as the Rust workflow in `deployment.rs.toml`
 deployment choice, not a per-request switch: only one of the two files is
 ever the active deployment. Rust is the default (`just serve`, an alias for
 `just serve-rs`); run `just serve-js` to start the server on the JS
-deployment instead. Switching a server between them with `obelisk deployment
-apply` is safe for new sessions (both sides start from a clean slate), but
-**not** for a session already in flight: hot-swapping a *running* execution's
-own component between two different language implementations of itself is
-inherently risky (Obelisk's JS workflow runtime doesn't yet track
-`requested_ffqn` on generic `join-next` calls the way Rust's typed bindings
-do, so an in-flight auto-upgrade replay under JS fails nondeterminism-checked
-and strands the session), and is not how workflow-agent redeploys in general
-anyway - it always targets a separate `TARGET_OBELISK` instance, never
-itself (see `scripts/test-e2e-target-deploy.sh`, and "Target instance"
+deployment instead. Both files pin their session workflow's
+`exec.locking_strategy` to `by_component_digest`, so switching a server's
+active deployment with `obelisk deployment apply` never affects a session
+already in flight (it keeps running on whichever digest created it,
+regardless of which deployment is now active) - but that is not the same as
+*hot-swapping* an in-flight execution to a new language mid-turn, which
+workflow-agent never does anyway: it always redeploys a separate
+`TARGET_OBELISK` instance, never itself (see `scripts/test-e2e-target-deploy.sh`,
+and "Target instance"
 below). See [`docs/js-backend-migration.md`](docs/js-backend-migration.md)
 for why the JS backend exists and its current status.
 

@@ -9,20 +9,16 @@
 # This replaces the former same-instance rs<->js replay-parity design: that
 # test hot-swapped a *running* session's own component between two different
 # language implementations of itself via `deployment apply` on its own
-# server. Any hot redeploy where source and target are the same instance is
-# risky by construction - the driving FFQN (or the deployment-apply tooling
-# itself) might not even exist in the swapped-in manifest - and it is not
-# how workflow-agent is meant to operate: it always redeploys a separate
+# server, then kept driving it live - risky by construction, and not how
+# workflow-agent is meant to operate: it always redeploys a separate
 # TARGET_OBELISK instance, never itself (see README.md's "Target instance"
-# section and this repo's TARGET_OBELISK_* env vars). The old test happened
-# to also surface a real
-# Obelisk-core gap (the JS workflow runtime's generic `join-next` doesn't
-# track `requested_ffqn` the way Rust's typed extension bindings do, so an
-# in-flight auto-upgrade replay under JS fails nondeterminism-detected and
-# strands the session - see git history / obelisk's
-# crates/workflow-js-runtime for that limitation), but that gap is about
-# auto-upgrading a *live* execution, an unsafe operation this suite no
-# longer exercises, so it's no longer this repo's concern to keep red for.
+# section and this repo's TARGET_OBELISK_* env vars). Cross-language replay
+# compatibility of the driving session is still checked below
+# (e2e_verify_replay_parity), just through the non-destructive `PUT
+# /v1/executions/{id}/replay` RPC instead of a live hot-swap, and with both
+# deployment.rs.toml/deployment.js.toml pinning `locking_strategy =
+# "by_component_digest"` so switching the active deployment can never affect
+# SESSION_ID's own progress.
 #
 # Runs for both rs and js SOURCE backends (the agent side); the target is
 # backend-agnostic, a plain generated JS activity.
@@ -120,6 +116,10 @@ SOURCE_NOW_ID="$("$OBELISK" deployment active -a "$E2E_API_URL")"
     exit 1
 }
 echo ">>> source E2E PASS: the agent's own (${BACKEND}) deployment was never touched"
+
+# KNOWN-RED: an Obelisk-core replay-finalize gap, not a workflow-agent bug -
+# see the KNOWN-RED note on e2e_verify_replay_parity in e2e-lib.sh.
+e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 echo ">>> E2E PASS: the agent (${BACKEND}) safely redeployed a separate target instance"

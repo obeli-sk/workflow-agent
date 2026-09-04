@@ -74,5 +74,8 @@ while true; do
 done
 OUTPUT="$(node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION")"
 [[ "$OUTPUT" == *"$AUTHORED_ID"* ]] || { echo "authored submit failed: $PROJECTION" >&2; exit 1; }
+
+e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
+
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 echo ">>> E2E PASS: the session submitted an authored WIT plus a multi-file JS graph"

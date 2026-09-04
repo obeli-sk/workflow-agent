@@ -283,4 +283,7 @@ while true; do
     sleep 1
 done
 echo ">>> E2E PASS: the session surfaced the LLM configuration error and returned to idle"
+
+e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$EXEC_ID"
+
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$EXEC_ID" >/dev/null || true

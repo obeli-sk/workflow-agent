@@ -237,6 +237,10 @@ WATCH_OUT="$(shell_turn "$PARENT_ID" "shell-chat-watch-timeout" \
 grep -q '"timed_out":true' <<<"$WATCH_OUT" \
     || { echo "watch did not time out: $WATCH_OUT" >&2; exit 1; }
 
+# KNOWN-RED: an Obelisk-core replay-finalize gap, not a workflow-agent bug -
+# see the KNOWN-RED note on e2e_verify_replay_parity in e2e-lib.sh.
+e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$PARENT_ID"
+
 echo ">>> cleaning up sessions"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$PARENT_ID" >/dev/null || true
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true

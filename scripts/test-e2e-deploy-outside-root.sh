@@ -117,5 +117,9 @@ RESULT="$("$OBELISK" execution result --follow -j -a "$E2E_TARGET_API_URL" "$CHE
 }
 echo ">>> target E2E PASS: the target now serves the authored function (${RESULT})"
 
+# KNOWN-RED: an Obelisk-core replay-finalize gap, not a workflow-agent bug -
+# see the KNOWN-RED note on e2e_verify_replay_parity in e2e-lib.sh.
+e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
+
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 echo ">>> E2E PASS: the agent (${BACKEND}) submitted+applied a manifest from outside DEPLOYMENT_ROOT and the target ended up with a working deployment"

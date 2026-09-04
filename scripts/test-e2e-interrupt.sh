@@ -178,6 +178,8 @@ FOLLOWUP_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-loop-followup 
     echo "follow-up output wrong after composer stop: $FOLLOWUP_OUT" >&2
     exit 1
 }
+e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$LOOP_SESSION"
+
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$LOOP_SESSION" >/dev/null || true
 echo ">>> session survival after composer stop E2E PASS"
 

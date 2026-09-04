@@ -774,29 +774,46 @@ natively (small algorithms) rather than vendoring the npm package's source.
   timeout-firing, and chat/interrupt/mcp CI wiring are all covered now that
   the e2e scripts are backend-parametrized and run against both `rs` and
   `js` in CI's `e2e` matrix job.
-- **Cross-backend hot-swap of a live session is an Obelisk core limitation,
-  and also not a thing workflow-agent should do** (Phase 8, revisited later):
-  Obelisk's JS workflow runtime's `*-await-next` extension-import proxy
-  (`create_ext_await_next_proxy` in
-  `crates/workflow-js-runtime/src/workflow_js_runtime.rs`) doesn't track
-  `requested_ffqn` the way Rust's `wit-bindgen`-generated typed bindings do,
-  so a session that ran a turn under the Rust backend cannot replay under
-  the JS one via `deployment apply` on the same server. The original
-  `scripts/test-e2e-replay-parity.sh` exercised exactly that self-swap to
-  prove it (documented as expected-red, `continue-on-error: true` in CI);
-  it has since been **replaced**, not fixed, by
-  `scripts/test-e2e-target-deploy.sh`, which proves the thing workflow-agent
-  actually relies on — authoring and redeploying a *separate* target
-  instance — without the unsafe same-instance hot-swap (see that script's
-  header comment and the Phase 8 checklist entry's "Update" note above for
-  the full trace-diff finding: the swap doesn't just fail to replay, it
-  strands the session, since Obelisk's auto-upgrade path tears down the old
-  executor before discovering the new one can't replay it). The
-  `requested_ffqn` gap itself is still open and still worth an Obelisk-core
-  fix for real hot-upgrade scenarios (e.g. a *target* instance upgrading its
-  own in-flight JS workflows), just no longer gated behind workflow-agent's
-  CI. The typed-import fixes already in `session.js`
-  (`recordOutputAwaitNext`/`sessionRenamedAwaitNext`) stay as-is — they are
-  the semantically correct calls and cost nothing — but proving they close
-  the gap needs a test against Obelisk's own JS workflow runtime (that repo,
-  not this one), not a workflow-agent e2e script.
+- **Cross-backend replay-parity is checked again, safely** (later session):
+  the `requested_ffqn` gap above is fixed on Obelisk's `codex/typed-js-await-next`
+  branch (unreleased), confirmed by rebuilding `obelisk` locally with
+  `-F activity-js-local,workflow-js-local,webhook-js-local`. Rather than
+  reviving the old same-instance hot-swap (`deployment apply` on a *live*
+  session, then continuing to drive it - genuinely unsafe by construction,
+  see `test-e2e-target-deploy.sh`'s history), both `deployment.rs.toml` and
+  `deployment.js.toml` now pin the session workflow's `exec.locking_strategy
+  = "by_component_digest"`, so an in-flight execution is never auto-upgraded
+  just because the active deployment changes. `e2e-lib.sh`'s
+  `e2e_verify_replay_parity` uses this to run a session to completion under
+  one backend, switch the active deployment to the other, and call the
+  non-destructive `PUT /v1/executions/{id}/replay` RPC (`obelisk execution
+  replay`, a dry-run: reports Advanceable/Finished/Blocked/ReplayFailed
+  without persisting anything) - wired into the tail of all 8
+  backend-parametrized e2e scripts. Passes both directions on
+  `test-e2e-redeploy.sh` and `test-e2e-interrupt.sh` (verified with a real
+  operator interrupt and composer stop in the history); `test-e2e-mcp.sh`
+  and `test-e2e-agent-workflow.sh` weren't exercised (no docker / no network
+  in the sandbox this was built in, respectively). Along the way this also
+  found and fixed a real Obelisk-core bug: `POST /v1/deployments` had no
+  `DefaultBodyLimit` override, so axum's 2 MiB default silently truncated
+  any upload over that size (e.g. `workflow_agent_rs.wasm`) even though the
+  configured per-file cap is 20 MiB and the gRPC submit path already raises
+  its own limit for the same reason.
+  - **New known-red, still unscoped**: `test-e2e-chat.sh`,
+    `test-e2e-target-deploy.sh`, and `test-e2e-deploy-outside-root.sh` fail
+    replay-parity deterministically. session.rs and session.js produce
+    byte-for-byte identical event sequences for each of these scenarios
+    (verified by diffing each language's own native trace) - the mismatch
+    is in Obelisk-core's replay engine, not workflow-agent: replaying under
+    the other language, right after the turn's trailing `session-events`
+    notify(es), an `n:user-{turn}` join-set close is emitted from an
+    `execution_replay:finalize` span instead of continuing through the
+    normal `execution_replay:apply_inner` matching loop that produced
+    everything else correctly. Not specific to `obelisk deployment apply`
+    (`test-e2e-chat.sh` never calls it) nor to turn 0 nor to session
+    complexity in any way pinned down yet: `test-e2e-redeploy.sh` (one turn,
+    `submit` only) and `test-e2e-interrupt.sh` (several turns, real
+    interrupts) both pass. See the `KNOWN-RED` note on
+    `e2e_verify_replay_parity` in `scripts/e2e-lib.sh`. Needs investigation
+    in `crates/wasm-workers/src/workflow/replay_advance.rs` /
+    `workflow_js_worker.rs`'s replay finalize path, not attempted here.

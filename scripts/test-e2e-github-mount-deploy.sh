@@ -141,5 +141,7 @@ TARGET_LIST="$("$OBELISK" deployment list -a "$E2E_TARGET_API_URL")"
 }
 echo ">>> target E2E PASS: the target genuinely stored the GitHub-mounted deployment (${AUTHORED_ID})"
 
+e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
+
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 echo ">>> E2E PASS: the agent (${BACKEND}) submitted this app's own real deployment.js.toml, fetched cold through the real GitHub apps mount, and the target has a working stored deployment"

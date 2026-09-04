@@ -86,6 +86,83 @@ e2e_select_backend() {
             return 1
             ;;
     esac
+    E2E_BACKEND="$backend"
+}
+
+# Verifies that SESSION_ID's full execution history, recorded under
+# ORIGINAL_BACKEND, replays cleanly under the *other* language backend's
+# component, without ever driving the session live under it. Both
+# deployment.rs.toml and deployment.js.toml pin their session workflow's
+# `exec.locking_strategy` to `by_component_digest` (not the workflow default
+# `auto`), so an in-flight execution only ever gets locked by an executor for
+# the exact digest that created it - switching the server's active deployment
+# here cannot affect SESSION_ID's own progress the way a plain `deployment
+# apply` + continued-driving hot-swap could (see docs/js-backend-migration.md).
+# The actual cross-language check is the non-destructive `PUT
+# /v1/executions/{id}/replay` RPC (`obelisk execution replay`): it replays the
+# persisted history against whichever component is currently registered for
+# the FFQN and reports Advanceable/Finished/Blocked/ReplayFailed without
+# persisting anything, so a mismatch is a clean assertion failure, not a
+# stranded session. Restores ORIGINAL_DEPLOY as the active deployment before
+# returning (even on failure), so callers can keep driving SESSION_ID
+# afterward if they need to.
+#
+# KNOWN-RED on some callers (test-e2e-chat.sh, test-e2e-target-deploy.sh,
+# test-e2e-deploy-outside-root.sh), an Obelisk-core gap, not a
+# session.rs/session.js bug: each language's own native execution trace is
+# byte-for-byte identical for these scenarios (verified by diffing
+# t_execution_log directly), but replaying under the other language
+# nondeterminism-fails at an `n:user-{turn}` join-set close, right after the
+# turn's trailing `session-events` notify(es). The replay trace
+# (`OBELISK__LOG__CONSOLE__LEVEL=info,obeli_sk_wasm_workers::workflow::
+# event_history=trace`) shows the mismatching close is emitted from an
+# `execution_replay:finalize` span, not the normal
+# `execution_replay:apply_inner` matching loop that produced everything
+# else correctly - a replay-finalize bug, not a control-flow divergence.
+# Reproduces on both the simple `test-e2e-redeploy.sh`-shaped one-turn
+# scripts that call `obelisk deployment apply` and the many-turn
+# `test-e2e-chat.sh` (no `apply` involved at all), so it is not specific to
+# either; `test-e2e-redeploy.sh` (submit only) and `test-e2e-interrupt.sh`
+# (several turns, real interrupts) both pass, so the trigger is still
+# unscoped. Needs investigation in Obelisk-core's
+# crates/wasm-workers/src/workflow/replay_advance.rs /
+# workflow_js_worker.rs, not attempted here.
+e2e_verify_replay_parity() {
+    local original_backend="$1"
+    local original_deploy="$2"
+    local session_id="$3"
+
+    local other_backend
+    case "$original_backend" in
+        rs) other_backend="js" ;;
+        js) other_backend="rs" ;;
+        *)
+            echo "unknown backend '$original_backend' (expected rs|js)" >&2
+            return 1
+            ;;
+    esac
+
+    echo ">>> replay parity: switching active deployment to '$other_backend' to replay $session_id"
+    e2e_select_backend "$other_backend"
+    # Relative component `location`s (e.g. packs/.../descriptor.js) resolve
+    # against the manifest's own directory, so this must live next to
+    # deployment.rs.toml/deployment.js.toml under $ROOT, not under $E2E_TMP,
+    # matching e2e_patch_workflow_manifest's other callers.
+    local other_deploy="$ROOT/$(basename "$original_deploy" .toml)-replay-parity-${other_backend}.toml"
+    e2e_patch_workflow_manifest "$other_deploy"
+    "$OBELISK" deployment apply "$other_deploy" -a "$E2E_API_URL" >/dev/null
+
+    local replay_json outcome
+    replay_json="$("$OBELISK" execution replay -j -a "$E2E_API_URL" "$session_id")"
+    outcome="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).type)' <<<"$replay_json")"
+
+    "$OBELISK" deployment apply "$original_deploy" -a "$E2E_API_URL" >/dev/null
+
+    if [[ "$outcome" == "replay_failed" ]]; then
+        echo ">>> E2E FAIL: $session_id ($original_backend) did not replay under '$other_backend': $replay_json" >&2
+        return 1
+    fi
+    echo ">>> replay parity E2E PASS: $session_id ($original_backend) replays cleanly under '$other_backend' (outcome: $outcome)"
 }
 
 e2e_build_component() {
