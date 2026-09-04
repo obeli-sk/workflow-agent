@@ -9,10 +9,11 @@ serve-rs: build-rs
 
 # Same session-workflow FFQN as `serve`, but backed by the JS workflow
 # (workflow/workflow-js, deployment.js.toml) instead of the Rust default (see
-# docs/js-backend-migration.md). A session started under one and continued
-# under the other replays cleanly, since both export
-# obelisk-agent:workflow/workflow.run-cancellable identically; switch a
-# running server between them with `obelisk deployment apply`.
+# docs/js-backend-migration.md). Both backends can run new sessions, but do
+# not switch an in-flight session between them: JS generic join-next calls
+# omit the requested FFQN that Rust typed awaits record, so cross-backend
+# replay is nondeterministic-checked and fails. Use this only for a fresh
+# server or new sessions after a deployment switch.
 serve-js:
   obelisk server run -d deployment.js.toml --server-config server.toml
 

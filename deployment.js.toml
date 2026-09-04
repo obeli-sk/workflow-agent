@@ -552,11 +552,11 @@ wit = "wit"
 # parity with the Rust workflow (see docs/js-backend-migration.md). It exports
 # the same canonical `obelisk-agent:workflow/workflow.run-cancellable` FFQN as
 # `deployment.rs.toml`'s `[[workflow_wasm]]` block. Only one of the two files is
-# ever the active deployment at a time; deploying this one instead of
-# deployment.rs.toml is how a workflow started under the Rust component keeps
-# running under this one (replay-compatible by construction, verified by
-# scripts/test-e2e-replay-parity.sh). Everything outside this workflow block
-# must stay identical between the two files, enforced by
+# ever the active deployment at a time. Switching between them is safe for new
+# sessions but not an in-flight session: JS generic join-next calls omit the
+# requested FFQN that Rust typed awaits record, so cross-backend replay fails.
+# Everything outside this workflow block must stay identical between the two
+# files, enforced by
 # `scripts/check-deployment-toml-parity.sh`.
 
 [[workflow_js]]
