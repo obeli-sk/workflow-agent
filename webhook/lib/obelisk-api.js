@@ -11,8 +11,8 @@ import * as webapi from "obelisk-agent:tools/webapi";
 import { activityJson } from "./http.js";
 
 const API_BASE = (process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005").replace(/\/$/, "");
-const OBELISK_API_TOKEN = process.env["OBELISK__API__TOKEN"];
-if (!OBELISK_API_TOKEN) throw new Error("OBELISK__API__TOKEN is required");
+const OBELISK_API_TOKEN = process.env["OBELISK_API_TOKEN"];
+if (!OBELISK_API_TOKEN) throw new Error("OBELISK_API_TOKEN is required");
 
 async function apiGet(label, path, accept = "application/json") {
     let resp;

@@ -726,7 +726,7 @@ function apiBase() {
 
 function authHeaders(extra) {
     const headers = { accept: "application/json", ...extra };
-    const token = process.env["OBELISK__API__TOKEN"];
+    const token = process.env["OBELISK_API_TOKEN"];
     if (token) headers.authorization = `Bearer ${token}`;
     return headers;
 }

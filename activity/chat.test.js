@@ -22,11 +22,11 @@ async function run(args, routes = [], stdin = "", env = {}) {
     const table = routes.map(([method, match, respond]) => ({ method, match, respond }));
     const originalFetch = globalThis.fetch;
     const originalEnv = {};
-    for (const key of ["OBELISK_API_URL", "OBELISK__API__TOKEN", "AGENT_MODELS"]) {
+    for (const key of ["OBELISK_API_URL", "OBELISK_API_TOKEN", "AGENT_MODELS"]) {
         originalEnv[key] = process.env[key];
     }
     process.env.OBELISK_API_URL = "http://127.0.0.1:5005";
-    process.env.OBELISK__API__TOKEN = "test-token";
+    process.env.OBELISK_API_TOKEN = "test-token";
     process.env.AGENT_MODELS = '[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"}]';
     for (const [key, value] of Object.entries(env)) {
         if (value === undefined) delete process.env[key];

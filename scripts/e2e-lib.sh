@@ -13,7 +13,7 @@ e2e_init() {
     E2E_TARGET_SERVER_PID=""
     E2E_DEPLOYMENTS=()
 
-    export OBELISK__API__TOKEN="$token"
+    export OBELISK_API_TOKEN="$token"
     # Control/deploy tools + the deployment mount target this same isolated
     # instance (self-host default; matches OBELISK_API_URL below).
     export TARGET_OBELISK_TOKEN="$token"
@@ -169,7 +169,7 @@ e2e_start_target_server() {
     echo ">>> starting ISOLATED EMPTY target obelisk server on ${E2E_TARGET_API_URL} (sqlite: ${E2E_TMP}/target-obelisk-sqlite)"
     # --no-auth refuses to start if a token is set; unset the source
     # server's exported token for this one subprocess only.
-    env -u OBELISK__API__TOKEN -u OBELISK_API_TOKEN \
+    env -u OBELISK_API_TOKEN \
     OBELISK__API__LISTENING_ADDR="127.0.0.1:${api_port}" \
     OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}" \
     OBELISK__WEBUI__ENABLED=false \

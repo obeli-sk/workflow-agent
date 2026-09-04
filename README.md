@@ -72,7 +72,7 @@ There are two Obelisk instances in play:
 
 - The **agent instance** the workflow-agent runs on. Its own session runs, logs,
   and the UI's pause/cancel/answer buttons live here, authenticated with
-  `OBELISK__API__TOKEN` (and `OBELISK_UI_URL` for links).
+  `OBELISK_API_TOKEN` (and `OBELISK_UI_URL` for links).
 - The **target instance** the agent inspects and deploys to. Every control/deploy
   tool (`obelisk functions|executions|call|deployment ...`) and the
   `/workspace/deployment` mount talk to it, configured by three vars that default
@@ -81,7 +81,7 @@ There are two Obelisk instances in play:
   ```sh
   export TARGET_OBELISK_API_URL=http://127.0.0.1:5205
   export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:5205"
-  export TARGET_OBELISK_TOKEN="$OBELISK__API__TOKEN"
+  export TARGET_OBELISK_TOKEN="$OBELISK_API_TOKEN"
   ```
 
   A fourth var, `TARGET_OBELISK_WEBHOOK_URL` (default

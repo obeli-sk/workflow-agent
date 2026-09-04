@@ -23,7 +23,7 @@ async function stub_execution_impl(executionId, resultJson) {
         `${base}/v1/executions/${encodeURIComponent(executionId)}/stub`,
         {
             method: "PUT",
-            headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}`, "content-type": "application/json" },
+            headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK_API_TOKEN"]}`, "content-type": "application/json" },
             body: JSON.stringify(result),
         },
     );
@@ -47,7 +47,7 @@ async function isTerminal(base, executionId) {
     try {
         const resp = await fetch(
             `${base}/v1/executions/${encodeURIComponent(executionId)}/status`,
-            { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK__API__TOKEN"]}` } },
+            { headers: { accept: "application/json", authorization: `Bearer ${process.env["OBELISK_API_TOKEN"]}` } },
         );
         if (!resp.ok) return false;
         const body = await resp.json();
