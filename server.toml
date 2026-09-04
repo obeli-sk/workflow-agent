@@ -16,14 +16,60 @@ GITHUB_TOKEN = { env = "GITHUB_TOKEN" }
 pattern = "https://obeli.sk"
 methods = ["GET"]
 
-# Agent's own instance: webhook UI reads of the agent's own sessions plus the
-# pause/unpause/cancel/stub control of them.
+# Agent's own instance. Coverage requires each entry's request_url_regex to be
+# byte-identical (post env-substitution) to the component's own declaration in
+# deployment.{js,rs}.toml, so these mirror those entries one-for-one rather
+# than being consolidated into one broader grant.
+
+# program_chat: peer session discovery/create + stub fulfilment.
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "POST", "PUT"]
+methods = ["GET", "PUT", "POST"]
+request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions|PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub$|POST ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions$"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
-request_url_regex = "^GET http[s]?://[^/]+/v1/(executions(/[^/]+(/(status|events|responses|logs))?)?|deployments/[^/]+|deployment-id|files/[^/]+)$|^POST http[s]?://[^/]+/v1/executions$|^PUT http[s]?://[^/]+/v1/executions/[^/]+/(pause|unpause|cancel|stub)$"
+
+# tool_pause_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/pause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# tool_unpause_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/unpause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# tool_cancel_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/cancel|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# tool_stub_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# ui-api webhook: read-only polling (statuses, responses, events, logs,
+# deployments, files) run as direct fetches instead of one child activity
+# per call.
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/)"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
 
 # Target instance: the control/deploy tools and the VFS deployment mount.
 [[outbound_http.allowed_host]]
