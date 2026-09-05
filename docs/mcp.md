@@ -65,4 +65,4 @@ round-trip) and reports whether it is responding. Avoid `tree`/`find`/recursive
 (`just sample-mcp-server`). `scripts/test-e2e-mcp.sh` runs it in a container,
 deploys a keyless block pointed at it (overriding `MCP_SERVERS_JSON` to wire only
 that server), and drives the command surface and lazy resources over real HTTP.
-It needs docker or podman and SKIPs when neither is present.
+It runs the sample server with the node provided by the dev shell.

@@ -638,7 +638,7 @@ core subset session.rs exercises day to day.
       verify` (both manifests + the parity script) all green.
       `test-e2e-agent-workflow.sh`/`test-e2e-chat.sh`/
       `test-e2e-interrupt.sh`/`test-e2e-redeploy.sh` pass for both `rs` and
-      `js`; `test-e2e-mcp.sh` SKIPs without docker/podman (both backends,
+      `js`; `test-e2e-mcp.sh` uses the local node sample server (both backends,
       unaffected by this phase). `test-e2e-replay-parity.sh` fails exactly
       at the documented, expected point (turn 2, rs → js), not earlier or
       for a different reason — confirmed by re-running it after each fix
@@ -826,13 +826,16 @@ natively (small algorithms) rather than vendoring the npm package's source.
     purely a sandbox-credentials issue, not a bug. Rebuilding `obelisk` from
     `codex/typed-js-await-next` (still unreleased) confirms
     `test-e2e-agent-workflow.sh`'s replay-parity failure *was* the
-    `requested_ffqn` gap fixed on that branch - it now passes clean. But two
-    **new, distinct** KNOWN-RED gaps turned up, unaffected by that same fix
-    (confirmed: still fail byte-for-byte identically on the fixed build):
-    `test-e2e-mcp.sh` (rs->js: `nondeterminism_detected: found unprocessed
-    request stored at version 8: event: JoinSetCreate(o:3-obelisk-e2e)`, a
-    "OneOff" join set auto-numbered per target function name by
-    `WorkflowCtx::call_json`'s `next_join_set_one_off_named`) and
+    `requested_ffqn` gap fixed on that branch - it now passes clean.
+    `test-e2e-mcp.sh` initially appeared to expose another gap at
+    `JoinSetCreate(o:3-obelisk-e2e)`, but that was a harness bug: the
+    other-backend replay manifest was rebuilt from the base manifest and lost
+    the MCP activity injected by the suite. The failed startup probe was
+    intentionally caught as "not responding", leaving the original call
+    unprocessed. Replay manifests now retain the suite's exact prepared
+    environment and replace only the workflow implementation. With that fixed,
+    MCP reaches the existing `n:user-0`/`session-events` replay-finalize gap
+    described above. One **distinct** KNOWN-RED remains in
     `test-e2e-github-mount-deploy.sh` (rs->js: `key does not match event
     stored at version 118: key: JoinNext(g:1 closing), event:
     JoinSetRequest(ChildExecutionRequest(...o:32-request_1,
@@ -846,6 +849,4 @@ natively (small algorithms) rather than vendoring the npm package's source.
     ingredient not yet isolated (candidates: scale, since the real trace
     reaches `o:32` and the reductions only reached `o:4`; or a named/
     typed-await-next join set alongside the one-off ones). See the extended
-    `KNOWN-RED` note on `e2e_verify_replay_parity` in `scripts/e2e-lib.sh`;
-    these two E_* execution ids and error strings are the reference
-    reproduction until a synthetic Obelisk-core repro is found.
+    `KNOWN-RED` note on `e2e_verify_replay_parity` in `scripts/e2e-lib.sh`.

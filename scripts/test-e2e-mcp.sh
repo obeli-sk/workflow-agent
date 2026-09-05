@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 #
 # End-to-end test for stateless MCP support (docs/mcp.md). Runs the self-contained
-# sample server (examples/stateless-mcp-server.mjs) in a stock node container,
+# sample server (examples/stateless-mcp-server.mjs) with local node,
 # deploys one MCP activity block pointed at it, opens a session, and drives the
 # shell command surface and lazily mounted resources through one user shell
 # turn, asserting the rendered output.
 #
-# Requires docker or podman. When neither is present the test SKIPs (exit 0) so
-# environments without a container runtime stay green; the skip is logged.
+# Requires node, provided by the dev shell.
 # Usage: test-e2e-mcp.sh [rs|js]  (default rs)
 
 set -euo pipefail
@@ -15,24 +14,10 @@ cd "$(dirname "$0")/.."
 ROOT="$PWD"
 BACKEND="${1:-rs}"
 
-# --- container runtime --------------------------------------------------------
-CRT=""
-for candidate in docker podman; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-        CRT="$candidate"
-        break
-    fi
-done
-if [[ -z "$CRT" ]]; then
-    echo ">>> MCP E2E SKIP: no docker/podman on PATH (container runtime required)" >&2
-    exit 0
-fi
-
 source "$ROOT/scripts/e2e-lib.sh"
 
 MCP_PORT="${MCP_PORT:-1071}"
-MCP_IMAGE="${MCP_NODE_IMAGE:-node:22-alpine}"
-MCP_CONTAINER="wfa-e2e-mcp-$$"
+MCP_PID=""
 MCP_URL="http://127.0.0.1:${MCP_PORT}/mcp"
 SERVER_NAME="obelisk-e2e"
 
@@ -50,20 +35,19 @@ export GITHUB_TOKEN=""
 export MCP_SERVERS_JSON="[{\"name\":\"${SERVER_NAME}\",\"ffqn\":\"obelisk-agent:mcp/server.${SERVER_NAME}\"}]"
 export MCP_SERVER_TOKEN=""
 
-# Extend the library cleanup to also remove the MCP container.
+# Extend the library cleanup to also stop the MCP server.
 mcp_cleanup() {
-    "$CRT" logs "$MCP_CONTAINER" >"$E2E_TMP/mcp-server.log" 2>&1 || true
-    "$CRT" rm -f "$MCP_CONTAINER" >/dev/null 2>&1 || true
+    if [[ -n "$MCP_PID" ]]; then
+        kill "$MCP_PID" 2>/dev/null || true
+        wait "$MCP_PID" 2>/dev/null || true
+    fi
     e2e_cleanup
 }
 trap mcp_cleanup EXIT
 
-echo ">>> starting stateless MCP server ($MCP_IMAGE) on :${MCP_PORT}"
-"$CRT" run -d --name "$MCP_CONTAINER" \
-    -p "127.0.0.1:${MCP_PORT}:${MCP_PORT}" \
-    -e "PORT=${MCP_PORT}" \
-    -v "$ROOT/examples/stateless-mcp-server.mjs:/srv/server.mjs:ro" \
-    "$MCP_IMAGE" node /srv/server.mjs >/dev/null
+echo ">>> starting stateless MCP server (local node) on :${MCP_PORT}"
+PORT="$MCP_PORT" node "$ROOT/examples/stateless-mcp-server.mjs" >"$E2E_TMP/mcp-server.log" 2>&1 &
+MCP_PID=$!
 
 # The nix devshell ships node but not curl, so probe readiness with node.
 http_ok() {
@@ -73,8 +57,8 @@ echo ">>> waiting for the MCP server to become ready"
 waited=0
 until http_ok "http://127.0.0.1:${MCP_PORT}/" 2>/dev/null; do
     if [[ $waited -ge 30 ]]; then
-        echo "MCP server did not become ready; container log:" >&2
-        "$CRT" logs "$MCP_CONTAINER" >&2 || true
+        echo "MCP server did not become ready; log:" >&2
+        sed -n '1,120p' "$E2E_TMP/mcp-server.log" >&2 || true
         exit 1
     fi
     sleep 1
