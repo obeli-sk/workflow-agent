@@ -1297,15 +1297,22 @@ fn contains_background_statement(script: &str) -> bool {
 }
 
 fn shell_result(result: ExecResult) -> ShellResult {
+    let mut output = Vec::new();
+    for chunk in result.output {
+        let chunk = match chunk.fd {
+            Fd::Stdout => OutputChunk::Stdout(chunk.text),
+            Fd::Stderr => OutputChunk::Stderr(chunk.text),
+        };
+        match (output.last_mut(), chunk) {
+            (Some(OutputChunk::Stdout(previous)), OutputChunk::Stdout(text))
+            | (Some(OutputChunk::Stderr(previous)), OutputChunk::Stderr(text)) => {
+                previous.push_str(&text);
+            }
+            (_, chunk) => output.push(chunk),
+        }
+    }
     ShellResult {
-        output: result
-            .output
-            .into_iter()
-            .map(|chunk| match chunk.fd {
-                Fd::Stdout => OutputChunk::Stdout(chunk.text),
-                Fd::Stderr => OutputChunk::Stderr(chunk.text),
-            })
-            .collect(),
+        output,
         exit_code: result.exit_code,
         interrupted: result.interrupted.map(|kind| kind.label().to_string()),
     }
@@ -2068,6 +2075,27 @@ mod tests {
         });
         assert_eq!(stopped.exit_code, 130);
         assert_eq!(stopped.interrupted.as_deref(), Some("operator"));
+    }
+
+    #[test]
+    fn shell_result_coalesces_adjacent_output_like_js() {
+        let result = shell_result(ExecResult {
+            output: vec![
+                just_bash_rs::OutputChunk {
+                    fd: Fd::Stdout,
+                    text: "first\n".to_string(),
+                },
+                just_bash_rs::OutputChunk {
+                    fd: Fd::Stdout,
+                    text: "second\n".to_string(),
+                },
+            ],
+            ..Default::default()
+        });
+        assert_eq!(
+            result.output,
+            vec![OutputChunk::Stdout("first\nsecond\n".to_string())]
+        );
     }
 
     #[test]

@@ -36,8 +36,7 @@
 # target's own API afterward.
 #
 # Needs real network access and a GitHub token; SKIPs (not fails) when
-# GITHUB_TOKEN is unset, matching test-e2e-mcp.sh's SKIP-without-docker
-# precedent, so `just test-e2e`'s default run stays hermetic.
+# GITHUB_TOKEN is unset, so `just test-e2e`'s default run stays hermetic.
 #
 # GitHub always serves GH_REF's current remote state, not this checkout's
 # working tree - push local fixes before relying on them showing up in the

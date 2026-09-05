@@ -2094,6 +2094,24 @@ backtrace.sources = { \".../src/lib.rs\" = { path = \"src/lib.rs\", content_dige
     }
 
     #[test]
+    fn owned_source_locations_groups_interleaved_arrays_like_toml_document() {
+        let manifest = r#"
+[[activity_js]]
+location = "first.js"
+
+[[workflow_js]]
+location = "workflow.js"
+
+[[activity_js]]
+location = "second.js"
+"#;
+        assert_eq!(
+            owned_source_locations(manifest),
+            vec!["first.js", "second.js", "workflow.js"]
+        );
+    }
+
+    #[test]
     fn simplify_manifest_tolerates_reformatted_component_files() {
         // The old line-based scanner assumed `component_files` sat on a single
         // line; toml_edit parses the document, so a multi-line inline table (valid

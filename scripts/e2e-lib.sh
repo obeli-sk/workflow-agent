@@ -127,17 +127,6 @@ e2e_select_backend() {
 # unscoped. Needs investigation in Obelisk-core's
 # crates/wasm-workers/src/workflow/replay_advance.rs /
 # workflow_js_worker.rs, not attempted here.
-#
-# KNOWN-RED, `test-e2e-github-mount-deploy.sh` fails with `key does not
-# match event stored at version 118: key: JoinNext(g:1 closing), event:
-# JoinSetRequest(ChildExecutionRequest(...o:32-request_1,
-# obelisk-agent:mounts/apps.request, ...))` - a "Generated" (anonymous)
-# join set's closing drain colliding with an unrelated one-off join set's
-# child request. The former MCP failure at `JoinSetCreate(o:3-obelisk-e2e)`
-# was a harness bug: the other-backend manifest omitted the suite-injected MCP
-# activity, and the workflow intentionally caught FunctionNotFound as a failed
-# startup probe. Replay manifests now retain the exact prepared environment and
-# replace only the workflow implementation.
 e2e_verify_replay_parity() {
     local original_backend="$1"
     local original_deploy="$2"

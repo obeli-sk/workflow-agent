@@ -390,6 +390,20 @@ test("ownedSourceLocations reads both the nested-table and inline backtrace form
     assert.deepEqual(ownedSourceLocations(inline), ["w.wasm", "src/lib.rs"]);
 });
 
+test("ownedSourceLocations groups interleaved arrays like a TOML document", () => {
+    const manifest = `
+[[activity_js]]
+location = "first.js"
+
+[[workflow_js]]
+location = "workflow.js"
+
+[[activity_js]]
+location = "second.js"
+`;
+    assert.deepEqual(ownedSourceLocations(manifest), ["first.js", "second.js", "workflow.js"]);
+});
+
 // -- the TOML editor: simplify / expand --
 
 test("simplifyManifest tolerates a reformatted multi-line component_files", () => {

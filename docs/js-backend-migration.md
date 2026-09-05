@@ -835,18 +835,9 @@ natively (small algorithms) rather than vendoring the npm package's source.
     unprocessed. Replay manifests now retain the suite's exact prepared
     environment and replace only the workflow implementation. With that fixed,
     MCP reaches the existing `n:user-0`/`session-events` replay-finalize gap
-    described above. One **distinct** KNOWN-RED remains in
-    `test-e2e-github-mount-deploy.sh` (rs->js: `key does not match event
-    stored at version 118: key: JoinNext(g:1 closing), event:
-    JoinSetRequest(ChildExecutionRequest(...o:32-request_1,
-    obelisk-agent:mounts/apps.request, ...))`, a "Generated" anonymous join
-    set's closing drain colliding with an unrelated one-off join set's child
-    request). Three reduction attempts in Obelisk-core (repeated `call_json`
-    calls to one activity; the same wrapped in an anonymous
-    `ScriptWatchGuard`-shaped join set that closes; the same checked while
-    `Blocked` rather than `Finished`, matching what these e2e suites actually
-    observe) all replayed cleanly in isolation - the real trigger needs an
-    ingredient not yet isolated (candidates: scale, since the real trace
-    reaches `o:32` and the reductions only reached `o:4`; or a named/
-    typed-await-next join set alongside the one-off ones). See the extended
-    `KNOWN-RED` note on `e2e_verify_replay_parity` in `scripts/e2e-lib.sh`.
+    described above. The distinct GitHub-mount replay failure was two
+    workflow-agent divergences, not an Obelisk join-set threshold: the JS packer
+    preserved physical order for interleaved TOML arrays while Rust grouped
+    entries by top-level key, and Rust exposed adjacent same-FD shell chunks
+    while JS coalesced them. Matching both representations makes the full
+    GitHub-mount E2E replay cleanly in both directions.

@@ -800,7 +800,12 @@ function groupBlocks(regions) {
             current.sections.set(r.relPath, r);
         }
     }
-    return blocks;
+    const byName = new Map();
+    for (const block of blocks) {
+        if (!byName.has(block.blockName)) byName.set(block.blockName, []);
+        byName.get(block.blockName).push(block);
+    }
+    return [...byName.values()].flat();
 }
 
 // The `backtrace.sources` entries for one block, whichever of the three
