@@ -817,3 +817,35 @@ natively (small algorithms) rather than vendoring the npm package's source.
     `e2e_verify_replay_parity` in `scripts/e2e-lib.sh`. Needs investigation
     in `crates/wasm-workers/src/workflow/replay_advance.rs` /
     `workflow_js_worker.rs`'s replay finalize path, not attempted here.
+  - **Update, later session**: `test-e2e-mcp.sh` and `test-e2e-agent-workflow.sh`
+    (previously unexercised - no docker / no network in that sandbox) were run
+    for real: a plain-node stand-in for the MCP sample server (no docker
+    needed) and `GITHUB_TOKEN` exported from `gh`'s own token unblocked both.
+    `test-e2e-agent-workflow.sh` and `test-e2e-github-mount-deploy.sh` (GitHub
+    mount + submit itself) both work correctly; the GITHUB_TOKEN gap was
+    purely a sandbox-credentials issue, not a bug. Rebuilding `obelisk` from
+    `codex/typed-js-await-next` (still unreleased) confirms
+    `test-e2e-agent-workflow.sh`'s replay-parity failure *was* the
+    `requested_ffqn` gap fixed on that branch - it now passes clean. But two
+    **new, distinct** KNOWN-RED gaps turned up, unaffected by that same fix
+    (confirmed: still fail byte-for-byte identically on the fixed build):
+    `test-e2e-mcp.sh` (rs->js: `nondeterminism_detected: found unprocessed
+    request stored at version 8: event: JoinSetCreate(o:3-obelisk-e2e)`, a
+    "OneOff" join set auto-numbered per target function name by
+    `WorkflowCtx::call_json`'s `next_join_set_one_off_named`) and
+    `test-e2e-github-mount-deploy.sh` (rs->js: `key does not match event
+    stored at version 118: key: JoinNext(g:1 closing), event:
+    JoinSetRequest(ChildExecutionRequest(...o:32-request_1,
+    obelisk-agent:mounts/apps.request, ...))`, a "Generated" anonymous join
+    set's closing drain colliding with an unrelated one-off join set's child
+    request). Three reduction attempts in Obelisk-core (repeated `call_json`
+    calls to one activity; the same wrapped in an anonymous
+    `ScriptWatchGuard`-shaped join set that closes; the same checked while
+    `Blocked` rather than `Finished`, matching what these e2e suites actually
+    observe) all replayed cleanly in isolation - the real trigger needs an
+    ingredient not yet isolated (candidates: scale, since the real trace
+    reaches `o:32` and the reductions only reached `o:4`; or a named/
+    typed-await-next join set alongside the one-off ones). See the extended
+    `KNOWN-RED` note on `e2e_verify_replay_parity` in `scripts/e2e-lib.sh`;
+    these two E_* execution ids and error strings are the reference
+    reproduction until a synthetic Obelisk-core repro is found.

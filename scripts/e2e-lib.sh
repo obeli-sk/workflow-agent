@@ -127,6 +127,35 @@ e2e_select_backend() {
 # unscoped. Needs investigation in Obelisk-core's
 # crates/wasm-workers/src/workflow/replay_advance.rs /
 # workflow_js_worker.rs, not attempted here.
+#
+# KNOWN-RED, two more callers, a *different* gap from the one above (later
+# session): `test-e2e-mcp.sh` and `test-e2e-github-mount-deploy.sh` both fail
+# too, but neither is the `n:user-{turn}`/`session-events` finalize bug -
+# confirmed unrelated because rebuilding `obelisk` from the (unreleased)
+# `codex/typed-js-await-next` branch, which fixes exactly that gap (verified:
+# `test-e2e-agent-workflow.sh` now passes replay-parity clean on that build,
+# where it previously hit the same `n:user-{turn}` signature), leaves both of
+# these failing byte-for-byte identically. `test-e2e-mcp.sh` fails rs->js with
+# `nondeterminism_detected: found unprocessed request stored at version 8:
+# event: JoinSetCreate(o:3-obelisk-e2e)` - a "OneOff" join set, auto-numbered
+# per target function name by `WorkflowCtx::call_json`'s
+# `next_join_set_one_off_named` (every MCP call, regardless of JSON-RPC
+# method, goes through the same activity ffqn, so repeated calls share one
+# counter). `test-e2e-github-mount-deploy.sh` fails rs->js with `key does not
+# match event stored at version 118: key: JoinNext(g:1 closing), event:
+# JoinSetRequest(ChildExecutionRequest(...o:32-request_1,
+# obelisk-agent:mounts/apps.request, ...))` - a "Generated" (anonymous)
+# join set's closing drain colliding with an unrelated one-off join set's
+# child request. Three isolated reduction attempts in Obelisk-core (repeated
+# `call_json` calls to one activity; the same wrapped in an anonymous
+# `ScriptWatchGuard`-shaped join set that closes; the same checked while
+# `Blocked` rather than `Finished`, matching what these e2e suites actually
+# observe) all replayed cleanly - the real trigger needs an ingredient not
+# yet isolated, possibly scale (the real trace reaches `o:32`; the reductions
+# only reached `o:4`) or a named/typed-await-next join set alongside the
+# one-off ones. Not attempted further here; these two E_* execution ids and
+# error strings are the reference reproduction until a synthetic Obelisk-core
+# repro is found.
 e2e_verify_replay_parity() {
     local original_backend="$1"
     local original_deploy="$2"
