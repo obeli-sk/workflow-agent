@@ -187,6 +187,15 @@ class Notifications {
             throw `unexpected session rename response: ${this.nameJoinSet.lastId}`;
         }
     }
+
+    // PORT: Rust's implicit `Drop` of `Notifications`' `join_sets` map when
+    // `agent_loop` unwinds (return or `?`-propagated error/cancellation) --
+    // JS has no destructor, so `agentLoop`'s `finally` calls this explicitly
+    // on every exit path instead.
+    close() {
+        if (this.joinSet) this.joinSet.close();
+        if (this.nameJoinSet) this.nameJoinSet.close();
+    }
 }
 
 // PORT: host.rs's RealHost::call_json interception of ASK_USER_FFQN reached
@@ -613,114 +622,120 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     mountPacks(bash, config);
     publishAgentStatus(notifications, shouldCallLlm, turnIndex);
 
-    while (true) {
-        console.debug(`turn=${turnIndex} step=${agentSteps} shouldCallLlm=${shouldCallLlm}`);
-        session.turnIndex = turnIndex;
-        notifications.setTurnIndex(turnIndex);
-        if (shouldCallLlm && agentSteps >= maxSteps) {
-            const error = stepLimitError(turnIndex, maxSteps);
-            messages.push({ role: "assistant", content: [{ type: "text", text: error.text }] });
-            notifications.notify({ agent_error: error });
-            shouldCallLlm = false;
-            publishAgentStatus(notifications, false, turnIndex);
-            agentSteps = 0;
-            turnIndex = advanceTurn(session, notifications);
-            continue;
-        }
-        if (shouldCallLlm && agentSteps >= stepWarningThreshold(maxSteps) && stepWarnedTurn !== turnIndex) {
-            stepWarnedTurn = turnIndex;
-            messages.push(userText(stepWarningText(maxSteps)));
-        }
-
-        let turnComplete = false;
-        if (!shouldCallLlm) {
-            const event = pendingShell !== null
-                ? { shell: { id: `shell-opened-${turnIndex}`, script: pendingShell, stdin: "" } }
-                : takeUserEvent(session, notifications);
-            pendingShell = null;
-            // A composer/opening shell command runs synchronously right here,
-            // with no LLM call to mark the turn "working": publish before it
-            // starts (not just after `shouldCallLlm` turns out true) so the
-            // composer's Stop control is visible for its whole run, matching
-            // a model-driven bash tool call.
-            const isShell = Boolean(event.shell);
-            if (isShell) publishAgentStatus(notifications, true, turnIndex);
-            shouldCallLlm = applySessionInput(event, turnIndex, true, notifications, bash, messages);
-            if (shouldCallLlm) publishAgentStatus(notifications, true, turnIndex);
-            else if (isShell) publishAgentStatus(notifications, false, turnIndex);
-            turnComplete = !shouldCallLlm;
-        } else {
-            publishAgentStatus(notifications, true, turnIndex);
-            const outcome = callLlmWithUser(session, system, messages, model, effort, bash, notifications);
-            if (outcome.kind === "failed") {
-                notifications.notify({ agent_error: llmErrorEvent(turnIndex, outcome.message) });
-                shouldCallLlm = false;
-                agentSteps = 0;
-                publishAgentStatus(notifications, false, turnIndex);
-                turnIndex = advanceTurn(session, notifications);
-                continue;
-            }
-            if (outcome.kind === "interrupted") {
-                const error = interruptedError(turnIndex);
+    try {
+        while (true) {
+            console.debug(`turn=${turnIndex} step=${agentSteps} shouldCallLlm=${shouldCallLlm}`);
+            session.turnIndex = turnIndex;
+            notifications.setTurnIndex(turnIndex);
+            if (shouldCallLlm && agentSteps >= maxSteps) {
+                const error = stepLimitError(turnIndex, maxSteps);
                 messages.push({ role: "assistant", content: [{ type: "text", text: error.text }] });
                 notifications.notify({ agent_error: error });
                 shouldCallLlm = false;
-                agentSteps = 0;
                 publishAgentStatus(notifications, false, turnIndex);
+                agentSteps = 0;
                 turnIndex = advanceTurn(session, notifications);
                 continue;
             }
-
-            agentSteps += 1;
-            const calls = outcome.content
-                .filter((b) => b?.type === "tool_use")
-                .map((b) => ({ id: b.id ?? "", name: b.name ?? "", input: b.input ?? {} }));
-            const nudgeEmptyReply = calls.length === 0 && !outcome.promptQueued && !hasUserVisibleText(outcome.content) && emptyReplyNudgedTurn !== turnIndex;
-            const assistantCompletesTurn = calls.length === 0 && !outcome.promptQueued && !nudgeEmptyReply;
-            notifications.notify({
-                assistant_reply: {
-                    content_json: outcome.contentJson,
-                    turn_index: turnIndex,
-                    duration_milliseconds: outcome.durationMilliseconds,
-                    turn_complete: assistantCompletesTurn,
-                },
-            });
-            messages.splice(outcome.requestMessageCount, 0, { role: "assistant", content: outcome.content });
-
-            if (calls.length > 0) {
-                const resultBlocks = [];
-                for (const call of calls) {
-                    console.debug(`turn=${turnIndex} step=${agentSteps} tool start: ${call.name}(${call.id})`);
-                    const startedAt = hostNowMs();
-                    const block = dispatchBash(call, bash, notifications, turnIndex, agentSteps);
-                    const durationMilliseconds = elapsedMilliseconds(startedAt, hostNowMs());
-                    console.debug(`turn=${turnIndex} step=${agentSteps} tool finish: ${call.name}(${call.id}) ok=${block.ok} in ${durationMilliseconds}ms`);
-                    notifications.notify({
-                        tool_result: {
-                            id: call.id,
-                            output: block.ok ? { ok: block.result } : { error: block.message },
-                            turn_index: turnIndex,
-                            duration_milliseconds: durationMilliseconds,
-                        },
-                    });
-                    resultBlocks.push(toolResultMessageValue(block));
-                }
-                messages.splice(outcome.requestMessageCount + 1, 0, { role: "user", content: resultBlocks });
-                shouldCallLlm = true;
-            } else if (nudgeEmptyReply) {
-                emptyReplyNudgedTurn = turnIndex;
-                messages.splice(outcome.requestMessageCount + 1, 0, userText(EMPTY_REPLY_NUDGE));
-                shouldCallLlm = true;
-            } else {
-                if (!outcome.promptQueued && !hasUserVisibleText(outcome.content)) {
-                    notifications.notify({ agent_error: emptyReplyError(turnIndex) });
-                }
-                shouldCallLlm = outcome.promptQueued;
-                agentSteps = 0;
-                turnComplete = assistantCompletesTurn;
-                if (!shouldCallLlm) publishAgentStatus(notifications, false, turnIndex);
+            if (shouldCallLlm && agentSteps >= stepWarningThreshold(maxSteps) && stepWarnedTurn !== turnIndex) {
+                stepWarnedTurn = turnIndex;
+                messages.push(userText(stepWarningText(maxSteps)));
             }
+
+            let turnComplete = false;
+            if (!shouldCallLlm) {
+                const event = pendingShell !== null
+                    ? { shell: { id: `shell-opened-${turnIndex}`, script: pendingShell, stdin: "" } }
+                    : takeUserEvent(session, notifications);
+                pendingShell = null;
+                // A composer/opening shell command runs synchronously right here,
+                // with no LLM call to mark the turn "working": publish before it
+                // starts (not just after `shouldCallLlm` turns out true) so the
+                // composer's Stop control is visible for its whole run, matching
+                // a model-driven bash tool call.
+                const isShell = Boolean(event.shell);
+                if (isShell) publishAgentStatus(notifications, true, turnIndex);
+                shouldCallLlm = applySessionInput(event, turnIndex, true, notifications, bash, messages);
+                if (shouldCallLlm) publishAgentStatus(notifications, true, turnIndex);
+                else if (isShell) publishAgentStatus(notifications, false, turnIndex);
+                turnComplete = !shouldCallLlm;
+            } else {
+                publishAgentStatus(notifications, true, turnIndex);
+                const outcome = callLlmWithUser(session, system, messages, model, effort, bash, notifications);
+                if (outcome.kind === "failed") {
+                    notifications.notify({ agent_error: llmErrorEvent(turnIndex, outcome.message) });
+                    shouldCallLlm = false;
+                    agentSteps = 0;
+                    publishAgentStatus(notifications, false, turnIndex);
+                    turnIndex = advanceTurn(session, notifications);
+                    continue;
+                }
+                if (outcome.kind === "interrupted") {
+                    const error = interruptedError(turnIndex);
+                    messages.push({ role: "assistant", content: [{ type: "text", text: error.text }] });
+                    notifications.notify({ agent_error: error });
+                    shouldCallLlm = false;
+                    agentSteps = 0;
+                    publishAgentStatus(notifications, false, turnIndex);
+                    turnIndex = advanceTurn(session, notifications);
+                    continue;
+                }
+
+                agentSteps += 1;
+                const calls = outcome.content
+                    .filter((b) => b?.type === "tool_use")
+                    .map((b) => ({ id: b.id ?? "", name: b.name ?? "", input: b.input ?? {} }));
+                const nudgeEmptyReply = calls.length === 0 && !outcome.promptQueued && !hasUserVisibleText(outcome.content) && emptyReplyNudgedTurn !== turnIndex;
+                const assistantCompletesTurn = calls.length === 0 && !outcome.promptQueued && !nudgeEmptyReply;
+                notifications.notify({
+                    assistant_reply: {
+                        content_json: outcome.contentJson,
+                        turn_index: turnIndex,
+                        duration_milliseconds: outcome.durationMilliseconds,
+                        turn_complete: assistantCompletesTurn,
+                    },
+                });
+                messages.splice(outcome.requestMessageCount, 0, { role: "assistant", content: outcome.content });
+
+                if (calls.length > 0) {
+                    const resultBlocks = [];
+                    for (const call of calls) {
+                        console.debug(`turn=${turnIndex} step=${agentSteps} tool start: ${call.name}(${call.id})`);
+                        const startedAt = hostNowMs();
+                        const block = dispatchBash(call, bash, notifications, turnIndex, agentSteps);
+                        const durationMilliseconds = elapsedMilliseconds(startedAt, hostNowMs());
+                        console.debug(`turn=${turnIndex} step=${agentSteps} tool finish: ${call.name}(${call.id}) ok=${block.ok} in ${durationMilliseconds}ms`);
+                        notifications.notify({
+                            tool_result: {
+                                id: call.id,
+                                output: block.ok ? { ok: block.result } : { error: block.message },
+                                turn_index: turnIndex,
+                                duration_milliseconds: durationMilliseconds,
+                            },
+                        });
+                        resultBlocks.push(toolResultMessageValue(block));
+                    }
+                    messages.splice(outcome.requestMessageCount + 1, 0, { role: "user", content: resultBlocks });
+                    shouldCallLlm = true;
+                } else if (nudgeEmptyReply) {
+                    emptyReplyNudgedTurn = turnIndex;
+                    messages.splice(outcome.requestMessageCount + 1, 0, userText(EMPTY_REPLY_NUDGE));
+                    shouldCallLlm = true;
+                } else {
+                    if (!outcome.promptQueued && !hasUserVisibleText(outcome.content)) {
+                        notifications.notify({ agent_error: emptyReplyError(turnIndex) });
+                    }
+                    shouldCallLlm = outcome.promptQueued;
+                    agentSteps = 0;
+                    turnComplete = assistantCompletesTurn;
+                    if (!shouldCallLlm) publishAgentStatus(notifications, false, turnIndex);
+                }
+            }
+            if (turnComplete) turnIndex = advanceTurn(session, notifications);
         }
-        if (turnComplete) turnIndex = advanceTurn(session, notifications);
+    } finally {
+        if (session.joinSet) session.joinSet.close();
+        ownSession.close();
+        notifications.close();
     }
 }

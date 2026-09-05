@@ -78,6 +78,15 @@ export class ChatSelf {
     parentId() {
         return parentOf(this.executionId);
     }
+
+    // PORT: Rust's implicit `Drop` of `chat.rs`'s `peers` map when
+    // `agent_loop` unwinds -- JS has no destructor, so `agentLoop`'s
+    // `finally` calls this explicitly on every exit path instead.
+    close() {
+        for (const joinSet of this.peers.values()) {
+            joinSet.close();
+        }
+    }
 }
 
 // PORT: chat.rs's `command_handler`.
