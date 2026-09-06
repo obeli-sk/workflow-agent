@@ -308,8 +308,9 @@ export class Interpreter {
         for (const [name, prev] of savedVars) {
             if (prev === undefined) this.vars.delete(name); else this.vars.set(name, prev);
         }
-        this.deliver(bindings[1], result.stdout);
+        // Deliver stderr before stdout, matching just-bash-rs's run_pipeline order.
         this.deliver(bindings[2], result.stderr);
+        this.deliver(bindings[1], result.stdout);
         this.lastExitCode = result.exitCode;
         return result.exitCode;
     }
