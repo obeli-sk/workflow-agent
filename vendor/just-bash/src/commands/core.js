@@ -180,11 +180,39 @@ export const core = {
         return ok(out.map(String).join("\n") + (out.length ? "\n" : ""));
     },
 
+    // PORT: just-bash-rs's commands/misc.rs `which` - resolves each name
+    // against a simulated PATH (default "/usr/bin:/bin" when unset) instead
+    // of just echoing the bare name back, so registered/custom commands
+    // print a real-looking "/usr/bin/<name>" path like Rust's does.
     which(interp, args) {
-        const names = args.slice(1);
-        const found = names.filter((n) => interp.commandNames.includes(n) || interp.custom.has(n));
-        if (found.length !== names.length) return fail("", 1);
-        return ok(found.join("\n") + (found.length ? "\n" : ""));
+        let showAll = false;
+        let silent = false;
+        const names = [];
+        for (const arg of args.slice(1)) {
+            if (arg === "-a") showAll = true;
+            else if (arg === "-s") silent = true;
+            else if (arg === "-as" || arg === "-sa") { showAll = true; silent = true; }
+            else names.push(arg);
+        }
+        if (names.length === 0) return fail("", 1);
+
+        const pathEnv = interp.getVar("PATH") ?? "/usr/bin:/bin";
+        const dirs = pathEnv.split(":");
+        let stdout = "";
+        let allFound = true;
+        for (const name of names) {
+            let found = false;
+            for (const dir of dirs) {
+                if (!dir) continue;
+                if ((dir === "/usr/bin" || dir === "/bin") && (interp.commandNames.includes(name) || interp.custom.has(name))) {
+                    found = true;
+                    if (!silent) stdout += `${dir}/${name}\n`;
+                    if (!showAll) break;
+                }
+            }
+            if (!found) allFound = false;
+        }
+        return { stdout, stderr: "", exitCode: allFound ? 0 : 1 };
     },
 
     env: listEnv,

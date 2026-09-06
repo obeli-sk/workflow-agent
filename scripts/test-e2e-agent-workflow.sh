@@ -34,6 +34,28 @@ run_detail() {
 # Waits for SESSION_ID's next input offer, submits SCRIPT as a direct shell
 # turn under it, waits for its record-output notification, and leaves the
 # notification's stdout in SHELL_STDOUT.
+
+# Waits for SESSION_ID to publish a fresh input offer. run_shell_turn's own
+# completion only proves the shell's record-output stub is written (visible
+# to any reader the instant record_output_stub self-answers it, ahead of the
+# workflow's own await-next) - not that the workflow has actually finished
+# advancing and parked on its new turn's join set. Swapping the deployment
+# before that settles can preempt the workflow mid-flush, which is not a
+# clean, replayable state under any backend. Callers that need to know the
+# session is truly idle (e.g. before a live backend swap) must wait here too.
+wait_for_input_offer() {
+    SECONDS=0
+    local session_projection injection_id
+    while true; do
+        if session_projection="$(run_detail "$SESSION_ID")"; then
+            injection_id="$(node scripts/e2e-json.js input-offer-id <<<"$session_projection")"
+            [[ -n "$injection_id" ]] && break
+        fi
+        [[ $SECONDS -ge 30 ]] && { echo "session did not settle on a fresh input offer: $session_projection" >&2; exit 1; }
+        sleep 1
+    done
+}
+
 run_shell_turn() {
     local shell_id="$1" script="$2"
     SECONDS=0
@@ -232,6 +254,9 @@ if [[ "$LS_ORDER" != ". .. a A apps b B deployment mcp" ]]; then
 fi
 
 echo ">>> live-swapping the blocked session to the other workflow backend"
+# Let the workflow finish advancing past the ls turn and settle on its new
+# join set before swapping - see wait_for_input_offer's comment.
+wait_for_input_offer
 case "$BACKEND" in
     rs) SWAP_BACKEND="js" ;;
     js) SWAP_BACKEND="rs" ;;
@@ -248,9 +273,10 @@ fi
 UPGRADE_EVENTS="$("$OBELISK" execution events -j -a "$E2E_API_URL" --from 0 --limit 500 "$SESSION_ID")"
 if ! node -e '
     const events = JSON.parse(require("fs").readFileSync(0, "utf8")).events || [];
-    const upgraded = events.some(({ event }) =>
-        event?.component_upgrade_finished?.outcome?.success?.reason === "auto"
-        || event?.component_upgrade_finished?.outcome?.Success?.reason === "auto");
+    const upgraded = events.some(({ event }) => {
+        const outcome = event?.component_upgrade_finished?.outcome;
+        return outcome?.type === "success" && outcome?.reason?.type === "auto";
+    });
     process.exit(upgraded ? 0 : 1);
 ' <<<"$UPGRADE_EVENTS"; then
     echo "the live swap resumed without recording a successful auto-upgrade: $UPGRADE_EVENTS" >&2
