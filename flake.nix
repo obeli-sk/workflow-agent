@@ -32,6 +32,7 @@
           commonDeps = with pkgs; [
             just
             rustToolchain
+            cargo-nextest
             jq
             yq-go # for scripts/sync-branch-protection.sh
           ];

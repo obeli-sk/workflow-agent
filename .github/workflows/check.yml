@@ -205,37 +205,9 @@ jobs:
       - name: Populate the nix store
         run: nix develop --command echo
 
-      - name: agent workflow e2e
-        run: nix develop --command ./scripts/test-e2e-agent-workflow.sh ${{ matrix.backend }}
+      # rs/js share ports per suite (scripts/e2e/helpers.mjs), so filter to this backend;
+      # suites that don't need a real token export their own empty override internally.
+      - name: e2e suites (${{ matrix.backend }})
+        run: nix develop --command node --test scripts/e2e/*.test.mjs --test-name-pattern "\(${{ matrix.backend }}\)$"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MCP_SERVER_TOKEN: ""
-
-      - name: chat e2e
-        run: nix develop --command ./scripts/test-e2e-chat.sh ${{ matrix.backend }}
-        env:
-          GITHUB_TOKEN: ""
-          MCP_SERVER_TOKEN: ""
-
-      - name: interrupt e2e
-        run: nix develop --command ./scripts/test-e2e-interrupt.sh ${{ matrix.backend }}
-        env:
-          GITHUB_TOKEN: ""
-          MCP_SERVER_TOKEN: ""
-
-      - name: mcp e2e
-        run: nix develop --command ./scripts/test-e2e-mcp.sh ${{ matrix.backend }}
-        env:
-          GITHUB_TOKEN: ""
-
-      - name: redeploy e2e
-        run: nix develop --command ./scripts/test-e2e-redeploy.sh ${{ matrix.backend }}
-        env:
-          GITHUB_TOKEN: ""
-          MCP_SERVER_TOKEN: ""
-
-      - name: target deploy e2e
-        run: nix develop --command ./scripts/test-e2e-target-deploy.sh ${{ matrix.backend }}
-        env:
-          GITHUB_TOKEN: ""
-          MCP_SERVER_TOKEN: ""
