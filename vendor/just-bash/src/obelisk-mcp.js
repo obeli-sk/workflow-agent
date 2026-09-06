@@ -645,10 +645,16 @@ function promptCollectionHelp(server, command) {
     return `Usage: ${server} ${command} [NAME [OPTIONS]]\n\nList prompts when NAME is omitted, or render one by name.\nRun \`${server} ${command} NAME --help\` for its arguments.\n`;
 }
 
+// PORT: obelisk_mcp.rs's `server_help`/`registry_help` - Rust's multi-line
+// string literals with a trailing `\` continuation strip ALL leading
+// whitespace on the next source line (a language quirk, not a formatting
+// choice), so the visually-indented subcommand lines in the .rs source
+// actually compile to unindented lines. These JS literals must match that
+// stripped (unindented) output exactly.
 function serverHelp(server) {
-    return `Usage: ${server} <subcommand>\n\nSubcommands:\n  tools [TOOL [OPTIONS]]    List tools or invoke one directly\n  call TOOL [OPTIONS|JSON]  Call a tool; args from stdin if omitted\n  prompts [NAME [OPTIONS]]  List prompts or render one directly\n  prompt NAME [OPTIONS]     Render a prompt to stdout\n  info                      Show server metadata (server/discover)\n`;
+    return `Usage: ${server} <subcommand>\n\nSubcommands:\ntools [TOOL [OPTIONS]]    List tools or invoke one directly\ncall TOOL [OPTIONS|JSON]  Call a tool; args from stdin if omitted\nprompts [NAME [OPTIONS]]  List prompts or render one directly\nprompt NAME [OPTIONS]     Render a prompt to stdout\ninfo                      Show server metadata (server/discover)\n`;
 }
 
 function registryHelp() {
-    return "Usage: mcp <subcommand>\n\nSubcommands:\n  list        List configured MCP servers with URL and auth status (default)\n  tools       List tools across all configured servers\n";
+    return "Usage: mcp <subcommand>\n\nSubcommands:\nlist        List configured MCP servers with URL and auth status (default)\ntools       List tools across all configured servers\n";
 }

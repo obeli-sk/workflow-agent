@@ -1,6 +1,7 @@
 # Investigating cross-backend replay-parity failures
 
-Status: methodology write-up, current as of the 2026-09-06 `which`/help-text
+Status: methodology write-up, current as of the 2026-09-06 stdout/stderr
+chunk-order fix (commit `9ed8fc4`), which followed the `which`/help-text
 indentation fixes (commits `726b6d5`, `d89ae15`). Read this before touching
 `e2e_verify_replay_parity`, a live-swap auto-upgrade failure, or anything in
 `crates/wasm-workers/src/workflow/{event_history,replay_advance}.rs` in the
@@ -47,7 +48,7 @@ diverging value.
 **In short: find the shell output (or any self-stubbed value) that differs
 byte-for-byte between backends. That's the bug, not the join-set close.**
 
-Two confirmed root causes so far, both output-divergence bugs, not replay-
+Three confirmed root causes so far, all output-divergence bugs, not replay-
 engine bugs:
 
 1. `which` (`vendor/just-bash/src/commands/core.js` vs
@@ -61,6 +62,21 @@ engine bugs:
    subcommand lists in the `.rs` source (`  list ...`, `  wit ...`) actually
    compile to unindented strings. JS's literals don't have this quirk, so
    they kept their source indentation and diverged.
+3. stdout/stderr chunk order (`vendor/just-bash/src/interpreter.js`'s
+   `runSimple` vs `vendor/just-bash-rs/src/interpreter.rs`'s
+   `run_pipeline`): not a content divergence at all, a *structural* one.
+   A command's `CommandOutput` carries stdout/stderr as two monolithic
+   strings with no real interleaving info once both are non-empty (true of
+   most custom commands, e.g. `chat watch`'s loop, which accumulates stderr
+   notes throughout and only builds the final stdout string at the very
+   end). JS delivered stdout before stderr; Rust delivers stderr before
+   stdout. Both are internally consistent but disagree with each other, so
+   a command emitting non-empty output on *both* streams produced
+   differently-ordered `output` chunk arrays for byte-identical content —
+   the WIT `output-chunk` list order is part of what gets hashed into the
+   self-stubbed `shell_output` event. Found via `chat watch --timeout`
+   (`scripts/test-e2e-chat.sh`), fixed in `9ed8fc4` by swapping the two
+   `deliver()` calls in `runSimple` to match Rust's order.
 
 Any other place where a bash builtin, a `--help` string, an error message,
 or `ls`-style formatting can differ between the two interpreters is a
