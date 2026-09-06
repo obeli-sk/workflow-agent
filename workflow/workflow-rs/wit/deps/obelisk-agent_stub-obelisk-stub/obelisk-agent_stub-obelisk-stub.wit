@@ -7,7 +7,7 @@ interface stub {
 
   injection-stub: func(execution-id: execution-id, execution-result: result<session-input, string>) -> result<_, stub-error>;
 
-  record-output-stub: func(execution-id: execution-id, execution-result: result<session-event, string>) -> result<_, stub-error>;
+  record-output-stub: func(execution-id: execution-id, execution-result: result<list<session-event>, string>) -> result<_, stub-error>;
 
   session-renamed-stub: func(execution-id: execution-id, execution-result: result<session-renamed-event, string>) -> result<_, stub-error>;
 

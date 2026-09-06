@@ -73,14 +73,15 @@ switch (command) {
     }
     case "shell-stdout": {
         // Extract stdout from a record-output result. `execution result -j`
-        // yields {ok: {shell_output: {id, script, result}}}. Stderr and a
-        // non-zero exit go to stderr so a failing turn is visible in the log.
+        // yields {ok: [...events]} (record-output batches events into a
+        // list); find the batch's shell_output. Stderr and a non-zero exit
+        // go to stderr so a failing turn is visible in the log.
         const outer = json();
         if (outer && typeof outer === "object" && outer.err !== undefined) {
             console.error(`record-output returned an error: ${JSON.stringify(outer.err)}`);
             process.exit(1);
         }
-        const record = outer?.ok?.shell_output;
+        const record = (outer?.ok ?? []).find((event) => event?.shell_output)?.shell_output;
         if (!record) {
             console.error(`record-output returned an unexpected value: ${JSON.stringify(outer)}`);
             process.exit(1);
@@ -92,13 +93,13 @@ switch (command) {
         break;
     }
     case "shell-stderr": {
-        const record = json()?.ok?.shell_output;
+        const record = (json()?.ok ?? []).find((event) => event?.shell_output)?.shell_output;
         if (!record) process.exit(1);
         process.stdout.write(shellStream(record.result ?? {}, "stderr"));
         break;
     }
     case "check-shell-notification": {
-        const record = json()?.ok?.shell_output;
+        const record = (json()?.ok ?? []).find((event) => event?.shell_output)?.shell_output;
         const valid = record?.id === "shell-e2e-1"
             && record.turn_index === 0
             && record.turn_complete === true

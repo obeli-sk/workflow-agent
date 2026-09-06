@@ -133,6 +133,12 @@ class Notifications {
         this.joinSet = null;
         this.nameJoinSet = null;
         this.turnIndex = 0;
+        // Buffered until flush(): a burst of events published back-to-back
+        // (e.g. a shell turn's shell_output/agent_status/input_offered tail)
+        // lands as one durable record instead of one submit+stub+await round
+        // trip per event, so the composer isn't left waiting on several
+        // sequential commits before it can re-enable.
+        this.pending = [];
     }
 
     setTurnIndex(turnIndex) {
@@ -140,9 +146,20 @@ class Notifications {
     }
 
     notify(event) {
+        this.pending.push(event);
+    }
+
+    // Publishes every buffered event as a single record-output call. Callers
+    // must flush right before any real blocking wait (takeUserEvent,
+    // callLlmWithUser's race loop, askUser) so the transcript is always
+    // up to date by the time the session goes idle waiting on the outside.
+    flush() {
+        if (this.pending.length === 0) return;
         if (!this.joinSet) this.joinSet = obelisk.createJoinSet({ name: SESSION_EVENTS_JOIN_SET });
+        const events = this.pending;
+        this.pending = [];
         const execId = recordOutputSubmit(this.joinSet);
-        recordOutputStub(execId, { ok: event });
+        recordOutputStub(execId, { ok: events });
         // Semantically the right call (PORT: session.rs's session_ext::
         // record_output_await_next; this join set is homogeneous, always
         // `stub.record-output`, matching Rust's use of the typed await
@@ -193,6 +210,7 @@ class Notifications {
     // JS has no destructor, so `agentLoop`'s `finally` calls this explicitly
     // on every exit path instead.
     close() {
+        try { this.flush(); } catch (_) { /* best-effort during cleanup */ }
         if (this.joinSet) this.joinSet.close();
         if (this.nameJoinSet) this.nameJoinSet.close();
     }
@@ -255,6 +273,7 @@ function askUser(paramsJson, notifications) {
     const executionId = askUserSubmit(joinSet, question);
     notifications.humanInputRequested(executionId, question);
     let answer;
+    notifications.flush();
     try {
         answer = joinSet.joinNext();
     } catch (e) {
@@ -387,6 +406,10 @@ function execShell(bash, notifications, id, turnIndex, step, script, stdin, time
     const guard = armScriptWatch(timeoutMs ?? null);
     console.debug(`execShell(${id}) watch armed, offer=${guard.offerExecutionId}`);
     notifications.notify({ shell_started: { id, offer_id: guard.offerExecutionId, turn_index: turnIndex } });
+    // bash.exec below can itself block on host calls (sleep, curl, obelisk
+    // calls); flush now so the running indicator/interrupt offer show up
+    // immediately instead of waiting on the whole script to finish.
+    notifications.flush();
     bash.setScriptWatch(guard.watcher());
     bash.setLogContext(`turn=${turnIndex} step=${step} id=${id}`);
     try {
@@ -458,6 +481,7 @@ function publishAgentStatus(notifications, working, turnIndex) {
 
 function takeUserEvent(session, notifications) {
     let event;
+    notifications.flush();
     try {
         event = session.joinSet.joinNext();
     } catch (e) {
@@ -485,6 +509,7 @@ function callLlmWithUser(session, system, messages, model, effort, bash, notific
         while (true) {
             let value;
             let failed = null;
+            notifications.flush();
             try {
                 value = session.joinSet.joinNext();
             } catch (e) {
@@ -600,7 +625,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     let messages = pendingShell === null && prompt.trim() ? [userText(prompt.trim())] : [];
 
     notifications.notify({
-        session_started: { protocol_version: 9, prompt, backend: model, effort, system_prompt: system },
+        session_started: { protocol_version: 10, prompt, backend: model, effort, system_prompt: system },
     });
     // A session created with a slug label (`chat create --name`, Phase 5)
     // starts already renamed; anything else arrives unnamed.

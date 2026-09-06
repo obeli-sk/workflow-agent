@@ -15,9 +15,9 @@ interface stub {
 
   record-output-submit: func(join-set: borrow<join-set>) -> execution-id;
 
-  record-output-await-next: func(join-set: borrow<join-set>) -> result<result<session-event, string>, await-next-extension-error>;
+  record-output-await-next: func(join-set: borrow<join-set>) -> result<result<list<session-event>, string>, await-next-extension-error>;
 
-  record-output-get: func(execution-id: execution-id) -> result<result<session-event, string>, get-extension-error>;
+  record-output-get: func(execution-id: execution-id) -> result<result<list<session-event>, string>, get-extension-error>;
 
   session-renamed-submit: func(join-set: borrow<join-set>, name: string) -> execution-id;
 

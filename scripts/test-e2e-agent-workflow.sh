@@ -60,7 +60,7 @@ run_shell_turn() {
             [[ -n "$record_id" ]] || continue
             local candidate
             candidate="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$record_id" 2>/dev/null)" || continue
-            if node -e "const r=JSON.parse(require('fs').readFileSync(0,'utf8'))?.ok?.shell_output; process.exit(r?.id===process.argv[1]?0:1)" "$shell_id" <<<"$candidate" 2>/dev/null; then
+            if node -e "const list=JSON.parse(require('fs').readFileSync(0,'utf8'))?.ok??[]; const r=list.find((e)=>e?.shell_output)?.shell_output; process.exit(r?.id===process.argv[1]?0:1)" "$shell_id" <<<"$candidate" 2>/dev/null; then
                 notification="$candidate"
                 break
             fi
@@ -156,11 +156,12 @@ curl --fail --silent --show-error \
     -d "{\"offer_id\":\"$INJECTION_ID\",\"input\":{\"shell\":{\"id\":\"shell-e2e-1\",\"script\":\"which curl && curl --version\",\"stdin\":\"\"}}}" \
     "http://127.0.0.1:28091/api/input/$SESSION_ID" >/dev/null
 
-# The session emits one `record-output` stub per event of any kind
-# (session_started, input_offered, shell_output, ...), so we cannot pick the
-# shell turn's notification by list order: the next turn's input_offered record
-# often lands first. Poll until the specific `shell_output` record for
-# shell-e2e-1 is present, matching each record-output result in turn.
+# The session batches several events (session_started, input_offered,
+# shell_output, ...) into each `record-output` stub, so we cannot pick the
+# shell turn's notification by list order: the next turn's input_offered
+# record often lands first (or bundled alongside a later batch). Poll until
+# the specific `shell_output` record for shell-e2e-1 is present, matching
+# each record-output result in turn.
 SECONDS=0
 SHELL_NOTIFICATION=""
 while true; do

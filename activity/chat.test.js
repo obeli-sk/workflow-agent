@@ -72,7 +72,21 @@ function sessionEvent(value) {
     };
 }
 
+// session-events payload: record-output batches events, so each row's
+// payload is a list. Every element here becomes its own single-event row
+// (oldest-first), matching the pre-batching test shapes exactly; batching
+// itself (several events sharing one row) gets its own dedicated tests.
 function responsesPayload(values, scanCursor = values.length, maxCursor = scanCursor) {
+    return {
+        responses: values.map((value) => sessionEvent([value])),
+        scan_cursor: scanCursor,
+        max_cursor: maxCursor,
+    };
+}
+
+// session-name payload: this join set is never batched (renames publish
+// through their own single-event stub), so each row's payload stays scalar.
+function sessionNamePayload(values, scanCursor = values.length, maxCursor = scanCursor) {
     return {
         responses: values.map(sessionEvent),
         scan_cursor: scanCursor,
@@ -100,7 +114,7 @@ test("models reports an unusable catalog on stderr", async () => {
 
 test("list queries sessions with derived included and renders rows", async () => {
     const { result, calls } = await run(["list"], [
-        ["GET", "join_set=session-name", () => jsonResponse(200, responsesPayload([
+        ["GET", "join_set=session-name", () => jsonResponse(200, sessionNamePayload([
             { name: "my-slug" },
         ]))],
         ["GET", "/v1/executions?", (url) => {
@@ -128,7 +142,7 @@ test("list queries sessions with derived included and renders rows", async () =>
 
 test("list ignores a stale working flag from an older turn", async () => {
     const { result } = await run(["list"], [
-        ["GET", "join_set=session-name", () => jsonResponse(200, responsesPayload([]))],
+        ["GET", "join_set=session-name", () => jsonResponse(200, sessionNamePayload([]))],
         ["GET", "ffqn_prefix=obelisk-agent%3Aworkflow%2Fworkflow.run-cancellable", () => jsonResponse(200, [{
             execution_id: RUN_ID,
             created_at: "2026-08-25T01:02:03Z",
@@ -151,7 +165,7 @@ test("names come off the dedicated session-name join set", async () => {
             // comes back oldest-to-newest even in the older direction.
             assert.ok(url.includes("direction=older"));
             assert.ok(url.includes("length=1"));
-            return jsonResponse(200, responsesPayload([{ name: "dedicated-slug" }]));
+            return jsonResponse(200, sessionNamePayload([{ name: "dedicated-slug" }]));
         }],
         ["GET", "ffqn_prefix=obelisk-agent%3Aworkflow%2Fworkflow.run-cancellable", () => jsonResponse(200, [{
             execution_id: RUN_ID,
@@ -507,6 +521,32 @@ test("interrupt arms the live script offer", async () => {
     assert.match(result.stdout, new RegExp(`interrupt sent to ${RUN_ID} \\(offer ${OFFER}\\)`));
     const put = calls.find((c) => c.method === "PUT");
     assert.ok(put.url.includes(`/executions/${encodeURIComponent(OFFER)}/stub`));
+});
+
+test("interrupt finds a live offer batched together with an older event", async () => {
+    // record-output batches events sharing one row; the row's internal order
+    // must survive pickLiveInterruptOffer's flatten-then-reverse newest-first
+    // scan, or a live shell_started could get shadowed by an older shell_output.
+    const OFFER = RUN_ID + ".o:9_1";
+    const { result } = await run(["interrupt", RUN_ID], [
+        ["GET", `/executions/${RUN_ID}/responses`, () => jsonResponse(200, {
+            responses: [
+                sessionEvent([{ shell_output: { id: "shell-0", script: "ls", result: { output: [], exit_code: 0 } } }]),
+                sessionEvent([
+                    { agent_status: { working: true, turn_index: 1 } },
+                    { shell_started: { id: "shell-live", offer_id: OFFER, turn_index: 1 } },
+                ]),
+            ],
+            scan_cursor: 2,
+            max_cursor: 2,
+        })],
+        ["PUT", "/stub", (url, init) => {
+            assert.equal(JSON.parse(init.body).ok, "peer-interrupt");
+            return jsonResponse(200, {});
+        }],
+    ]);
+    assert.equal(result.exit_code, 0);
+    assert.match(result.stdout, new RegExp(`interrupt sent to ${RUN_ID} \\(offer ${OFFER}\\)`));
 });
 
 test("interrupt refuses when the newest script already finished or none ran", async () => {

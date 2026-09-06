@@ -149,14 +149,15 @@ test("scanMarkers accepts the pre-id MAX_STEPS text fallback", () => {
 });
 
 // One GET /responses row as served (the record-output stub's result hides
-// three levels deep).
-function row(value) {
+// three levels deep). record-output batches events, so a row's payload is a
+// list; callers usually pass a single-element array.
+function row(values) {
     return {
         event: {
             created_at: "2026-08-25T00:00:00Z",
             event: {
                 join_set_id: "n:session-events",
-                event: { type: "child_execution_finished", result: { ok: { value } } },
+                event: { type: "child_execution_finished", result: { ok: { value: values } } },
             },
         },
     };
@@ -164,7 +165,7 @@ function row(value) {
 
 test("sessionEventValue unwraps the recorded stub payload", () => {
     const value = { agent_status: { working: false, turn_index: 1 } };
-    assert.deepEqual(sessionEventValue(row(value)), value);
+    assert.deepEqual(sessionEventValue(row([value])), [value]);
     assert.equal(sessionEventValue({ event: { event: { event: { type: "other" } } } }), null);
     assert.equal(sessionEventValue(undefined), null);
 });
@@ -173,10 +174,10 @@ test("latest-window scan lets the newest status win over older turns", () => {
     // Pages arrive oldest-first even in the older direction; a session parked
     // after its final answer must not read the earlier model turn's true.
     const scan = projectLatestWindow([
-        row({ agent_status: { working: true, turn_index: 0 } }),
-        row({ assistant_reply: { content_json: JSON.stringify([{ type: "text", text: "done" }]), turn_complete: true, turn_index: 0 } }),
-        row({ input_offered: { execution_id: "E_s.n:user_3", turn_index: 0 } }),
-        row({ agent_status: { working: false, turn_index: 0 } }),
+        row([{ agent_status: { working: true, turn_index: 0 } }]),
+        row([{ assistant_reply: { content_json: JSON.stringify([{ type: "text", text: "done" }]), turn_complete: true, turn_index: 0 } }]),
+        row([{ input_offered: { execution_id: "E_s.n:user_3", turn_index: 0 } }]),
+        row([{ agent_status: { working: false, turn_index: 0 } }]),
     ]);
     assert.equal(scan.working, false);
     assert.equal(scan.offerId, "E_s.n:user_3");
@@ -184,7 +185,7 @@ test("latest-window scan lets the newest status win over older turns", () => {
 });
 
 test("latest-window scan reports null flags when nothing matches", () => {
-    const scan = projectLatestWindow([row({ session_started: { prompt: "p" } })]);
+    const scan = projectLatestWindow([row([{ session_started: { prompt: "p" } }])]);
     assert.equal(scan.working, null);
     assert.equal(scan.offerId, null);
     assert.deepEqual(scan.markers, emptyMarkers());
@@ -193,15 +194,33 @@ test("latest-window scan reports null flags when nothing matches", () => {
 
 test("latest-window scan invalidates a turn's offer until the next one is advertised", () => {
     const ended = projectLatestWindow([
-        row({ input_offered: { execution_id: "E_s.n:user-0_2", turn_index: 0 } }),
-        row({ shell_output: { id: "shell-0", turn_complete: true, turn_index: 0 } }),
+        row([{ input_offered: { execution_id: "E_s.n:user-0_2", turn_index: 0 } }]),
+        row([{ shell_output: { id: "shell-0", turn_complete: true, turn_index: 0 } }]),
     ]);
     assert.equal(ended.offerId, null);
 
     const advanced = projectLatestWindow([
-        row({ input_offered: { execution_id: "E_s.n:user-0_2", turn_index: 0 } }),
-        row({ assistant_reply: { content_json: "[]", turn_complete: true, turn_index: 0 } }),
-        row({ input_offered: { execution_id: "E_s.n:user-1_1", turn_index: 1 } }),
+        row([{ input_offered: { execution_id: "E_s.n:user-0_2", turn_index: 0 } }]),
+        row([{ assistant_reply: { content_json: "[]", turn_complete: true, turn_index: 0 } }]),
+        row([{ input_offered: { execution_id: "E_s.n:user-1_1", turn_index: 1 } }]),
     ]);
     assert.equal(advanced.offerId, "E_s.n:user-1_1");
+});
+
+test("latest-window scan applies every event in a batched row, in order", () => {
+    // record-output now packs a shell turn's tail (shell_output, agent_status,
+    // input_offered) into one row; all three must still apply in order,
+    // exactly as if they had arrived as three separate rows.
+    const scan = projectLatestWindow([
+        row([{ input_offered: { execution_id: "E_s.n:user-0_2", turn_index: 0 } }]),
+        row([
+            { shell_output: { id: "shell-0", turn_complete: true, turn_index: 0 } },
+            { agent_status: { working: false, turn_index: 0 } },
+            { input_offered: { execution_id: "E_s.n:user-1_1", turn_index: 1 } },
+        ]),
+    ]);
+    assert.equal(scan.offerId, "E_s.n:user-1_1");
+    assert.equal(scan.working, false);
+    assert.equal(scan.markers.lastShellTurn, 0);
+    assert.equal(scan.markers.hasShellEvents, true);
 });

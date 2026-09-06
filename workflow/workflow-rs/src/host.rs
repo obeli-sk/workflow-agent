@@ -40,6 +40,7 @@ impl RealHost {
             .map_err(|e| format!("ask-user submit failed: {e:?}"))?;
         self.notifications
             .human_input_requested(execution_id.id.clone(), question)?;
+        self.notifications.flush()?;
         let result = workflow_support::join_next(&join_set)
             .map_err(|e| format!("ask-user await failed: {e:?}"))?;
         let completed_id = last_response_execution_id(&join_set);

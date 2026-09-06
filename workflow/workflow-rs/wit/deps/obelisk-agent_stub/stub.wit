@@ -140,7 +140,10 @@ interface stub {
   }
 
   injection: func() -> result<session-input, string>;
-  record-output: func() -> result<session-event, string>;
+  // Returns a list so a burst of events published back-to-back (e.g. a shell
+  // turn's shell-output/agent-status/input-offered tail) can be recorded as
+  // one durable batch instead of one round trip per event.
+  record-output: func() -> result<list<session-event>, string>;
   // Renames publish on their own join set (never through record-output), so
   // consumers fetch a session's current name with one bounded request instead
   // of racing the mixed event stream.

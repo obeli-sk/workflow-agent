@@ -180,9 +180,11 @@ export function emptyMarkers() {
     return { lastReplyTurn: null, stepLimitTurn: null, lastShellTurn: null, hasShellEvents: false };
 }
 
-// Unwraps one recorded-notification row into its SessionEvent payload: the
-// record-output stub's result hides three levels deep. Shared by every
-// /responses reader (webhook/lib/responses.js, activity/chat.js).
+// Unwraps one recorded-notification row into its stub payload: hides three
+// levels deep, and generic across join sets. On the session-events join set
+// this is a list<session-event> (record-output batches several events into
+// one response); on session-name it's a lone session-renamed-event. Shared
+// by every /responses reader (webhook/lib/responses.js, activity/chat.js).
 export function sessionEventValue(response) {
     const event = response?.event?.event?.event;
     if (!event || event.type !== "child_execution_finished") return null;
@@ -203,15 +205,18 @@ export function projectLatestWindow(responses, valueOf = sessionEventValue) {
     let working = null;
     let offerId = null;
     for (const response of responses ?? []) {
-        const value = valueOf(response);
-        if (!value || typeof value !== "object") continue;
-        scanMarkers(markers, value);
-        if (sessionEventEndsTurn(value)) offerId = null;
-        if (typeof value.agent_status?.working === "boolean") {
-            working = value.agent_status.working;
-        }
-        if (typeof value.input_offered?.execution_id === "string") {
-            offerId = value.input_offered.execution_id;
+        // record-output now batches several events into one response; each
+        // element of that list is applied in order, same as separate rows.
+        for (const value of valueOf(response) ?? []) {
+            if (!value || typeof value !== "object") continue;
+            scanMarkers(markers, value);
+            if (sessionEventEndsTurn(value)) offerId = null;
+            if (typeof value.agent_status?.working === "boolean") {
+                working = value.agent_status.working;
+            }
+            if (typeof value.input_offered?.execution_id === "string") {
+                offerId = value.input_offered.execution_id;
+            }
         }
     }
     return { working, offerId, markers };

@@ -533,27 +533,51 @@ struct NotificationJoinSetsState {
 pub(crate) struct Notifications {
     state: Rc<RefCell<NotificationJoinSetsState>>,
     turn_index: Rc<RefCell<u64>>,
+    // Buffered until flush(): a burst of events published back-to-back (e.g.
+    // a shell turn's ShellOutput/AgentStatus/InputOffered tail) lands as one
+    // durable record instead of one submit+stub+await round trip per event,
+    // so the composer isn't left waiting on several sequential commits
+    // before it can re-enable. Every call site uses SESSION_EVENTS_JOIN_SET.
+    pending: Rc<RefCell<Vec<SessionEvent>>>,
 }
 
 impl Notifications {
     fn notify(&self, join_set_name: &str, event: &SessionEvent) -> Result<(), String> {
+        debug_assert_eq!(join_set_name, SESSION_EVENTS_JOIN_SET);
+        self.pending.borrow_mut().push(event.clone());
+        Ok(())
+    }
+
+    /// Publishes every buffered event as a single record-output call. Callers
+    /// must flush right before any real blocking wait (take_user_event,
+    /// call_llm_with_user's race loop, ask_user, exec_shell's bash.exec) so
+    /// the transcript is always up to date by the time the session goes idle
+    /// waiting on the outside.
+    pub(crate) fn flush(&self) -> Result<(), String> {
+        let events = std::mem::take(&mut *self.pending.borrow_mut());
+        if events.is_empty() {
+            return Ok(());
+        }
         let mut state = self.state.borrow_mut();
-        if !state.join_sets.contains_key(join_set_name) {
-            let join_set = workflow_support::join_set_create_named(join_set_name)
-                .map_err(|e| format!("{join_set_name} join set: {e:?}"))?;
-            state.join_sets.insert(join_set_name.to_string(), join_set);
+        if !state.join_sets.contains_key(SESSION_EVENTS_JOIN_SET) {
+            let join_set = workflow_support::join_set_create_named(SESSION_EVENTS_JOIN_SET)
+                .map_err(|e| format!("{SESSION_EVENTS_JOIN_SET} join set: {e:?}"))?;
+            state
+                .join_sets
+                .insert(SESSION_EVENTS_JOIN_SET.to_string(), join_set);
         }
         let join_set = state
             .join_sets
-            .get(join_set_name)
+            .get(SESSION_EVENTS_JOIN_SET)
             .expect("notification join set must exist");
         let execution_id = session_ext::record_output_submit(join_set);
-        session_stub::record_output_stub(&execution_id, Ok(event)).map_err(|e| format!("{e:?}"))?;
+        session_stub::record_output_stub(&execution_id, Ok(&events))
+            .map_err(|e| format!("{e:?}"))?;
         let published = session_ext::record_output_await_next(join_set)
             .map_err(|e| format!("{e:?}"))?
             .map_err(|e| format!("session event failed: {e}"))?;
         let last_id = last_response_execution_id(join_set);
-        if last_id.as_deref() != Some(execution_id.id.as_str()) || published != *event {
+        if last_id.as_deref() != Some(execution_id.id.as_str()) || published != events {
             return Err(format!("unexpected session event response: {last_id:?}"));
         }
         Ok(())
@@ -772,7 +796,9 @@ pub fn agent_loop(
         &SessionEvent::SessionStarted(SessionStartedEvent {
             // 9: session-input now has an interrupt variant, delivered through
             // the same live input offer as prompt/shell, to stop a turn.
-            protocol_version: 9,
+            // 10: record-output batches multiple events into one response
+            // (list<session-event>) instead of publishing exactly one.
+            protocol_version: 10,
             prompt: prompt.clone(),
             backend: model.clone(),
             effort: effort.clone(),
@@ -1267,6 +1293,10 @@ fn exec_shell(
             turn_index,
         }),
     )?;
+    // bash.exec below can itself block on host calls (sleep, curl, obelisk
+    // calls); flush now so the running indicator/interrupt offer show up
+    // immediately instead of waiting on the whole script to finish.
+    notifications.flush()?;
     bash.set_script_watch(Some(guard.watcher()));
     bash.set_log_context(Some(format!("turn={turn_index} step={step} id={id}")));
     log_line(&format!("exec_shell({id}) bash.exec starting"));
@@ -1357,6 +1387,7 @@ fn call_llm_with_user(
             // A typed `-await-next` here would mark the next response processed
             // even on a function mismatch, consuming the wrong child.
             let join_set = session.join_set.as_ref().expect("turn join set is open");
+            notifications.flush()?;
             let _ = workflow_support::join_next(join_set).map_err(|e| format!("{e:?}"))?;
             let completed_id = last_response_execution_id(join_set)
                 .expect("user join set has only child executions, never delays");
@@ -1550,6 +1581,7 @@ fn take_user_event(
     // generically, confirm the completed id is the outstanding injection offer,
     // then fetch its typed value with `injection-get`.
     let join_set = session.join_set.as_ref().expect("turn join set is open");
+    notifications.flush()?;
     let _ = workflow_support::join_next(join_set).map_err(|e| format!("{e:?}"))?;
     let completed_id = last_response_execution_id(join_set)
         .expect("user join set has only child executions, never delays");

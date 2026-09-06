@@ -30,27 +30,29 @@ export async function loadResponses(execId, startCursor = 0) {
         } catch (_) { break; }
         const responses = payload.responses || [];
         for (const r of responses) {
-            const value = sessionEventValue(r);
-            if (!value) continue;
-            const projection = {
-                replies,
-                toolResults,
-                userMessages,
-                shellEvents,
-                turnStarts,
-                shellStarts,
-                humanInputEvents,
-                agentErrors,
-                sessionStarted,
-                inputOffer,
-                agentWorking,
-                sessionName,
-            };
-            appendSessionEvent(projection, value, r);
-            inputOffer = projection.inputOffer;
-            agentWorking = projection.agentWorking;
-            sessionStarted = projection.sessionStarted;
-            sessionName = projection.sessionName;
+            // record-output now batches several events into one response;
+            // each element is applied in order, same as separate rows.
+            for (const value of sessionEventValue(r) ?? []) {
+                const projection = {
+                    replies,
+                    toolResults,
+                    userMessages,
+                    shellEvents,
+                    turnStarts,
+                    shellStarts,
+                    humanInputEvents,
+                    agentErrors,
+                    sessionStarted,
+                    inputOffer,
+                    agentWorking,
+                    sessionName,
+                };
+                appendSessionEvent(projection, value, r);
+                inputOffer = projection.inputOffer;
+                agentWorking = projection.agentWorking;
+                sessionStarted = projection.sessionStarted;
+                sessionName = projection.sessionName;
+            }
         }
         const next = payload.scan_cursor;
         if (typeof next !== "number" || next <= cursor) break;

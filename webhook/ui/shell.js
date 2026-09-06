@@ -1003,12 +1003,20 @@ function renderComposer() {
     input.disabled = true;
     send.disabled = true;
     stop.disabled = true;
-  } else if (gate || !sessionReady) {
+  } else if (gate) {
+    // A pending ask owns its own inline input; the composer just gets out of the way.
     input.placeholder = 'Respond to the request above...';
-    if (!gate) input.placeholder = 'Preparing the session...';
     input.disabled = true;
     send.disabled = true;
     stop.disabled = true;
+  } else if (!sessionReady) {
+    // No offer to submit against yet (session still starting, or the previous
+    // turn hasn't been rearmed). Keep the textarea open so the user can keep
+    // typing/queue their next message; only submitting is blocked.
+    input.placeholder = 'Preparing the session...';
+    input.disabled = false;
+    send.disabled = true;
+    stop.disabled = false;
   } else {
     input.disabled = false;
     send.disabled = false;
@@ -1773,6 +1781,7 @@ document.getElementById('composer-stop').addEventListener('click', () => {
 document.getElementById('composer-input').addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter' && !ev.shiftKey) {
     ev.preventDefault();
+    if (document.getElementById('composer-send').disabled) return;
     sendComposer();
     scrollTranscriptToBottom();
   }

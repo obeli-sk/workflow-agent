@@ -408,20 +408,22 @@ async function walkResponses(executionId) {
             + `&length=${RESPONSE_PAGE}`,
         );
         for (const r of payload.responses ?? []) {
-            const value = sessionEventValue(r);
-            if (!value) continue;
-            scanMarkers(markers, value);
-            if (sessionEventEndsTurn(value)) inputOffer = null;
-            if (value.session_started) sessionStarted = projectSessionStarted(value.session_started);
-            else if (value.input_offered) {
-                inputOffer = {
-                    id: strOr(value.input_offered.execution_id),
-                    turn_index: intOrNull(value.input_offered.turn_index),
-                };
-            } else if (value.agent_status) working = value.agent_status.working === true;
-            else if (value.session_renamed) name = strOr(value.session_renamed.name);
-            const event = projectEvent(value, createdAtOf(r));
-            if (event) events.push(event);
+            // record-output now batches several events into one response;
+            // each element is applied in order, same as separate rows.
+            for (const value of sessionEventValue(r) ?? []) {
+                scanMarkers(markers, value);
+                if (sessionEventEndsTurn(value)) inputOffer = null;
+                if (value.session_started) sessionStarted = projectSessionStarted(value.session_started);
+                else if (value.input_offered) {
+                    inputOffer = {
+                        id: strOr(value.input_offered.execution_id),
+                        turn_index: intOrNull(value.input_offered.turn_index),
+                    };
+                } else if (value.agent_status) working = value.agent_status.working === true;
+                else if (value.session_renamed) name = strOr(value.session_renamed.name);
+                const event = projectEvent(value, createdAtOf(r));
+                if (event) events.push(event);
+            }
         }
         const next = payload.scan_cursor;
         if (typeof next !== "number" || next <= cursor) break;
@@ -474,8 +476,12 @@ async function cmdInterrupt(args) {
     let offerId = null;
     try {
         const payload = await latestResponses(id);
-        // The listing is oldest-first; liveness scans newest-first.
-        offerId = pickLiveInterruptOffer((payload.responses ?? []).map(sessionEventValue).reverse());
+        // The listing is oldest-first; liveness scans newest-first. Flatten
+        // each response's batched event list before reversing, so a row's
+        // internal event order stays intact relative to older/newer rows.
+        offerId = pickLiveInterruptOffer(
+            (payload.responses ?? []).flatMap((r) => sessionEventValue(r) ?? []).reverse(),
+        );
     } catch (_) { offerId = null; }
     if (!offerId) {
         return fail(1, `chat: no running script found in ${id}; `
