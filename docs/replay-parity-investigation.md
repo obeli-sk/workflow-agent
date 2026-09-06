@@ -55,13 +55,17 @@ engine bugs:
    `vendor/just-bash-rs/src/commands/misc.rs`): JS echoed the bare command
    name; Rust simulates `PATH` resolution and prints `/usr/bin/<name>`.
 2. Help text indentation (`vendor/just-bash/src/obelisk-pack.js` vs
-   `vendor/just-bash-rs/src/obelisk_pack.rs`): Rust's multi-line string
-   literals use a trailing `\` to continue onto the next source line —
+   `vendor/just-bash-rs/src/obelisk_pack.rs`, and the same pattern again in
+   `vendor/just-bash/src/obelisk-mcp.js` vs `vendor/just-bash-rs/src/obelisk_mcp.rs`'s
+   `server_help`/`registry_help`, fixed in `1905eaa`): Rust's multi-line
+   string literals use a trailing `\` to continue onto the next source line —
    **which silently strips *all* leading whitespace on that next line**, a
    real Rust language quirk, not a formatting choice. Visually-indented
    subcommand lists in the `.rs` source (`  list ...`, `  wit ...`) actually
    compile to unindented strings. JS's literals don't have this quirk, so
-   they kept their source indentation and diverged.
+   they kept their source indentation and diverged. Any other `*_help()`-style
+   function using this backslash-continuation trick in Rust is a candidate;
+   grep the `.rs` file for lines ending in `\` to find them all in one pass.
 3. stdout/stderr chunk order (`vendor/just-bash/src/interpreter.js`'s
    `runSimple` vs `vendor/just-bash-rs/src/interpreter.rs`'s
    `run_pipeline`): not a content divergence at all, a *structural* one.
