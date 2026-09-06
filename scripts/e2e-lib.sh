@@ -106,27 +106,6 @@ e2e_select_backend() {
 # stranded session. Restores ORIGINAL_DEPLOY as the active deployment before
 # returning (even on failure), so callers can keep driving SESSION_ID
 # afterward if they need to.
-#
-# KNOWN-RED on some callers (test-e2e-chat.sh, test-e2e-target-deploy.sh,
-# test-e2e-deploy-outside-root.sh), an Obelisk-core gap, not a
-# session.rs/session.js bug: each language's own native execution trace is
-# byte-for-byte identical for these scenarios (verified by diffing
-# t_execution_log directly), but replaying under the other language
-# nondeterminism-fails at an `n:user-{turn}` join-set close, right after the
-# turn's trailing `session-events` notify(es). The replay trace
-# (`OBELISK__LOG__CONSOLE__LEVEL=info,obeli_sk_wasm_workers::workflow::
-# event_history=trace`) shows the mismatching close is emitted from an
-# `execution_replay:finalize` span, not the normal
-# `execution_replay:apply_inner` matching loop that produced everything
-# else correctly - a replay-finalize bug, not a control-flow divergence.
-# Reproduces on both the simple `test-e2e-redeploy.sh`-shaped one-turn
-# scripts that call `obelisk deployment apply` and the many-turn
-# `test-e2e-chat.sh` (no `apply` involved at all), so it is not specific to
-# either; `test-e2e-redeploy.sh` (submit only) and `test-e2e-interrupt.sh`
-# (several turns, real interrupts) both pass, so the trigger is still
-# unscoped. Needs investigation in Obelisk-core's
-# crates/wasm-workers/src/workflow/replay_advance.rs /
-# workflow_js_worker.rs, not attempted here.
 e2e_verify_replay_parity() {
     local original_backend="$1"
     local original_deploy="$2"

@@ -70,6 +70,7 @@ run_shell_turn() {
         sleep 1
     done
     SHELL_STDOUT="$(node scripts/e2e-json.js shell-stdout <<<"$notification")"
+    SHELL_STDERR="$(node scripts/e2e-json.js shell-stderr <<<"$notification")"
 }
 
 echo ">>> checking ask-user lifecycle through the session projection"
@@ -226,6 +227,16 @@ run_shell_turn "shell-e2e-ls" "touch b A a B && ls -la"
 LS_ORDER="$(printf '%s\n' "$SHELL_STDOUT" | sed -n 's/^[-d][^ ]* 1 user user [ ]*[0-9][0-9]* Jan  1 00:00 //p' | paste -sd ' ' -)"
 if [[ "$LS_ORDER" != ". .. a A apps B b deployment mcp" ]]; then
     echo "ls -la output did not use the replay-stable format/order: $SHELL_STDOUT" >&2
+    exit 1
+fi
+run_shell_turn "shell-e2e-submit-error" "sed 's/GITHUB_TOKEN/REPLAY_MISSING_SECRET/g' deployment/current/deployment.toml > replay-invalid.toml; obelisk deployment submit replay-invalid.toml"
+if [[ "$SHELL_STDERR" != *"REPLAY_MISSING_SECRET"* ]]; then
+    echo "deployment submit did not surface its typed server error: $SHELL_STDERR" >&2
+    exit 1
+fi
+run_shell_turn "shell-e2e-submit-help" "obelisk deployment submit --help"
+if [[ "$SHELL_STDOUT" != *"any filename -- not just"* ]]; then
+    echo "deployment submit help did not match the Rust backend: $SHELL_STDOUT" >&2
     exit 1
 fi
 e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"

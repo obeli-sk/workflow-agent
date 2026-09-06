@@ -99,7 +99,20 @@ test("help flags print usage at every level", () => {
 
     out = executeObelisk(i, words("deployment submit --help"), "", host);
     assert.equal(out.exitCode, 0);
-    assert.match(out.stdout, /PATH-TO-DEPLOYMENT\.TOML/);
+    assert.equal(out.stdout, [
+        "Usage: obelisk deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML",
+        "",
+        "Store the edited deployment as a new inactive deployment and print its ID. PATH",
+        "is the path to the deployment TOML file to submit (any filename -- not just the",
+        'literal "deployment.toml"); it must be a file, not a directory, matching real',
+        "obelisk. Digests are recomputed from the files, so leave them out.",
+        "",
+        "Options:",
+        "--description TEXT               Human-readable description for the new deployment.",
+        "--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.",
+        "(alias: --allow-unavailable-runtime-config)",
+        "",
+    ].join("\n"));
 
     // `call -h` reaches the call help even though the ffqn sits in the
     // action slot, but a help flag after `--` is a positional parameter.

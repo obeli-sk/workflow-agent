@@ -841,3 +841,12 @@ natively (small algorithms) rather than vendoring the npm package's source.
     entries by top-level key, and Rust exposed adjacent same-FD shell chunks
     while JS coalesced them. Matching both representations makes the full
     GitHub-mount E2E replay cleanly in both directions.
+  - **Update, replay-finalize gap resolved**: the closing `n:user-{turn}` event
+    was cleanup after an earlier self-stub hash mismatch, not an Obelisk-core
+    replay bug. Rust and JS rendered `ls` output differently (including long
+    format and filename collation), decoded typed `permanent-error` and
+    `transient-error` values differently, and emitted different deployment
+    submit help text. Aligning those observable shell results lets the original
+    419-version Rust execution replay under JS to its genuine blocked state.
+    `test-e2e-agent-workflow.sh` now covers `ls -la`, a typed deployment-submit
+    failure, and deployment-submit help before switching backends for replay.

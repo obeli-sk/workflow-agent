@@ -91,6 +91,12 @@ switch (command) {
         if (result.exit_code) process.stderr.write(`\n[exit ${result.exit_code}]\n`);
         break;
     }
+    case "shell-stderr": {
+        const record = json()?.ok?.shell_output;
+        if (!record) process.exit(1);
+        process.stdout.write(shellStream(record.result ?? {}, "stderr"));
+        break;
+    }
     case "check-shell-notification": {
         const record = json()?.ok?.shell_output;
         const valid = record?.id === "shell-e2e-1"

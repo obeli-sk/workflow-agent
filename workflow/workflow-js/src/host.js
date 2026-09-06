@@ -44,9 +44,18 @@ export function createHost() {
 function childErrorMessage(error) {
     if (typeof obelisk !== "undefined" && error instanceof obelisk.ChildError) {
         if (error.value !== undefined) {
-            return typeof error.value === "string" ? error.value : JSON.stringify(error.value);
+            return decodeChildErrorValue(error.value);
         }
         return error.message;
     }
     return String(error);
+}
+
+export function decodeChildErrorValue(value) {
+    if (typeof value === "string") return value;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+        if (typeof value.permanent_error === "string") return value.permanent_error;
+        if (typeof value.transient_error === "string") return value.transient_error;
+    }
+    return JSON.stringify(value);
 }
