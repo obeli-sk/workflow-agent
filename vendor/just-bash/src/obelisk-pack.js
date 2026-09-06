@@ -689,20 +689,25 @@ function actionHelp(group, action) {
     return groupHelp(group);
 }
 
+// PORT: obelisk_pack.rs's `help()` - Rust's multi-line string literals with a
+// trailing `\` continuation strip ALL leading whitespace on the next source
+// line (a language quirk, not a formatting choice), so the visually-indented
+// subcommand names in the .rs source actually compile to unindented lines.
+// These JS literals must match that stripped (unindented) output exactly.
 const helpText =
-    "Usage: obelisk <command> [args]\n\nQuery and control the running Obelisk server, and edit the deployment checked\nout under /workspace/deployment/current.\n\nCommands:\n  functions    List deployed functions, or print a function's WIT.\n  executions   List executions, or show one execution's record, logs, or result.\n  call         Call a deployed function and print its result.\n  deployment   Inspect, edit, submit, and activate deployments.\n  generate     Print a starter configuration file.\n\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
+    "Usage: obelisk <command> [args]\n\nQuery and control the running Obelisk server, and edit the deployment checked\nout under /workspace/deployment/current.\n\nCommands:\nfunctions    List deployed functions, or print a function's WIT.\nexecutions   List executions, or show one execution's record, logs, or result.\ncall         Call a deployed function and print its result.\ndeployment   Inspect, edit, submit, and activate deployments.\ngenerate     Print a starter configuration file.\n\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
 
 const functionsHelp =
-    "Usage: obelisk functions <subcommand>\n\nList deployed functions, or print a single function's WIT interface.\n\nSubcommands:\n  list [--prefix PREFIX] [--length N] [--json]   List functions and their signatures.\n  wit FFQN                                        Print the WIT interface for one function.\n";
+    "Usage: obelisk functions <subcommand>\n\nList deployed functions, or print a single function's WIT interface.\n\nSubcommands:\nlist [--prefix PREFIX] [--length N] [--json]   List functions and their signatures.\nwit FFQN                                        Print the WIT interface for one function.\n";
 
 const executionsHelp =
-    "Usage: obelisk executions <subcommand>\n\nList executions, or show one execution's record, logs, or result.\n\nSubcommands:\n  list [--ffqn-prefix PREFIX] [--id-prefix PREFIX] [--show-derived] [--hide-finished] [--length N]\n                                                  List executions (most recent first).\n  get ID                                          Show an execution's record.\n  logs ID [--length N]                            Show an execution's logs.\n  result ID                                       Show an execution's result value.\n";
+    "Usage: obelisk executions <subcommand>\n\nList executions, or show one execution's record, logs, or result.\n\nSubcommands:\nlist [--ffqn-prefix PREFIX] [--id-prefix PREFIX] [--show-derived] [--hide-finished] [--length N]\nList executions (most recent first).\nget ID                                          Show an execution's record.\nlogs ID [--length N]                            Show an execution's logs.\nresult ID                                       Show an execution's result value.\n";
 
 const callHelp =
-    "Usage: obelisk call FFQN [PARAMS_JSON]\n       obelisk call FFQN -- PARAM...\n\nCall a deployed function and print its result. Pass parameters as one JSON array\nin WIT parameter order, or after `--` as positional values (each parsed as JSON\nwhen valid, otherwise as a string). With neither, parameters are read from stdin,\ndefaulting to `[]`.\n";
+    "Usage: obelisk call FFQN [PARAMS_JSON]\nobelisk call FFQN -- PARAM...\n\nCall a deployed function and print its result. Pass parameters as one JSON array\nin WIT parameter order, or after `--` as positional values (each parsed as JSON\nwhen valid, otherwise as a string). With neither, parameters are read from stdin,\ndefaulting to `[]`.\n";
 
 const deploymentHelp =
-    "Usage: obelisk deployment <subcommand>\n\nInspect, edit, submit, and activate deployments. Edits under\n/workspace/deployment/current are local until `submit` or `apply`.\n\nSubcommands:\n  current                   Print the active deployment ID.\n  refresh                   Re-fetch the active deployment, discarding local edits.\n  check [PATH]              Report a deployment's manifest and locally-edited sources.\n  submit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\n  switch ID [OPTIONS]       Activate a stored deployment (verified on next server restart).\n  apply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\nRun `obelisk deployment <subcommand> --help` for a subcommand's options.\n";
+    "Usage: obelisk deployment <subcommand>\n\nInspect, edit, submit, and activate deployments. Edits under\n/workspace/deployment/current are local until `submit` or `apply`.\n\nSubcommands:\ncurrent                   Print the active deployment ID.\nrefresh                   Re-fetch the active deployment, discarding local edits.\ncheck [PATH]              Report a deployment's manifest and locally-edited sources.\nsubmit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\nswitch ID [OPTIONS]       Activate a stored deployment (verified on next server restart).\napply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\nRun `obelisk deployment <subcommand> --help` for a subcommand's options.\n";
 
 const deploymentSubmitHelp =
     "Usage: obelisk deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML\n\nStore the edited deployment as a new inactive deployment and print its ID. PATH\nis the path to the deployment TOML file to submit (any filename -- not just the\nliteral \"deployment.toml\"); it must be a file, not a directory, matching real\nobelisk. Digests are recomputed from the files, so leave them out.\n\nOptions:\n--description TEXT               Human-readable description for the new deployment.\n--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n(alias: --allow-unavailable-runtime-config)\n";
@@ -717,7 +722,7 @@ const deploymentApplyHelp =
     "Usage: obelisk deployment apply ID\n\nHot-redeploy a stored deployment now (fails if it cannot be applied live).\n";
 
 const generateHelp =
-    "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file.\n\nSubcommands:\n  deployment   Print a default deployment.toml with every option documented.\n";
+    "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\n";
 
 const generateDeploymentHelp =
     "Usage: obelisk generate deployment\n\nPrint a default deployment.toml with every option documented as comments.\nRedirect it to a file to scaffold a new deployment, e.g.\n`obelisk generate deployment > deployment.toml`.\n";
