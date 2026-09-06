@@ -13,6 +13,20 @@ function fresh() {
     return new Bash({ cwd: "/workspace" });
 }
 
+test("ls -la matches the Rust shell's replay-stable format", () => {
+    const bash = fresh();
+    bash.vfs.mkdirp("/workspace/apps");
+    bash.vfs.writeFile("/workspace/note", "hé");
+    assert.equal(
+        bash.exec("ls -la").stdout,
+        "total 4\n" +
+        "drwxr-xr-x 1 user user     0 Jan  1 00:00 .\n" +
+        "drwxr-xr-x 1 user user     0 Jan  1 00:00 ..\n" +
+        "drwxr-xr-x 1 user user     0 Jan  1 00:00 apps\n" +
+        "-rw-r--r-- 1 user user     3 Jan  1 00:00 note\n",
+    );
+});
+
 test("chmod validates mode syntax and target existence", () => {
     const bash = fresh();
     bash.vfs.writeFile("/f.txt", "x");

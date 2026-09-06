@@ -4,6 +4,7 @@
 
 import { ok, fail, unknownOption } from "./core.js";
 import { FsError } from "../fs.js";
+import { utf8Encode } from "../utf8.js";
 
 function flagsOf(args) {
     const flags = new Set();
@@ -20,28 +21,25 @@ function flagsOf(args) {
 export const fsutil = {
     ls(interp, args) {
         const { flags, rest } = flagsOf(args.slice(1));
-        const targets = rest.length ? rest : ["."];
-        const outputs = [];
-        for (const t of targets) {
-            const path = interp.resolvePath(t);
-            if (!interp.vfs.exists(path)) return fail(`ls: cannot access '${t}': No such file or directory\n`, 1);
-            if (interp.vfs.isFile(path)) { outputs.push(t); continue; }
-            let names = interp.vfs.readdir(path);
-            if (!flags.has("a")) names = names.filter((n) => !n.startsWith("."));
-            if (flags.has("l")) {
-                const lines = names.map((n) => {
-                    const child = `${path === "/" ? "" : path}/${n}`;
-                    const isDir = interp.vfs.isDir(child);
-                    const size = isDir ? 0 : interp.vfs.readFile(child).length;
-                    return `${isDir ? "d" : "-"}rwxr-xr-x 1 agent agent ${size} ${n}`;
-                });
-                outputs.push(lines.join("\n"));
+        const targets = rest.length
+            ? rest.map((display) => ({ display, path: interp.resolvePath(display) }))
+            : [{ display: interp.cwd, path: interp.cwd }];
+        const multiple = targets.length > 1;
+        const blocks = [];
+        let stderr = "";
+        let exitCode = 0;
+        for (const { display, path } of targets) {
+            if (interp.vfs.isFile(path)) {
+                blocks.push(flags.has("l") ? lsLongLine("-rw-r--r--", fileSize(interp, path), display) : `${display}\n`);
+            } else if (interp.vfs.isDir(path)) {
+                const header = multiple ? `${path}:\n` : "";
+                blocks.push(header + lsDir(interp, path, flags.has("l"), flags.has("a")));
             } else {
-                outputs.push(names.join("\n"));
+                stderr += `ls: cannot access '${display}': No such file or directory\n`;
+                exitCode = 1;
             }
         }
-        const text = outputs.filter((s) => s.length).join("\n");
-        return ok(text + (text ? "\n" : ""));
+        return { stdout: blocks.join(multiple ? "\n" : ""), stderr, exitCode };
     },
 
     cat(interp, args, stdin) {
@@ -503,6 +501,35 @@ export const fsutil = {
         return { stdout: outLines.join(""), stderr, exitCode: stderr ? 1 : 0 };
     },
 };
+
+function fileSize(interp, path) {
+    return utf8Encode(interp.vfs.readFile(path)).length;
+}
+
+function lsLongLine(mode, size, name) {
+    return `${mode} 1 user user ${String(size).padStart(5)} Jan  1 00:00 ${name}\n`;
+}
+
+function lsDir(interp, path, long, all) {
+    let names = interp.vfs.readdir(path);
+    if (all) names.push(".", "..");
+    else names = names.filter((name) => !name.startsWith("."));
+    names.sort((a, b) => a.localeCompare(b));
+    if (!long) return names.map((name) => `${name}\n`).join("");
+
+    let output = `total ${names.length}\n`;
+    for (const name of names) {
+        if (name === "." || name === "..") {
+            output += lsLongLine("drwxr-xr-x", 0, name);
+        } else {
+            const child = `${path === "/" ? "" : path}/${name}`;
+            output += interp.vfs.isDir(child)
+                ? lsLongLine("drwxr-xr-x", 0, name)
+                : lsLongLine("-rw-r--r--", fileSize(interp, child), name);
+        }
+    }
+    return output;
+}
 
 function copyDir(vfs, src, dest) {
     vfs.mkdirp(dest);
