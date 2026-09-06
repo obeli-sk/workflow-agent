@@ -20,6 +20,7 @@ import {
     projectSessionState,
     scanMarkers,
     sessionEventEndsTurn,
+    sessionEventList,
     sessionEventValue,
 } from "../shared/session-state.js";
 
@@ -408,9 +409,11 @@ async function walkResponses(executionId) {
             + `&length=${RESPONSE_PAGE}`,
         );
         for (const r of payload.responses ?? []) {
-            // record-output now batches several events into one response;
-            // each element is applied in order, same as separate rows.
-            for (const value of sessionEventValue(r) ?? []) {
+            // record-output now batches several events into one response
+            // (older rows still hold a lone event; sessionEventList
+            // normalizes both to a list). Each element is applied in order,
+            // same as separate rows.
+            for (const value of sessionEventList(r)) {
                 scanMarkers(markers, value);
                 if (sessionEventEndsTurn(value)) inputOffer = null;
                 if (value.session_started) sessionStarted = projectSessionStarted(value.session_started);
@@ -480,7 +483,7 @@ async function cmdInterrupt(args) {
         // each response's batched event list before reversing, so a row's
         // internal event order stays intact relative to older/newer rows.
         offerId = pickLiveInterruptOffer(
-            (payload.responses ?? []).flatMap((r) => sessionEventValue(r) ?? []).reverse(),
+            (payload.responses ?? []).flatMap(sessionEventList).reverse(),
         );
     } catch (_) { offerId = null; }
     if (!offerId) {

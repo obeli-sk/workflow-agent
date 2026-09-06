@@ -5,6 +5,7 @@ import {
     emptyMarkers,
     projectLatestWindow,
     sessionEventEndsTurn,
+    sessionEventList,
     sessionEventValue,
 } from "../../shared/session-state.js";
 
@@ -30,9 +31,11 @@ export async function loadResponses(execId, startCursor = 0) {
         } catch (_) { break; }
         const responses = payload.responses || [];
         for (const r of responses) {
-            // record-output now batches several events into one response;
-            // each element is applied in order, same as separate rows.
-            for (const value of sessionEventValue(r) ?? []) {
+            // record-output now batches several events into one response
+            // (older rows still hold a lone event; sessionEventList
+            // normalizes both to a list). Each element is applied in order,
+            // same as separate rows.
+            for (const value of sessionEventList(r)) {
                 const projection = {
                     replies,
                     toolResults,

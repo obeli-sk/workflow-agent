@@ -12,6 +12,7 @@ import {
     projectLatestWindow,
     projectSessionState,
     scanMarkers,
+    sessionEventList,
     sessionEventValue,
 } from "./session-state.js";
 
@@ -163,6 +164,21 @@ function row(values) {
     };
 }
 
+// A row written before record-output started batching (protocol_version <
+// 10): a lone event object, not a list. Old rows never disappear once
+// recorded, so readers must keep accepting this shape indefinitely.
+function oldRow(value) {
+    return {
+        event: {
+            created_at: "2026-08-25T00:00:00Z",
+            event: {
+                join_set_id: "n:session-events",
+                event: { type: "child_execution_finished", result: { ok: { value } } },
+            },
+        },
+    };
+}
+
 test("sessionEventValue unwraps the recorded stub payload", () => {
     const value = { agent_status: { working: false, turn_index: 1 } };
     assert.deepEqual(sessionEventValue(row([value])), [value]);
@@ -223,4 +239,29 @@ test("latest-window scan applies every event in a batched row, in order", () => 
     assert.equal(scan.working, false);
     assert.equal(scan.markers.lastShellTurn, 0);
     assert.equal(scan.markers.hasShellEvents, true);
+});
+
+test("sessionEventList normalizes both old scalar rows and new batched rows", () => {
+    const value = { agent_status: { working: true, turn_index: 0 } };
+    assert.deepEqual(sessionEventList(oldRow(value)), [value]);
+    assert.deepEqual(sessionEventList(row([value])), [value]);
+    assert.deepEqual(sessionEventList(row([value, value])), [value, value]);
+    assert.deepEqual(sessionEventList({ event: { event: { event: { type: "other" } } } }), []);
+});
+
+test("latest-window scan does not crash on pre-batching rows recorded before this protocol bump", () => {
+    // Regression: a plain event object is not iterable. A for-of straight
+    // over sessionEventValue's result crashed on any session with history
+    // predating the record-output batching change, taking the whole sidebar
+    // listing down with it (one bad session poisons the aggregate query).
+    const scan = projectLatestWindow([
+        oldRow({ input_offered: { execution_id: "E_s.n:user-0_2", turn_index: 0 } }),
+        oldRow({ agent_status: { working: true, turn_index: 0 } }),
+        row([
+            { agent_status: { working: false, turn_index: 0 } },
+            { input_offered: { execution_id: "E_s.n:user-1_1", turn_index: 1 } },
+        ]),
+    ]);
+    assert.equal(scan.offerId, "E_s.n:user-1_1");
+    assert.equal(scan.working, false);
 });

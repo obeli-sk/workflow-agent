@@ -191,6 +191,16 @@ export function sessionEventValue(response) {
     return event.result?.ok?.value ?? event.result?.ok ?? null;
 }
 
+// Normalizes a session-events row to a list: rows written before
+// record-output started batching (protocol_version < 10) still hold a lone
+// event object on disk, and old rows never disappear once recorded, so
+// readers must accept either shape indefinitely.
+export function sessionEventList(response) {
+    const value = sessionEventValue(response);
+    if (value === null || value === undefined) return [];
+    return Array.isArray(value) ? value : [value];
+}
+
 // Newest-facts scan over one bounded page of GET /responses. Pages always
 // arrive oldest-first regardless of direction (direction only picks the
 // window), so a forward walk makes the newest fact win each overwrite:
@@ -200,14 +210,15 @@ export function sessionEventValue(response) {
 // A backward walk with overwrite semantics would end on the OLDEST fact and
 // resurrect stale flags (a session parked after `$ cmd` looked stuck on
 // thinking because of exactly that).
-export function projectLatestWindow(responses, valueOf = sessionEventValue) {
+export function projectLatestWindow(responses, valueOf = sessionEventList) {
     const markers = emptyMarkers();
     let working = null;
     let offerId = null;
     for (const response of responses ?? []) {
-        // record-output now batches several events into one response; each
-        // element of that list is applied in order, same as separate rows.
-        for (const value of valueOf(response) ?? []) {
+        // record-output now batches several events into one response (older
+        // rows still hold a lone event; valueOf normalizes both to a list).
+        // Each element is applied in order, same as separate rows.
+        for (const value of valueOf(response)) {
             if (!value || typeof value !== "object") continue;
             scanMarkers(markers, value);
             if (sessionEventEndsTurn(value)) offerId = null;

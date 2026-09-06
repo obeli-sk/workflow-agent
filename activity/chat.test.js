@@ -200,6 +200,30 @@ test("state emits one JSON line with offer, backend, and name", async () => {
     assert.ok(!result.stdout.includes("big"), "system prompt must not leak through state");
 });
 
+test("state does not crash on rows recorded before record-output started batching", async () => {
+    // Regression: rows written before the protocol bump still hold a lone
+    // event object, not a list. A for-of straight over that value threw
+    // TypeError (not iterable), so any session with pre-existing history
+    // broke `chat list`/`chat state` outright.
+    const { result } = await run(["state", RUN_ID], [
+        ["GET", "/status", () => jsonResponse(200, {
+            pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
+        })],
+        ["GET", "/responses", () => jsonResponse(200, {
+            responses: [
+                sessionEvent({ input_offered: { execution_id: OFFER_ID, turn_index: 1 } }),
+                sessionEvent({ session_started: { protocol_version: 9, prompt: "p", backend: "fake", effort: "", system_prompt: "old" } }),
+            ],
+            scan_cursor: 2,
+            max_cursor: 2,
+        })],
+    ]);
+    assert.equal(result.exit_code, 0);
+    const state = JSON.parse(result.stdout);
+    assert.equal(state.pending_offer_id, OFFER_ID);
+    assert.equal(state.backend, "fake");
+});
+
 test("state counts a mid-flight model turn as its own index", async () => {
     const { result } = await run(["state", RUN_ID], [
         ["GET", "/status", () => jsonResponse(200, {
