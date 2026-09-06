@@ -27,6 +27,15 @@ test("ls -la matches the Rust shell's replay-stable format", () => {
     );
 });
 
+test("ls sorts case-insensitively with lowercase before uppercase", () => {
+    const bash = fresh();
+    bash.vfs.writeFile("/workspace/B", "");
+    bash.vfs.writeFile("/workspace/a", "");
+    bash.vfs.writeFile("/workspace/A", "");
+    bash.vfs.writeFile("/workspace/b", "");
+    assert.equal(bash.exec("ls").stdout, "a\nA\nb\nB\n");
+});
+
 test("chmod validates mode syntax and target existence", () => {
     const bash = fresh();
     bash.vfs.writeFile("/f.txt", "x");

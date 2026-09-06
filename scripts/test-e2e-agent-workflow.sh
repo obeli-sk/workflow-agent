@@ -220,6 +220,16 @@ if [[ "$SHELL_STDOUT" != *"Usage: obelisk functions"* ]]; then
     exit 1
 fi
 echo ">>> obelisk/mount E2E PASS"
+
+echo ">>> checking replay-stable ls formatting and collation"
+run_shell_turn "shell-e2e-ls" "touch b A a B && ls -la"
+LS_ORDER="$(printf '%s\n' "$SHELL_STDOUT" | sed -n 's/^[-d][^ ]* 1 user user [ ]*[0-9][0-9]* Jan  1 00:00 //p' | paste -sd ' ' -)"
+if [[ "$LS_ORDER" != ". .. a A apps B b deployment mcp" ]]; then
+    echo "ls -la output did not use the replay-stable format/order: $SHELL_STDOUT" >&2
+    exit 1
+fi
+e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
+echo ">>> ls replay-parity E2E PASS"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 
 echo ">>> creating a session with an initial name"

@@ -514,7 +514,7 @@ function lsDir(interp, path, long, all) {
     let names = interp.vfs.readdir(path);
     if (all) names.push(".", "..");
     else names = names.filter((name) => !name.startsWith("."));
-    names.sort((a, b) => a.localeCompare(b));
+    names.sort(localeCompareStable);
     if (!long) return names.map((name) => `${name}\n`).join("");
 
     let output = `total ${names.length}\n`;
@@ -529,6 +529,22 @@ function lsDir(interp, path, long, all) {
         }
     }
     return output;
+}
+
+function localeCompareStable(a, b) {
+    const lowerA = a.toLowerCase();
+    const lowerB = b.toLowerCase();
+    if (lowerA < lowerB) return -1;
+    if (lowerA > lowerB) return 1;
+    for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
+        if (a[i] !== b[i]) {
+            const aLower = a[i] === a[i].toLowerCase() && a[i] !== a[i].toUpperCase();
+            const bLower = b[i] === b[i].toLowerCase() && b[i] !== b[i].toUpperCase();
+            if (aLower !== bLower) return aLower ? -1 : 1;
+            return a[i] < b[i] ? -1 : 1;
+        }
+    }
+    return a.length - b.length;
 }
 
 function copyDir(vfs, src, dest) {
