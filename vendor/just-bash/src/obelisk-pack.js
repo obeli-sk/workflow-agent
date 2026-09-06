@@ -865,9 +865,11 @@ export function simplifyManifest(manifest) {
     return applyEdits(manifest, edits);
 }
 
-// Inverse of `simplifyManifest`: re-pin each `content_digest`,
-// `component_files` value, and `backtrace.sources` entry from the file's
-// current bytes (a missing file is left as-is).
+// Inverse of `simplifyManifest`: re-pin each `content_digest` and
+// `component_files` value from the file's current bytes (a missing file is
+// left as-is). `backtrace.sources` stays a plain path map: its digest lives in
+// `component_files` (added by `manifestWithGeneratedFiles`, which always runs
+// first), matching the server's plain-string schema (matches the Rust port).
 export function manifestWithDigests(fs, dir, manifest) {
     const blocks = groupBlocks(findRegions(manifest));
     const edits = [];
@@ -904,19 +906,6 @@ export function manifestWithDigests(fs, dir, manifest) {
             }
         }
 
-        for (const entry of backtraceEntries(manifest, block)) {
-            const valueText = manifest.slice(entry.valueStart, entry.valueEnd).trim();
-            if (valueText.startsWith("{")) continue; // already expanded; left untouched (matches the Rust port)
-            const path = unquoteString(manifest.slice(entry.valueStart, entry.valueEnd));
-            if (path.startsWith("oci://")) continue;
-            const sourceDigest = ownedSourceDigest(fs, `${dir}/${path}`);
-            if (sourceDigest === null) continue;
-            edits.push({
-                start: entry.valueStart,
-                end: entry.valueEnd,
-                text: `{ path = ${quoteString(path)}, content_digest = ${quoteString(sourceDigest)} }`,
-            });
-        }
     }
     return applyEdits(manifest, edits);
 }

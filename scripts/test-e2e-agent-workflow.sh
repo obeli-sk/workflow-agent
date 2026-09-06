@@ -286,7 +286,7 @@ fi
 e2e_select_backend "$BACKEND"
 echo ">>> live-swap auto-upgrade E2E PASS"
 
-run_shell_turn "shell-e2e-submit-error" "sed 's/GITHUB_TOKEN/REPLAY_MISSING_SECRET/g' deployment/current/deployment.toml > replay-invalid.toml; obelisk deployment submit replay-invalid.toml"
+run_shell_turn "shell-e2e-submit-error" "cd deployment/current && sed 's/GITHUB_TOKEN/REPLAY_MISSING_SECRET/g' deployment.toml > replay-invalid.toml && obelisk deployment submit replay-invalid.toml"
 if [[ "$SHELL_STDERR" != *"REPLAY_MISSING_SECRET"* ]]; then
     echo "deployment submit did not surface its typed server error: $SHELL_STDERR" >&2
     exit 1

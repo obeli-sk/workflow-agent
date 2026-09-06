@@ -684,8 +684,12 @@ fn simplify_manifest(manifest: &str) -> String {
     doc.to_string()
 }
 
-/// Inverse of `simplify_manifest`: re-pin each `content_digest`, `component_files`
-/// value, and `backtrace.sources` table from the file's current bytes (a missing file is left as-is).
+/// Inverse of `simplify_manifest`: re-pin each `content_digest` and `component_files`
+/// value from the file's current bytes (a missing file is left as-is). `backtrace.sources`
+/// stays a plain path map: its digest lives in `component_files` (added by
+/// `manifest_with_generated_files`, which always runs first), matching the server's
+/// `HashMap<String, String>` schema -- see Obelisk core's `b95db0f6` ("backtrace sources
+/// become a plain path map").
 fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str, log: fn(&str)) -> String {
     let Ok(mut doc) = manifest.parse::<DocumentMut>() else {
         return manifest.to_string();
@@ -712,24 +716,6 @@ fn manifest_with_digests(fs: &Vfs, dir: &str, manifest: &str, log: fn(&str)) -> 
                 if let Some(digest) = owned_source_digest(fs, &format!("{dir}/{key}"), log) {
                     files.insert(&key, toml_edit::value(digest));
                 }
-            }
-        }
-        if let Some(sources) = backtrace_sources_mut(table) {
-            for key in table_like_keys(sources) {
-                let Some(path) = sources.get(&key).and_then(Item::as_str).map(str::to_string)
-                else {
-                    continue;
-                };
-                if path.starts_with("oci://") {
-                    continue;
-                }
-                let Some(digest) = owned_source_digest(fs, &format!("{dir}/{path}"), log) else {
-                    continue;
-                };
-                let mut inline = InlineTable::new();
-                inline.insert("path", toml_edit::Value::from(path));
-                inline.insert("content_digest", toml_edit::Value::from(digest));
-                sources.insert(&key, Item::Value(toml_edit::Value::InlineTable(inline)));
             }
         }
     }
@@ -2990,11 +2976,14 @@ content_digest = \"sha256:1\"\n\
     }
 
     #[test]
-    fn manifest_with_digests_expands_component_files_and_backtrace() {
+    fn manifest_with_digests_expands_component_files_and_leaves_backtrace_sources_as_paths() {
         // The inverse of `simplify_manifest`: the agent's digest-free view plus the
-        // file bytes rebuilds every content_digest, component_files value, and
-        // backtrace inline table. Regression for the `component_files` blind spot
-        // that failed E_01M09ZWQ915HF6H60D3XFMTQWB.
+        // file bytes rebuilds every content_digest and component_files value.
+        // Regression for the `component_files` blind spot that failed
+        // E_01M09ZWQ915HF6H60D3XFMTQWB. `backtrace.sources` is left untouched here: its
+        // digest is tracked via `component_files` (added by
+        // `manifest_with_generated_files`, which always runs first in `submit`), not as
+        // an inline `{ path, content_digest }` table -- the server rejects that shape.
         let collapsed = concat!(
             "[[webhook_endpoint]]\n",
             "location = \"webhook/ui-api.js\"\n",
@@ -3008,11 +2997,8 @@ content_digest = \"sha256:1\"\n\
             .unwrap();
         i.fs.write_file(&format!("{dir}/webhook/ui/shell.js"), b"shell")
             .unwrap();
-        i.fs.write_file(&format!("{dir}/src/lib.rs"), b"rs")
-            .unwrap();
         let api = format!("sha256:{}", sha256_hex(b"api"));
         let shell = format!("sha256:{}", sha256_hex(b"shell"));
-        let rs = format!("sha256:{}", sha256_hex(b"rs"));
         // toml_edit appends the re-pinned `content_digest` at the end of the
         // component table (after `component_files`); order is cosmetic.
         let expected = format!(
@@ -3022,11 +3008,10 @@ content_digest = \"sha256:1\"\n\
                 "component_files = {{ \"webhook/ui-api.js\" = \"{api}\", \"webhook/ui/shell.js\" = \"{shell}\" }}\n",
                 "content_digest = \"{api}\"\n",
                 "[webhook_endpoint.backtrace.sources]\n",
-                "\"/abs/src/lib.rs\" = {{ path = \"src/lib.rs\", content_digest = \"{rs}\" }}\n",
+                "\"/abs/src/lib.rs\" = \"src/lib.rs\"\n",
             ),
             api = api,
             shell = shell,
-            rs = rs,
         );
         assert_eq!(
             manifest_with_digests(&i.fs, dir, collapsed, |_| {}),

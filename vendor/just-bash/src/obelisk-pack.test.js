@@ -458,7 +458,11 @@ test("simplifyManifest collapses every digest shape", () => {
     assert.equal(simplifyManifest(stored), expected);
 });
 
-test("manifestWithDigests expands component_files and backtrace, pinning digests from file bytes", () => {
+test("manifestWithDigests expands component_files, pinning digests from file bytes, and leaves backtrace.sources as paths", () => {
+    // backtrace.sources stays untouched here: its digest is tracked via
+    // component_files (added by manifestWithGeneratedFiles, which always runs
+    // first in `submit`), not as an inline `{ path, content_digest }` table -
+    // the server rejects that shape.
     const collapsed = [
         "[[webhook_endpoint]]",
         'location = "webhook/ui-api.js"',
@@ -471,18 +475,16 @@ test("manifestWithDigests expands component_files and backtrace, pinning digests
     const dir = "/workspace/deployment/current";
     i.vfs.writeFile(`${dir}/webhook/ui-api.js`, "api");
     i.vfs.writeFile(`${dir}/webhook/ui/shell.js`, "shell");
-    i.vfs.writeFile(`${dir}/src/lib.rs`, "rs");
 
     const api = sha256("api");
     const shell = sha256("shell");
-    const rs = sha256("rs");
     const expected = [
         "[[webhook_endpoint]]",
         'location = "webhook/ui-api.js"',
         `component_files = { "webhook/ui-api.js" = "${api}", "webhook/ui/shell.js" = "${shell}" }`,
         `content_digest = "${api}"`,
         "[webhook_endpoint.backtrace.sources]",
-        `"/abs/src/lib.rs" = { path = "src/lib.rs", content_digest = "${rs}" }`,
+        '"/abs/src/lib.rs" = "src/lib.rs"',
         "",
     ].join("\n");
     assert.equal(manifestWithDigests(i.vfs, dir, collapsed), expected);
