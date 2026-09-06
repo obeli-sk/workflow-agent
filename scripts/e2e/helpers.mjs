@@ -5,10 +5,9 @@ import path from 'node:path';
 const ROOT = path.resolve(fileURLToPath(import.meta.url), '../../..');
 
 // Runs an existing scripts/test-e2e-*.sh suite as a single node:test case.
-// Output is buffered and only dumped on failure, since suites run
-// concurrently (one per file) and interleaved live output would be
-// unreadable; within a file, node:test runs cases sequentially, which is
-// what keeps a suite's rs/js pair (same hardcoded ports) from colliding.
+// Output is buffered and only dumped on failure, since suites (and, within a
+// suite, the rs/js backend pair) run concurrently and interleaved live
+// output would be unreadable.
 export function runE2eScript(script, args = []) {
     return new Promise((resolve, reject) => {
         const child = spawn(path.join(ROOT, 'scripts', script), args, {

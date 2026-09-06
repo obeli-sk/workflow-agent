@@ -7,16 +7,19 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 BACKEND="${1:-rs}"
-e2e_init "redeploy-e2e-$BACKEND" 28017 28092 "e2e-redeploy-token"
+PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
+API_PORT=$((28017 + PORT_OFFSET))
+EXTERNAL_PORT=$((28092 + PORT_OFFSET))
+e2e_init "redeploy-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-redeploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
-export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28017"
+export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 # server.toml's [secrets] requires every named var to exist; empty is fine.
 export MCP_SERVER_TOKEN=""
 export GITHUB_TOKEN=""
 export AGENT_MODELS="[]"
 
 e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-redeploy-deployment.toml"
+DEPLOY="$ROOT/.e2e-redeploy-deployment-$BACKEND.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
 
@@ -49,7 +52,7 @@ fi
 
 echo ">>> E2E PASS: redeployed from the content-addressed store (${ORIG_ID} -> ${NEW_ID})"
 
-UI_BASE="http://127.0.0.1:28092"
+UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 AUTHORED_ID="$("$OBELISK" generate deployment-id)"
 AUTHOR_DIR="/workspace/deployment/$AUTHORED_ID"

@@ -62,9 +62,12 @@ fi
 source "$ROOT/scripts/e2e-lib.sh"
 
 BACKEND="${1:-rs}"
-e2e_init "github-mount-deploy-e2e-$BACKEND" 28040 28100 "e2e-github-mount-deploy-token"
+PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
+API_PORT=$((28040 + PORT_OFFSET))
+EXTERNAL_PORT=$((28100 + PORT_OFFSET))
+e2e_init "github-mount-deploy-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-github-mount-deploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
-export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28040"
+export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 export MCP_SERVER_TOKEN=""
 export AGENT_MODELS="[]"
 # Mounts this app's own repo at /workspace/apps/workflow-agent, matching the
@@ -75,8 +78,8 @@ GH_REPO="${GH_REPO:-workflow-agent}"
 GH_REF="${GH_REF:-main}"
 export APPS_JSON="[{\"name\":\"workflow-agent\",\"owner\":\"${GH_OWNER}\",\"repo\":\"${GH_REPO}\",\"ref\":\"${GH_REF}\"}]"
 
-TARGET_API_PORT=28041
-TARGET_EXTERNAL_PORT=28101
+TARGET_API_PORT=$((28041 + PORT_OFFSET))
+TARGET_EXTERNAL_PORT=$((28101 + PORT_OFFSET))
 # Point the source session's `obelisk` command + deployment mount at the
 # separate target server started below (not the self-host default e2e_init
 # set up), keyless since the target runs with --no-auth.
@@ -87,12 +90,12 @@ export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${TARGET_API_PORT}"
 e2e_start_target_server "$TARGET_API_PORT" "$TARGET_EXTERNAL_PORT"
 
 e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-github-mount-deploy-deployment.toml"
+DEPLOY="$ROOT/.e2e-github-mount-deploy-deployment-$BACKEND.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
-UI_BASE="http://127.0.0.1:28100"
+UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
 
 # Cold: no ls/readdir anywhere first, exactly like the real failure.
 # Submits this app's own real deployment.js.toml, fetched entirely through

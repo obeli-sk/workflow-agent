@@ -26,16 +26,19 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 BACKEND="${1:-rs}"
-e2e_init "target-deploy-e2e-$BACKEND" 28020 28096 "e2e-target-deploy-token"
+PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
+API_PORT=$((28020 + PORT_OFFSET))
+EXTERNAL_PORT=$((28096 + PORT_OFFSET))
+e2e_init "target-deploy-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-target-deploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
-export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28020"
+export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 # server.toml's [secrets] requires every named var to exist; empty is fine.
 export MCP_SERVER_TOKEN=""
 export GITHUB_TOKEN=""
 export AGENT_MODELS="[]"
 
-TARGET_API_PORT=28021
-TARGET_EXTERNAL_PORT=28097
+TARGET_API_PORT=$((28021 + PORT_OFFSET))
+TARGET_EXTERNAL_PORT=$((28097 + PORT_OFFSET))
 # Point the source session's `obelisk` command + deployment mount at the
 # separate target server started below (not the self-host default e2e_init
 # set up), keyless since the target runs with --no-auth.
@@ -46,12 +49,12 @@ export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${TARGET_API_PORT}"
 e2e_start_target_server "$TARGET_API_PORT" "$TARGET_EXTERNAL_PORT"
 
 e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-target-deploy-deployment.toml"
+DEPLOY="$ROOT/.e2e-target-deploy-deployment-$BACKEND.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
-UI_BASE="http://127.0.0.1:28096"
+UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
 
 ORIG_ID="$("$OBELISK" deployment active -a "$E2E_API_URL")"
 echo ">>> source (${BACKEND}) active deployment: ${ORIG_ID}"

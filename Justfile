@@ -38,8 +38,7 @@ test-js:
   node --test $(find workflow/workflow-js/src -name '*.test.js')
 
 
-# Suites run one node:test file per script (in parallel across files); a
-# suite's own rs/js pair stays in one file so they run sequentially, since
-# both hardcode the same ports (see scripts/e2e/helpers.mjs).
+# Every suite, and each suite's rs/js pair, runs concurrently: each backend
+# uses its own offset port range (scripts/e2e-lib.sh's e2e_backend_port_offset).
 test-e2e:
   node --test scripts/e2e/*.test.mjs

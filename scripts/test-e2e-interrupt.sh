@@ -20,16 +20,20 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 BACKEND="${1:-rs}"
-e2e_init "interrupt-e2e-$BACKEND" 28019 28094 "e2e-interrupt-token"
+PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
+API_PORT=$((28019 + PORT_OFFSET))
+EXTERNAL_PORT=$((28094 + PORT_OFFSET))
+LLM_PORT=$((28095 + PORT_OFFSET))
+e2e_init "interrupt-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-interrupt-token"
 export OBELISK_API_URL="$E2E_API_URL"
-export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28019"
+export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 # server.toml's [secrets] requires every named var to exist; empty is fine.
 export MCP_SERVER_TOKEN=""
 export GITHUB_TOKEN=""
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"},{"id":"fake-loop","label":"Fake Loop","api_type":"openai-chat-completions"}]'
-export LLM_BASE_URL="http://127.0.0.1:28095"
+export LLM_BASE_URL="http://127.0.0.1:${LLM_PORT}"
 
-node scripts/e2e-llm-server.mjs 28095 >"$E2E_TMP/llm.log" 2>&1 &
+node scripts/e2e-llm-server.mjs "$LLM_PORT" >"$E2E_TMP/llm.log" 2>&1 &
 E2E_LLM_PID=$!
 cleanup() {
     kill "$E2E_LLM_PID" 2>/dev/null || true
@@ -38,12 +42,12 @@ cleanup() {
 trap cleanup EXIT
 
 e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-interrupt-deployment.toml"
+DEPLOY="$ROOT/.e2e-interrupt-deployment-$BACKEND.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
-UI_BASE="http://127.0.0.1:28094"
+UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
 run_detail() {
     curl --fail --silent --show-error "$UI_BASE/api/runs/$1" 2>&1
 }

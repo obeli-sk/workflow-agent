@@ -12,9 +12,12 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 BACKEND="${1:-rs}"
-e2e_init "agent-workflow-e2e-$BACKEND" 28016 28091 "e2e-agent-workflow-token"
+PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
+API_PORT=$((28016 + PORT_OFFSET))
+EXTERNAL_PORT=$((28091 + PORT_OFFSET))
+e2e_init "agent-workflow-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-agent-workflow-token"
 export OBELISK_API_URL="$E2E_API_URL"
-export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28016"
+export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 # server.toml's [secrets] requires every named var to exist; empty is fine.
 export MCP_SERVER_TOKEN=""
 export GITHUB_TOKEN="${GITHUB_TOKEN:-}"
@@ -22,13 +25,13 @@ export AGENT_MODELS="[]"
 
 e2e_select_backend "$BACKEND"
 export APPS_JSON='[{"name":"components","repo":"components","description":"E2E GitHub mount"}]'
-DEPLOY="$ROOT/.e2e-agent-deployment.toml"
+DEPLOY="$ROOT/.e2e-agent-deployment-$BACKEND.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 run_detail() {
-    curl --fail --silent --show-error "http://127.0.0.1:28091/api/runs/$1" 2>&1
+    curl --fail --silent --show-error "http://127.0.0.1:${EXTERNAL_PORT}/api/runs/$1" 2>&1
 }
 
 # Waits for SESSION_ID's next input offer, submits SCRIPT as a direct shell
@@ -71,7 +74,7 @@ run_shell_turn() {
     curl --fail --silent --show-error \
         -H 'content-type: application/json' \
         -d "{\"offer_id\":\"$injection_id\",\"input\":{\"shell\":{\"id\":\"$shell_id\",\"script\":$(printf '%s' "$script" | node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8")))'),\"stdin\":\"\"}}}" \
-        "http://127.0.0.1:28091/api/input/$SESSION_ID" >/dev/null
+        "http://127.0.0.1:${EXTERNAL_PORT}/api/input/$SESSION_ID" >/dev/null
 
     SECONDS=0
     local notification=""
@@ -117,7 +120,7 @@ ASK_BODY="$(node scripts/e2e-json.js shell-input "$ASK_OFFER_ID" shell-e2e-ask "
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d "$ASK_BODY" \
-    "http://127.0.0.1:28091/api/input/$ASK_SESSION_ID" >/dev/null
+    "http://127.0.0.1:${EXTERNAL_PORT}/api/input/$ASK_SESSION_ID" >/dev/null
 
 SECONDS=0
 while true; do
@@ -136,7 +139,7 @@ ASK_ID="$(node scripts/e2e-json.js pending-ask-id <<<"$ASK_PROJECTION")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d '{"answer":"yes"}' \
-    "http://127.0.0.1:28091/api/answer/$ASK_ID" >/dev/null
+    "http://127.0.0.1:${EXTERNAL_PORT}/api/answer/$ASK_ID" >/dev/null
 
 SECONDS=0
 while true; do
@@ -176,7 +179,7 @@ RESPONSE_CURSOR="$(node scripts/e2e-json.js response-cursor <<<"$SESSION_PROJECT
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d "{\"offer_id\":\"$INJECTION_ID\",\"input\":{\"shell\":{\"id\":\"shell-e2e-1\",\"script\":\"which curl && curl --version\",\"stdin\":\"\"}}}" \
-    "http://127.0.0.1:28091/api/input/$SESSION_ID" >/dev/null
+    "http://127.0.0.1:${EXTERNAL_PORT}/api/input/$SESSION_ID" >/dev/null
 
 # The session batches several events (session_started, input_offered,
 # shell_output, ...) into each `record-output` stub, so we cannot pick the
@@ -210,7 +213,7 @@ node scripts/e2e-json.js check-shell-notification <<<"$SHELL_NOTIFICATION"
 SECONDS=0
 while true; do
     SHELL_PROJECTION="$(curl --fail --silent \
-        "http://127.0.0.1:28091/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")"
+        "http://127.0.0.1:${EXTERNAL_PORT}/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")"
     node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION" 2>/dev/null && break
     [[ $SECONDS -ge 30 ]] && { node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"; exit 1; }
     sleep 1

@@ -1,10 +1,15 @@
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import { runE2eScript } from './helpers.mjs';
 
-test('interrupt e2e (rs)', async () => {
-    await runE2eScript('test-e2e-interrupt.sh', ['rs']);
-});
+// concurrency: true runs the rs/js siblings in parallel; safe since every
+// port each backend uses is offset (see e2e_backend_port_offset in
+// scripts/e2e-lib.sh), so the two servers never collide.
+describe('interrupt e2e', { concurrency: true }, () => {
+    test('rs', async () => {
+        await runE2eScript('test-e2e-interrupt.sh', ['rs']);
+    });
 
-test('interrupt e2e (js)', async () => {
-    await runE2eScript('test-e2e-interrupt.sh', ['js']);
+    test('js', async () => {
+        await runE2eScript('test-e2e-interrupt.sh', ['js']);
+    });
 });

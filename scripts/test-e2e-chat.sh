@@ -7,16 +7,19 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 BACKEND="${1:-rs}"
-e2e_init "chat-e2e-$BACKEND" 28018 28093 "e2e-chat-token"
+PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
+API_PORT=$((28018 + PORT_OFFSET))
+EXTERNAL_PORT=$((28093 + PORT_OFFSET))
+e2e_init "chat-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-chat-token"
 export OBELISK_API_URL="$E2E_API_URL"
-export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28018"
+export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions","wire_model":"fake"}]'
 # server.toml's [secrets] requires every named var to exist; empty is fine.
 export MCP_SERVER_TOKEN=""
 export GITHUB_TOKEN=""
 
 e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-chat-deployment.toml"
+DEPLOY="$ROOT/.e2e-chat-deployment-$BACKEND.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
 
@@ -24,7 +27,7 @@ RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 CHAT_FFQN="obelisk-agent:programs/program.chat"
 run_detail() {
     local detail
-    detail="$(curl --fail --silent "http://127.0.0.1:28093/api/runs/$1")" || return 1
+    detail="$(curl --fail --silent "http://127.0.0.1:${EXTERNAL_PORT}/api/runs/$1")" || return 1
     node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"))' <<<"$detail" >/dev/null 2>&1 || return 1
     printf '%s\n' "$detail"
 }
@@ -81,7 +84,7 @@ shell_turn() {
     curl --fail --silent --show-error \
         -H 'content-type: application/json' \
         -d "{\"offer_id\":\"$offer\",\"input\":{\"shell\":{\"id\":\"$turn_id\",\"script\":\"$script\",\"stdin\":\"\"}}}" \
-        "http://127.0.0.1:28093/api/input/$session_id" >/dev/null
+        "http://127.0.0.1:${EXTERNAL_PORT}/api/input/$session_id" >/dev/null
     SECONDS=0
     while true; do
         if projection="$(run_detail "$session_id")"; then
@@ -115,7 +118,7 @@ RENAME_OUT="$(shell_turn "$PARENT_ID" "shell-chat-current-2" 'chat current')"
 node scripts/e2e-json.js check-current-id "$PARENT_ID" --name e2e-slug <<<"$RENAME_OUT"
 SECONDS=0
 while true; do
-    if RUNS="$(curl --fail --silent "http://127.0.0.1:28093/api/runs")" \
+    if RUNS="$(curl --fail --silent "http://127.0.0.1:${EXTERNAL_PORT}/api/runs")" \
         && node scripts/e2e-json.js check-runs-name e2e-slug <<<"$RUNS"; then
         break
     fi
@@ -163,7 +166,7 @@ grep -q "child session by $PARENT_ID" <<<"$READ_SYS"
 echo ">>> the startup name reaches /api/runs without any rename turn"
 SECONDS=0
 while true; do
-    if RUNS="$(curl --fail --silent http://127.0.0.1:28093/api/runs)" \
+    if RUNS="$(curl --fail --silent http://127.0.0.1:${EXTERNAL_PORT}/api/runs)" \
         && node scripts/e2e-json.js check-runs-name e2e-child <<<"$RUNS"; then
         break
     fi
@@ -172,7 +175,7 @@ while true; do
 done
 
 echo ">>> /api/runs nests children under their parent"
-RUNS="$(curl --fail --silent http://127.0.0.1:28093/api/runs)"
+RUNS="$(curl --fail --silent http://127.0.0.1:${EXTERNAL_PORT}/api/runs)"
 node scripts/e2e-json.js check-runs-parent "$PARENT_ID" "$CHILD_ID" <<<"$RUNS"
 node scripts/e2e-json.js check-runs-parent "$PARENT_ID" "$BASH_CHILD_ID" <<<"$RUNS"
 

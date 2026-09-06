@@ -30,6 +30,21 @@ e2e_init() {
     trap e2e_cleanup EXIT
 }
 
+# Port offset for a suite's own rs/js pair: 0 for rs, 1000 for js. Suites add
+# this to every hardcoded port (api, external, and any secondary/target
+# server) so the two backends can run as fully separate servers and not
+# collide when driven concurrently (see scripts/e2e/helpers.mjs).
+e2e_backend_port_offset() {
+    case "$1" in
+        rs) echo 0 ;;
+        js) echo 1000 ;;
+        *)
+            echo "unknown backend '$1' (expected rs|js)" >&2
+            return 1
+            ;;
+    esac
+}
+
 e2e_cleanup() {
     if [[ -n "$E2E_SERVER_PID" ]]; then
         echo ">>> stopping isolated obelisk server (pid $E2E_SERVER_PID)"

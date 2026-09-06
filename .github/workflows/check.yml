@@ -205,9 +205,8 @@ jobs:
       - name: Populate the nix store
         run: nix develop --command echo
 
-      # rs/js share ports per suite (scripts/e2e/helpers.mjs), so filter to this backend;
-      # suites that don't need a real token export their own empty override internally.
+      # Suites that don't need a real token export their own empty override internally.
       - name: e2e suites (${{ matrix.backend }})
-        run: nix develop --command node --test scripts/e2e/*.test.mjs --test-name-pattern "\(${{ matrix.backend }}\)$"
+        run: nix develop --command node --test --test-name-pattern "^${{ matrix.backend }}$" scripts/e2e/*.test.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

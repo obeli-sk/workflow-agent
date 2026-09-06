@@ -16,14 +16,17 @@ BACKEND="${1:-rs}"
 
 source "$ROOT/scripts/e2e-lib.sh"
 
-MCP_PORT="${MCP_PORT:-1071}"
+PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
+API_PORT=$((28116 + PORT_OFFSET))
+EXTERNAL_PORT=$((28191 + PORT_OFFSET))
+MCP_PORT="${MCP_PORT:-$((1071 + PORT_OFFSET))}"
 MCP_PID=""
 MCP_URL="http://127.0.0.1:${MCP_PORT}/mcp"
 SERVER_NAME="obelisk-e2e"
 
-e2e_init "mcp-e2e-$BACKEND" 28116 28191 "e2e-mcp-token"
+e2e_init "mcp-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-mcp-token"
 export OBELISK_API_URL="$E2E_API_URL"
-export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28116"
+export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 export AGENT_MODELS="[]"
 # server.toml's [secrets] requires every named var to exist; empty is fine.
 export GITHUB_TOKEN=""
@@ -67,7 +70,7 @@ done
 
 # --- deployment: real manifest + one MCP block, keyless -----------------------
 e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-mcp-deployment.toml"
+DEPLOY="$ROOT/.e2e-mcp-deployment-$BACKEND.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 cat >> "$DEPLOY" <<EOF
 
@@ -88,7 +91,7 @@ methods = ["POST"]
 EOF
 
 # server.toml needs the matching outbound-host grant (keyless).
-SERVER_CFG="$ROOT/.e2e-mcp-server.toml"
+SERVER_CFG="$ROOT/.e2e-mcp-server-$BACKEND.toml"
 E2E_DEPLOYMENTS+=("$SERVER_CFG")
 cp "$ROOT/server.toml" "$SERVER_CFG"
 cat >> "$SERVER_CFG" <<EOF
