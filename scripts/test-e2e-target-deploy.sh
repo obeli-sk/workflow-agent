@@ -13,12 +13,8 @@
 # workflow-agent is meant to operate: it always redeploys a separate
 # TARGET_OBELISK instance, never itself (see README.md's "Target instance"
 # section and this repo's TARGET_OBELISK_* env vars). Cross-language replay
-# compatibility of the driving session is still checked below
-# (e2e_verify_replay_parity), just through the non-destructive `PUT
-# /v1/executions/{id}/replay` RPC instead of a live hot-swap, and with both
-# deployment.rs.toml/deployment.js.toml pinning `locking_strategy =
-# "by_component_digest"` so switching the active deployment can never affect
-# SESSION_ID's own progress.
+# compatibility of the driving session is still checked below through the
+# non-destructive `PUT /v1/executions/{id}/replay` RPC.
 #
 # Runs for both rs and js SOURCE backends (the agent side); the target is
 # backend-agnostic, a plain generated JS activity.

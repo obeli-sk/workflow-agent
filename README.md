@@ -47,16 +47,11 @@ exact same FFQN as the Rust workflow in `deployment.rs.toml`
 deployment choice, not a per-request switch: only one of the two files is
 ever the active deployment. Rust is the default (`just serve`, an alias for
 `just serve-rs`); run `just serve-js` to start the server on the JS
-deployment instead. Both files pin their session workflow's
-`exec.locking_strategy` to `by_component_digest`, so switching a server's
-active deployment with `obelisk deployment apply` never affects a session
-already in flight (it keeps running on whichever digest created it,
-regardless of which deployment is now active) - but that is not the same as
-*hot-swapping* an in-flight execution to a new language mid-turn, which
-workflow-agent never does anyway: it always redeploys a separate
-`TARGET_OBELISK` instance, never itself (see `scripts/test-e2e-target-deploy.sh`,
-and "Target instance"
-below). See [`docs/js-backend-migration.md`](docs/js-backend-migration.md)
+deployment instead. Both files leave the session workflow's locking strategy
+unset, selecting Obelisk's `auto` default. Switching
+the active deployment therefore replays a runnable in-flight session against
+the new backend and persists the compatible component upgrade before it
+continues. See [`docs/js-backend-migration.md`](docs/js-backend-migration.md)
 for why the JS backend exists and its current status.
 
 Then open http://localhost:9090 (the external/webhook listener; `server.toml`

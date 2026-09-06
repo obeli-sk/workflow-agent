@@ -229,6 +229,36 @@ if [[ "$LS_ORDER" != ". .. a A apps B b deployment mcp" ]]; then
     echo "ls -la output did not use the replay-stable format/order: $SHELL_STDOUT" >&2
     exit 1
 fi
+
+echo ">>> live-swapping the blocked session to the other workflow backend"
+case "$BACKEND" in
+    rs) SWAP_BACKEND="js" ;;
+    js) SWAP_BACKEND="rs" ;;
+esac
+e2e_select_backend "$SWAP_BACKEND"
+SWAP_DEPLOY="$ROOT/.e2e-agent-live-swap-${SWAP_BACKEND}.toml"
+e2e_swap_workflow_manifest "$DEPLOY" "$SWAP_DEPLOY"
+"$OBELISK" deployment apply "$SWAP_DEPLOY" -a "$E2E_API_URL" >/dev/null
+run_shell_turn "shell-e2e-after-swap" "echo auto-upgrade-ran"
+if [[ "$SHELL_STDOUT" != "auto-upgrade-ran" ]]; then
+    echo "the swapped backend did not resume the session: $SHELL_STDOUT" >&2
+    exit 1
+fi
+UPGRADE_EVENTS="$("$OBELISK" execution events -j -a "$E2E_API_URL" --from 0 --limit 500 "$SESSION_ID")"
+if ! node -e '
+    const events = JSON.parse(require("fs").readFileSync(0, "utf8")).events || [];
+    const upgraded = events.some(({ event }) =>
+        event?.component_upgrade_finished?.outcome?.success?.reason === "auto"
+        || event?.component_upgrade_finished?.outcome?.Success?.reason === "auto");
+    process.exit(upgraded ? 0 : 1);
+' <<<"$UPGRADE_EVENTS"; then
+    echo "the live swap resumed without recording a successful auto-upgrade: $UPGRADE_EVENTS" >&2
+    exit 1
+fi
+"$OBELISK" deployment apply "$DEPLOY" -a "$E2E_API_URL" >/dev/null
+e2e_select_backend "$BACKEND"
+echo ">>> live-swap auto-upgrade E2E PASS"
+
 run_shell_turn "shell-e2e-submit-error" "sed 's/GITHUB_TOKEN/REPLAY_MISSING_SECRET/g' deployment/current/deployment.toml > replay-invalid.toml; obelisk deployment submit replay-invalid.toml"
 if [[ "$SHELL_STDERR" != *"REPLAY_MISSING_SECRET"* ]]; then
     echo "deployment submit did not surface its typed server error: $SHELL_STDERR" >&2

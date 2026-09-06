@@ -563,10 +563,6 @@ wit = "wit"
 name = "workflow_agent_rs"
 location = "target/wasm32-unknown-unknown/release/workflow_agent_rs.wasm"
 exec.lock_expiry.seconds = 30
-# Pins in-flight executions to the digest that created them instead of
-# auto-upgrading to whatever `deployment apply` makes active next, so a
-# same-instance deployment switch can never strand a running session.
-exec.locking_strategy = "by_component_digest"
 
 # Backtrace source map for the native workflow. All these `.rs` files compile
 # into the single workflow_agent_rs.wasm, so every key is the full

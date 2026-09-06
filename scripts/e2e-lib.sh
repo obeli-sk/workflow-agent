@@ -91,13 +91,9 @@ e2e_select_backend() {
 
 # Verifies that SESSION_ID's full execution history, recorded under
 # ORIGINAL_BACKEND, replays cleanly under the *other* language backend's
-# component, without ever driving the session live under it. Both
-# deployment.rs.toml and deployment.js.toml pin their session workflow's
-# `exec.locking_strategy` to `by_component_digest` (not the workflow default
-# `auto`), so an in-flight execution only ever gets locked by an executor for
-# the exact digest that created it - switching the server's active deployment
-# here cannot affect SESSION_ID's own progress the way a plain `deployment
-# apply` + continued-driving hot-swap could (see docs/js-backend-migration.md).
+# component, without ever driving the session live under it. The session is
+# blocked while the other deployment is active, so the default `auto` executor
+# has no runnable work to lock before the original deployment is restored.
 # The actual cross-language check is the non-destructive `PUT
 # /v1/executions/{id}/replay` RPC (`obelisk execution replay`): it replays the
 # persisted history against whichever component is currently registered for

@@ -778,12 +778,7 @@ natively (small algorithms) rather than vendoring the npm package's source.
   the `requested_ffqn` gap above is fixed on Obelisk's `codex/typed-js-await-next`
   branch (unreleased), confirmed by rebuilding `obelisk` locally with
   `-F activity-js-local,workflow-js-local,webhook-js-local`. Rather than
-  reviving the old same-instance hot-swap (`deployment apply` on a *live*
-  session, then continuing to drive it - genuinely unsafe by construction,
-  see `test-e2e-target-deploy.sh`'s history), both `deployment.rs.toml` and
-  `deployment.js.toml` now pin the session workflow's `exec.locking_strategy
-  = "by_component_digest"`, so an in-flight execution is never auto-upgraded
-  just because the active deployment changes. `e2e-lib.sh`'s
+  reviving the old same-instance hot-swap, `e2e-lib.sh`'s
   `e2e_verify_replay_parity` uses this to run a session to completion under
   one backend, switch the active deployment to the other, and call the
   non-destructive `PUT /v1/executions/{id}/replay` RPC (`obelisk execution
@@ -799,6 +794,10 @@ natively (small algorithms) rather than vendoring the npm package's source.
   any upload over that size (e.g. `workflow_agent_rs.wasm`) even though the
   configured per-file cap is 20 MiB and the gRPC submit path already raises
   its own limit for the same reason.
+  - **Update, auto upgrades enabled**: both manifests now leave
+    `exec.locking_strategy` unset, selecting the workflow default `auto`.
+    Switching implementations causes the next runnable session tick to replay
+    under the active component and persist the compatible digest upgrade.
   - **New known-red, still unscoped**: `test-e2e-chat.sh`,
     `test-e2e-target-deploy.sh`, and `test-e2e-deploy-outside-root.sh` fail
     replay-parity deterministically. session.rs and session.js produce

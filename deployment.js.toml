@@ -552,12 +552,11 @@ wit = "wit"
 # parity with the Rust workflow (see docs/js-backend-migration.md). It exports
 # the same canonical `obelisk-agent:workflow/workflow.run-cancellable` FFQN as
 # `deployment.rs.toml`'s `[[workflow_wasm]]` block. Only one of the two files is
-# ever the active deployment at a time. Both blocks pin `locking_strategy =
-# "by_component_digest"`, so switching between them never affects an in-flight
-# session (it keeps running on whichever digest created it); cross-backend
-# replay compatibility of a session's full history is verified separately via
-# the non-destructive `PUT /v1/executions/{id}/replay` RPC (e2e-lib.sh's
-# e2e_verify_replay_parity). Everything outside this workflow block must stay
+# ever the active deployment at a time. Both use Obelisk's default `auto`
+# locking strategy, so a runnable in-flight session is replayed and upgraded
+# when switching between them. Cross-backend replay compatibility is also
+# verified non-destructively by e2e-lib.sh's e2e_verify_replay_parity.
+# Everything outside this workflow block must stay
 # identical between the two files, enforced by
 # `scripts/check-deployment-toml-parity.sh`.
 
@@ -574,10 +573,6 @@ params = [
 ]
 return_type = "result<_, string>"
 exec.lock_expiry.seconds = 30
-# Pins in-flight executions to the digest that created them instead of
-# auto-upgrading to whatever `deployment apply` makes active next, so a
-# same-instance deployment switch can never strand a running session.
-exec.locking_strategy = "by_component_digest"
 # --- End workflow -----------------------------------------------------------
 
 [[webhook_endpoint_js]]
