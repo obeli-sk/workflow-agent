@@ -338,7 +338,7 @@ pub(crate) fn sha256_hex(data: &[u8]) -> String {
         0x1f83d9ab,
         0x5be0cd19,
     ];
-    for block in padded.chunks_exact(64) {
+    for block in padded.as_chunks::<64>().0 {
         let mut words = [0u32; 64];
         for (i, word) in words[..16].iter_mut().enumerate() {
             *word = u32::from_be_bytes(block[i * 4..i * 4 + 4].try_into().unwrap());
