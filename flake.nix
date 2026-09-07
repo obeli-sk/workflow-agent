@@ -35,7 +35,7 @@
             cargo-nextest
             jq
             yq-go # for scripts/sync-branch-protection.sh
-            rg # for scripts/e2e-lib.sh
+            ripgrep # for scripts/e2e-lib.sh
           ];
           withObelisk = commonDeps ++ [ obelisk.packages.${system}.default ];
         in
