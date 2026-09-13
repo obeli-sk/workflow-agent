@@ -552,7 +552,7 @@ impl Notifications {
     /// must flush right before any real blocking wait (take_user_event,
     /// call_llm_with_user's race loop, ask_user, exec_shell's bash.exec) so
     /// the transcript is always up to date by the time the session goes idle
-    /// waiting on the outside.
+    /// starting another durable operation or waiting on the outside.
     pub(crate) fn flush(&self) -> Result<(), String> {
         let events = std::mem::take(&mut *self.pending.borrow_mut());
         if events.is_empty() {
@@ -1365,6 +1365,7 @@ fn call_llm_with_user(
 ) -> Result<LlmOutcome, String> {
     let mut prompt_queued = false;
     loop {
+        notifications.flush()?;
         let request_message_count = messages.len();
         let messages_json = serde_json::to_string(messages).expect("json");
         let started_at = host_now_ms();

@@ -503,6 +503,7 @@ function takeUserEvent(session, notifications) {
 function callLlmWithUser(session, system, messages, model, effort, bash, notifications) {
     let promptQueued = false;
     while (true) {
+        notifications.flush();
         const requestMessageCount = messages.length;
         const messagesJson = JSON.stringify(messages);
         const startedAt = hostNowMs();
