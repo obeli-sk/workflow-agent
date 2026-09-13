@@ -386,6 +386,7 @@ function refreshDetail() {
         detail.backend = started.backend || null;
         detail.effort = started.effort || null;
         detail.system_prompt = started.system_prompt || null;
+        detail.session_started_at = started.created_at || null;
       }
       detail.pending_asks = state.transcript?.pending_asks || [];
       detail.input_offer = state.transcript?.input_offer || null;
@@ -787,6 +788,7 @@ function renderDetail(forceScroll = false) {
     id: d.id, status: d.status, result_kind: d.result_kind, join_name: d.join_name,
     name: d.name,
     prompt: d.prompt, backend: d.backend, effort: d.effort, system_prompt: d.system_prompt,
+    session_started_at: d.session_started_at,
     turns: d.turns, final_result: d.final_result,
     pending_asks: d.pending_asks,
     input_offer: d.input_offer,
@@ -844,6 +846,7 @@ function renderDetail(forceScroll = false) {
   // links to the web UI; it is shown here only when the title above is a name,
   // so an unnamed session does not print the id twice.
   const execIdHtml = d.name ? '<code>' + esc(d.id) + '</code>' : 'web UI';
+  const creationLatency = elapsedTimestampMilliseconds(d.created_at, d.session_started_at);
   main.innerHTML = ''
     + '<div class="detail-head">'
     + '<h2>' + esc(d.name || d.id) + '</h2>'
@@ -851,6 +854,7 @@ function renderDetail(forceScroll = false) {
     +   '<a href="' + esc(execLink(d.id)) + '" target="_blank" rel="noopener" title="open in obelisk web UI">' + execIdHtml + '</a>'
     +   ' &middot; <span class="status ' + esc(statusCls) + '">' + esc(label) + '</span>'
     +   ' &middot; ' + esc(ago(d.created_at))
+    +   (creationLatency === null ? '' : ' &middot; ' + latencyHtml(creationLatency, 'session creation latency', 'created in '))
     +   (d.backend ? ' &middot; <code>' + esc(d.backend) + '</code>' : '')
     +   (d.effort ? ' &middot; <code>effort: ' + esc(d.effort) + '</code>' : '')
     +   (d.system_prompt ? ' &middot; <button type="button" id="sysprompt-toggle">system prompt</button>' : '')

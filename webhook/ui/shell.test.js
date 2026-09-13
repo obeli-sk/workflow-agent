@@ -471,6 +471,7 @@ function detailFixture(overrides) {
         backend: "claude-x",
         effort: "",
         system_prompt: null,
+        session_started_at: null,
         turns: [],
         final_result: null,
         pending_asks: [],
@@ -521,6 +522,16 @@ test("hides the system prompt behind a meta-row link next to logs", async () => 
     assert.match(slot,
         /<div class="call sysprompt"><div class="label">system prompt<\/div><div class="rendered-markdown" data-source="/);
     assert.match(slot, new RegExp(encodeURIComponent("You are an agent.")));
+});
+
+test("shows session creation latency in the detail header", async () => {
+    const renderer = await loadRenderer();
+    renderer.state.detail = detailFixture({
+        created_at: "2026-08-18T10:00:00.000Z",
+        session_started_at: "2026-08-18T10:00:01.234Z",
+    });
+    const html = renderDetailHtml(renderer);
+    assert.match(html, /title="session creation latency">created in 1\.23s<\/span>/);
 });
 
 test("omits the system-prompt link for runs recorded before it existed", async () => {
