@@ -278,7 +278,9 @@ async function postRaw(url, headers, body) {
         console.debug(`Fetch from ${url} failed after ${Date.now() - startedAt}ms: ${String(e)}`);
         throw `LLM request failed: ${String(e)}`;   // network error -> transient retry
     }
-    console.debug(`Fetch from ${url} finished in ${Date.now() - startedAt}ms, status=${resp.status}`);
+    const backendExecutionId = resp.headers?.get?.('x-obelisk-execution-id');
+    const backendExecutionLog = backendExecutionId ? `, backend_execution_id=${backendExecutionId}` : '';
+    console.debug(`Fetch from ${url} finished in ${Date.now() - startedAt}ms, status=${resp.status}${backendExecutionLog}`);
 
     if (resp.status === 429) {
         const text = await safeText(resp);
