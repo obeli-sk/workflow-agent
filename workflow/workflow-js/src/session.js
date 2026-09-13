@@ -22,6 +22,8 @@
 // tested; this file is the host-facing orchestration only.
 
 import { discover } from "obelisk-agent:config/config";
+import * as obelisk from "obelisk:workflow@1.0.0";
+import * as dynamic from "obelisk:workflow-dynamic@1.0.0";
 import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
 import {
     askUserSubmit,
@@ -67,6 +69,8 @@ import {
     userText,
 } from "./session-logic.js";
 
+chat.configureRuntime(obelisk);
+
 // obelisk-agent:mounts/apps.request: one deployed activity backing every
 // lazily-mounted GitHub repo tree, mounted at /workspace/apps/<name> per the
 // operator-configured APPS_JSON registry (see obelisk-pack.js's
@@ -100,7 +104,7 @@ function runInner(prompt, model, descriptorFfqn, effort, name) {
         if (error) throw `invalid session name ${JSON.stringify(name)}: ${error}`;
     }
     const descriptor = descriptorFfqn || DEFAULT_DESCRIPTOR_FFQN;
-    const described = obelisk.call(descriptor, []);
+    const described = dynamic.call(descriptor, []);
     if (typeof described?.prompt !== "string") {
         throw `descriptor ${descriptor} did not return { prompt }`;
     }
@@ -225,7 +229,7 @@ class Notifications {
 // to the target instance, which has no such function.
 
 function askUserAwareHost(notifications) {
-    const host = createHost();
+    const host = createHost(dynamic, obelisk);
     return {
         callJson(ffqn, paramsJson) {
             if (ffqn === NATIVE_CALL_FFQN) {
@@ -327,7 +331,7 @@ function loadSessionConfig(executionId, backend, effort, name) {
 // session.rs's per-program loop).
 function registerProgramsAndMcp(bash, config, ownSession, notifications, submitFn) {
     for (const program of config.programs) {
-        const plainHandler = obeliskProgram.commandHandler(program.name, program.ffqn, createHost());
+        const plainHandler = obeliskProgram.commandHandler(program.name, program.ffqn, createHost(dynamic, obelisk));
         const handler = program.ffqn === CHAT_PROGRAM_FFQN
             ? chat.commandHandler(plainHandler, ownSession, notifications, submitFn)
             : plainHandler;
@@ -335,9 +339,9 @@ function registerProgramsAndMcp(bash, config, ownSession, notifications, submitF
     }
 
     const mcpRegistry = config.mcpServers.map(({ name, ffqn }) => ({ name, ffqn }));
-    bash.registerCommand("mcp", obeliskMcp.registryCommandHandler(mcpRegistry, createHost()));
+    bash.registerCommand("mcp", obeliskMcp.registryCommandHandler(mcpRegistry, createHost(dynamic, obelisk)));
     for (const { name, ffqn } of config.mcpServers) {
-        bash.registerCommand(name, obeliskMcp.serverCommandHandler(name, ffqn, createHost()));
+        bash.registerCommand(name, obeliskMcp.serverCommandHandler(name, ffqn, createHost(dynamic, obelisk)));
     }
 
     bash.registerCommand("mount", mountCommandHandler(config.apps, config.mcpServers, config.webhookUrl));
@@ -353,7 +357,7 @@ function mountCommandHandler(apps, mcpServers, webhookUrl) {
 }
 
 function renderMountOutput(apps, mcpServers, webhookUrl) {
-    const host = createHost();
+    const host = createHost(dynamic, obelisk);
     const probe = (ffqn) => {
         try {
             host.callJson(ffqn, '["tools/list","{}"]');
@@ -373,17 +377,17 @@ function renderMountOutput(apps, mcpServers, webhookUrl) {
 // input offer opens.
 function mountPacks(bash, config) {
     const fs = bash.fs();
-    fs.setBlobLoader(obeliskPack.blobLoader(createHost()));
-    obeliskPack.registerDeferredMount(fs, createHost());
+    fs.setBlobLoader(obeliskPack.blobLoader(createHost(dynamic, obelisk)));
+    obeliskPack.registerDeferredMount(fs, createHost(dynamic, obelisk));
     for (const app of config.apps) {
         // Pass the live app object (not a copy) so `obelisk-web.js` writing
         // `resolvedRef` onto it, once the mount is first used, is visible to
         // `renderMountOutput`/`mountCommandHandler` below, which share this
         // same `config.apps` array.
-        obeliskWeb.mount(fs, createHost(), APPS_MOUNT_FFQN, `/workspace/apps/${app.name}`, app);
+        obeliskWeb.mount(fs, createHost(dynamic, obelisk), APPS_MOUNT_FFQN, `/workspace/apps/${app.name}`, app);
     }
     for (const { name, ffqn } of config.mcpServers) {
-        obeliskMcp.registerDeferredMount(fs, createHost(), createHost(), ffqn, `/workspace/mcp/${name}`);
+        obeliskMcp.registerDeferredMount(fs, createHost(dynamic, obelisk), createHost(dynamic, obelisk), ffqn, `/workspace/mcp/${name}`);
     }
 }
 
@@ -403,7 +407,7 @@ function execShell(bash, notifications, id, turnIndex, step, script, stdin, time
         return { output: [{ fd: "stderr", text: message }], exitCode: 2, interrupted: null };
     }
     console.debug(`execShell(${id}) turn=${turnIndex} step=${step} arming script watch, script=${JSON.stringify(script.slice(0, 200))}`);
-    const guard = armScriptWatch(timeoutMs ?? null);
+    const guard = armScriptWatch(timeoutMs ?? null, obelisk);
     console.debug(`execShell(${id}) watch armed, offer=${guard.offerExecutionId}`);
     notifications.notify({ shell_started: { id, offer_id: guard.offerExecutionId, turn_index: turnIndex } });
     // bash.exec below can itself block on host calls (sleep, curl, obelisk

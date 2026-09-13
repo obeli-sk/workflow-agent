@@ -1,20 +1,16 @@
 // Tests for the WIT-touching half of chat.js. `delegate`/`notifications`/
 // `submitFn` are all injected parameters (see chat.js's header comment), so
-// only `obelisk.createJoinSet`/`obelisk.sleep` need a fake global -- set here
-// per test and restored afterward, the same way this file would see the real
-// host-provided global once deployed.
+// only the workflow runtime's join-set and sleep functions need a fake.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ChatSelf, attachFinal, commandHandler, createChild, rename, watchCommand, watchLoop } from "./chat.js";
+import { ChatSelf, attachFinal, commandHandler, configureRuntime, createChild, rename, watchCommand, watchLoop } from "./chat.js";
 
 function withFakeObelisk(fake, fn) {
-    const previous = globalThis.obelisk;
-    globalThis.obelisk = fake;
+    configureRuntime(fake);
     try {
-        return fn();
+        return fn(fake);
     } finally {
-        if (previous === undefined) delete globalThis.obelisk;
-        else globalThis.obelisk = previous;
+        configureRuntime(undefined);
     }
 }
 
@@ -202,8 +198,7 @@ test("rename surfaces a notifications failure without updating own.name", () => 
 // ----- createChild ------------------------------------------------------
 
 test("createChild reuses the default 'peers' join set across unnamed children", () => {
-    withFakeObelisk(noSleepObelisk(), () => {
-        const fake = globalThis.obelisk;
+    withFakeObelisk(noSleepObelisk(), (fake) => {
         const session = own("E_1");
         const delegate = fakeDelegate({});
         const submitFn = (joinSet) => `E_child_${joinSet.name}`;
@@ -215,8 +210,7 @@ test("createChild reuses the default 'peers' join set across unnamed children", 
 });
 
 test("createChild gives a --name'd child its own join set keyed by slug", () => {
-    withFakeObelisk(noSleepObelisk(), () => {
-        const fake = globalThis.obelisk;
+    withFakeObelisk(noSleepObelisk(), (fake) => {
         const session = own("E_1");
         const delegate = fakeDelegate({});
         const submitFn = (joinSet) => `E_${joinSet.name}`;

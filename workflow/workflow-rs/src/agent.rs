@@ -5,7 +5,7 @@
 
 use serde_json::Value;
 
-use crate::generated::obelisk::workflow::workflow_support;
+use crate::generated::obelisk::workflow::workflow_dynamic_support;
 use crate::support::{decode_string_or_raw, split_ffqn};
 
 const DEFAULT_DESCRIPTOR_FFQN: &str = "obelisk-control:agent/pack.describe";
@@ -29,7 +29,7 @@ pub fn run(
         .unwrap_or_else(|| DEFAULT_DESCRIPTOR_FFQN.to_string());
 
     let descriptor_function = split_ffqn(&descriptor)?;
-    let described_json = match workflow_support::call_json(&descriptor_function, "[]") {
+    let described_json = match workflow_dynamic_support::call_json(&descriptor_function, "[]") {
         Ok(Ok(value)) => value,
         Ok(Err(value)) => return Err(decode_string_or_raw(value.as_deref().unwrap_or("null"))),
         Err(err) => return Err(format!("{err:?}")),

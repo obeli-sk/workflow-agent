@@ -20,6 +20,8 @@
 // logic) and ./ui/shell.js (the served single-page app).
 
 import { jsonError, jsonResponse, nonNegativeInteger, parseQuery } from "./lib/http.js";
+import * as obelisk from "obelisk:webhook@1.0.0";
+import * as dynamic from "obelisk:webhook-dynamic@1.0.0";
 import { loadModels } from "./lib/models.js";
 import { detailRun, listRuns, loadExecutionTreeLogs } from "./lib/runs.js";
 import {
@@ -30,8 +32,11 @@ import {
     pauseExecution,
     submitSessionInput,
     submit,
+    configureRuntime,
 } from "./lib/mutations.js";
 import { htmlShell } from "./ui/shell.js";
+
+configureRuntime(obelisk, dynamic);
 
 export default async function handle(request) {
     const url = new URL(request.url);

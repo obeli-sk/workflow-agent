@@ -65,7 +65,7 @@ function witHint(ffqn, message) {
 }
 
 function callErrorMessage(e) {
-    if (e instanceof obelisk.ChildError) {
+    if (e && typeof e === 'object' && (e.name === 'ChildError' || typeof e.failureKind === 'string')) {
         if (e.value !== undefined) return typeof e.value === 'string' ? e.value : JSON.stringify(e.value);
         return e.message;
     }

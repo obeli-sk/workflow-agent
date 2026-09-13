@@ -19,7 +19,7 @@
 // call (see obelisk-pack.js's `targetCall`, which calls this seam with
 // `ffqn = "obelisk-control:tools/native.call"`).
 
-export function createHost() {
+export function createHost(dynamic, obelisk) {
     return {
         callJson(ffqn, paramsJson) {
             let params;
@@ -30,7 +30,7 @@ export function createHost() {
             }
             let value;
             try {
-                value = obelisk.call(ffqn, params);
+                value = dynamic.call(ffqn, params);
             } catch (error) {
                 throw childErrorMessage(error);
             }

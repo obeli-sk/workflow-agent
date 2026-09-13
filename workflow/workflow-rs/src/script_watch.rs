@@ -40,7 +40,8 @@ impl ScriptWatchGuard {
             "script-watch arm: creating join set, timeout_ms={timeout_ms:?}"
         ));
         let join_set = workflow_support::join_set_create();
-        let offer = session_ext::interrupt_submit(&join_set);
+        let offer = session_ext::interrupt_submit(&join_set)
+            .expect("verified interrupt submit must succeed");
         log_line(&format!(
             "script-watch arm: interrupt offer submitted, offer_execution_id={}",
             offer.id

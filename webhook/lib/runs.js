@@ -184,8 +184,10 @@ async function loadFinalResult(id) {
 // recv activity is visible while the model is working.
 export async function loadExecutionTreeLogs(workflowId, startCursor) {
     const logs = [];
-    let cursor = startCursor || "1970-01-01T00:00:00Z";
-    let including = !startCursor;
+    // Since 0.42 cursors are opaque server-issued tokens. Omitting one starts
+    // at the beginning; a timestamp is no longer a valid synthetic cursor.
+    let cursor = startCursor || "";
+    let including = false;
     while (true) {
         let page;
         try {
@@ -194,7 +196,7 @@ export async function loadExecutionTreeLogs(workflowId, startCursor) {
         if (!Array.isArray(page) || page.length === 0) break;
         logs.push(...page);
         const next = page[page.length - 1]?.cursor;
-        if (typeof next !== "string" || !next || next <= cursor) break;
+        if (typeof next !== "string" || !next || next === cursor) break;
         cursor = next;
         including = false;
         if (page.length < 200) break;

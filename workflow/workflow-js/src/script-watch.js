@@ -37,7 +37,7 @@ export { ScriptWatchGuard };
 // NonDeterminismError (see scripts/test-e2e-replay-parity.sh). Anonymous
 // join sets have no such conflict to sidestep in the first place: each call
 // gets its own ordinal, unique by construction.
-export function arm(timeoutMs) {
+export function arm(timeoutMs, obelisk) {
     console.debug(`script-watch arm: creating join set, timeoutMs=${timeoutMs}`);
     const joinSet = obelisk.createJoinSet();
     const offerExecutionId = interruptSubmit(joinSet);

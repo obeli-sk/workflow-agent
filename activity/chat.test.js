@@ -114,7 +114,7 @@ test("models reports an unusable catalog on stderr", async () => {
 
 test("list queries sessions with derived included and renders rows", async () => {
     const { result, calls } = await run(["list"], [
-        ["GET", "join_set=session-name", () => jsonResponse(200, sessionNamePayload([
+        ["GET", "join_set=n%3Asession-name", () => jsonResponse(200, sessionNamePayload([
             { name: "my-slug" },
         ]))],
         ["GET", "/v1/executions?", (url) => {
@@ -142,7 +142,7 @@ test("list queries sessions with derived included and renders rows", async () =>
 
 test("list ignores a stale working flag from an older turn", async () => {
     const { result } = await run(["list"], [
-        ["GET", "join_set=session-name", () => jsonResponse(200, sessionNamePayload([]))],
+        ["GET", "join_set=n%3Asession-name", () => jsonResponse(200, sessionNamePayload([]))],
         ["GET", "ffqn_prefix=obelisk-agent%3Aworkflow%2Fworkflow.run-cancellable", () => jsonResponse(200, [{
             execution_id: RUN_ID,
             created_at: "2026-08-25T01:02:03Z",
@@ -160,7 +160,7 @@ test("list ignores a stale working flag from an older turn", async () => {
 
 test("names come off the dedicated session-name join set", async () => {
     const { result } = await run(["list"], [
-        ["GET", "join_set=session-name", (url) => {
+        ["GET", "join_set=n%3Asession-name", (url) => {
             // Newest-first filtered page: one response is enough. The page
             // comes back oldest-to-newest even in the older direction.
             assert.ok(url.includes("direction=older"));
@@ -178,7 +178,7 @@ test("names come off the dedicated session-name join set", async () => {
 });
 
 test("state emits one JSON line with offer, backend, and name", async () => {
-    const { result } = await run(["state", RUN_ID], [
+    const { result, calls } = await run(["state", RUN_ID], [
         ["GET", "/status", () => jsonResponse(200, {
             pending_state: { status: "blocked_by_join_set", join_set_id: "n:user" },
         })],
@@ -198,6 +198,9 @@ test("state emits one JSON line with offer, backend, and name", async () => {
     assert.equal(state.turn_index, 2);
     assert.equal(state.last_reply, null);
     assert.ok(!result.stdout.includes("big"), "system prompt must not leak through state");
+    const responseCalls = calls.filter(({ url }) => url.includes("/responses"));
+    assert.ok(responseCalls.length > 0);
+    assert.ok(responseCalls.every(({ url }) => url.includes("join_set=n%3A")));
 });
 
 test("state does not crash on rows recorded before record-output started batching", async () => {

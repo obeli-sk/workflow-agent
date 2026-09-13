@@ -37,6 +37,8 @@ const SEND_ATTEMPTS = 4;
 const SEND_RETRY_MS = 500;
 const EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 const BLOCK_CHAR_LIMIT = 4000;
+const SESSION_EVENTS_JOIN_SET = "n:session-events";
+const SESSION_NAME_JOIN_SET = "n:session-name";
 
 // Distinguishes caller mistakes (exit 2, like curl's argument errors) from
 // runtime failures (exit 1).
@@ -405,7 +407,7 @@ async function walkResponses(executionId) {
         const payload = await apiJson(
             "GET",
             `/v1/executions/${encodeURIComponent(executionId)}/responses`
-            + `?join_set=session-events&cursor=${cursor}&including_cursor=${including}`
+            + `?join_set=${encodeURIComponent(SESSION_EVENTS_JOIN_SET)}&cursor=${cursor}&including_cursor=${including}`
             + `&length=${RESPONSE_PAGE}`,
         );
         for (const r of payload.responses ?? []) {
@@ -448,7 +450,7 @@ async function latestSessionName(executionId) {
         const payload = await apiJson(
             "GET",
             `/v1/executions/${encodeURIComponent(executionId)}/responses`
-            + `?join_set=session-name&direction=older&length=1`,
+            + `?join_set=${encodeURIComponent(SESSION_NAME_JOIN_SET)}&direction=older&length=1`,
         );
         const value = sessionEventValue(payload.responses?.[0]);
         if (typeof value?.name === "string") return value.name;
@@ -464,7 +466,7 @@ async function latestResponses(executionId) {
     return apiJson(
         "GET",
         `/v1/executions/${encodeURIComponent(executionId)}/responses`
-        + `?join_set=session-events&direction=older&length=${LATEST_WINDOW}`,
+        + `?join_set=${encodeURIComponent(SESSION_EVENTS_JOIN_SET)}&direction=older&length=${LATEST_WINDOW}`,
     );
 }
 

@@ -9,6 +9,9 @@ import {
     sessionEventValue,
 } from "../../shared/session-state.js";
 
+const SESSION_EVENTS_JOIN_SET = "n:session-events";
+const SESSION_NAME_JOIN_SET = "n:session-name";
+
 export async function loadResponses(execId, startCursor = 0) {
     const replies = [];
     const toolResults = [];
@@ -27,7 +30,7 @@ export async function loadResponses(execId, startCursor = 0) {
     while (true) {
         let payload;
         try {
-            payload = await getExecutionResponses(execId, "session-events", cursor, including, 200);
+            payload = await getExecutionResponses(execId, SESSION_EVENTS_JOIN_SET, cursor, including, 200);
         } catch (_) { break; }
         const responses = payload.responses || [];
         for (const r of responses) {
@@ -90,7 +93,7 @@ export async function loadResponses(execId, startCursor = 0) {
 export async function loadLatestSessionName(execId) {
     let payload;
     try {
-        payload = await getLatestExecutionResponses(execId, "session-name", 1);
+        payload = await getLatestExecutionResponses(execId, SESSION_NAME_JOIN_SET, 1);
     } catch (_) { return null; }
     const value = sessionEventValue(payload.responses?.[0]);
     // New renames carry their event directly ({name}); pre-protocol-7
@@ -112,7 +115,7 @@ export async function loadLatestSessionName(execId) {
 // loadLatestSessionName instead.
 export async function loadLatestAgentState(execId) {
     let payload;
-    try { payload = await getLatestExecutionResponses(execId, "session-events", 50); }
+    try { payload = await getLatestExecutionResponses(execId, SESSION_EVENTS_JOIN_SET, 50); }
     catch (_) { return { working: false, name: null, markers: emptyMarkers() }; }
     const scan = projectLatestWindow(payload.responses || []);
     return { working: scan.working === true, name: null, markers: scan.markers };

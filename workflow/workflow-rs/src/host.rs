@@ -7,7 +7,7 @@
 
 use just_bash_rs::obelisk_pack::ObeliskHost;
 
-use crate::generated::obelisk::workflow::workflow_support;
+use crate::generated::obelisk::workflow::{workflow_dynamic_support, workflow_support};
 use serde_json::Value;
 
 use crate::session::Notifications;
@@ -36,7 +36,7 @@ impl RealHost {
             .and_then(|value| value.as_str().map(str::to_string))
             .ok_or_else(|| "ask-user requires a question".to_string())?;
         let join_set = workflow_support::join_set_create();
-        let execution_id = workflow_support::submit_json(&join_set, function, params_json)
+        let execution_id = workflow_dynamic_support::submit_json(&join_set, function, params_json)
             .map_err(|e| format!("ask-user submit failed: {e:?}"))?;
         self.notifications
             .human_input_requested(execution_id.id.clone(), question)?;
@@ -94,7 +94,7 @@ impl ObeliskHost for RealHost {
         {
             return result;
         }
-        match workflow_support::call_json(&function, params_json) {
+        match workflow_dynamic_support::call_json(&function, params_json) {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(value)) => Err(child_error_message(value)),
             Err(err) => Err(format!("{err:?}")),

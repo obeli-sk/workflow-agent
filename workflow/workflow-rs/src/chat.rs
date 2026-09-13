@@ -183,14 +183,17 @@ fn create_child(
         // The map keeps sole ownership of every handle; the submit only
         // borrows, since a dropped duplicate would close the join set.
         let join_set = peers.get(set_name).expect("join set just ensured");
-        workflow_ext::run_cancellable_submit(
+        match workflow_ext::run_cancellable_submit(
             join_set,
             &parsed.prompt,
             parsed.model.as_deref(),
             None,
             parsed.effort.as_deref(),
             parsed.name.as_deref(),
-        )
+        ) {
+            Ok(execution_id) => execution_id,
+            Err(error) => return failure(&format!("child submit: {error:?}")),
+        }
     };
     if !parsed.watch {
         return CommandOutput {

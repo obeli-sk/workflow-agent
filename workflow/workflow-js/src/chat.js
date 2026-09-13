@@ -54,6 +54,12 @@ import { validateSlug } from "./session-logic.js";
 
 export { parentOf };
 
+let workflowRuntime;
+
+export function configureRuntime(runtime) {
+    workflowRuntime = runtime;
+}
+
 // Live identity of the invoking session, captured where commands are
 // registered (the activity cannot learn its caller). PORT: chat.rs's
 // `ChatSelf` -- Rust needs `Rc<RefCell<...>>` for shared mutability across
@@ -144,7 +150,7 @@ export function createChild(own, args, delegate, interp, submitFn) {
     let joinSet = own.peers.get(setName);
     if (!joinSet) {
         try {
-            joinSet = obelisk.createJoinSet({ name: setName });
+            joinSet = workflowRuntime.createJoinSet({ name: setName });
         } catch (error) {
             return failure(`child join set: ${describeError(error)}`);
         }
@@ -210,7 +216,7 @@ export function watchLoop(delegate, interp, parsed) {
         const now = nowMs();
         if (now >= deadline) break;
         try {
-            obelisk.sleep({ milliseconds: Math.min(parsed.intervalMs, deadline - now) });
+            workflowRuntime.sleep({ milliseconds: Math.min(parsed.intervalMs, deadline - now) });
         } catch {
             // Cancelled durable sleep: the `sleep` builtin just returns,
             // matching session.js's hostSleepMs (which drops the

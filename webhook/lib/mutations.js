@@ -18,9 +18,17 @@ import {
 // this file picks per request.
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 
+let runtime;
+let dynamicRuntime;
+
+export function configureRuntime(obelisk, dynamic) {
+    runtime = obelisk;
+    dynamicRuntime = dynamic;
+}
+
 function scheduleSession(prompt, backend, effort) {
-    const execId = obelisk.executionIdGenerate();
-    obelisk.schedule(execId, WORKFLOW_FFQN, [prompt, backend, null, effort, null], null);
+    const execId = runtime.executionIdGenerate();
+    dynamicRuntime.schedule(execId, WORKFLOW_FFQN, [prompt, backend, null, effort, null], null);
     return execId;
 }
 

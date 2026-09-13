@@ -570,7 +570,8 @@ impl Notifications {
             .join_sets
             .get(SESSION_EVENTS_JOIN_SET)
             .expect("notification join set must exist");
-        let execution_id = session_ext::record_output_submit(join_set);
+        let execution_id = session_ext::record_output_submit(join_set)
+            .map_err(|e| format!("session event submit: {e:?}"))?;
         session_stub::record_output_stub(&execution_id, Ok(&events))
             .map_err(|e| format!("{e:?}"))?;
         let published = session_ext::record_output_await_next(join_set)
@@ -631,7 +632,8 @@ impl Notifications {
             .join_sets
             .get(SESSION_NAME_JOIN_SET)
             .expect("session-name join set must exist");
-        let execution_id = session_ext::session_renamed_submit(join_set, &name);
+        let execution_id = session_ext::session_renamed_submit(join_set, &name)
+            .map_err(|e| format!("session rename submit: {e:?}"))?;
         session_stub::session_renamed_stub(
             &execution_id,
             Ok(&SessionRenamedEvent { name: name.clone() }),
@@ -1378,7 +1380,8 @@ fn call_llm_with_user(
             BASH_TOOLS_JSON,
             model,
             effort,
-        );
+        )
+        .map_err(|e| format!("llm.completion submit failed: {e:?}"))?;
 
         let res = loop {
             // The `user` join set is heterogeneous (completion child + injection
@@ -1504,7 +1507,8 @@ fn tool_error(id: &str, message: &str) -> ToolResultBlock {
 fn open_session(turn_index: u64, notifications: &Notifications) -> Result<Session, String> {
     let join_set = workflow_support::join_set_create_named(&format!("user-{turn_index}"))
         .map_err(|e| format!("user-{turn_index} join set: {e:?}"))?;
-    let injection_execution_id = session_ext::injection_submit(&join_set);
+    let injection_execution_id = session_ext::injection_submit(&join_set)
+        .map_err(|e| format!("user-{turn_index} injection submit: {e:?}"))?;
     publish_input_offer(notifications, &injection_execution_id, turn_index)?;
     Ok(Session {
         join_set: Some(join_set),
@@ -1528,7 +1532,8 @@ fn advance_turn(session: &mut Session, notifications: &Notifications) -> Result<
         .ok_or_else(|| "turn index overflow".to_string())?;
     let join_set = workflow_support::join_set_create_named(&format!("user-{turn_index}"))
         .map_err(|e| format!("user-{turn_index} join set: {e:?}"))?;
-    session.injection_execution_id = session_ext::injection_submit(&join_set);
+    session.injection_execution_id = session_ext::injection_submit(&join_set)
+        .map_err(|e| format!("user-{turn_index} injection submit: {e:?}"))?;
     session.join_set = Some(join_set);
     session.turn_index = turn_index;
     publish_input_offer(notifications, &session.injection_execution_id, turn_index)?;
@@ -1537,7 +1542,8 @@ fn advance_turn(session: &mut Session, notifications: &Notifications) -> Result<
 
 fn rearm_user_input(session: &mut Session, notifications: &Notifications) -> Result<(), String> {
     session.injection_execution_id =
-        session_ext::injection_submit(session.join_set.as_ref().expect("turn join set is open"));
+        session_ext::injection_submit(session.join_set.as_ref().expect("turn join set is open"))
+            .map_err(|e| format!("user-{} injection submit: {e:?}", session.turn_index))?;
     publish_input_offer(
         notifications,
         &session.injection_execution_id,
