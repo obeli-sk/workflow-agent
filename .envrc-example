@@ -32,7 +32,5 @@ export LLM_BASE_URL=http://127.0.0.1:9190
 # section.
 export OBELISK_VERSION="v$(obelisk -v | cut -d ' ' -f 2)"
 
-# Optional: raises the GitHub API rate limit for the /workspace/components
-# mount (obeli-sk/components) from the shared 60 req/h anonymous IP pool to
-# 5000 req/h.
+# Optional: raises the GitHub API rate limit for fetching obeli-sk/* mounts.
 # export GITHUB_TOKEN=$(gh auth token)
