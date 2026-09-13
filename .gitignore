@@ -9,3 +9,4 @@ target-e2e
 .e2e-agent-deployment.toml
 .e2e-redeploy-deployment.toml
 .target-obelisk-sqlite
+/obelisk_server_daily.log.*

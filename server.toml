@@ -119,5 +119,5 @@ span = "none"                             # One of "none","new","enter","exit","
 target = false
 rotation = "daily"                        # One of "minutely"|"hourly"|"daily"|"never"
 directory = "."
-prefix = "obelisk_server_daily.log."
+prefix = "obelisk_server_daily.log"
 
