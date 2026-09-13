@@ -847,6 +847,9 @@ function renderDetail(forceScroll = false) {
   // so an unnamed session does not print the id twice.
   const execIdHtml = d.name ? '<code>' + esc(d.id) + '</code>' : 'web UI';
   const creationLatency = elapsedTimestampMilliseconds(d.created_at, d.session_started_at);
+  const creationTimingHtml = creationLatency === null ? ''
+    : '<div class="turn session-creation"><div class="turn-header"><span>Session creation</span>'
+      + latencyHtml(creationLatency, 'session creation latency', 'in ') + '</div></div>';
   main.innerHTML = ''
     + '<div class="detail-head">'
     + '<h2>' + esc(d.name || d.id) + '</h2>'
@@ -854,7 +857,6 @@ function renderDetail(forceScroll = false) {
     +   '<a href="' + esc(execLink(d.id)) + '" target="_blank" rel="noopener" title="open in obelisk web UI">' + execIdHtml + '</a>'
     +   ' &middot; <span class="status ' + esc(statusCls) + '">' + esc(label) + '</span>'
     +   ' &middot; ' + esc(ago(d.created_at))
-    +   (creationLatency === null ? '' : ' &middot; ' + latencyHtml(creationLatency, 'session creation latency', 'created in '))
     +   (d.backend ? ' &middot; <code>' + esc(d.backend) + '</code>' : '')
     +   (d.effort ? ' &middot; <code>effort: ' + esc(d.effort) + '</code>' : '')
     +   (d.system_prompt ? ' &middot; <button type="button" id="sysprompt-toggle">system prompt</button>' : '')
@@ -867,6 +869,7 @@ function renderDetail(forceScroll = false) {
     + '<div id="sysprompt-slot">' + renderSysprompt() + '</div>'
     + '<div id="logs-slot">' + renderLogs() + '</div>'
     + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div>' + preBlock(d.prompt) + '</div>' : '')
+    + creationTimingHtml
     + turnsHtml
     + finalHtml
     + asksHtml

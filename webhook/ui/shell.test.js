@@ -524,14 +524,26 @@ test("hides the system prompt behind a meta-row link next to logs", async () => 
     assert.match(slot, new RegExp(encodeURIComponent("You are an agent.")));
 });
 
-test("shows session creation latency in the detail header", async () => {
+test("shows session creation latency between the opening prompt and turn one", async () => {
     const renderer = await loadRenderer();
     renderer.state.detail = detailFixture({
         created_at: "2026-08-18T10:00:00.000Z",
         session_started_at: "2026-08-18T10:00:01.234Z",
+        turns: [{
+            kind: "tool_calls",
+            calls: [bashCall("bash_0")],
+            blocks: [],
+            turn_index: 0,
+            turn_complete: false,
+        }],
     });
     const html = renderDetailHtml(renderer);
-    assert.match(html, /title="session creation latency">created in 1\.23s<\/span>/);
+    assert.match(html, /Session creation<\/span><span class="latency" title="session creation latency">in 1\.23s<\/span>/);
+    const promptAt = html.indexOf('<div class="label">prompt</div>');
+    const creationAt = html.indexOf('Session creation');
+    const turnAt = html.indexOf('Turn 1');
+    assert.ok(promptAt !== -1 && promptAt < creationAt && creationAt < turnAt);
+    assert.doesNotMatch(html.slice(0, html.indexOf('<div id="detail-body">')), /session creation latency/);
 });
 
 test("omits the system-prompt link for runs recorded before it existed", async () => {
