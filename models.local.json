@@ -1,14 +1,56 @@
 [
   {
     "id": "claude",
-    "label": "claude",
+    "label": "claude (default)",
     "api_type": "openai-chat-completions",
     "wire_model": "claude"
   },
   {
+    "id": "claude-opus",
+    "label": "claude opus",
+    "api_type": "openai-chat-completions",
+    "wire_model": "claude/opus"
+  },
+  {
+    "id": "claude-sonnet",
+    "label": "claude sonnet",
+    "api_type": "openai-chat-completions",
+    "wire_model": "claude/sonnet"
+  },
+  {
+    "id": "claude-haiku",
+    "label": "claude haiku",
+    "api_type": "openai-chat-completions",
+    "wire_model": "claude/haiku"
+  },
+  {
     "id": "codex",
-    "label": "codex",
+    "label": "codex (default)",
     "api_type": "openai-chat-completions",
     "wire_model": "codex"
+  },
+  {
+    "id": "codex-gpt-5.6-sol",
+    "label": "codex gpt-5.6-sol",
+    "api_type": "openai-chat-completions",
+    "wire_model": "codex/gpt-5.6-sol"
+  },
+  {
+    "id": "codex-gpt-5.6-luna",
+    "label": "codex gpt-5.6-luna",
+    "api_type": "openai-chat-completions",
+    "wire_model": "codex/gpt-5.6-luna"
+  },
+  {
+    "id": "codex-gpt-5.5",
+    "label": "codex gpt-5.5",
+    "api_type": "openai-chat-completions",
+    "wire_model": "codex/gpt-5.5"
+  },
+  {
+    "id": "codex-gpt-5.3-codex-spark",
+    "label": "codex gpt-5.3-codex-spark",
+    "api_type": "openai-chat-completions",
+    "wire_model": "codex/gpt-5.3-codex-spark"
   }
 ]
