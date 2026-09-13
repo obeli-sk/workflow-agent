@@ -36,6 +36,12 @@
     "wire_model": "codex/gpt-5.6-sol"
   },
   {
+    "id": "codex-gpt-5.6-terra",
+    "label": "codex gpt-5.6-terra",
+    "api_type": "openai-chat-completions",
+    "wire_model": "codex/gpt-5.6-terra"
+  },
+  {
     "id": "codex-gpt-5.6-luna",
     "label": "codex gpt-5.6-luna",
     "api_type": "openai-chat-completions",
