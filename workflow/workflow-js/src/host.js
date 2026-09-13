@@ -32,7 +32,7 @@ export function createHost(dynamic, obelisk) {
             try {
                 value = dynamic.call(ffqn, params);
             } catch (error) {
-                throw childErrorMessage(error);
+                throw childErrorMessage(error, obelisk);
             }
             return value === undefined ? null : JSON.stringify(value);
         },
@@ -41,8 +41,8 @@ export function createHost(dynamic, obelisk) {
 
 // PORT: support.rs's `child_error_message` / the JS callers' inline
 // equivalent (e.g. packs/obelisk-control/native-call.js's `callErrorMessage`).
-function childErrorMessage(error) {
-    if (typeof obelisk !== "undefined" && error instanceof obelisk.ChildError) {
+function childErrorMessage(error, obelisk) {
+    if (typeof obelisk?.ChildError === "function" && error instanceof obelisk.ChildError) {
         if (error.value !== undefined) {
             return decodeChildErrorValue(error.value);
         }
