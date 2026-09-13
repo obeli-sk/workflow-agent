@@ -1,6 +1,3 @@
-[workflows]
-snapshot_every_n_events = 1000
-
 [secrets]
 LLM_API_KEY = { env = "LLM_API_KEY" }
 OBELISK_API_TOKEN = { env = "OBELISK_API_TOKEN" }
@@ -113,3 +110,14 @@ pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
 methods = ["POST"]
 secrets = ["MCP_SERVER_TOKEN"]
 replace_in = ["headers"]
+
+[log.file]
+enabled = true
+level = "info,obeli=debug,app=debug"
+style = "plain"                           # One of "plain","plain_compact","json"
+span = "none"                             # One of "none","new","enter","exit","close","active","full"
+target = false
+rotation = "daily"                        # One of "minutely"|"hourly"|"daily"|"never"
+directory = "."
+prefix = "obelisk_server_daily.log."
+
