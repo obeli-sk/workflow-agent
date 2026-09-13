@@ -266,6 +266,25 @@ test("renders a prompt queued mid-call after the response it raced", async () =>
     assert.match(renderTurnGroupHtml(renderer, turns), /final response/);
 });
 
+test("renders a prompt before a step whose reconstructed start is the same millisecond", async () => {
+    const renderer = await loadRenderer();
+    const sentAt = "2026-09-13T21:12:16.631375685Z";
+    renderer.state.transcript = {
+        replies: [toolStep(
+            5,
+            "2026-09-13T21:12:26.404339016Z",
+            9773,
+            [bashCall("bash_1"), bashCall("bash_2")],
+        )],
+        user_messages: [{ id: "p5", text: "create an app", created_at: sentAt, turn_index: 5 }],
+        shell_events: [],
+        turn_starts: [{ id: "p5", kind: "prompt", created_at: sentAt }],
+        sent_results: [],
+    };
+    const turns = renderer.buildCachedTurns("2026-09-13T21:05:19.302Z", "test");
+    assert.equal(turns.map((turn) => turn.kind).join(","), "user_message,tool_calls");
+});
+
 function renderTurnGroupHtml(renderer, turns) {
     return renderer.groupTurns(turns)
         .map((g, i) => renderer.renderTurnGroup(g, i))

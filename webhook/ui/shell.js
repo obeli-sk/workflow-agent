@@ -721,7 +721,8 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
   const flushBefore = (startMs) => {
     while (next < pending.length) {
       const sentAt = pending[next].sent;
-      if (!Number.isFinite(sentAt) || startMs === null || !(startMs > sentAt)) break;
+      // Equal millisecond values can mean the prompt arrived just before the snapshot.
+      if (!Number.isFinite(sentAt) || startMs === null || !(startMs >= sentAt)) break;
       ordered.push(pending[next].turn);
       next += 1;
     }
