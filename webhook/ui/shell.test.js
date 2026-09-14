@@ -432,6 +432,42 @@ test("shows the interrupt control on a running bash card only", async () => {
     assert.doesNotMatch(resolved, /call-interrupt/);
 });
 
+test("pairs results per step when tool-call ids repeat across steps in a turn", async () => {
+    const renderer = await loadRenderer();
+    const call = (id, script) => ({ id, name: "bash", args: { script } });
+    const result = (id, stdout) => ({
+        id, turn_index: 0, duration_milliseconds: 1,
+        ok: { output: [{ stdout }], exit_code: 0 },
+    });
+    // Two steps in one turn, both starting their ids at call_0 (as a model does
+    // per response). A run-global by-id pairing would show step 1's output under
+    // step 2's call_0.
+    const fixture = {
+        transcript: {
+            replies: [
+                toolStep(0, "2026-08-18T10:00:01.000Z", 100, [call("call_0", "chat read peer")]),
+                toolStep(0, "2026-08-18T10:00:03.000Z", 100,
+                    [call("call_0", "chat rename x"), call("call_1", "ls")]),
+            ],
+            user_messages: [],
+            shell_events: [],
+            turn_starts: [],
+            sent_results: [
+                result("call_0", "PEER_TRANSCRIPT"),
+                result("call_0", "RENAMED_OK"),
+                result("call_1", "FILE_LISTING"),
+            ],
+        },
+        created: "2026-08-18T10:00:00.000Z",
+        prompt: "inspect peers",
+    };
+    const html = render(renderer, fixture).join("");
+    assert.match(html, /chat read peer[\s\S]*PEER_TRANSCRIPT/);
+    assert.match(html, /chat rename x[\s\S]*RENAMED_OK/);
+    // The earlier step's output must not leak past the later step's call.
+    assert.doesNotMatch(html, /chat rename x[\s\S]*PEER_TRANSCRIPT/);
+});
+
 test("a user-typed running shell command exposes its interrupt offer too", async () => {
     const renderer = await loadRenderer();
     const fixture = {

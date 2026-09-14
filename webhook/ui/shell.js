@@ -531,11 +531,17 @@ function mergeTurnStarts(target, incoming) {
 }
 
 function mergeToolResults(target, incoming) {
-  const byId = new Set(target.map((item) => item?.id).filter(Boolean));
+  // A result's identity is (id, created_at), not id alone: tool-call ids
+  // (call_0, call_1, ...) restart every step, so id-only dedup would drop a
+  // later step's call_0 and mispair it, while created_at still collapses a
+  // genuinely re-fetched duplicate.
+  const resultKey = (item) => (item ? (item.id || '') + ' ' + (item.created_at || '') : '');
+  const seen = new Set(target.map(resultKey).filter(Boolean));
   for (const item of incoming) {
     if (!item) continue;
-    if (item.id && byId.has(item.id)) continue;
-    if (item.id) byId.add(item.id);
+    const key = resultKey(item);
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
     target.push(item);
   }
 }
@@ -565,9 +571,13 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
   const wholeTurnLatency = (item) => item?.turn_complete === true
     ? elapsedTimestampMilliseconds(startsByTurn.get(item.turn_index), item.created_at)
     : null;
-  const sentResultsById = new Map(
-    (cached.sent_results || []).filter((result) => result?.id).map((result) => [result.id, result]),
-  );
+  // Results arrive in emission order as one contiguous block per step. Tool-call
+  // ids are unique within a step but restart at call_0 across steps, so pair per
+  // step: take each step's block, then match by id inside it (parallel calls can
+  // finish out of order). A run-global by-id map would show an earlier step's
+  // output; positional-only pairing would misassign out-of-order parallel calls.
+  const orderedResults = (cached.sent_results || []).filter(Boolean);
+  let resultCursor = 0;
   const interruptOffersById = new Map(
     (cached.shell_starts || []).filter((start) => start?.id && start.offer_id)
       .map((start) => [start.id, start.offer_id]),
@@ -604,8 +614,11 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
         turn_complete: item.turn_complete === true,
       });
     } else if (Array.isArray(reply.tool_calls)) {
+      const block = orderedResults.slice(resultCursor, resultCursor + reply.tool_calls.length);
+      resultCursor += reply.tool_calls.length;
+      const resultById = new Map(block.filter((r) => r && r.id).map((r) => [r.id, r]));
       const calls = reply.tool_calls.map((call) => {
-        const sent = call?.id ? sentResultsById.get(call.id) : null;
+        const sent = call?.id ? resultById.get(call.id) : null;
         const rendered = {
           id: call?.id || '',
           name: call?.name,
