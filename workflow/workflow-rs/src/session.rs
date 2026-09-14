@@ -846,10 +846,9 @@ pub fn agent_loop(
         notifications.set_turn_index(turn_index);
         if should_call_llm && agent_steps >= max_steps {
             let error = step_limit_error(turn_index, max_steps);
-            messages.push(json!({
-                "role": "assistant",
-                "content": [{"type": "text", "text": error.text.clone()}],
-            }));
+            // A user, not assistant, message: a synthetic assistant turn would poison the
+            // agent-backed-llm-server's prefix-hash pairing, so `continue` cannot re-pair (409).
+            messages.push(user_text(&error.text));
             notifications.notify(SESSION_EVENTS_JOIN_SET, &SessionEvent::AgentError(error))?;
             should_call_llm = false;
             publish_agent_status(&notifications, false, turn_index)?;
@@ -977,14 +976,11 @@ pub fn agent_loop(
                     continue;
                 }
                 LlmOutcome::Interrupted => {
-                    // Same shape as the step-limit branch above: the guidance is
-                    // for the model (so a later "continue" has something to act
-                    // on), not just a UI notice, so it goes into the history too.
+                    // Same shape as the step-limit branch above: guidance for the model (so a
+                    // later "continue" has something to act on), delivered as a user message so
+                    // it rides in the next delta instead of poisoning backend prefix-hash pairing.
                     let error = interrupted_error(turn_index);
-                    messages.push(json!({
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": error.text.clone()}],
-                    }));
+                    messages.push(user_text(&error.text));
                     notifications
                         .notify(SESSION_EVENTS_JOIN_SET, &SessionEvent::AgentError(error))?;
                     should_call_llm = false;

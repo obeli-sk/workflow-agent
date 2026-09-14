@@ -659,7 +659,9 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
             notifications.setTurnIndex(turnIndex);
             if (shouldCallLlm && agentSteps >= maxSteps) {
                 const error = stepLimitError(turnIndex, maxSteps);
-                messages.push({ role: "assistant", content: [{ type: "text", text: error.text }] });
+                // A user, not assistant, message: a synthetic assistant turn would poison the
+                // agent-backed-llm-server's prefix-hash pairing, so `continue` cannot re-pair (409).
+                messages.push(userText(error.text));
                 notifications.notify({ agent_error: error });
                 shouldCallLlm = false;
                 publishAgentStatus(notifications, false, turnIndex);
@@ -702,7 +704,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
                 }
                 if (outcome.kind === "interrupted") {
                     const error = interruptedError(turnIndex);
-                    messages.push({ role: "assistant", content: [{ type: "text", text: error.text }] });
+                    messages.push(userText(error.text));
                     notifications.notify({ agent_error: error });
                     shouldCallLlm = false;
                     agentSteps = 0;
