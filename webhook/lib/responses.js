@@ -252,6 +252,7 @@ function appendAssistantReply(replies, rep, createdAt) {
         narration: toolUses.length > 0 ? text : "",
         created_at: createdAt,
         turn_index: Number.isInteger(rep.turn_index) ? rep.turn_index : null,
+        step: Number.isInteger(rep.step) ? rep.step : null,
         duration_milliseconds: rep.duration_milliseconds,
         turn_complete: rep.turn_complete === true,
     });
@@ -263,6 +264,7 @@ function normalizeSessionToolResult(result, createdAt) {
     else if (result.output && "error" in result.output) out.err = result.output.error;
     out.duration_milliseconds = result.duration_milliseconds;
     if (Number.isInteger(result.turn_index)) out.turn_index = result.turn_index;
+    if (Number.isInteger(result.step)) out.step = result.step;
     return out;
 }
 

@@ -83,6 +83,9 @@ interface stub {
   record assistant-reply-event {
     content-json: string,
     turn-index: u64,
+    // The per-turn model-invocation index (1-based); with turn-index and the
+    // in-reply tool-call id it uniquely identifies a step and its results.
+    step: u64,
     duration-milliseconds: u64,
     turn-complete: bool,
   }
@@ -112,6 +115,9 @@ interface stub {
     id: string,
     output: tool-output,
     turn-index: u64,
+    // The producing step's per-turn index; pairs this result to its call
+    // without relying on id (which restarts each step) or emission order.
+    step: u64,
     duration-milliseconds: u64,
   }
 

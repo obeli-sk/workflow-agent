@@ -68,12 +68,13 @@ async function loadRenderer() {
     return ctx.__render;
 }
 
-function toolStep(ti, at, durationMs, calls, narration = "", complete = false) {
+function toolStep(ti, at, durationMs, calls, narration = "", complete = false, step = 0) {
     return {
         reply: { tool_calls: calls },
         narration,
         created_at: at,
         turn_index: ti,
+        step,
         duration_milliseconds: durationMs,
         turn_complete: complete,
     };
@@ -83,8 +84,8 @@ function bashCall(id) {
     return { id, name: "bash", args: { script: "echo hi" } };
 }
 
-function bashResult(id, ti, durationMs) {
-    return { id, turn_index: ti, duration_milliseconds: durationMs, ok: { output: [], exit_code: 0 } };
+function bashResult(id, ti, durationMs, step = 0) {
+    return { id, turn_index: ti, step, duration_milliseconds: durationMs, ok: { output: [], exit_code: 0 } };
 }
 
 // A two-turn session mirroring the run in the task description: turn 0 exhausts
@@ -389,7 +390,7 @@ test("preserves a leading newline in command output (pre-tag guard)", async () =
             shell_events: [],
             turn_starts: [],
             sent_results: [{
-                id: "bash_0", turn_index: 0, duration_milliseconds: 5,
+                id: "bash_0", turn_index: 0, step: 0, duration_milliseconds: 5,
                 ok: { output: [{ stdout: "\n[[webhook_endpoint_js]]\n" }], exit_code: 0 },
             }],
         },
@@ -435,27 +436,27 @@ test("shows the interrupt control on a running bash card only", async () => {
 test("pairs results per step when tool-call ids repeat across steps in a turn", async () => {
     const renderer = await loadRenderer();
     const call = (id, script) => ({ id, name: "bash", args: { script } });
-    const result = (id, stdout) => ({
-        id, turn_index: 0, duration_milliseconds: 1,
+    const result = (id, stdout, step) => ({
+        id, turn_index: 0, step, duration_milliseconds: 1,
         ok: { output: [{ stdout }], exit_code: 0 },
     });
     // Two steps in one turn, both starting their ids at call_0 (as a model does
-    // per response). A run-global by-id pairing would show step 1's output under
-    // step 2's call_0.
+    // per response). Pairing by (turn, step, id) keeps each step's output on its
+    // own card; a run-global by-id map would show step 1's output under step 2.
     const fixture = {
         transcript: {
             replies: [
-                toolStep(0, "2026-08-18T10:00:01.000Z", 100, [call("call_0", "chat read peer")]),
+                toolStep(0, "2026-08-18T10:00:01.000Z", 100, [call("call_0", "chat read peer")], "", false, 1),
                 toolStep(0, "2026-08-18T10:00:03.000Z", 100,
-                    [call("call_0", "chat rename x"), call("call_1", "ls")]),
+                    [call("call_0", "chat rename x"), call("call_1", "ls")], "", false, 2),
             ],
             user_messages: [],
             shell_events: [],
             turn_starts: [],
             sent_results: [
-                result("call_0", "PEER_TRANSCRIPT"),
-                result("call_0", "RENAMED_OK"),
-                result("call_1", "FILE_LISTING"),
+                result("call_0", "PEER_TRANSCRIPT", 1),
+                result("call_0", "RENAMED_OK", 2),
+                result("call_1", "FILE_LISTING", 2),
             ],
         },
         created: "2026-08-18T10:00:00.000Z",

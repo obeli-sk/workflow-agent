@@ -723,6 +723,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
                     assistant_reply: {
                         content_json: outcome.contentJson,
                         turn_index: turnIndex,
+                        step: agentSteps,
                         duration_milliseconds: outcome.durationMilliseconds,
                         turn_complete: assistantCompletesTurn,
                     },
@@ -742,6 +743,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
                                 id: call.id,
                                 output: block.ok ? { ok: block.result } : { error: block.message },
                                 turn_index: turnIndex,
+                                step: agentSteps,
                                 duration_milliseconds: durationMilliseconds,
                             },
                         });

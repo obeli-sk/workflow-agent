@@ -1026,6 +1026,7 @@ pub fn agent_loop(
                 &SessionEvent::AssistantReply(AssistantReplyEvent {
                     content_json: reply.content_json.clone(),
                     turn_index,
+                    step: u64::from(agent_steps),
                     duration_milliseconds: reply.duration_milliseconds,
                     turn_complete: assistant_completes_turn,
                 }),
@@ -1056,6 +1057,7 @@ pub fn agent_loop(
                             id: call.id.clone(),
                             output: block.output.clone(),
                             turn_index,
+                            step: u64::from(agent_steps),
                             duration_milliseconds,
                         }),
                     )?;
@@ -1985,6 +1987,7 @@ mod tests {
                 interrupted: None,
             }),
             turn_index: 4,
+            step: 2,
             duration_milliseconds: 25,
         });
 
@@ -2001,6 +2004,7 @@ mod tests {
                         },
                     },
                     "turn_index": 4,
+                    "step": 2,
                     "duration_milliseconds": 25,
                 },
             })
