@@ -275,8 +275,17 @@ function executeGenerate(action) {
 }
 
 function executeDeployment(interp, action, args, host) {
-    if (action === "current") {
-        return jsonCall(host, "obelisk-agent:tools/webapi.current-deployment-id", []);
+    if (action === "active") {
+        // Print the active deployment id, or its JSON-quoted form with --json,
+        // matching real obelisk `deployment active`.
+        const id = decodeString(callValue(host, "obelisk-agent:tools/webapi.current-deployment-id", "[]"));
+        return ok(flag(args, "--json") ? `${JSON.stringify(id)}\n` : `${id}\n`);
+    }
+    if (action === "list") {
+        return deploymentList(host);
+    }
+    if (action === "show") {
+        return deploymentShow(host, args);
     }
     if (action === "refresh") {
         // An explicit refresh populates the tree now, so drop the deferred
@@ -313,16 +322,92 @@ function executeDeployment(interp, action, args, host) {
         const allowMissing = flagRuntimeConfig(args);
         return submitDeployment(interp.vfs, host, dir, expanded, description, allowMissing, deploymentId);
     }
-    if (action === "switch") {
-        return jsonCall(host, "obelisk-agent:tools/webapi.deployment-switch", [
+    if (action === "enqueue") {
+        // Stage the deployment for the next server restart (never hot-swaps),
+        // mirroring real obelisk `deployment enqueue`'s wording exactly.
+        const outcome = switchOutcome(callValue(host, "obelisk-agent:tools/webapi.deployment-switch", JSON.stringify([
             required(args[0], "deployment id"),
             flagRuntimeConfig(args),
-        ]);
+        ])));
+        if (outcome === "switched") return ok("Deployment already active; it will remain active after restart.\n");
+        if (outcome === "restart_required") return ok("Deployment enqueued. Restart the server to apply.\n");
+        throw `unexpected outcome from server: ${outcome}`;
     }
     if (action === "apply") {
-        return jsonCall(host, "obelisk-agent:tools/webapi.apply-deployment", [required(args[0], "deployment id")]);
+        // Hot-redeploy now; a server that can only stage the switch reports
+        // restart_required, which real obelisk `deployment apply` treats as a
+        // failure rather than a silent enqueue.
+        const outcome = switchOutcome(callValue(host, "obelisk-agent:tools/webapi.apply-deployment", JSON.stringify([
+            required(args[0], "deployment id"),
+        ])));
+        if (outcome === "switched") return ok("Applied successfully.\n");
+        if (outcome === "restart_required") throw "Could not apply immediately; deployment enqueued. Restart the server to apply.";
+        throw `unexpected outcome from server: ${outcome}`;
     }
     return fail(`obelisk deployment: unknown action '${action}'\n`);
+}
+
+// Map the `{ok:<outcome>}` switch response (the web API body the
+// deployment-switch/apply tools return verbatim) to its outcome string.
+function switchOutcome(value) {
+    if (value && typeof value === "object" && typeof value.ok === "string") return value.ok;
+    if (typeof value === "string") {
+        try {
+            const parsed = JSON.parse(value);
+            if (parsed && typeof parsed === "object" && typeof parsed.ok === "string") return parsed.ok;
+        } catch (_) { /* not JSON, fall through */ }
+        if (value.trim() !== "") return value.trim();
+    }
+    throw "deployment activation returned no outcome";
+}
+
+// PORT: real obelisk `deployment list` - a fixed-width table (newest first),
+// or "No deployments found.". The list-deployments tool returns the web API's
+// DeploymentStateSer array verbatim.
+function deploymentList(host) {
+    const value = callValue(host, "obelisk-agent:tools/webapi.list-deployments", JSON.stringify(["", false, 20]));
+    const deployments = decodeJson(value);
+    if (!Array.isArray(deployments)) throw "deployment list returned a non-array response";
+    if (deployments.length === 0) return ok("No deployments found.\n");
+    const lines = [padColumn("ID", 32) + "  " + padColumn("STATUS", 12) + "  " + padColumn("CREATED_AT", 19) + "  " + padColumn("LAST_ACTIVE_AT", 19) + "  DESCRIPTION"];
+    for (const dep of deployments) {
+        const id = typeof dep?.deployment_id === "string" ? dep.deployment_id : "";
+        const status = formatDeploymentStatus(dep?.status);
+        const created = formatDeploymentTimestamp(dep?.created_at);
+        const lastActive = dep?.last_active_at ? formatDeploymentTimestamp(dep.last_active_at) : "";
+        const description = typeof dep?.description === "string" ? dep.description : "";
+        lines.push(padColumn(id, 32) + "  " + padColumn(status, 12) + "  " + padColumn(created, 19) + "  " + padColumn(lastActive, 19) + "  " + description);
+    }
+    return ok(`${lines.join("\n")}\n`);
+}
+
+// PORT: real obelisk `deployment show ID` - print the stored TOML manifest.
+// The real CLI's FILE and --json variants need a source-blob fetch and a
+// TOML parser (unavailable here), so only the default manifest form is shown.
+function deploymentShow(host, args) {
+    const id = required(firstPositional(args, []), "deployment id");
+    const record = decodeJson(callValue(host, "obelisk-agent:tools/webapi.get-deployment", JSON.stringify([id, null, null, null, null])));
+    const toml = typeof record?.deployment_toml === "string" ? record.deployment_toml : "";
+    return ok(ensureTrailingNewline(toml));
+}
+
+function padColumn(text, width) {
+    return text.length >= width ? text : text + " ".repeat(width - text.length);
+}
+
+function formatDeploymentStatus(status) {
+    if (status === "inactive") return "Inactive";
+    if (status === "enqueued") return "Enqueued";
+    if (status === "active") return "Active";
+    return typeof status === "string" ? status : "";
+}
+
+// The web API serializes timestamps as RFC 3339; real obelisk prints them as
+// `%Y-%m-%d %H:%M:%S`, so keep the date and clock and drop the sub-second/zone.
+function formatDeploymentTimestamp(value) {
+    if (typeof value !== "string") return "";
+    const match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/.exec(value);
+    return match ? `${match[1]} ${match[2]}` : value;
 }
 
 // The workflow half of the submit contract: drive the dumb
@@ -683,7 +768,7 @@ function actionHelp(group, action) {
     if (group === "call") return callHelp;
     if (group === "deployment" && action === "submit") return deploymentSubmitHelp;
     if (group === "deployment" && action === "check") return deploymentCheckHelp;
-    if (group === "deployment" && action === "switch") return deploymentSwitchHelp;
+    if (group === "deployment" && action === "enqueue") return deploymentEnqueueHelp;
     if (group === "deployment" && action === "apply") return deploymentApplyHelp;
     if (group === "generate" && action === "deployment") return generateDeploymentHelp;
     return groupHelp(group);
@@ -707,7 +792,7 @@ const callHelp =
     "Usage: obelisk call FFQN [PARAMS_JSON]\nobelisk call FFQN -- PARAM...\n\nCall a deployed function and print its result. Pass parameters as one JSON array\nin WIT parameter order, or after `--` as positional values (each parsed as JSON\nwhen valid, otherwise as a string). With neither, parameters are read from stdin,\ndefaulting to `[]`.\n";
 
 const deploymentHelp =
-    "Usage: obelisk deployment <subcommand>\n\nInspect, edit, submit, and activate deployments. Edits under\n/workspace/deployment/current are local until `submit` or `apply`.\n\nSubcommands:\ncurrent                   Print the active deployment ID.\nrefresh                   Re-fetch the active deployment, discarding local edits.\ncheck [PATH]              Report a deployment's manifest and locally-edited sources.\nsubmit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\nswitch ID [OPTIONS]       Activate a stored deployment (verified on next server restart).\napply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\nRun `obelisk deployment <subcommand> --help` for a subcommand's options.\n";
+    "Usage: obelisk deployment <subcommand>\n\nInspect, edit, submit, and activate deployments. Edits under\n/workspace/deployment/current are local until `submit` or `apply`.\n\nSubcommands:\nactive [--json]           Print the active deployment ID.\nlist                      List recent deployments.\nshow ID                   Print a stored deployment's TOML manifest.\nrefresh                   Re-fetch the active deployment, discarding local edits.\ncheck [PATH]              Report a deployment's manifest and locally-edited sources.\nsubmit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\nenqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\napply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\nRun `obelisk deployment <subcommand> --help` for a subcommand's options.\n";
 
 const deploymentSubmitHelp =
     "Usage: obelisk deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML\n\nStore the edited deployment as a new inactive deployment and print its ID. PATH\nis the path to the deployment TOML file to submit (any filename -- not just the\nliteral \"deployment.toml\"); it must be a file, not a directory, matching real\nobelisk. Digests are recomputed from the files, so leave them out.\n\nOptions:\n--description TEXT               Human-readable description for the new deployment.\n--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n(alias: --allow-unavailable-runtime-config)\n";
@@ -715,8 +800,8 @@ const deploymentSubmitHelp =
 const deploymentCheckHelp =
     "Usage: obelisk deployment check [PATH-TO-DEPLOYMENT.TOML]\n\nReport a deployment's manifest size and the owned sources edited locally (the\nfiles a submit would upload). PATH is the path to the deployment TOML file (any\nfilename); it must be a file, not a directory, and defaults to ./deployment.toml.\n";
 
-const deploymentSwitchHelp =
-    "Usage: obelisk deployment switch [OPTIONS] ID\n\nMark a stored deployment active; it is verified and applied on the next server\nrestart.\n\nOptions:\n--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n(alias: --allow-unavailable-runtime-config)\n";
+const deploymentEnqueueHelp =
+    "Usage: obelisk deployment enqueue [OPTIONS] ID\n\nEnqueue a stored deployment; it is verified and applied on the next server\nrestart. Use `apply` to hot-redeploy without a restart.\n\nOptions:\n--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n(alias: --allow-unavailable-runtime-config)\n";
 
 const deploymentApplyHelp =
     "Usage: obelisk deployment apply ID\n\nHot-redeploy a stored deployment now (fails if it cannot be applied live).\n";

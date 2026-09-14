@@ -295,25 +295,84 @@ test("call requires ffqn", () => {
     assert.equal(out.stderr, "obelisk: ffqn is required\n");
 });
 
-test("deployment current calls host", () => {
+test("deployment active calls host", () => {
     const host = fakeHost().with("obelisk-agent:tools/webapi.current-deployment-id", JSON.stringify("dep-1"));
-    const out = executeObelisk(interp(), words("deployment current"), "", host);
+    const out = executeObelisk(interp(), words("deployment active"), "", host);
     assert.equal(out.stdout, "dep-1\n");
 });
 
-test("deployment switch requires id and forwards the flag", () => {
+test("deployment active --json quotes the id", () => {
+    const host = fakeHost().with("obelisk-agent:tools/webapi.current-deployment-id", JSON.stringify("dep-1"));
+    const out = executeObelisk(interp(), words("deployment active --json"), "", host);
+    assert.equal(out.stdout, '"dep-1"\n');
+});
+
+test("deployment enqueue requires id, forwards the flag, and reports the outcome", () => {
     const i = interp();
-    let out = executeObelisk(i, words("deployment switch"), "", fakeHost());
+    let out = executeObelisk(i, words("deployment enqueue"), "", fakeHost());
     assert.equal(out.exitCode, 2);
     assert.equal(out.stderr, "obelisk: deployment id is required\n");
 
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-switch", "null");
-    executeObelisk(i, words("deployment switch dep-2 --allow-missing-runtime-config"), "", host);
+    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-switch", JSON.stringify({ ok: "restart_required" }));
+    out = executeObelisk(i, words("deployment enqueue dep-2 --allow-missing-runtime-config"), "", host);
     assert.equal(host.calls[0][1], JSON.stringify(["dep-2", true]));
+    assert.equal(out.stdout, "Deployment enqueued. Restart the server to apply.\n");
+});
+
+test("deployment enqueue reports an already-active deployment", () => {
+    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-switch", JSON.stringify({ ok: "switched" }));
+    const out = executeObelisk(interp(), words("deployment enqueue dep-2"), "", host);
+    assert.equal(out.stdout, "Deployment already active; it will remain active after restart.\n");
 });
 
 test("deployment apply requires id", () => {
     const out = executeObelisk(interp(), words("deployment apply"), "", fakeHost());
+    assert.equal(out.exitCode, 2);
+    assert.equal(out.stderr, "obelisk: deployment id is required\n");
+});
+
+test("deployment apply reports success", () => {
+    const host = fakeHost().with("obelisk-agent:tools/webapi.apply-deployment", JSON.stringify({ ok: "switched" }));
+    const out = executeObelisk(interp(), words("deployment apply dep-2"), "", host);
+    assert.equal(host.calls[0][1], JSON.stringify(["dep-2"]));
+    assert.equal(out.stdout, "Applied successfully.\n");
+});
+
+test("deployment apply fails when only a restart could apply it", () => {
+    const host = fakeHost().with("obelisk-agent:tools/webapi.apply-deployment", JSON.stringify({ ok: "restart_required" }));
+    const out = executeObelisk(interp(), words("deployment apply dep-2"), "", host);
+    assert.equal(out.exitCode, 2);
+    assert.equal(out.stderr, "obelisk: Could not apply immediately; deployment enqueued. Restart the server to apply.\n");
+});
+
+test("deployment list renders a table, newest first", () => {
+    const host = fakeHost().with("obelisk-agent:tools/webapi.list-deployments", JSON.stringify([
+        { deployment_id: "Dep_2", description: "second", status: "active", created_at: "2026-09-14T08:22:17.592Z", last_active_at: "2026-09-14T09:00:00.000Z" },
+        { deployment_id: "Dep_1", description: "", status: "inactive", created_at: "2026-09-13T07:00:00.000Z", last_active_at: null },
+    ]));
+    const out = executeObelisk(interp(), words("deployment list"), "", host);
+    assert.equal(host.calls[0][1], JSON.stringify(["", false, 20]));
+    const lines = out.stdout.split("\n");
+    assert.equal(lines[0], "ID                                STATUS        CREATED_AT           LAST_ACTIVE_AT       DESCRIPTION");
+    assert.equal(lines[1], "Dep_2                             Active        2026-09-14 08:22:17  2026-09-14 09:00:00  second");
+    assert.equal(lines[2], "Dep_1                             Inactive      2026-09-13 07:00:00                       ");
+});
+
+test("deployment list reports an empty catalog", () => {
+    const host = fakeHost().with("obelisk-agent:tools/webapi.list-deployments", JSON.stringify([]));
+    const out = executeObelisk(interp(), words("deployment list"), "", host);
+    assert.equal(out.stdout, "No deployments found.\n");
+});
+
+test("deployment show prints the stored manifest", () => {
+    const host = fakeHost().with("obelisk-agent:tools/webapi.get-deployment", JSON.stringify({ deployment_toml: "[[activity_js]]\nname = \"x\"\n" }));
+    const out = executeObelisk(interp(), words("deployment show Dep_1"), "", host);
+    assert.equal(host.calls[0][1], JSON.stringify(["Dep_1", null, null, null, null]));
+    assert.equal(out.stdout, "[[activity_js]]\nname = \"x\"\n");
+});
+
+test("deployment show requires id", () => {
+    const out = executeObelisk(interp(), words("deployment show"), "", fakeHost());
     assert.equal(out.exitCode, 2);
     assert.equal(out.stderr, "obelisk: deployment id is required\n");
 });

@@ -418,11 +418,20 @@ fn execute_deployment(
     host: &mut dyn ObeliskHost,
 ) -> Result<CommandOutput, String> {
     match action {
-        "current" => json_call(
-            host,
-            "obelisk-agent:tools/webapi.current-deployment-id",
-            json!([]),
-        ),
+        "active" => {
+            // Print the active deployment id, or its JSON-quoted form with
+            // --json, matching real obelisk `deployment active`.
+            let value =
+                call_value(host, "obelisk-agent:tools/webapi.current-deployment-id", "[]")?;
+            let id = decode_string(&value);
+            Ok(ok(if flag(args, "--json") {
+                format!("{}\n", serde_json::to_string(&id).expect("string encodes"))
+            } else {
+                format!("{id}\n")
+            }))
+        }
+        "list" => deployment_list(host),
+        "show" => deployment_show(host, args),
         "refresh" => {
             // An explicit refresh populates the tree now, so drop the deferred
             // mount to keep a later deployment access from re-fetching it.
@@ -479,23 +488,172 @@ fn execute_deployment(
                 &deployment_id,
             )
         }
-        "switch" => json_call(
-            host,
-            "obelisk-agent:tools/webapi.deployment-switch",
-            json!([
-                required(args.first().map(String::as_str), "deployment id")?,
-                flag_runtime_config(args),
-            ]),
-        ),
-        "apply" => json_call(
-            host,
-            "obelisk-agent:tools/webapi.apply-deployment",
-            json!([required(args.first().map(String::as_str), "deployment id")?]),
-        ),
+        "enqueue" => {
+            // Stage the deployment for the next server restart (never
+            // hot-swaps), mirroring real obelisk `deployment enqueue`.
+            let value = call_value(
+                host,
+                "obelisk-agent:tools/webapi.deployment-switch",
+                &json!([
+                    required(args.first().map(String::as_str), "deployment id")?,
+                    flag_runtime_config(args),
+                ])
+                .to_string(),
+            )?;
+            match switch_outcome(&value)?.as_str() {
+                "switched" => Ok(ok(
+                    "Deployment already active; it will remain active after restart.\n".to_string(),
+                )),
+                "restart_required" => {
+                    Ok(ok("Deployment enqueued. Restart the server to apply.\n".to_string()))
+                }
+                other => Err(format!("unexpected outcome from server: {other}")),
+            }
+        }
+        "apply" => {
+            // Hot-redeploy now; a server that can only stage the switch reports
+            // restart_required, which real obelisk `deployment apply` treats as
+            // a failure rather than a silent enqueue.
+            let value = call_value(
+                host,
+                "obelisk-agent:tools/webapi.apply-deployment",
+                &json!([required(args.first().map(String::as_str), "deployment id")?]).to_string(),
+            )?;
+            match switch_outcome(&value)?.as_str() {
+                "switched" => Ok(ok("Applied successfully.\n".to_string())),
+                "restart_required" => Err(
+                    "Could not apply immediately; deployment enqueued. Restart the server to apply."
+                        .to_string(),
+                ),
+                other => Err(format!("unexpected outcome from server: {other}")),
+            }
+        }
         _ => Ok(fail(format!(
             "obelisk deployment: unknown action '{action}'\n"
         ))),
     }
+}
+
+/// Map the `{ok:<outcome>}` switch response (the web API body the
+/// deployment-switch/apply tools return verbatim) to its outcome string.
+fn switch_outcome(value: &Value) -> Result<String, String> {
+    if let Some(outcome) = value.get("ok").and_then(Value::as_str) {
+        return Ok(outcome.to_string());
+    }
+    if let Value::String(s) = value {
+        if let Ok(parsed) = serde_json::from_str::<Value>(s) {
+            if let Some(outcome) = parsed.get("ok").and_then(Value::as_str) {
+                return Ok(outcome.to_string());
+            }
+        }
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    Err("deployment activation returned no outcome".to_string())
+}
+
+/// PORT: real obelisk `deployment list` - a fixed-width table (newest first),
+/// or "No deployments found.". The list-deployments tool returns the web API's
+/// DeploymentStateSer array verbatim.
+fn deployment_list(host: &mut dyn ObeliskHost) -> Result<CommandOutput, String> {
+    let value = call_value(
+        host,
+        "obelisk-agent:tools/webapi.list-deployments",
+        &json!(["", false, 20]).to_string(),
+    )?;
+    let deployments = decode_json(&value)?;
+    let deployments = deployments
+        .as_array()
+        .ok_or_else(|| "deployment list returned a non-array response".to_string())?;
+    if deployments.is_empty() {
+        return Ok(ok("No deployments found.\n".to_string()));
+    }
+    let mut lines = vec![format!(
+        "{}  {}  {}  {}  DESCRIPTION",
+        pad_column("ID", 32),
+        pad_column("STATUS", 12),
+        pad_column("CREATED_AT", 19),
+        pad_column("LAST_ACTIVE_AT", 19),
+    )];
+    for dep in deployments {
+        let id = dep.get("deployment_id").and_then(Value::as_str).unwrap_or("");
+        let status = format_deployment_status(dep.get("status"));
+        let created = format_deployment_timestamp(dep.get("created_at").and_then(Value::as_str));
+        let last_active =
+            format_deployment_timestamp(dep.get("last_active_at").and_then(Value::as_str));
+        let description = dep.get("description").and_then(Value::as_str).unwrap_or("");
+        lines.push(format!(
+            "{}  {}  {}  {}  {description}",
+            pad_column(id, 32),
+            pad_column(&status, 12),
+            pad_column(&created, 19),
+            pad_column(&last_active, 19),
+        ));
+    }
+    Ok(ok(format!("{}\n", lines.join("\n"))))
+}
+
+/// PORT: real obelisk `deployment show ID` - print the stored TOML manifest.
+/// The real CLI's FILE and --json variants need a source-blob fetch and a TOML
+/// parser (unavailable here), so only the default manifest form is shown.
+fn deployment_show(host: &mut dyn ObeliskHost, args: &[String]) -> Result<CommandOutput, String> {
+    let id = required(first_positional(args, &[]), "deployment id")?.to_string();
+    let value = call_value(
+        host,
+        "obelisk-agent:tools/webapi.get-deployment",
+        &json!([id, Value::Null, Value::Null, Value::Null, Value::Null]).to_string(),
+    )?;
+    let record = decode_json(&value)?;
+    let toml = record
+        .get("deployment_toml")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Ok(ok(ensure_trailing_newline(toml.to_string())))
+}
+
+fn pad_column(text: &str, width: usize) -> String {
+    if text.len() >= width {
+        text.to_string()
+    } else {
+        format!("{text}{}", " ".repeat(width - text.len()))
+    }
+}
+
+fn format_deployment_status(status: Option<&Value>) -> String {
+    match status.and_then(Value::as_str) {
+        Some("inactive") => "Inactive".to_string(),
+        Some("enqueued") => "Enqueued".to_string(),
+        Some("active") => "Active".to_string(),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    }
+}
+
+/// The web API serializes timestamps as RFC 3339; real obelisk prints them as
+/// `%Y-%m-%d %H:%M:%S`, so keep the date and clock and drop the sub-second/zone.
+fn format_deployment_timestamp(value: Option<&str>) -> String {
+    let Some(value) = value else {
+        return String::new();
+    };
+    let bytes = value.as_bytes();
+    if bytes.len() >= 19 && (bytes[10] == b'T' || bytes[10] == b' ') {
+        let date = &value[..10];
+        let clock = &value[11..19];
+        let date_ok = date
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() });
+        let clock_ok = clock
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| if i == 2 || i == 5 { b == b':' } else { b.is_ascii_digit() });
+        if date_ok && clock_ok {
+            return format!("{date} {clock}");
+        }
+    }
+    value.to_string()
 }
 
 /// The workflow half of the submit contract: drive the dumb `deployment-submit`
@@ -1332,7 +1490,7 @@ fn action_help(group: &str, action: &str) -> String {
         ("call", _) => call_help(),
         ("deployment", "submit") => deployment_submit_help(),
         ("deployment", "check") => deployment_check_help(),
-        ("deployment", "switch") => deployment_switch_help(),
+        ("deployment", "enqueue") => deployment_enqueue_help(),
         ("deployment", "apply") => deployment_apply_help(),
         ("generate", "deployment") => generate_deployment_help(),
         _ => group_help(group),
@@ -1399,11 +1557,13 @@ Inspect, edit, submit, and activate deployments. Edits under\n\
 /workspace/deployment/current are local until `submit` or `apply`.\n\
 \n\
 Subcommands:\n\
-  current                   Print the active deployment ID.\n\
+  active [--json]           Print the active deployment ID.\n\
+  list                      List recent deployments.\n\
+  show ID                   Print a stored deployment's TOML manifest.\n\
   refresh                   Re-fetch the active deployment, discarding local edits.\n\
   check [PATH]              Report a deployment's manifest and locally-edited sources.\n\
   submit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\n\
-  switch ID [OPTIONS]       Activate a stored deployment (verified on next server restart).\n\
+  enqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\n\
   apply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\
 \n\
 Run `obelisk deployment <subcommand> --help` for a subcommand's options.\n"
@@ -1434,11 +1594,11 @@ filename); it must be a file, not a directory, and defaults to ./deployment.toml
         .to_string()
 }
 
-fn deployment_switch_help() -> String {
-    "Usage: obelisk deployment switch [OPTIONS] ID\n\
+fn deployment_enqueue_help() -> String {
+    "Usage: obelisk deployment enqueue [OPTIONS] ID\n\
 \n\
-Mark a stored deployment active; it is verified and applied on the next server\n\
-restart.\n\
+Enqueue a stored deployment; it is verified and applied on the next server\n\
+restart. Use `apply` to hot-redeploy without a restart.\n\
 \n\
 Options:\n\
       --allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n\
@@ -1938,30 +2098,49 @@ mod tests {
     }
 
     #[test]
-    fn deployment_current_calls_host() {
+    fn deployment_active_calls_host() {
         let mut host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.current-deployment-id",
             "\"dep-1\"",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "current"]), "", &mut host);
+        let out = execute_obelisk(&mut i, &words(&["deployment", "active"]), "", &mut host);
         assert_eq!(out.stdout, "dep-1\n");
     }
 
     #[test]
-    fn deployment_switch_requires_id_and_forwards_flag() {
+    fn deployment_active_json_quotes_the_id() {
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.current-deployment-id",
+            "\"dep-1\"",
+        );
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "active", "--json"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.stdout, "\"dep-1\"\n");
+    }
+
+    #[test]
+    fn deployment_enqueue_requires_id_forwards_flag_and_reports_outcome() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "switch"]), "", &mut host);
+        let out = execute_obelisk(&mut i, &words(&["deployment", "enqueue"]), "", &mut host);
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: deployment id is required\n");
 
-        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.deployment-switch", "null");
-        execute_obelisk(
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.deployment-switch",
+            "{\"ok\":\"restart_required\"}",
+        );
+        let out = execute_obelisk(
             &mut i,
             &words(&[
                 "deployment",
-                "switch",
+                "enqueue",
                 "dep-2",
                 "--allow-missing-runtime-config",
             ]),
@@ -1969,6 +2148,21 @@ mod tests {
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"dep-2\",true]");
+        assert_eq!(out.stdout, "Deployment enqueued. Restart the server to apply.\n");
+    }
+
+    #[test]
+    fn deployment_enqueue_reports_already_active() {
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.deployment-switch",
+            "{\"ok\":\"switched\"}",
+        );
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["deployment", "enqueue", "dep-2"]), "", &mut host);
+        assert_eq!(
+            out.stdout,
+            "Deployment already active; it will remain active after restart.\n"
+        );
     }
 
     #[test]
@@ -1976,6 +2170,87 @@ mod tests {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
         let out = execute_obelisk(&mut i, &words(&["deployment", "apply"]), "", &mut host);
+        assert_eq!(out.exit_code, 2);
+        assert_eq!(out.stderr, "obelisk: deployment id is required\n");
+    }
+
+    #[test]
+    fn deployment_apply_reports_success() {
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.apply-deployment",
+            "{\"ok\":\"switched\"}",
+        );
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["deployment", "apply", "dep-2"]), "", &mut host);
+        assert_eq!(host.calls[0].1, "[\"dep-2\"]");
+        assert_eq!(out.stdout, "Applied successfully.\n");
+    }
+
+    #[test]
+    fn deployment_apply_fails_when_only_restart_could_apply() {
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.apply-deployment",
+            "{\"ok\":\"restart_required\"}",
+        );
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["deployment", "apply", "dep-2"]), "", &mut host);
+        assert_eq!(out.exit_code, 2);
+        assert_eq!(
+            out.stderr,
+            "obelisk: Could not apply immediately; deployment enqueued. Restart the server to apply.\n"
+        );
+    }
+
+    #[test]
+    fn deployment_list_renders_a_table_newest_first() {
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.list-deployments",
+            "[{\"deployment_id\":\"Dep_2\",\"description\":\"second\",\"status\":\"active\",\"created_at\":\"2026-09-14T08:22:17.592Z\",\"last_active_at\":\"2026-09-14T09:00:00.000Z\"},{\"deployment_id\":\"Dep_1\",\"description\":\"\",\"status\":\"inactive\",\"created_at\":\"2026-09-13T07:00:00.000Z\",\"last_active_at\":null}]",
+        );
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["deployment", "list"]), "", &mut host);
+        assert_eq!(host.calls[0].1, "[\"\",false,20]");
+        let lines: Vec<&str> = out.stdout.split('\n').collect();
+        assert_eq!(
+            lines[0],
+            "ID                                STATUS        CREATED_AT           LAST_ACTIVE_AT       DESCRIPTION"
+        );
+        assert_eq!(
+            lines[1],
+            "Dep_2                             Active        2026-09-14 08:22:17  2026-09-14 09:00:00  second"
+        );
+        assert_eq!(
+            lines[2],
+            "Dep_1                             Inactive      2026-09-13 07:00:00                       "
+        );
+    }
+
+    #[test]
+    fn deployment_list_reports_empty_catalog() {
+        let mut host =
+            FakeHost::new().with("obelisk-agent:tools/webapi.list-deployments", "[]");
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["deployment", "list"]), "", &mut host);
+        assert_eq!(out.stdout, "No deployments found.\n");
+    }
+
+    #[test]
+    fn deployment_show_prints_the_stored_manifest() {
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.get-deployment",
+            "{\"deployment_toml\":\"[[activity_js]]\\nname = \\\"x\\\"\\n\"}",
+        );
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["deployment", "show", "Dep_1"]), "", &mut host);
+        assert_eq!(host.calls[0].1, "[\"Dep_1\",null,null,null,null]");
+        assert_eq!(out.stdout, "[[activity_js]]\nname = \"x\"\n");
+    }
+
+    #[test]
+    fn deployment_show_requires_id() {
+        let mut host = FakeHost::new();
+        let mut i = interp("/workspace");
+        let out = execute_obelisk(&mut i, &words(&["deployment", "show"]), "", &mut host);
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: deployment id is required\n");
     }

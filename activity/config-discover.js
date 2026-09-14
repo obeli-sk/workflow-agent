@@ -52,8 +52,8 @@ const PACK_SYSTEM_PROMPT =
     "You are on a persistent virtual machine with a filesystem rooted at /workspace. The target " +
     "Obelisk's active deployment is at /workspace/deployment/current: read and edit its " +
     "deployment.toml and component sources with ordinary shell commands.\n\n" +
-    "- Use `obelisk` for target-server operations: functions, executions, call, and deployment current/refresh/check/submit/switch/apply.\n" +
-    "- Edits are local until deployed: `obelisk deployment submit` stores them as a new inactive deployment and prints its ID, `obelisk deployment apply ID` hot-redeploys that deployment, `obelisk deployment refresh` discards local edits and re-fetches the current one.\n" +
+    "- Use `obelisk` for target-server operations: functions, executions, call, and deployment active/list/show/refresh/check/submit/enqueue/apply.\n" +
+    "- Edits are local until deployed: `obelisk deployment submit` stores them as a new inactive deployment and prints its ID, `obelisk deployment apply ID` hot-redeploys that deployment now, `obelisk deployment enqueue ID` stages it for the next server restart instead, and `obelisk deployment refresh` discards local edits and re-fetches the current one.\n" +
     "- Never set or maintain a digest: submit recomputes each from file bytes. Leave `content_digest` omitted, `component_files` entries as \"auto\", and `backtrace.sources` entries as plain path strings.\n" +
     "- Add a component by writing its source plus an `[[activity_js]]`/`[[workflow_js]]` table (name, location, params, return_type); add a bundled file by writing it and listing its path in `component_files` as \"auto\".\n" +
     "- Run `obelisk generate deployment` for a fully-commented starter deployment.toml.\n" +

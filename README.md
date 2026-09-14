@@ -90,11 +90,13 @@ instance.
 > [!WARNING]
 > The default targets the agent's **own** instance, which is recursive and risky.
 > A deployment the agent applies to itself can remove the agent, or worse remove
-> the very `deployment submit`/`switch` activity that is still running: a
-> deployment switch closes all executors *before* it acknowledges, so the
+> the very `deployment submit`/`apply` activity that is still running: a hot
+> `deployment apply` closes all executors *before* it acknowledges, so the
 > in-flight control execution is left Pending. Re-activating the previous
 > deployment then immediately switches back to the broken one and re-Pends it. Use
-> a separate target instance for anything beyond local experimentation.
+> a separate target instance for anything beyond local experimentation. (A
+> `deployment enqueue` sidesteps the teardown but only takes effect on the next
+> server restart.)
 
 ## LLM endpoint
 
