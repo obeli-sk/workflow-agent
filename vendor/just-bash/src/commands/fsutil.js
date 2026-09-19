@@ -139,17 +139,24 @@ export const fsutil = {
 
     wc(interp, args, stdin) {
         const { flags, rest } = flagsOf(args.slice(1));
-        const inputs = rest.length ? rest.map((t) => interp.vfs.readFile(interp.resolvePath(t))) : [stdin];
-        const lines = [];
+        const inputs = rest.length
+            ? rest.map((name) => ({ name, text: interp.vfs.readFile(interp.resolvePath(name)) }))
+            : [{ name: "", text: stdin }];
+        const stats = [];
         let totalL = 0, totalW = 0, totalC = 0;
-        for (const text of inputs) {
+        for (const { name, text } of inputs) {
             const l = text === "" ? 0 : (text.match(/\n/g) ?? []).length;
             const w = text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
-            const c = text.length;
+            const c = utf8Encode(text).length;
             totalL += l; totalW += w; totalC += c;
-            lines.push(formatWc(flags, l, w, c));
+            stats.push({ l, w, c, name });
         }
-        if (rest.length > 1) lines.push(formatWc(flags, totalL, totalW, totalC, "total"));
+        const totals = { l: totalL, w: totalW, c: totalC, name: "total" };
+        const width = rest.length > 1
+            ? Math.max(3, ...selectedWcCounts(flags, totals).map((count) => String(count).length))
+            : Math.max(...selectedWcCounts(flags, stats[0]).map((count) => String(count).length));
+        const lines = stats.map(({ l, w, c, name }) => formatWc(flags, l, w, c, name, width));
+        if (rest.length > 1) lines.push(formatWc(flags, totalL, totalW, totalC, "total", width));
         return ok(lines.join("\n") + "\n");
     },
 
@@ -569,12 +576,17 @@ function countArg(args, def) {
     return { n, rest };
 }
 
-function formatWc(flags, l, w, c, label) {
+function selectedWcCounts(flags, { l, w, c }) {
     const any = flags.has("l") || flags.has("w") || flags.has("c");
     const parts = [];
     if (!any || flags.has("l")) parts.push(l);
     if (!any || flags.has("w")) parts.push(w);
     if (!any || flags.has("c")) parts.push(c);
+    return parts;
+}
+
+function formatWc(flags, l, w, c, label, width) {
+    const parts = selectedWcCounts(flags, { l, w, c }).map((count) => String(count).padStart(width));
     return parts.join(" ") + (label ? ` ${label}` : "");
 }
 

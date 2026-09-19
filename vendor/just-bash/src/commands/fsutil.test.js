@@ -36,6 +36,17 @@ test("ls sorts case-insensitively with lowercase before uppercase", () => {
     assert.equal(bash.exec("ls").stdout, "a\nA\nb\nB\n");
 });
 
+test("wc includes operand names, byte counts, and aligned totals", () => {
+    const bash = fresh();
+    bash.vfs.writeFile("/workspace/a.txt", "one\n");
+    bash.vfs.writeFile("/workspace/b.txt", "twó\n");
+    assert.equal(bash.exec("wc -l a.txt").stdout, "1 a.txt\n");
+    assert.equal(
+        bash.exec("wc -lc a.txt b.txt").stdout,
+        "  1   4 a.txt\n  1   5 b.txt\n  2   9 total\n",
+    );
+});
+
 test("chmod validates mode syntax and target existence", () => {
     const bash = fresh();
     bash.vfs.writeFile("/f.txt", "x");
