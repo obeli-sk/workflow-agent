@@ -9,7 +9,7 @@
       };
     };
     obelisk = {
-      url = "github:obeli-sk/obelisk/latest-pre";
+      url = "github:obeli-sk/obelisk/latest-rc";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         flake-utils.follows = "flake-utils";
@@ -33,6 +33,7 @@
             just
             rustToolchain
             cargo-nextest
+            gh # for scripts/sync-branch-protection.sh
             jq
             yq-go # for scripts/sync-branch-protection.sh
             ripgrep # for scripts/e2e-lib.sh

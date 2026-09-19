@@ -1089,7 +1089,7 @@ function collectJsGraph(fs, dir, entry) {
                 const slash = path.lastIndexOf("/");
                 const base = slash === -1 ? "" : path.slice(0, slash + 1);
                 queued.push(normalizeDeploymentPath(base + specifier));
-            } else if (!(specifier.includes(":") && specifier.includes("/"))) {
+            } else if (!(specifier.startsWith("obelisk:") || (specifier.includes(":") && specifier.includes("/")))) {
                 throw `unsupported bare module specifier ${JSON.stringify(specifier)} in ${path}`;
             }
         }

@@ -1,8 +1,7 @@
 // obelisk-agent:tools/webapi.apply-deployment:
 //   func(deployment-id: string) -> result<string, string>
 //
-// Trigger a hot redeploy by PUT-ing /v1/deployments/{id}/switch with
-// hot_redeploy=true. Simple JS activity, parallel to deployment-switch.
+// Trigger a hot redeploy by PUT-ing /v1/deployments/{id}/switch with apply=true.
 export default async function apply_deployment(deploymentId) {
     if (!deploymentId) throw "deployment-id is required";
     const base = process.env["TARGET_OBELISK_API_URL"];
@@ -12,7 +11,7 @@ export default async function apply_deployment(deploymentId) {
         {
             method: "PUT",
             headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}`, "content-type": "application/json" },
-            body: JSON.stringify({ hot_redeploy: true }),
+            body: JSON.stringify({ apply: true }),
         },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;

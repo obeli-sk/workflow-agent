@@ -255,9 +255,9 @@ e2e_start_server() {
 
 # Starts a second, genuinely separate obelisk instance for suites that need
 # to prove a redeploy against a real *target* rather than self-hosting (see
-# scripts/test-e2e-target-deploy.sh): `--empty --no-auth`, no server config
-# (the target has no secrets/outbound_http needs of its own for a plain
-# generated JS activity). Sets E2E_TARGET_API_URL; caller wires
+# scripts/test-e2e-target-deploy.sh): `--empty --no-auth`, using the target
+# policy so submitted full-app deployments have their public variables declared.
+# Sets E2E_TARGET_API_URL; caller wires
 # TARGET_OBELISK_* env vars to point the source session's `obelisk` command
 # and deployment mount at it before starting the source server.
 e2e_start_target_server() {
@@ -274,7 +274,7 @@ e2e_start_target_server() {
     OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}" \
     OBELISK__WEBUI__ENABLED=false \
     OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/target-obelisk-sqlite" \
-        "$OBELISK" server run --empty --no-auth \
+        "$OBELISK" server run --empty --no-auth --server-config "$ROOT/server-target.toml" \
         > "$E2E_TMP/target-server.log" 2>&1 &
     E2E_TARGET_SERVER_PID=$!
 
