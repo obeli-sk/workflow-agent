@@ -108,6 +108,13 @@ test("here-doc with expansion", () => {
     assert.equal(r.stdout, "hello world\n");
 });
 
+test("a trailing markup close is a syntax error, not a redirect to cwd", () => {
+    const bash = new Bash({ cwd: "/workspace" });
+    const result = bash.exec("cat <<'EOF'\nbody\nEOF\necho written</parameter>");
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /syntax error: expected redirect target/);
+});
+
 test("command substitution", () => {
     const r = run('echo "today is $(echo Monday)"');
     assert.equal(r.stdout, "today is Monday\n");

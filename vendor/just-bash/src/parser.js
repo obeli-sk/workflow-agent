@@ -401,6 +401,12 @@ class Parser {
         const fd = digits === "" ? defaultFd : parseInt(digits, 10);
         this.pos += digits.length + opLen;
         this.skipInlineWs();
+        const readTargetWord = () => {
+            const targetStart = this.pos;
+            const word = this.readWord();
+            if (this.pos === targetStart) throw new ParseError("expected redirect target");
+            return word;
+        };
         if (isDup) {
             const m = /^[0-9]+/.exec(this.text.slice(this.pos));
             if (m) {
@@ -411,18 +417,18 @@ class Parser {
                 this.pos++;
                 return { fd, kind: fd === 0 ? "read" : "write", target: { type: "dup", fd: -1 } };
             }
-            const word = this.readWord();
+            const word = readTargetWord();
             return { fd, kind: fd === 0 ? "read" : "write", target: { type: "file", word } };
         }
         if (isHeredoc) {
-            const word = this.readWord();
+            const word = readTargetWord();
             return { fd, kind: "read", target: { type: "heredoc", word, stripTabs } };
         }
         if (kind === "here-string") {
-            const word = this.readWord();
+            const word = readTargetWord();
             return { fd, kind: "read", target: { type: "herestring", word } };
         }
-        const word = this.readWord();
+        const word = readTargetWord();
         return { fd, kind, target: { type: "file", word } };
     }
 
