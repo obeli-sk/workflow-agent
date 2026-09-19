@@ -124,10 +124,8 @@ while true; do
         break
     fi
     # Real GitHub API round trips for a multi-file app plus a real
-    # multi-component submit: much slower than the hermetic suites, and the
-    # slower JS agent backend under CI load has been observed finishing just
-    # past 180s, so keep a wide margin here.
-    [[ $SECONDS -ge 300 ]] && { echo "cold GitHub-mounted submit did not finish: $PROJECTION" >&2; exit 1; }
+    # multi-component submit: much slower than the hermetic suites.
+    [[ $SECONDS -ge 180 ]] && { echo "cold GitHub-mounted submit did not finish: $PROJECTION" >&2; exit 1; }
     sleep 2
 done
 OUTPUT="$(node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION")"

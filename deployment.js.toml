@@ -572,7 +572,12 @@ params = [
   { name = "name",            type = "option<string>" },
 ]
 return_type = "result<_, string>"
-exec.lock_expiry.seconds = 30
+# The JS interpreter replays and runs the whole just-bash session (including
+# uninterruptible synchronous steps like a full-app `deployment submit`
+# preflight) much slower than the native Rust workflow, so it needs a wider
+# epoch/lock budget than the 30s the Rust variant uses to avoid a lock-expiry
+# livelock on a heavy in-JS step.
+exec.lock_expiry.minutes = 2
 # --- End workflow -----------------------------------------------------------
 
 [[webhook_endpoint_js]]
