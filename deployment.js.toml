@@ -438,8 +438,8 @@ location = "packs/obelisk-control/tools/deployment-submit.js"
 env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["POST"]
-request_url_regex = "^POST ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments$"
+methods = ["PUT"]
+request_url_regex = "^PUT ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/deployments/Dep_[^/]+$"
 secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 

@@ -16,7 +16,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BRANCH="${1:-main}"
-REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 
 # Expands a workflow's `.jobs` into one required-check name per job, per
 # matrix combination, substituting `${{ matrix.<key> }}` in job names.
@@ -73,10 +72,7 @@ PAYLOAD="$(jq -n --argjson contexts "$CONTEXTS_JSON" '{
         contexts: $contexts
     },
     enforce_admins: false,
-    required_pull_request_reviews: {
-        required_approving_review_count: 1,
-        dismiss_stale_reviews: true
-    },
+    required_pull_request_reviews: null,
     restrictions: null,
     required_linear_history: false,
     allow_force_pushes: false,
@@ -84,6 +80,12 @@ PAYLOAD="$(jq -n --argjson contexts "$CONTEXTS_JSON" '{
     required_conversation_resolution: true
 }')"
 
+if [ "${DRY_RUN:-}" = "1" ]; then
+    echo "$PAYLOAD"
+    exit 0
+fi
+
+REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 echo ">>> Applying branch protection to $REPO@$BRANCH"
 echo "$PAYLOAD" | gh api \
     --method PUT \

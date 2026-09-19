@@ -421,8 +421,11 @@ fn execute_deployment(
         "active" => {
             // Print the active deployment id, or its JSON-quoted form with
             // --json, matching real obelisk `deployment active`.
-            let value =
-                call_value(host, "obelisk-agent:tools/webapi.current-deployment-id", "[]")?;
+            let value = call_value(
+                host,
+                "obelisk-agent:tools/webapi.current-deployment-id",
+                "[]",
+            )?;
             let id = decode_string(&value);
             Ok(ok(if flag(args, "--json") {
                 format!("{}\n", serde_json::to_string(&id).expect("string encodes"))
@@ -504,9 +507,9 @@ fn execute_deployment(
                 "switched" => Ok(ok(
                     "Deployment already active; it will remain active after restart.\n".to_string(),
                 )),
-                "restart_required" => {
-                    Ok(ok("Deployment enqueued. Restart the server to apply.\n".to_string()))
-                }
+                "restart_required" => Ok(ok(
+                    "Deployment enqueued. Restart the server to apply.\n".to_string()
+                )),
                 other => Err(format!("unexpected outcome from server: {other}")),
             }
         }
@@ -541,10 +544,10 @@ fn switch_outcome(value: &Value) -> Result<String, String> {
         return Ok(outcome.to_string());
     }
     if let Value::String(s) = value {
-        if let Ok(parsed) = serde_json::from_str::<Value>(s) {
-            if let Some(outcome) = parsed.get("ok").and_then(Value::as_str) {
-                return Ok(outcome.to_string());
-            }
+        if let Ok(parsed) = serde_json::from_str::<Value>(s)
+            && let Some(outcome) = parsed.get("ok").and_then(Value::as_str)
+        {
+            return Ok(outcome.to_string());
         }
         let trimmed = s.trim();
         if !trimmed.is_empty() {
@@ -578,7 +581,10 @@ fn deployment_list(host: &mut dyn ObeliskHost) -> Result<CommandOutput, String> 
         pad_column("LAST_ACTIVE_AT", 19),
     )];
     for dep in deployments {
-        let id = dep.get("deployment_id").and_then(Value::as_str).unwrap_or("");
+        let id = dep
+            .get("deployment_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let status = format_deployment_status(dep.get("status"));
         let created = format_deployment_timestamp(dep.get("created_at").and_then(Value::as_str));
         let last_active =
@@ -641,14 +647,20 @@ fn format_deployment_timestamp(value: Option<&str>) -> String {
     if bytes.len() >= 19 && (bytes[10] == b'T' || bytes[10] == b' ') {
         let date = &value[..10];
         let clock = &value[11..19];
-        let date_ok = date
-            .bytes()
-            .enumerate()
-            .all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() });
-        let clock_ok = clock
-            .bytes()
-            .enumerate()
-            .all(|(i, b)| if i == 2 || i == 5 { b == b':' } else { b.is_ascii_digit() });
+        let date_ok = date.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+        let clock_ok = clock.bytes().enumerate().all(|(i, b)| {
+            if i == 2 || i == 5 {
+                b == b':'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
         if date_ok && clock_ok {
             return format!("{date} {clock}");
         }
@@ -1010,7 +1022,9 @@ fn collect_js_graph(fs: &Vfs, dir: &str, entry: &str) -> Result<Vec<String>, Str
                     format!("{base}/{specifier}")
                 };
                 queue.push_back(normalize_deployment_path(&joined)?);
-            } else if !(specifier.contains(':') && specifier.contains('/')) {
+            } else if !(specifier.starts_with("obelisk:")
+                || (specifier.contains(':') && specifier.contains('/')))
+            {
                 return Err(format!(
                     "unsupported bare module specifier {specifier:?} in {path}"
                 ));
@@ -2148,7 +2162,10 @@ mod tests {
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"dep-2\",true]");
-        assert_eq!(out.stdout, "Deployment enqueued. Restart the server to apply.\n");
+        assert_eq!(
+            out.stdout,
+            "Deployment enqueued. Restart the server to apply.\n"
+        );
     }
 
     #[test]
@@ -2158,7 +2175,12 @@ mod tests {
             "{\"ok\":\"switched\"}",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "enqueue", "dep-2"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "enqueue", "dep-2"]),
+            "",
+            &mut host,
+        );
         assert_eq!(
             out.stdout,
             "Deployment already active; it will remain active after restart.\n"
@@ -2181,7 +2203,12 @@ mod tests {
             "{\"ok\":\"switched\"}",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "apply", "dep-2"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "apply", "dep-2"]),
+            "",
+            &mut host,
+        );
         assert_eq!(host.calls[0].1, "[\"dep-2\"]");
         assert_eq!(out.stdout, "Applied successfully.\n");
     }
@@ -2193,7 +2220,12 @@ mod tests {
             "{\"ok\":\"restart_required\"}",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "apply", "dep-2"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "apply", "dep-2"]),
+            "",
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert_eq!(
             out.stderr,
@@ -2227,8 +2259,7 @@ mod tests {
 
     #[test]
     fn deployment_list_reports_empty_catalog() {
-        let mut host =
-            FakeHost::new().with("obelisk-agent:tools/webapi.list-deployments", "[]");
+        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.list-deployments", "[]");
         let mut i = interp("/workspace");
         let out = execute_obelisk(&mut i, &words(&["deployment", "list"]), "", &mut host);
         assert_eq!(out.stdout, "No deployments found.\n");
@@ -2241,7 +2272,12 @@ mod tests {
             "{\"deployment_toml\":\"[[activity_js]]\\nname = \\\"x\\\"\\n\"}",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "show", "Dep_1"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "show", "Dep_1"]),
+            "",
+            &mut host,
+        );
         assert_eq!(host.calls[0].1, "[\"Dep_1\",null,null,null,null]");
         assert_eq!(out.stdout, "[[activity_js]]\nname = \"x\"\n");
     }

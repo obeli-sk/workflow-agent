@@ -5,7 +5,7 @@
 //             variant { permanent-missing-files(list<record { path: string, digest: string }>),
 //               permanent-error(string), transient-error(string), execution-failed }>
 //
-// A single stateless POST to /v1/deployments. The deterministic workflow owns
+// A single stateless PUT to /v1/deployments/{deployment-id}. The deterministic workflow owns
 // the preflight/attach loop, so this activity never hashes or rewrites the TOML:
 //   - called with no `attachments`, it does a JSON preflight submit;
 //   - called with `attachments`, it does a multipart submit carrying those blobs.
@@ -38,7 +38,7 @@ async function deployment_submit_impl(
     if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const token = process.env["TARGET_OBELISK_TOKEN"];
     const wantedId = (typeof deploymentId === "string" && deploymentId.trim())
-        ? deploymentId.trim() : null;
+        ? deploymentId.trim() : generateDeploymentId();
     const desc = (typeof description === "string" && description.trim())
         ? description.trim() : null;
     const files = Array.isArray(attachments) ? attachments : [];
@@ -52,9 +52,8 @@ async function deployment_submit_impl(
             allow_unavailable_runtime_config: Boolean(allowMissing),
         };
         if (desc) body.description = desc;
-        if (wantedId) body.deployment_id = wantedId;
-        response = await fetch(`${base}/v1/deployments`, {
-            method: "POST",
+        response = await fetch(`${base}/v1/deployments/${encodeURIComponent(wantedId)}`, {
+            method: "PUT",
             headers: { accept: "application/json", authorization: `Bearer ${token}`, "content-type": "application/json" },
             body: JSON.stringify(body),
         });
@@ -68,17 +67,16 @@ async function deployment_submit_impl(
             deployment_toml: deploymentToml,
             description: desc,
             allow_unavailable_runtime_config: Boolean(allowMissing) ? "true" : "false",
-            deployment_id: wantedId,
         }, files);
-        response = await fetch(`${base}/v1/deployments`, {
-            method: "POST",
+        response = await fetch(`${base}/v1/deployments/${encodeURIComponent(wantedId)}`, {
+            method: "PUT",
             headers: { accept: "application/json", authorization: `Bearer ${token}`, "content-type": `multipart/form-data; boundary=${boundary}` },
             body: multipartBody,
         });
     }
 
     if (response.ok) {
-        return parseId(await response.text());
+        return parseId(await response.text()) || wantedId;
     }
     if (response.status !== 409) {
         throw `HTTP ${response.status}: ${await response.text()}`;
@@ -94,6 +92,20 @@ async function deployment_submit_impl(
     throw { permanent_missing_files: missing.map((issue) => ({ path: issue.path, digest: issue.digest })) };
 }
 
+function generateDeploymentId() {
+    const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let timestamp = Date.now();
+    let suffix = "";
+    for (let i = 0; i < 10; i += 1) {
+        suffix = alphabet[timestamp % 32] + suffix;
+        timestamp = Math.floor(timestamp / 32);
+    }
+    for (let i = 0; i < 16; i += 1) {
+        suffix += alphabet[Math.floor(Math.random() * 32)];
+    }
+    return `Dep_${suffix}`;
+}
+
 function classifySubmitError(error) {
     // The `permanent-missing-files` arm and pre-classified tool-errors pass through as-is.
     if (error && Array.isArray(error.permanent_missing_files)) return error;
@@ -105,8 +117,8 @@ function classifySubmitError(error) {
         ? { permanent_error: message } : { transient_error: message };
 }
 
-// The submit endpoint returns the new deployment ID, either as the JSON object
-// { deployment_id } (Accept: application/json) or a bare/quoted string.
+// The submit endpoint returns the new deployment ID as a bare/quoted string;
+// tolerate the earlier JSON object response as well.
 function parseId(text) {
     const trimmed = text.trim();
     try {

@@ -3,7 +3,7 @@
 //        -> result<string, string>
 //
 // Enqueue a deployment so it becomes active on the next server restart
-// (hot_redeploy = false). Unlike a hot redeploy, a non-hot switch does not tear
+// (apply = false). Unlike a hot redeploy, a non-hot switch does not tear
 // down the executor running this activity, so it is safe to call synchronously.
 // A hot redeploy must instead go through webapi.apply-deployment, which performs
 // the switch out of process to avoid deadlocking the executor.
@@ -19,7 +19,7 @@ export default async function deployment_switch(deploymentId, allowMissing) {
         {
             method: "PUT",
             headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}`, "content-type": "application/json" },
-            body: JSON.stringify({ hot_redeploy: false, allow_unavailable_runtime_config: Boolean(allowMissing) }),
+            body: JSON.stringify({ apply: false, allow_unavailable_runtime_config: Boolean(allowMissing) }),
         },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
