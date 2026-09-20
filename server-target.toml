@@ -2,14 +2,12 @@ api.listening_addr = "127.0.0.1:5205"
 webui.listening_addr = "127.0.0.1:8280"
 external.listening_addr = "127.0.0.1:9290"
 
-database.sqlite.directory = ".target-obelisk-sqlite"
+[database.sqlite]
+directory = "sqlite-target"
 
 [secrets]
 LLM_API_KEY = { env = "LLM_API_KEY" }
 OBELISK_API_TOKEN = { env = "TARGET_OBELISK_TOKEN" }
-# The target Obelisk the agent deploys to/controls; defaults to the agent's own
-# token for the self-host case (see .envrc-example, README recursion warning).
-TARGET_OBELISK_TOKEN = { env = "TARGET_OBELISK_TOKEN" }
 # Set to empty value for the testing mcp server
 MCP_SERVER_TOKEN = { env = "MCP_SERVER_TOKEN" }
 # Optional: raises the GitHub API rate limit for the /workspace/components

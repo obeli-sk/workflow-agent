@@ -1,13 +1,17 @@
+[database.sqlite]
+directory = "sqlite"
+
 [limits]
 # Deployment calls carry the manifest and source attachments, exceeding the 1 MiB default for this app.
 max_persisted_value_size_bytes = 2097152
 
 [secrets]
 LLM_API_KEY = { env = "LLM_API_KEY" }
-OBELISK_API_TOKEN = { env = "OBELISK_API_TOKEN" }
 # The target Obelisk the agent deploys to/controls; defaults to the agent's own
 # token for the self-host case (see .envrc-example, README recursion warning).
 TARGET_OBELISK_TOKEN = { env = "TARGET_OBELISK_TOKEN" }
+# Obelisk server is accessed e.g. by the UI to get execution state.
+OBELISK_API_TOKEN = { env = "OBELISK_API_TOKEN" }
 # Set to empty value for the testing mcp server
 MCP_SERVER_TOKEN = { env = "MCP_SERVER_TOKEN" }
 # Optional: raises the GitHub API rate limit for the /workspace/components
