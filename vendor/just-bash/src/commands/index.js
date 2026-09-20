@@ -86,7 +86,7 @@ const handlers = {
 export function dispatch(interp, args, stdin) {
     const name = args[0];
     const handler = handlers[name];
-    if (!handler) return fail(`${name}: command not found\n`, 127);
+    if (!handler) return fail(`bash: ${name}: command not found\n`, 127);
     return handler(interp, args, stdin);
 }
 

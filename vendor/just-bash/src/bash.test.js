@@ -14,6 +14,13 @@ test("echo prints a line", () => {
     assert.equal(r.exitCode, 0);
 });
 
+test("a missing command matches Bash diagnostics without hiding later stdout", () => {
+    const r = run("python3 -c pass; echo found");
+    assert.equal(r.stderr, "bash: python3: command not found\n");
+    assert.equal(r.stdout, "found\n");
+    assert.equal(r.exitCode, 0);
+});
+
 test("variables and expansion", () => {
     const r = run('X=foo; echo "$X-bar"; echo ${X}baz');
     assert.equal(r.stdout, "foo-bar\nfoobaz\n");
