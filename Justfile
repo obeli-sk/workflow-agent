@@ -6,9 +6,11 @@ serve-rs: build-rs
 serve-js:
   obelisk server run -d deployment.js.toml --server-config server.toml
 
+clean-target:
+  rm -rf sqlite-target/
+
 serve-target:
   #!/usr/bin/env bash
-  rm -rf .target-obelisk-sqlite
   export OBELISK_API_TOKEN=${TARGET_OBELISK_TOKEN}
   obelisk server run --server-config server-target.toml
 
