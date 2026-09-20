@@ -19,7 +19,7 @@ from an operator-owned registry (`PROGRAMS_JSON`), so adding one is a
 `deployment.rs.toml` edit with no workflow rebuild; each entry's description is
 surfaced in the system prompt. The one that ships, a GET-only `curl`, is an
 Obelisk activity. The per-turn model invocation limit comes out of the same
-registry read: `MAX_STEPS`, defaulting to `20`.
+registry read: `MAX_STEPS`, defaulting to `40`.
 
 ![workflow-agent web UI](docs/workflow-agent.png)
 

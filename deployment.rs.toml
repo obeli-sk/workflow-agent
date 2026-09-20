@@ -31,7 +31,7 @@ methods = ["GET"]
 # to the config activity's PROGRAMS_JSON. The workflow registers a shell
 # command per entry and lists it (with its description) in the system prompt.
 
-# Session configuration is read once at session start. MAX_STEPS defaults to 20;
+# Session configuration is read once at session start. MAX_STEPS defaults to 40;
 # the program and MCP registries default to the deployed entries below. Override
 # any of them from the host environment without rebuilding the workflow.
 [[activity_js]]
@@ -40,7 +40,7 @@ ffqn = "obelisk-agent:config/config.discover"
 wit = "wit"
 location = "activity/config-discover.js"
 env_vars = [
-  { key = "MAX_STEPS", value = "${MAX_STEPS:-20}" },
+  { key = "MAX_STEPS", value = "${MAX_STEPS:-40}" },
   { key = "PROGRAMS_JSON", value = '''
 ${PROGRAMS_JSON:-[
   {"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"},
