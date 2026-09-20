@@ -1,3 +1,7 @@
+[limits]
+# Deployment calls carry the manifest and source attachments, exceeding the 1 MiB default for this app.
+max_persisted_value_size_bytes = 2097152
+
 [secrets]
 LLM_API_KEY = { env = "LLM_API_KEY" }
 OBELISK_API_TOKEN = { env = "OBELISK_API_TOKEN" }
@@ -120,4 +124,3 @@ target = false
 rotation = "daily"                        # One of "minutely"|"hourly"|"daily"|"never"
 directory = "."
 prefix = "obelisk_server_daily.log"
-
