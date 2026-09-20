@@ -163,6 +163,7 @@ export const fsutil = {
     head(interp, args, stdin) {
         const { n, rest } = countArg(args, 10);
         const text = rest.length ? interp.vfs.readFile(interp.resolvePath(rest[0])) : stdin;
+        if (text === "") return ok();
         const lines = text.split("\n");
         const hadTrailingNl = text.endsWith("\n");
         const body = lines.slice(0, hadTrailingNl ? lines.length - 1 : lines.length);
@@ -172,6 +173,7 @@ export const fsutil = {
     tail(interp, args, stdin) {
         const { n, rest } = countArg(args, 10);
         const text = rest.length ? interp.vfs.readFile(interp.resolvePath(rest[0])) : stdin;
+        if (text === "") return ok();
         const lines = text.split("\n");
         const hadTrailingNl = text.endsWith("\n");
         const body = lines.slice(0, hadTrailingNl ? lines.length - 1 : lines.length);

@@ -274,7 +274,7 @@ e2e_start_target_server() {
     OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}" \
     OBELISK__WEBUI__ENABLED=false \
     OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/target-obelisk-sqlite" \
-        "$OBELISK" server run --empty --no-auth --server-config "$ROOT/server-target.toml" \
+        "$OBELISK" server run --empty --no-auth --server-config "$ROOT/server-target-e2e.toml" \
         > "$E2E_TMP/target-server.log" 2>&1 &
     E2E_TARGET_SERVER_PID=$!
 

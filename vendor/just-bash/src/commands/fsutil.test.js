@@ -47,6 +47,17 @@ test("wc includes operand names, byte counts, and aligned totals", () => {
     );
 });
 
+test("head and tail do not invent a newline for empty input", () => {
+    const bash = fresh();
+    bash.vfs.writeFile("/workspace/empty", "");
+    for (const command of ["head empty", "tail empty", "printf '' | head -80", "printf '' | tail -80"]) {
+        const result = bash.exec(command);
+        assert.equal(result.stdout, "", command);
+        assert.deepEqual(result.output, [], command);
+        assert.equal(result.exitCode, 0, command);
+    }
+});
+
 test("chmod validates mode syntax and target existence", () => {
     const bash = fresh();
     bash.vfs.writeFile("/f.txt", "x");

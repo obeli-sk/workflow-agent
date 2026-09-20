@@ -1,0 +1,10 @@
+# Policy for the isolated target started by deployment E2E suites. These tests
+# submit workflow-agent's full manifest to an otherwise empty server. Missing
+# runtime values are allowed by the submit command, but every referenced public
+# variable must still be declared in the target server policy.
+
+[public_env]
+allowed = ["DOCS_URLS_JSON", "OBELISK_VERSION", "MAX_STEPS", "PROGRAMS_JSON", "MCP_SERVERS_JSON",
+  "APPS_JSON", "TARGET_OBELISK_WEBHOOK_URL", "OBELISK_API_URL", "AGENT_MODELS", "OBELISK_API_URL_REGEX",
+  "GH_OWNER", "LLM_BASE_URL", "TARGET_OBELISK_API_URL", "TARGET_OBELISK_API_URL_REGEX", "MCP_OBELISK_LOCAL_URL",
+  "OBELISK_UI_URL"]
