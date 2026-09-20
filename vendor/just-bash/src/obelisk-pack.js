@@ -561,6 +561,10 @@ function flagRuntimeConfig(args) {
 
 function readManifest(fs, dir, file) {
     const path = `${dir}/${file}`;
+    // A directory reads as a path-first I/O error (matching just-bash's own
+    // grep/cat and the Rust port's read_manifest), not fs.readFile's
+    // description-first FsError.
+    if (fs.isDir(path)) throw `${path}: Is a directory`;
     if (!fs.exists(path)) throw `${path}: No such file or directory`;
     return fs.readFile(path);
 }

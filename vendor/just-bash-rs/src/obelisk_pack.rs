@@ -2859,7 +2859,12 @@ content_digest = \"sha256:1\"\n\
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
-        assert!(out.stderr.contains("Is a directory"), "{}", out.stderr);
+        // Path-first, byte-identical to just-bash's obelisk-pack.js (a
+        // description-first "Is a directory: <path>" broke cross-backend replay).
+        assert_eq!(
+            out.stderr,
+            "obelisk: /workspace/deployment/current: Is a directory\n"
+        );
     }
 
     #[test]
