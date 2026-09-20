@@ -36,6 +36,7 @@ use crate::chat;
 use crate::generated::obelisk::log::log::debug as log_line;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
+use crate::generated::obelisk_agent::config::config::input_accepted_at;
 use crate::generated::obelisk_agent::llm::chat::CompletionResult;
 use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
 use crate::generated::obelisk_agent::stub::stub::{
@@ -654,6 +655,13 @@ fn elapsed_milliseconds(start: i64, end: i64) -> u64 {
     u64::try_from(end.saturating_sub(start)).unwrap_or_default()
 }
 
+fn input_accepted_at_milliseconds(execution_id: &str) -> Result<i64, String> {
+    let milliseconds =
+        input_accepted_at(execution_id).map_err(|e| format!("input acceptance timestamp: {e}"))?;
+    i64::try_from(milliseconds)
+        .map_err(|_| "input acceptance timestamp is out of range".to_string())
+}
+
 /// Stable event id for a descriptor warning so repeated sessions with the same
 /// degradation stay distinguishable in the transcript.
 fn short_warning_id(warning: &str) -> String {
@@ -800,7 +808,8 @@ pub fn agent_loop(
             // the same live input offer as prompt/shell, to stop a turn.
             // 10: record-output batches multiple events into one response
             // (list<session-event>) instead of publishing exactly one.
-            protocol_version: 10,
+            // 11: shell duration starts when the injection stub finished.
+            protocol_version: 11,
             prompt: prompt.clone(),
             backend: model.clone(),
             effort: effort.clone(),
@@ -920,12 +929,15 @@ pub fn agent_loop(
             // A `$`-prefixed opening prompt is consumed here instead of the
             // input offer, after the deferred mounts registered above so the
             // script sees the same filesystem as any composer shell command.
-            let event = match pending_shell.take() {
-                Some(script) => SessionInput::Shell(ShellInput {
-                    id: format!("shell-opened-{turn_index}"),
-                    script,
-                    stdin: String::new(),
-                }),
+            let accepted = match pending_shell.take() {
+                Some(script) => AcceptedInput {
+                    event: SessionInput::Shell(ShellInput {
+                        id: format!("shell-opened-{turn_index}"),
+                        script,
+                        stdin: String::new(),
+                    }),
+                    accepted_at: Some(host_now_ms()),
+                },
                 None => take_user_event(&mut session, &notifications)?,
             };
             // A composer/opening shell command runs synchronously right here,
@@ -933,12 +945,13 @@ pub fn agent_loop(
             // starts (not just after `should_call_llm` turns out true) so the
             // composer's Stop control is visible for its whole run, matching
             // a model-driven bash tool call.
-            let is_shell = matches!(event, SessionInput::Shell(_));
+            let is_shell = matches!(accepted.event, SessionInput::Shell(_));
             if is_shell {
                 publish_agent_status(&notifications, true, turn_index)?;
             }
             should_call_llm = apply_session_input(
-                event,
+                accepted.event,
+                accepted.accepted_at,
                 turn_index,
                 true,
                 &notifications,
@@ -1175,6 +1188,7 @@ fn opening_shell_script(prompt: &str) -> Option<String> {
 
 fn apply_session_input(
     event: SessionInput,
+    accepted_at: Option<i64>,
     turn_index: u64,
     shell_completes_turn: bool,
     notifications: &Notifications,
@@ -1186,7 +1200,7 @@ fn apply_session_input(
             // One durable record per command (like the model-driven tool path):
             // `shell-output` carries the script and result, so the webui echoes
             // the command and shows its output from this single event.
-            let started_at = host_now_ms();
+            let started_at = accepted_at.unwrap_or_else(host_now_ms);
             let result = exec_shell(
                 notifications,
                 turn_index,
@@ -1427,9 +1441,17 @@ fn call_llm_with_user(
                     drop(session.join_set.take().expect("turn join set is open"));
                     break None;
                 }
+                let accepted_at = if matches!(&event, SessionInput::Shell(_)) {
+                    Some(input_accepted_at_milliseconds(
+                        &session.injection_execution_id.id,
+                    )?)
+                } else {
+                    None
+                };
                 rearm_user_input(session, notifications)?;
                 prompt_queued |= apply_session_input(
                     event,
+                    accepted_at,
                     session.turn_index,
                     false,
                     notifications,
@@ -1578,10 +1600,15 @@ fn publish_agent_status(
     )
 }
 
+struct AcceptedInput {
+    event: SessionInput,
+    accepted_at: Option<i64>,
+}
+
 fn take_user_event(
     session: &mut Session,
     notifications: &Notifications,
-) -> Result<SessionInput, String> {
+) -> Result<AcceptedInput, String> {
     // Same heterogeneous-join-set discipline as `call_llm_with_user`: await
     // generically, confirm the completed id is the outstanding injection offer,
     // then fetch its typed value with `injection-get`.
@@ -1598,8 +1625,15 @@ fn take_user_event(
     let event = session_ext::injection_get(&session.injection_execution_id)
         .map_err(|e| format!("{e:?}"))?
         .map_err(|e| format!("session injection failed: {e}"))?;
+    let accepted_at = if matches!(&event, SessionInput::Shell(_)) {
+        Some(input_accepted_at_milliseconds(
+            &session.injection_execution_id.id,
+        )?)
+    } else {
+        None
+    };
     rearm_user_input(session, notifications)?;
-    Ok(event)
+    Ok(AcceptedInput { event, accepted_at })
 }
 
 #[cfg(test)]

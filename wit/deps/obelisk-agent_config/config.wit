@@ -43,4 +43,5 @@ interface config {
   }
 
   discover: func(execution-id: string, backend: string, effort: string, name: option<string>) -> result<session-config, string>;
+  input-accepted-at: func(execution-id: string) -> result<u64, string>;
 }

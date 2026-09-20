@@ -36,6 +36,7 @@ test-js:
   node --test activity/chat.test.js
   node --test activity/github-contents.test.js
   node --test activity/config-discover.test.js
+  node --test activity/input-accepted-at.test.js
   node --test packs/obelisk-control/native-call.test.mjs
   node --test shared/session-state.test.js
   node --test $(find vendor/just-bash/src -name '*.test.js')

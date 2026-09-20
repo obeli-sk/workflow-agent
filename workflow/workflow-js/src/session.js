@@ -21,7 +21,7 @@
 // global, no WIT imports) live in session-logic.js so they can be unit
 // tested; this file is the host-facing orchestration only.
 
-import { discover } from "obelisk-agent:config/config";
+import { discover, inputAcceptedAt } from "obelisk-agent:config/config";
 import * as obelisk from "obelisk:workflow@1.0.0";
 import * as dynamic from "obelisk:workflow-dynamic@1.0.0";
 import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
@@ -430,10 +430,10 @@ function execShell(bash, notifications, id, turnIndex, step, script, stdin, time
 
 // ----- session input application -----
 
-function applySessionInput(event, turnIndex, shellCompletesTurn, notifications, bash, messages) {
+function applySessionInput(event, acceptedAt, turnIndex, shellCompletesTurn, notifications, bash, messages) {
     if (event.shell) {
         const { id, script, stdin = "" } = event.shell;
-        const startedAt = hostNowMs();
+        const startedAt = acceptedAt ?? hostNowMs();
         const result = execShell(bash, notifications, id, turnIndex, "direct", script, stdin, null);
         const durationMilliseconds = elapsedMilliseconds(startedAt, hostNowMs());
         const record = {
@@ -494,8 +494,9 @@ function takeUserEvent(session, notifications) {
     if (session.joinSet.lastId !== session.injectionId) {
         throw `unexpected session response while idle: ${session.joinSet.lastId}`;
     }
+    const acceptedAt = event.shell ? Number(inputAcceptedAt(session.injectionId)) : null;
     rearmUserInput(session, notifications);
-    return event;
+    return { event, acceptedAt };
 }
 
 // One LLM call raced against the user input offer; each injected event lands
@@ -543,8 +544,9 @@ function callLlmWithUser(session, system, messages, model, effort, bash, notific
                     completion = null;
                     break;
                 }
+                const acceptedAt = event.shell ? Number(inputAcceptedAt(session.injectionId)) : null;
                 rearmUserInput(session, notifications);
-                promptQueued = promptQueued || applySessionInput(event, session.turnIndex, false, notifications, bash, messages);
+                promptQueued = promptQueued || applySessionInput(event, acceptedAt, session.turnIndex, false, notifications, bash, messages);
             } else {
                 throw `unexpected session response: ${completedId}`;
             }
@@ -630,7 +632,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     let messages = pendingShell === null && prompt.trim() ? [userText(prompt.trim())] : [];
 
     notifications.notify({
-        session_started: { protocol_version: 10, prompt, backend: model, effort, system_prompt: system },
+        session_started: { protocol_version: 11, prompt, backend: model, effort, system_prompt: system },
     });
     // A session created with a slug label (`chat create --name`, Phase 5)
     // starts already renamed; anything else arrives unnamed.
@@ -676,8 +678,8 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
 
             let turnComplete = false;
             if (!shouldCallLlm) {
-                const event = pendingShell !== null
-                    ? { shell: { id: `shell-opened-${turnIndex}`, script: pendingShell, stdin: "" } }
+                const accepted = pendingShell !== null
+                    ? { event: { shell: { id: `shell-opened-${turnIndex}`, script: pendingShell, stdin: "" } }, acceptedAt: null }
                     : takeUserEvent(session, notifications);
                 pendingShell = null;
                 // A composer/opening shell command runs synchronously right here,
@@ -685,9 +687,9 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
                 // starts (not just after `shouldCallLlm` turns out true) so the
                 // composer's Stop control is visible for its whole run, matching
                 // a model-driven bash tool call.
-                const isShell = Boolean(event.shell);
+                const isShell = Boolean(accepted.event.shell);
                 if (isShell) publishAgentStatus(notifications, true, turnIndex);
-                shouldCallLlm = applySessionInput(event, turnIndex, true, notifications, bash, messages);
+                shouldCallLlm = applySessionInput(accepted.event, accepted.acceptedAt, turnIndex, true, notifications, bash, messages);
                 if (shouldCallLlm) publishAgentStatus(notifications, true, turnIndex);
                 else if (isShell) publishAgentStatus(notifications, false, turnIndex);
                 turnComplete = !shouldCallLlm;
