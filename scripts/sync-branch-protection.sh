@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Applies branch protection for `main`, so the rule lives in git instead of
-# only existing as manual GitHub UI clicks that can drift silently.
+# Applies branch protection for `main` and enables repository auto-merge, so
+# these rules live in git instead of only existing as manual GitHub UI clicks
+# that can drift silently.
 #
 # Required status checks are derived from every .github/workflows/*.yml file
 # that triggers on `pull_request`, rather than hardcoded here — add/rename/
@@ -92,6 +93,16 @@ echo "$PAYLOAD" | gh api \
     -H "Accept: application/vnd.github+json" \
     "repos/$REPO/branches/$BRANCH/protection" \
     --input - \
+    > /dev/null
+
+# Auto-merge is a repository setting, not part of branch protection: enable it so
+# a PR can be queued to merge automatically once the required checks above pass.
+echo ">>> Enabling auto-merge on $REPO"
+gh api \
+    --method PATCH \
+    -H "Accept: application/vnd.github+json" \
+    "repos/$REPO" \
+    -F allow_auto_merge=true \
     > /dev/null
 
 echo ">>> Done. Current protection:"
