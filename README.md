@@ -170,8 +170,8 @@ under `/workspace/apps/<name>`, sourced from the GitHub contents API
 (one deployed activity backs every mount; which repo each one browses travels
 in the request, not a fixed env var). A directory lists on first `ls` and a
 file's bytes fetch on first `cat`, one recorded activity call each. The
-default list mounts a handful of `obeli-sk` repos (`components`,
-`agent-backed-llm-server`, `demo-stargazers`, `demo-tutorial`,
+default list mounts a handful of `obeli-sk` repos (`agent-template`,
+`components`, `agent-backed-llm-server`, `demo-stargazers`, `demo-tutorial`,
 `obelisk-version-monitor`, and `workflow-agent` itself) from `main`, curated
 for authoring value: a JS repo is directly copy-and-adapt, a Rust one only
 makes the cut when it publishes reusable OCI components (`components`) or

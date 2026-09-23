@@ -61,6 +61,7 @@ ${PROGRAMS_JSON:-[
   # set of repos, private forks, or pinned refs.
   { key = "APPS_JSON", value = '''
 ${APPS_JSON:-[
+  {"name":"agent-template","repo":"agent-template","description":"JS: the minimal copy-to-start agent (durable loop workflow, LLM client, one tool activity, stub channel, web UI); copy it when asked to build a new agent deployment"},
   {"name":"components","repo":"components","description":"Rust: reusable OCI activities for HTTP, GitHub, Fly.io, Docker, OpenAI, and browser automation; copy a `*-oci.toml` block straight into a deployment.toml instead of writing the activity from scratch"},
   {"name":"agent-backed-llm-server","repo":"agent-backed-llm-server","description":"JS: an OpenAI-compatible LLM endpoint backed by a Claude/Codex CLI subscription; copy the webhook+activity pair when bridging a similar CLI tool"},
   {"name":"demo-stargazers","repo":"demo-stargazers","description":"Rust: a full webhook -> workflow -> external-API pattern (GitHub star notifications with persistent side effects); a reference before writing a similar workflow in JS"},
