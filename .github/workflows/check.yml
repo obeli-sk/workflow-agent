@@ -135,11 +135,8 @@ jobs:
     # also skip checks such as exec digests.
     env:
       AGENT_MODELS: "[]"
-      LLM_API_KEY: ci-placeholder
       TARGET_OBELISK_TOKEN: ci-placeholder
       OBELISK_API_TOKEN: ci-placeholder
-      MCP_SERVER_TOKEN: ""
-      GITHUB_TOKEN: ""
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:

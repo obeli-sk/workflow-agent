@@ -68,7 +68,7 @@ EXTERNAL_PORT=$((28100 + PORT_OFFSET))
 e2e_init "github-mount-deploy-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-github-mount-deploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
-export MCP_SERVER_TOKEN=""
+unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 # Mounts this app's own repo at /workspace/apps/workflow-agent, matching the
 # real-world failure exactly; override via GH_OWNER/GH_REPO/GH_REF to test a

@@ -6,9 +6,8 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 e2e_init "bash-workflow-e2e" 28015 28090 "e2e-bash-workflow-token"
-# app.toml's [secrets] requires every named var to exist; empty is fine.
-export MCP_SERVER_TOKEN=""
-export GITHUB_TOKEN=""
+unset MCP_SERVER_TOKEN
+unset GITHUB_TOKEN
 # app.toml's required [public_env] entry; unused by this suite's workflow.
 export AGENT_MODELS="[]"
 e2e_build_component "workflow/bash-rs" "bash_workflow.wasm"

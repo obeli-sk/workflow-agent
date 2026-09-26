@@ -32,9 +32,8 @@ EXTERNAL_PORT=$((28096 + PORT_OFFSET))
 e2e_init "target-deploy-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-target-deploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
-# app.toml's [secrets] requires every named var to exist; empty is fine.
-export MCP_SERVER_TOKEN=""
-export GITHUB_TOKEN=""
+unset MCP_SERVER_TOKEN
+unset GITHUB_TOKEN
 export AGENT_MODELS="[]"
 
 TARGET_API_PORT=$((28021 + PORT_OFFSET))

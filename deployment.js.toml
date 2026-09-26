@@ -182,7 +182,7 @@ exec.lock_expiry.seconds = 30
 pattern = "https://api.github.com"
 methods = ["GET"]
 request_url_regex = "^GET https://api\\.github\\.com/repos/${GH_OWNER:-obeli-sk}/[^/]+/(contents|commits/)"
-secrets = ["GITHUB_TOKEN"]
+secrets = [{ name = "GITHUB_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 # --- LLM endpoint: multi-provider client --------------------------------------
@@ -212,7 +212,7 @@ env_vars = [
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
 request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
-secrets = ["LLM_API_KEY"]
+secrets = [{ name = "LLM_API_KEY", optional = true }]
 replace_in = ["headers"]
 
 # --- LLM-facing tools ---------------------------------------------------------
@@ -676,5 +676,5 @@ env_vars = [{ key = "MCP_SERVER_URL", value = "${MCP_OBELISK_LOCAL_URL:-http://1
 [[activity_js.allowed_host]]
 pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
 methods = ["POST"]
-secrets = ["MCP_SERVER_TOKEN"]   # optional bearer; omit this and the app.toml secret for a keyless server
+secrets = [{ name = "MCP_SERVER_TOKEN", optional = true }]   # optional bearer; leave MCP_SERVER_TOKEN unset for a keyless server
 replace_in = ["headers"]
