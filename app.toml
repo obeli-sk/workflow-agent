@@ -1,0 +1,127 @@
+app_name = "workflow-agent"
+
+[secrets]
+LLM_API_KEY = { optional = true }
+# The target Obelisk the agent deploys to/controls; defaults to the agent's own
+# token for the self-host case (see .envrc-example, README recursion warning).
+TARGET_OBELISK_TOKEN = {}
+# Obelisk server is accessed e.g. by the UI to get execution state.
+OBELISK_API_TOKEN = {}
+# Leave unset for a keyless MCP server (e.g. the testing one).
+MCP_SERVER_TOKEN = { optional = true }
+# Optional: raises the GitHub API rate limit for the /workspace/components
+# mount from the shared 60 req/h anonymous IP pool to 5000 req/h. Leave it unset
+# for occasional use.
+GITHUB_TOKEN = { optional = true }
+
+[public_env]
+DOCS_URLS_JSON = { optional = true }
+OBELISK_VERSION = { optional = true }
+MAX_STEPS = { optional = true }
+PROGRAMS_JSON = { optional = true }
+MCP_SERVERS_JSON = { optional = true }
+APPS_JSON = { optional = true }
+TARGET_OBELISK_WEBHOOK_URL = { optional = true }
+OBELISK_API_URL = { optional = true }
+AGENT_MODELS = {}
+OBELISK_API_URL_REGEX = { optional = true }
+GH_OWNER = { optional = true }
+LLM_BASE_URL = { optional = true }
+TARGET_OBELISK_API_URL = { optional = true }
+TARGET_OBELISK_API_URL_REGEX = { optional = true }
+MCP_OBELISK_LOCAL_URL = { optional = true }
+OBELISK_UI_URL = { optional = true }
+
+# Allow reading documentation
+[[outbound_http.allowed_host]]
+pattern = "https://obeli.sk"
+methods = ["GET"]
+
+# Agent's own instance. These mirror the components' declarations in
+# deployment.{js,rs}.toml one-for-one rather than being consolidated into one
+# broader grant; both this and the component's request_url_regex apply to
+# every request.
+
+# program_chat: peer session discovery/create + stub fulfilment.
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT", "POST"]
+request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions|PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub$|POST ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# tool_pause_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/pause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# tool_unpause_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/unpause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# tool_cancel_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/cancel|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# tool_stub_execution
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# ui-api webhook: read-only polling (statuses, responses, events, logs,
+# deployments, files) run as direct fetches instead of one child activity
+# per call.
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/)"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+# Target instance: the control/deploy tools and the VFS deployment mount.
+[[outbound_http.allowed_host]]
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "POST", "PUT"]
+secrets = ["TARGET_OBELISK_TOKEN"]
+replace_in = ["headers"]
+
+# Target instance webhooks
+[[outbound_http.allowed_host]]
+pattern = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}"
+methods = ["GET"]
+
+# GitHub contents API for mount points. Read only PAT for public repos is enough.
+[[outbound_http.allowed_host]]
+pattern = "https://api.github.com"
+methods = ["GET"]
+secrets = ["GITHUB_TOKEN"]
+replace_in = ["headers"]
+
+# LLM server
+[[outbound_http.allowed_host]]
+pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+methods = ["POST"]
+request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
+secrets = ["LLM_API_KEY"]
+replace_in = ["headers"]
+
+# MCP servers
+[[outbound_http.allowed_host]]
+pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
+methods = ["POST"]
+secrets = ["MCP_SERVER_TOKEN"]
+replace_in = ["headers"]

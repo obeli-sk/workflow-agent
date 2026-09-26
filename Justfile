@@ -1,10 +1,10 @@
 serve: serve-rs
 
 serve-rs: build-rs
-  obelisk server run -d deployment.rs.toml --server-config server.toml
+  obelisk server run -d deployment.rs.toml --server-config server.toml --app-config app.toml
 
 serve-js:
-  obelisk server run -d deployment.js.toml --server-config server.toml
+  obelisk server run -d deployment.js.toml --server-config server.toml --app-config app.toml
 
 clean-target:
   rm -rf sqlite-target/
@@ -12,7 +12,7 @@ clean-target:
 serve-target:
   #!/usr/bin/env bash
   export OBELISK_API_TOKEN=${TARGET_OBELISK_TOKEN}
-  obelisk server run --server-config server-target.toml
+  obelisk server run --server-config server-target.toml --app-config app-target.toml
 
 sample-mcp-server:
   node examples/stateless-mcp-server.mjs
@@ -21,8 +21,8 @@ build-rs:
   cd workflow/workflow-rs && cargo build --release
 
 verify: build-rs
-  obelisk deployment verify --deployment deployment.rs.toml --server-config server.toml --allow-unavailable-runtime-config
-  obelisk deployment verify --deployment deployment.js.toml --server-config server.toml --allow-unavailable-runtime-config
+  obelisk deployment verify --deployment deployment.rs.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
+  obelisk deployment verify --deployment deployment.js.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
   ./scripts/check-deployment-toml-parity.sh
 
 test: test-rs test-js test-e2e

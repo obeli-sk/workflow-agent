@@ -277,7 +277,7 @@ Notes:
 
 A dependency-free sample server exposes tools, a prompt, and two resources.
 Start it with `just sample-mcp-server`; the sample's transport block in
-`deployment.rs.toml`, its outbound-host grant in `server.toml`, and its
+`deployment.rs.toml`, its outbound-host grant in `app.toml`, and its
 `MCP_SERVERS_JSON` entry are already shipped and enabled, so just build and run
 as above. In a new empty session:
 

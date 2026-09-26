@@ -24,7 +24,7 @@
 # apply/activate. The real app's deployment.js.toml has real runtime
 # requirements (5 secrets, 31 outbound_http destinations - LLM, GitHub, the
 # target's own control-plane calls, etc.); hot-*activating* it against a
-# bare `--empty --no-auth` target with no server.toml at all does not work
+# bare `--empty --no-auth` target with no app policy grants does not work
 # (verified: switch_deployment retries its config-warning check in a loop
 # and never completes) and would need a large amount of unrelated
 # config-matching work, none of which is what this suite exists to prove.
@@ -68,7 +68,7 @@ EXTERNAL_PORT=$((28100 + PORT_OFFSET))
 e2e_init "github-mount-deploy-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-github-mount-deploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
-export MCP_SERVER_TOKEN=""
+unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 # Mounts this app's own repo at /workspace/apps/workflow-agent, matching the
 # real-world failure exactly; override via GH_OWNER/GH_REPO/GH_REF to test a

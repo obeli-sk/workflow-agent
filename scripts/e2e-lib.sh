@@ -23,9 +23,10 @@ e2e_init() {
     export OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}"
     export OBELISK__WEBUI__ENABLED=false
     export OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/obelisk-sqlite"
-    export LLM_API_KEY="${LLM_API_KEY:-e2e-unused-llm-key}"
     # Keep default E2E startup hermetic and tokenless; a dedicated suite overrides this.
     export APPS_JSON="[]"
+    # Closed port, so no suite reaches a real LLM on the 9190 default; interrupt sets its own fake.
+    export LLM_BASE_URL="http://127.0.0.1:9"
 
     trap e2e_cleanup EXIT
 }
@@ -231,6 +232,7 @@ e2e_start_server() {
     echo ">>> starting ISOLATED obelisk server on ${E2E_API_URL} (sqlite: ${E2E_TMP}/obelisk-sqlite)"
     "$OBELISK" server run \
         --server-config "${E2E_SERVER_CONFIG:-$ROOT/server.toml}" \
+        --app-config "${E2E_APP_CONFIG:-$ROOT/app.toml}" \
         --deployment "$deployment" \
         > "$E2E_TMP/server.log" 2>&1 &
     E2E_SERVER_PID=$!
@@ -255,8 +257,9 @@ e2e_start_server() {
 
 # Starts a second, genuinely separate obelisk instance for suites that need
 # to prove a redeploy against a real *target* rather than self-hosting (see
-# scripts/test-e2e-target-deploy.sh): `--empty --no-auth`, using the target
-# policy so submitted full-app deployments have their public variables declared.
+# scripts/test-e2e-target-deploy.sh): `--empty --no-auth`, using the target app
+# policy (app-target-e2e.toml) so submitted full-app deployments have their
+# public variables declared.
 # Sets E2E_TARGET_API_URL; caller wires
 # TARGET_OBELISK_* env vars to point the source session's `obelisk` command
 # and deployment mount at it before starting the source server.
@@ -274,7 +277,7 @@ e2e_start_target_server() {
     OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}" \
     OBELISK__WEBUI__ENABLED=false \
     OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/target-obelisk-sqlite" \
-        "$OBELISK" server run --empty --no-auth --server-config "$ROOT/server-target-e2e.toml" \
+        "$OBELISK" server run --empty --no-auth --app-config "$ROOT/app-target-e2e.toml" \
         > "$E2E_TMP/target-server.log" 2>&1 &
     E2E_TARGET_SERVER_PID=$!
 
