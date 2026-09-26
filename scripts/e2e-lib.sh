@@ -25,6 +25,8 @@ e2e_init() {
     export OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/obelisk-sqlite"
     # Keep default E2E startup hermetic and tokenless; a dedicated suite overrides this.
     export APPS_JSON="[]"
+    # Closed port, so no suite reaches a real LLM on the 9190 default; interrupt sets its own fake.
+    export LLM_BASE_URL="http://127.0.0.1:9"
 
     trap e2e_cleanup EXIT
 }

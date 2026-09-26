@@ -194,6 +194,12 @@ while true; do
     sleep 1
 done
 
+echo ">>> chat watch times out on an idle parked child"
+WATCH_OUT="$(shell_turn "$PARENT_ID" "shell-chat-watch-timeout" \
+    "chat watch $CHILD_ID --timeout 5s --interval 1s")"
+grep -q '"timed_out":true' <<<"$WATCH_OUT" \
+    || { echo "watch did not time out: $WATCH_OUT" >&2; exit 1; }
+
 echo ">>> chat send queues a prompt for the child"
 SEND_OUT="$(chat_direct "[\"\",[\"send\",\"$CHILD_ID\",\"hello from e2e\"]]")"
 grep -q "sent to $CHILD_ID" <<<"$SEND_OUT"
@@ -232,12 +238,6 @@ WATCH_OUT="$(shell_turn "$PARENT_ID" "shell-chat-watch-cancelled" \
     "chat watch $TOPLEVEL_ID --timeout 60s")"
 grep -q '"state":"cancelled"' <<<"$WATCH_OUT" \
     || { echo "watch did not report cancelled: $WATCH_OUT" >&2; exit 1; }
-
-echo ">>> chat watch times out on an idle parked child"
-WATCH_OUT="$(shell_turn "$PARENT_ID" "shell-chat-watch-timeout" \
-    "chat watch $CHILD_ID --timeout 5s --interval 1s")"
-grep -q '"timed_out":true' <<<"$WATCH_OUT" \
-    || { echo "watch did not time out: $WATCH_OUT" >&2; exit 1; }
 
 # KNOWN-RED: an Obelisk-core replay-finalize gap, not a workflow-agent bug -
 # see the KNOWN-RED note on e2e_verify_replay_parity in e2e-lib.sh.
