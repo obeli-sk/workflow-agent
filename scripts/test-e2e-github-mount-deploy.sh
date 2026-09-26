@@ -47,7 +47,7 @@
 # GITHUB_MOUNT_REF.)
 #
 # Usage: test-e2e-github-mount-deploy.sh [rs|js]  (default rs)
-# Env: GITHUB_MOUNT_TOKEN (required, else SKIP), GH_OWNER/GITHUB_MOUNT_REPO/GITHUB_MOUNT_REF override
+# Env: GITHUB_MOUNT_TOKEN (required, else SKIP), GITHUB_MOUNT_OWNER/GITHUB_MOUNT_REPO/GITHUB_MOUNT_REF override
 # the mounted repo (default: obeli-sk/workflow-agent @ main).
 
 set -euo pipefail
@@ -71,12 +71,12 @@ export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 # Mounts this app's own repo at /workspace/apps/workflow-agent, matching the
-# real-world failure exactly; override via GH_OWNER/GITHUB_MOUNT_REPO/GITHUB_MOUNT_REF to test a
+# real-world failure exactly; override via GITHUB_MOUNT_OWNER/GITHUB_MOUNT_REPO/GITHUB_MOUNT_REF to test a
 # fork/branch instead.
-GH_OWNER="${GH_OWNER:-obeli-sk}"
+GITHUB_MOUNT_OWNER="${GITHUB_MOUNT_OWNER:-obeli-sk}"
 GITHUB_MOUNT_REPO="${GITHUB_MOUNT_REPO:-workflow-agent}"
 GITHUB_MOUNT_REF="${GITHUB_MOUNT_REF:-main}"
-export APPS_JSON="[{\"name\":\"workflow-agent\",\"owner\":\"${GH_OWNER}\",\"repo\":\"${GITHUB_MOUNT_REPO}\",\"ref\":\"${GITHUB_MOUNT_REF}\"}]"
+export APPS_JSON="[{\"name\":\"workflow-agent\",\"owner\":\"${GITHUB_MOUNT_OWNER}\",\"repo\":\"${GITHUB_MOUNT_REPO}\",\"ref\":\"${GITHUB_MOUNT_REF}\"}]"
 
 TARGET_API_PORT=$((28041 + PORT_OFFSET))
 TARGET_EXTERNAL_PORT=$((28101 + PORT_OFFSET))
