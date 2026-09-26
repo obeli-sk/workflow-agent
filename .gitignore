@@ -1,6 +1,5 @@
 .direnv
 .envrc
-models.json
 models-private*
 node_modules
 target
@@ -9,5 +8,3 @@ target-e2e
 .e2e-agent-deployment.toml
 .e2e-redeploy-deployment.toml
 /obelisk_server_daily.log.*
-/sqlite/
-/sqlite-target/
