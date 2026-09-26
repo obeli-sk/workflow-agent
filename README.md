@@ -102,7 +102,7 @@ instance.
 
 One endpoint serves the whole catalog, configured by three env vars: the
 catalog JSON `AGENT_MODELS` (required), the origin `LLM_BASE_URL` (default
-`http://127.0.0.1:9190`), and the bearer `LLM_API_KEY` (unset for keyless).
+`http://127.0.0.1:9190`), and the bearer `LLM_API_KEY` (empty for keyless).
 Each catalog entry points a model at an OpenAI- or Anthropic-shaped route under
 that origin. Three catalogs ship:
 
@@ -140,7 +140,7 @@ that origin. Three catalogs ship:
   The key is injected into the outbound header at the edge, never seen by the JS.
 
 Regenerate the exe.dev catalog from the published model list with
-`node scripts/update-exe-models.mjs`. Leave `LLM_API_KEY` unset.
+`node scripts/update-exe-models.mjs`. Leave `LLM_API_KEY` empty.
 
 Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama) works:
 point `LLM_BASE_URL` at it and add catalog entries.
@@ -191,7 +191,7 @@ Markdown bullet (`- \`name\` (owner/repo@commit) - description`), so keep `descr
 "Lang: what it's for" phrase; a repo's own README.md is the place for
 detail. `GH_OWNER` (default `obeli-sk`) scopes the deployed
 activity's `allowed_host` boundary to one GitHub org/user; every mounted
-repo's `owner` must fall within it. `GITHUB_TOKEN` is optional: unset, the
+repo's `owner` must fall within it. `GITHUB_TOKEN` is optional: empty, the
 mount shares GitHub's 60 req/h anonymous IP rate limit; set it (e.g. `gh auth
 token`) to raise that to 5000 req/h, which matters once multiple sessions
 share an egress IP.
@@ -277,7 +277,7 @@ Notes:
 
 A dependency-free sample server exposes tools, a prompt, and two resources.
 Start it with `just sample-mcp-server`; the sample's transport block in
-`deployment.rs.toml`, its outbound-host grant in `server.toml`, and its
+`deployment.rs.toml`, its outbound-host grant in `app.toml`, and its
 `MCP_SERVERS_JSON` entry are already shipped and enabled, so just build and run
 as above. In a new empty session:
 

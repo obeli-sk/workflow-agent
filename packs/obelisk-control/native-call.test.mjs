@@ -50,7 +50,10 @@ test("call-target submits first and follows the accepted execution by id", async
         if (requests.length === 1) {
             return new Response(JSON.stringify({ ok: "E_target" }), { status: 201 });
         }
-        return new Response(JSON.stringify({ err: "not a callable function" }), { status: 200 });
+        return new Response(
+            `: heartbeat\n\nevent: result\nid: 1\ndata: ${JSON.stringify({ err: "not a callable function" })}\n\n`,
+            { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
     };
 
     const result = JSON.parse(await callTarget("textkit:demo/pipeline.summarize-batch", "[[]]"));

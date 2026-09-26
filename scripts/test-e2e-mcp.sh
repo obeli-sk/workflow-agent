@@ -28,7 +28,7 @@ e2e_init "mcp-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-mcp-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 export AGENT_MODELS="[]"
-# server.toml's [secrets] requires every named var to exist; empty is fine.
+# app.toml's [secrets] requires every named var to exist; empty is fine.
 export GITHUB_TOKEN=""
 # The workflow discovers MCP servers from MCP_SERVERS_JSON (the config_discover
 # activity), overriding the manifest default so this run wires only the injected
@@ -90,18 +90,18 @@ pattern = "http://127.0.0.1:${MCP_PORT}"
 methods = ["POST"]
 EOF
 
-# server.toml needs the matching outbound-host grant (keyless).
-SERVER_CFG="$ROOT/.e2e-mcp-server-$BACKEND.toml"
-E2E_DEPLOYMENTS+=("$SERVER_CFG")
-cp "$ROOT/server.toml" "$SERVER_CFG"
-cat >> "$SERVER_CFG" <<EOF
+# app.toml needs the matching outbound-host grant (keyless).
+APP_CFG="$ROOT/.e2e-mcp-app-$BACKEND.toml"
+E2E_DEPLOYMENTS+=("$APP_CFG")
+cp "$ROOT/app.toml" "$APP_CFG"
+cat >> "$APP_CFG" <<EOF
 
 # Injected by scripts/test-e2e-mcp.sh: keyless outbound grant for the MCP server.
 [[outbound_http.allowed_host]]
 pattern = "http://127.0.0.1:${MCP_PORT}"
 methods = ["POST"]
 EOF
-export E2E_SERVER_CONFIG="$SERVER_CFG"
+export E2E_APP_CONFIG="$APP_CFG"
 
 e2e_start_server "$DEPLOY"
 

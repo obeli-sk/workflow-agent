@@ -130,6 +130,16 @@ jobs:
 
   verify:
     runs-on: ubuntu-24.04
+    # Placeholders for app.toml's required public variable and secrets, so
+    # verification runs without --allow-unavailable-runtime-config, which would
+    # also skip checks such as exec digests.
+    env:
+      AGENT_MODELS: "[]"
+      LLM_API_KEY: ci-placeholder
+      TARGET_OBELISK_TOKEN: ci-placeholder
+      OBELISK_API_TOKEN: ci-placeholder
+      MCP_SERVER_TOKEN: ""
+      GITHUB_TOKEN: ""
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
@@ -154,10 +164,10 @@ jobs:
         run: nix develop --command ./scripts/check-deployment-toml-parity.sh
 
       - name: obelisk deployment verify (rs)
-        run: nix develop --command obelisk deployment verify -d deployment.rs.toml -s server.toml --allow-unavailable-runtime-config
+        run: nix develop --command obelisk deployment verify -d deployment.rs.toml -s server.toml -a app.toml
 
       - name: obelisk deployment verify (js)
-        run: nix develop --command obelisk deployment verify -d deployment.js.toml -s server.toml --allow-unavailable-runtime-config
+        run: nix develop --command obelisk deployment verify -d deployment.js.toml -s server.toml -a app.toml
 
   e2e-common:
     name: End-to-end tests (backend-agnostic)

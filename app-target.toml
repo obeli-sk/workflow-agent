@@ -1,0 +1,28 @@
+app_name = "workflow-agent-target"
+
+# Allow all GET requests
+[[outbound_http.allowed_host]]
+pattern = "*://*:*"
+methods = ["GET"]
+
+[secrets]
+LLM_API_KEY = {}
+OBELISK_API_TOKEN = {}
+# Optional: raises the GitHub API rate limit for the /workspace/components
+# mount from the shared 60 req/h anonymous IP pool to 5000 req/h. Set it empty
+# for occasional use.
+GITHUB_TOKEN = {}
+
+[[outbound_http.allowed_host]]
+pattern = "https://api.github.com"
+methods = ["GET"]
+secrets = ["GITHUB_TOKEN"]
+replace_in = ["headers"]
+
+# LLM server
+[[outbound_http.allowed_host]]
+pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+methods = ["POST"]
+request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
+secrets = ["LLM_API_KEY"]
+replace_in = ["headers"]

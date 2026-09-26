@@ -1,0 +1,32 @@
+# Policy for the isolated target started by deployment E2E suites. These tests
+# submit workflow-agent's full manifest to an otherwise empty server. Missing
+# runtime values are allowed by the submit command, but every referenced public
+# variable must still be declared in the target app policy.
+
+app_name = "workflow-agent-e2e-target"
+
+[public_env]
+DOCS_URLS_JSON = { optional = true }
+OBELISK_VERSION = { optional = true }
+MAX_STEPS = { optional = true }
+PROGRAMS_JSON = { optional = true }
+MCP_SERVERS_JSON = { optional = true }
+APPS_JSON = { optional = true }
+TARGET_OBELISK_WEBHOOK_URL = { optional = true }
+OBELISK_API_URL = { optional = true }
+AGENT_MODELS = {}
+OBELISK_API_URL_REGEX = { optional = true }
+GH_OWNER = { optional = true }
+LLM_BASE_URL = { optional = true }
+TARGET_OBELISK_API_URL = { optional = true }
+TARGET_OBELISK_API_URL_REGEX = { optional = true }
+MCP_OBELISK_LOCAL_URL = { optional = true }
+OBELISK_UI_URL = { optional = true }
+
+# Throwaway, --no-auth test target: the suites submit workflow-agent's full
+# manifest here only to prove it stores and type-checks, so any outbound HTTP
+# destination the manifest requests is accepted, as
+# `obelisk generate app-config --trusted` does.
+[[outbound_http.allowed_host]]
+pattern = "*://*:*"
+methods = "*"

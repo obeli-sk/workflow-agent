@@ -24,7 +24,7 @@
 # apply/activate. The real app's deployment.js.toml has real runtime
 # requirements (5 secrets, 31 outbound_http destinations - LLM, GitHub, the
 # target's own control-plane calls, etc.); hot-*activating* it against a
-# bare `--empty --no-auth` target with no server.toml at all does not work
+# bare `--empty --no-auth` target with no app policy grants does not work
 # (verified: switch_deployment retries its config-warning check in a loop
 # and never completes) and would need a large amount of unrelated
 # config-matching work, none of which is what this suite exists to prove.

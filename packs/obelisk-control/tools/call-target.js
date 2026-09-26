@@ -51,11 +51,26 @@ async function call_target_impl(ffqn, paramsJson) {
         if (!resultResp.ok) {
             return JSON.stringify({ execution_id: executionId, result_error: responseError(resultResp.status, resultText) });
         }
-        return JSON.stringify({ execution_id: executionId, result: resultText });
+        const result = sseResultData(resultText);
+        if (result === null) {
+            return JSON.stringify({ execution_id: executionId, result_error: `result stream ended without a result event: ${resultText}` });
+        }
+        return JSON.stringify({ execution_id: executionId, result });
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return JSON.stringify({ execution_id: executionId, result_error: message });
     }
+}
+
+// `follow=true` answers with a text/event-stream whose `result` event carries the result JSON.
+function sseResultData(text) {
+    const event = text.split(/\r?\n\r?\n/)
+        .map((block) => block.split(/\r?\n/))
+        .find((lines) => lines.includes("event: result"));
+    if (!event) return null;
+    return event.filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).replace(/^ /, ""))
+        .join("\n");
 }
 
 function responseError(status, text) {

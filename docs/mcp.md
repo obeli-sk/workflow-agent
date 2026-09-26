@@ -28,12 +28,12 @@ workflow rebuild**: edit `deployment.rs.toml` alone.
 
 1. Add a transport block (copy the `mcp_obelisk_local` sample in
    `deployment.rs.toml`), rename the server, and point `MCP_SERVER_URL` at it.
-2. Add the matching outbound-host grant in `server.toml`.
+2. Add the matching outbound-host grant in `app.toml`.
 3. Register it in the discovery registry by appending `{ name, ffqn }` to
    `MCP_SERVERS_JSON` (the `config_discover` block's env var, overridable from the
    host env).
 
-Auth is a v1 limitation: `server.toml` can name only one `MCP_SERVER_TOKEN`, so
+Auth is a v1 limitation: `app.toml` can name only one `MCP_SERVER_TOKEN`, so
 at most one authenticated server. Keyless servers omit the secret entirely.
 
 ## Using it from the session

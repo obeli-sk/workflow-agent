@@ -445,7 +445,7 @@ name = "tool_deployment_submit"
 ffqn = "obelisk-agent:tools/webapi.deployment-submit"
 wit = "wit"
 # Submit verifies the whole deployment (compile + link every component) before
-# persisting, which far exceeds the 1s default lock.
+# persisting, which can exceed the 30s default lock.
 exec.lock_expiry.minutes = 5
 max_retries = 0
 location = "packs/obelisk-control/tools/deployment-submit.js"
@@ -686,9 +686,9 @@ replace_in = ["headers"]
 # authenticated server, exposes the fixed secret MCP_SERVER_TOKEN (a placeholder
 # bearer the runtime swaps for the real secret in the outbound header). Every
 # activity instance has its own env, so URLs differ per block freely; one
-# server.toml can name only one MCP_SERVER_TOKEN, so >1 authenticated server is a
+# app.toml can name only one MCP_SERVER_TOKEN, so >1 authenticated server is a
 # v1 limitation. Copy the transport block below, rename the server, point
-# MCP_SERVER_URL at it, add the matching server.toml grant, and register it in
+# MCP_SERVER_URL at it, add the matching app.toml grant, and register it in
 # MCP_SERVERS_JSON. See docs/mcp.md.
 
 [[activity_js]]
@@ -704,5 +704,5 @@ env_vars = [{ key = "MCP_SERVER_URL", value = "${MCP_OBELISK_LOCAL_URL:-http://1
 [[activity_js.allowed_host]]
 pattern = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071}"
 methods = ["POST"]
-secrets = ["MCP_SERVER_TOKEN"]   # optional bearer; omit this and the server.toml secret for a keyless server
+secrets = ["MCP_SERVER_TOKEN"]   # optional bearer; omit this and the app.toml secret for a keyless server
 replace_in = ["headers"]
