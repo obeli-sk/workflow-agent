@@ -164,7 +164,7 @@ location = "packs/obelisk-control/native-call.js"
 # browse example apps while authoring deployments (APPS_JSON above picks which
 # repos and where; owner/repo/ref travel in params-json, not fixed env vars, so
 # this single block serves them all). GH_OWNER scopes the allowed_host
-# boundary to one GitHub org/user; GITHUB_TOKEN is optional but raises the
+# boundary to one GitHub org/user; GITHUB_MOUNT_TOKEN is optional but raises the
 # GitHub API rate limit from the shared 60 req/h anonymous IP pool to 5000 req/h,
 # which matters once multiple sessions share an egress IP. The workflow calls
 # (method, params-json) on first `ls`/`cat` under each mount.
@@ -182,7 +182,7 @@ exec.lock_expiry.seconds = 30
 pattern = "https://api.github.com"
 methods = ["GET"]
 request_url_regex = "^GET https://api\\.github\\.com/repos/${GH_OWNER:-obeli-sk}/[^/]+/(contents|commits/)"
-secrets = [{ name = "GITHUB_TOKEN", optional = true }]
+secrets = [{ name = "GITHUB_MOUNT_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 # --- LLM endpoint: multi-provider client --------------------------------------

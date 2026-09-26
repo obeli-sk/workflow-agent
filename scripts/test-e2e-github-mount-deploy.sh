@@ -36,7 +36,7 @@
 # target's own API afterward.
 #
 # Needs real network access and a GitHub token; SKIPs (not fails) when
-# GITHUB_TOKEN is unset, so `just test-e2e`'s default run stays hermetic.
+# GITHUB_MOUNT_TOKEN is unset, so `just test-e2e`'s default run stays hermetic.
 #
 # GitHub always serves GH_REF's current remote state, not this checkout's
 # working tree - push local fixes before relying on them showing up in the
@@ -47,15 +47,15 @@
 # GH_REF.)
 #
 # Usage: test-e2e-github-mount-deploy.sh [rs|js]  (default rs)
-# Env: GITHUB_TOKEN (required, else SKIP), GH_OWNER/GH_REPO/GH_REF override
+# Env: GITHUB_MOUNT_TOKEN (required, else SKIP), GH_OWNER/GH_REPO/GH_REF override
 # the mounted repo (default: obeli-sk/workflow-agent @ main).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-    echo ">>> GitHub-mount deploy E2E SKIP: GITHUB_TOKEN not set (real GitHub API access required)" >&2
+if [[ -z "${GITHUB_MOUNT_TOKEN:-}" ]]; then
+    echo ">>> GitHub-mount deploy E2E SKIP: GITHUB_MOUNT_TOKEN not set (real GitHub API access required)" >&2
     exit 0
 fi
 

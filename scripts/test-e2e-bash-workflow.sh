@@ -7,7 +7,7 @@ source "$ROOT/scripts/e2e-lib.sh"
 
 e2e_init "bash-workflow-e2e" 28015 28090 "e2e-bash-workflow-token"
 unset MCP_SERVER_TOKEN
-unset GITHUB_TOKEN
+unset GITHUB_MOUNT_TOKEN
 # app.toml's required [public_env] entry; unused by this suite's workflow.
 export AGENT_MODELS="[]"
 e2e_build_component "workflow/bash-rs" "bash_workflow.wasm"

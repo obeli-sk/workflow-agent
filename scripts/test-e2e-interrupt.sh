@@ -28,7 +28,7 @@ e2e_init "interrupt-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-interrupt-to
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 unset MCP_SERVER_TOKEN
-unset GITHUB_TOKEN
+unset GITHUB_MOUNT_TOKEN
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"},{"id":"fake-loop","label":"Fake Loop","api_type":"openai-chat-completions"}]'
 export LLM_BASE_URL="http://127.0.0.1:${LLM_PORT}"
 

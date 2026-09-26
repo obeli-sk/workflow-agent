@@ -15,7 +15,7 @@ export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions","wire_model":"fake"}]'
 unset MCP_SERVER_TOKEN
-unset GITHUB_TOKEN
+unset GITHUB_MOUNT_TOKEN
 
 e2e_select_backend "$BACKEND"
 DEPLOY="$ROOT/.e2e-chat-deployment-$BACKEND.toml"

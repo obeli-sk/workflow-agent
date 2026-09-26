@@ -11,12 +11,12 @@ OBELISK_API_TOKEN = {}
 # Optional: raises the GitHub API rate limit for the /workspace/components
 # mount from the shared 60 req/h anonymous IP pool to 5000 req/h. Leave it unset
 # for occasional use.
-GITHUB_TOKEN = { optional = true }
+GITHUB_MOUNT_TOKEN = { optional = true }
 
 [[outbound_http.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET"]
-secrets = ["GITHUB_TOKEN"]
+secrets = ["GITHUB_MOUNT_TOKEN"]
 replace_in = ["headers"]
 
 # LLM server
