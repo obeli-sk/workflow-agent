@@ -189,9 +189,9 @@ mount ref for the session and is shown in both the system prompt and `mount`.
 The system prompt's "Example apps" section renders each entry as a one-line
 Markdown bullet (`- \`name\` (owner/repo@commit) - description`), so keep `description` to a short
 "Lang: what it's for" phrase; a repo's own README.md is the place for
-detail. `GH_OWNER` (default `obeli-sk`) scopes the deployed
+detail. `GITHUB_MOUNT_OWNER` (default `obeli-sk`) scopes the deployed
 activity's `allowed_host` boundary to one GitHub org/user; every mounted
-repo's `owner` must fall within it. `GITHUB_TOKEN` is optional: unset, the
+repo's `owner` must fall within it. `GITHUB_MOUNT_TOKEN` is optional: unset, the
 mount shares GitHub's 60 req/h anonymous IP rate limit; set it (e.g. `gh auth
 token`) to raise that to 5000 req/h, which matters once multiple sessions
 share an egress IP.

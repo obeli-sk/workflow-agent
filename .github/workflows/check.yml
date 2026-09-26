@@ -186,9 +186,6 @@ jobs:
 
       - name: bash workflow e2e
         run: nix develop --command ./scripts/test-e2e-bash-workflow.sh
-        env:
-          GITHUB_TOKEN: ""
-          MCP_SERVER_TOKEN: ""
 
   e2e:
     name: End-to-end tests (${{ matrix.backend }} backend)
@@ -212,8 +209,8 @@ jobs:
       - name: Populate the nix store
         run: nix develop --command echo
 
-      # Suites that don't need a real token export their own empty override internally.
+      # Suites that don't need a real token unset it internally.
       - name: e2e suites (${{ matrix.backend }})
         run: nix develop --command node --test --test-name-pattern "^${{ matrix.backend }}$" scripts/e2e/*.test.mjs
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_MOUNT_TOKEN: ${{ secrets.GITHUB_TOKEN }}

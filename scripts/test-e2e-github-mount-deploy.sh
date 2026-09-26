@@ -36,26 +36,26 @@
 # target's own API afterward.
 #
 # Needs real network access and a GitHub token; SKIPs (not fails) when
-# GITHUB_TOKEN is unset, so `just test-e2e`'s default run stays hermetic.
+# GITHUB_MOUNT_TOKEN is unset, so `just test-e2e`'s default run stays hermetic.
 #
-# GitHub always serves GH_REF's current remote state, not this checkout's
+# GitHub always serves GITHUB_MOUNT_REF's current remote state, not this checkout's
 # working tree - push local fixes before relying on them showing up in the
 # mounted content. (The fix under test here is the AGENT's own session
 # code, built fresh from this local checkout via e2e_select_backend, so it
 # does not need to be pushed - only the *content being fetched* through the
 # mount, which this app's own deployment.js.toml already is, comes from
-# GH_REF.)
+# GITHUB_MOUNT_REF.)
 #
 # Usage: test-e2e-github-mount-deploy.sh [rs|js]  (default rs)
-# Env: GITHUB_TOKEN (required, else SKIP), GH_OWNER/GH_REPO/GH_REF override
+# Env: GITHUB_MOUNT_TOKEN (required, else SKIP), GITHUB_MOUNT_OWNER/GITHUB_MOUNT_REPO/GITHUB_MOUNT_REF override
 # the mounted repo (default: obeli-sk/workflow-agent @ main).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-    echo ">>> GitHub-mount deploy E2E SKIP: GITHUB_TOKEN not set (real GitHub API access required)" >&2
+if [[ -z "${GITHUB_MOUNT_TOKEN:-}" ]]; then
+    echo ">>> GitHub-mount deploy E2E SKIP: GITHUB_MOUNT_TOKEN not set (real GitHub API access required)" >&2
     exit 0
 fi
 
@@ -71,12 +71,12 @@ export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 # Mounts this app's own repo at /workspace/apps/workflow-agent, matching the
-# real-world failure exactly; override via GH_OWNER/GH_REPO/GH_REF to test a
+# real-world failure exactly; override via GITHUB_MOUNT_OWNER/GITHUB_MOUNT_REPO/GITHUB_MOUNT_REF to test a
 # fork/branch instead.
-GH_OWNER="${GH_OWNER:-obeli-sk}"
-GH_REPO="${GH_REPO:-workflow-agent}"
-GH_REF="${GH_REF:-main}"
-export APPS_JSON="[{\"name\":\"workflow-agent\",\"owner\":\"${GH_OWNER}\",\"repo\":\"${GH_REPO}\",\"ref\":\"${GH_REF}\"}]"
+GITHUB_MOUNT_OWNER="${GITHUB_MOUNT_OWNER:-obeli-sk}"
+GITHUB_MOUNT_REPO="${GITHUB_MOUNT_REPO:-workflow-agent}"
+GITHUB_MOUNT_REF="${GITHUB_MOUNT_REF:-main}"
+export APPS_JSON="[{\"name\":\"workflow-agent\",\"owner\":\"${GITHUB_MOUNT_OWNER}\",\"repo\":\"${GITHUB_MOUNT_REPO}\",\"ref\":\"${GITHUB_MOUNT_REF}\"}]"
 
 TARGET_API_PORT=$((28041 + PORT_OFFSET))
 TARGET_EXTERNAL_PORT=$((28101 + PORT_OFFSET))

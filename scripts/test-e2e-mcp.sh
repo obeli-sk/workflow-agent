@@ -28,7 +28,7 @@ e2e_init "mcp-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-mcp-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 export AGENT_MODELS="[]"
-unset GITHUB_TOKEN
+unset GITHUB_MOUNT_TOKEN
 # The workflow discovers MCP servers from MCP_SERVERS_JSON (the config_discover
 # activity), overriding the manifest default so this run wires only the injected
 # obelisk-e2e server. Unset MCP_SERVER_TOKEN keeps the manifest's sample

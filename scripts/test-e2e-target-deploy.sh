@@ -33,7 +33,7 @@ e2e_init "target-deploy-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-target-d
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 unset MCP_SERVER_TOKEN
-unset GITHUB_TOKEN
+unset GITHUB_MOUNT_TOKEN
 export AGENT_MODELS="[]"
 
 TARGET_API_PORT=$((28021 + PORT_OFFSET))
