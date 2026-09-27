@@ -366,3 +366,13 @@ echo ">>> E2E PASS: the session surfaced the LLM configuration error and returne
 e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$EXEC_ID"
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$EXEC_ID" >/dev/null || true
+
+# The web UI creates sessions through its statically imported
+# run-cancellable-schedule; the session must start and publish an input offer.
+UI_CREATED="$(curl --fail --silent --show-error -X POST -H 'content-type: application/json' \
+    -d '{}' "http://127.0.0.1:${EXTERNAL_PORT}/api/sessions")"
+SESSION_ID="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(0,'utf8')).execution_id ?? '')" <<<"$UI_CREATED")"
+[[ "$SESSION_ID" == E_* ]] || { echo "UI session create returned no execution id: $UI_CREATED" >&2; exit 1; }
+wait_for_input_offer
+echo ">>> UI session create E2E PASS: $SESSION_ID started and is waiting for input"
+"$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
