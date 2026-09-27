@@ -23,6 +23,8 @@
 
 import { discover, inputAcceptedAt } from "obelisk-agent:config/config";
 import { request as appsRequest } from "obelisk-agent:mounts/apps";
+import * as webapi from "obelisk-agent:tools/webapi";
+import { call as nativeCall } from "obelisk-control:tools/native";
 import * as obelisk from "obelisk:workflow@1.0.0";
 import * as dynamic from "obelisk:workflow-dynamic@1.0.0";
 import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
@@ -41,7 +43,7 @@ import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
 import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
 import * as obeliskMcp from "../../../vendor/just-bash/src/obelisk-mcp.js";
 import * as obeliskWeb from "../../../vendor/just-bash/src/obelisk-web.js";
-import { childErrorMessage, createHost } from "./host.js";
+import { childErrorMessage, createControlPlane, createHost } from "./host.js";
 import { arm as armScriptWatch } from "./script-watch.js";
 import * as chat from "./chat.js";
 import {
@@ -87,8 +89,6 @@ const SESSION_EVENTS_JOIN_SET = "session-events";
 // Renames publish here instead, so a reader fetches the current name with one
 // bounded request instead of racing the mixed session-events stream.
 const SESSION_NAME_JOIN_SET = "session-name";
-const ASK_USER_FFQN = "obelisk-agent:stub/stub.ask-user";
-const NATIVE_CALL_FFQN = "obelisk-control:tools/native.call";
 // The operator-configured program whose registration gets wrapped with
 // chat.js's caller-aware subcommands (current/rename/create/watch). PORT:
 // chat.rs's CHAT_PROGRAM_FFQN.
@@ -224,46 +224,11 @@ class Notifications {
     }
 }
 
-// PORT: host.rs's RealHost::call_json interception of ASK_USER_FFQN reached
-// through native.call, plus RealHost::ask_user itself. Wraps a plain
-// createHost() so `obelisk call obelisk-agent:stub/stub.ask-user [...]`
-// (the only path that ever reaches native.call, see obelisk-pack.js's
-// `targetCall`) is answered by a real join-set-based question/answer
-// exchange instead of falling through to native.call's normal HTTP bridge
-// to the target instance, which has no such function.
-
-function askUserAwareHost(notifications) {
-    const host = createHost(dynamic, obelisk);
-    return {
-        callJson(ffqn, paramsJson) {
-            if (ffqn === NATIVE_CALL_FFQN) {
-                const intercepted = interceptAskUser(paramsJson, notifications);
-                if (intercepted !== undefined) return intercepted;
-            }
-            return host.callJson(ffqn, paramsJson);
-        },
-    };
-}
-
-// `undefined` means "not an ask-user call, fall through to the normal host".
-function interceptAskUser(nativeCallParamsJson, notifications) {
-    let params;
-    try {
-        params = JSON.parse(nativeCallParamsJson);
-    } catch {
-        return undefined;
-    }
-    if (!Array.isArray(params) || params[0] !== ASK_USER_FFQN) return undefined;
-    const targetParamsJson = params[1];
-    if (typeof targetParamsJson !== "string") throw "native call requires params-json";
-    return askUser(targetParamsJson, notifications);
-}
-
-// Returns native.call's own callJson contract: JSON text of native.call's
-// decoded (string) return value - i.e. JSON.stringify'd twice, matching how
-// a normal callJson(NATIVE_CALL_FFQN, ...) call would encode a string
-// result (see host.js's header comment for the "one layer of JSON text"
-// convention every obelisk-*.js module is written against).
+// PORT: host.rs's RealHost::ask_user. Answers `obelisk call
+// obelisk-agent:stub/stub.ask-user [...]` with a real join-set-based
+// question/answer exchange instead of native.call's HTTP bridge to the target
+// instance, which has no such function. Returns the answer's JSON text, like
+// native.call.
 function askUser(paramsJson, notifications) {
     let params;
     try {
@@ -289,7 +254,7 @@ function askUser(paramsJson, notifications) {
     }
     if (joinSet.lastId !== executionId) throw `unexpected ask-user response: ${joinSet.lastId}`;
     notifications.humanInputResolved(executionId);
-    return JSON.stringify(JSON.stringify(answer));
+    return JSON.stringify(answer);
 }
 
 function hostNowMs() {
@@ -380,10 +345,10 @@ function renderMountOutput(apps, mcpServers, webhookUrl) {
 // a bash-only session that never references a mounted path never touches the
 // network - so it is safe to run unconditionally, once, right after the
 // input offer opens.
-function mountPacks(bash, config) {
+function mountPacks(bash, config, controlPlane) {
     const fs = bash.fs();
-    fs.setBlobLoader(obeliskPack.blobLoader(createHost(dynamic, obelisk)));
-    obeliskPack.registerDeferredMount(fs, createHost(dynamic, obelisk));
+    fs.setBlobLoader(obeliskPack.blobLoader(controlPlane));
+    obeliskPack.registerDeferredMount(fs, controlPlane);
     for (const app of config.apps) {
         // Pass the live app object (not a copy) so `obelisk-web.js` writing
         // `resolvedRef` onto it, once the mount is first used, is visible to
@@ -615,11 +580,8 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const config = loadSessionConfig(executionId, model, effort, initialName);
     const maxSteps = config.maxSteps;
     // Always registered, independent of operator config (mirrors session.rs).
-    // Only this registration's host needs the ask-user interception: it's the
-    // only path that ever dispatches through native.call (obelisk-pack.js's
-    // `targetCall`, backing `obelisk call FFQN`); programs/MCP commands never
-    // route through it, so a plain createHost() is enough for those.
-    bash.registerCommand("obelisk", obeliskPack.commandHandler(askUserAwareHost(notifications), {
+    const controlPlane = createControlPlane(webapi, nativeCall, obelisk, (paramsJson) => askUser(paramsJson, notifications));
+    bash.registerCommand("obelisk", obeliskPack.commandHandler(controlPlane, {
         obeliskVersion: config.obeliskVersion,
         githubContents,
     }));
@@ -658,7 +620,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     // Deployment/components/MCP-resource trees mount lazily: registering them
     // makes no host call itself, so this runs once the input offer is already
     // open (a live session is visible immediately) without delaying startup.
-    mountPacks(bash, config);
+    mountPacks(bash, config, controlPlane);
     publishAgentStatus(notifications, shouldCallLlm, turnIndex);
 
     try {

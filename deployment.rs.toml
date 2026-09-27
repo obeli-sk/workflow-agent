@@ -154,11 +154,7 @@ replace_in = ["headers"]
 # (obelisk-control pack). A workflow, so obelisk.call runs durably in-loop.
 [[workflow_js]]
 ffqn = "obelisk-control:tools/native.call"
-params = [
-  { name = "ffqn",        type = "string" },
-  { name = "params-json", type = "string" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/native-call.js"
 
 # --- Reference mounts: GitHub repo trees ---------------------------------------
