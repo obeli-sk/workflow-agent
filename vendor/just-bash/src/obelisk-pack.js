@@ -1,27 +1,14 @@
 // PORT: vendor/just-bash-rs/src/obelisk_pack.rs
 //
 // The obelisk-control pack: one custom command, `obelisk`, whose subcommands
-// (`functions`, `executions`, `call`, `deployment`) all bottom out in a
-// single primitive - calling a deployed Obelisk FFQN and getting back its
-// JSON result - via the `host.callJson` seam below. Everything under
-// packs/obelisk-control/tools/*.js and packs/obelisk-control/github/*.js
-// stays a separately-deployed JS activity/workflow reached *through* one of
-// these FFQN calls (e.g. `obelisk-agent:tools/webapi.list-functions`); this
-// module only ports the shell-command dispatcher that runs inside the
-// session's own bash, not those targets, so it never needs to know how they
-// are implemented.
-//
-// `host` is duck-typed as `{ callJson(ffqn, paramsJson) -> string|null }`
-// (throws a string, or an Error, on failure), matching workflow-rs's
-// `ObeliskHost` trait so this module is host-implementation-agnostic and
-// testable with a plain fake object (see obelisk-pack.test.js) - the real
-// implementation lives in workflow/workflow-js/src/host.js, never imported
-// here. `paramsJson` is a JSON-encoded array (a string, matching Rust's
-// `params_json: &str`); the return value is the JSON *text* of the decoded
-// result (quoted for a string result, `null` for a void result), mirroring
-// the `obelisk:workflow/workflow-support.call-json` WIT host import exactly.
-// `obelisk-control:tools/native.call` needs no special-casing: it is called
-// through this exact same seam like any other ffqn (see `targetCall`).
+// (`functions`, `executions`, `call`, `deployment`, `generate`) call the
+// control-plane tools through `controlPlane`: an object with the same methods
+// as obelisk_pack.rs's `ControlPlane` trait, backed by the statically imported
+// `obelisk-agent:tools/webapi` and `obelisk-control:tools/native.call` (see
+// workflow/workflow-js/src/host.js's `createControlPlane`; tests pass a fake).
+// Methods return the decoded ok value and throw a plain message on error,
+// except `deploymentSubmit`, which throws `{ missingFiles }` for the
+// recoverable missing-files arm.
 //
 // Custom-command handlers receive the full argv including argv[0] (see
 // interpreter.js's `invoke`), unlike workflow-rs's `CustomCommandHandler`
@@ -33,10 +20,12 @@ import { utf8Encode } from "./utf8.js";
 import { DEPLOYMENT_TEMPLATE } from "./obelisk-deployment-template.js";
 import { isCasNamespacedDigest } from "./fs.js";
 
-const READ_BLOB_FFQN = "obelisk-agent:tools/webapi.deployment-read-blob";
-const SUBMIT_FFQN = "obelisk-agent:tools/webapi.deployment-submit";
 
 const DEPLOYMENT_ROOT = "/workspace/deployment";
+
+const TEMPLATE_OWNER = "obeli-sk";
+const TEMPLATE_REPO = "obelisk";
+const TEMPLATE_PATH = "examples/templates/js-http";
 
 // The placeholder value the agent sees in `component_files` maps in place of
 // a pinned digest; `deployment submit` replaces each with the file's real
@@ -48,12 +37,14 @@ const AUTO_DIGEST = "auto";
 // ---------------------------------------------------------------------------
 
 // Build the `obelisk` custom-command handler. Register it with
-// `commands.set("obelisk", obelisk.commandHandler(host))`. The handler owns
-// `host` for the life of the session (a plain closure capture, not an
+// `commands.set("obelisk", obelisk.commandHandler(controlPlane, generate))`. The handler owns
+// `controlPlane` for the life of the session (a plain closure capture, not an
 // Rc<RefCell<_>> as in the Rust port, since JS closures already close over a
-// shared mutable reference).
-export function commandHandler(host) {
-    return (interp, args, stdin) => executeObelisk(interp, args.slice(1), stdin, host);
+// shared mutable reference). `generate` is `{ obeliskVersion, githubContents }`:
+// the obelisk repo ref and the statically imported `obelisk-agent:mounts/apps.request`
+// that `generate new` fetches the starter app with.
+export function commandHandler(controlPlane, generate) {
+    return (interp, args, stdin) => executeObelisk(interp, args.slice(1), stdin, controlPlane, generate);
 }
 
 // ---------------------------------------------------------------------------
@@ -66,23 +57,17 @@ export function commandHandler(host) {
 // fetched here; each owned source (component scripts/wasm and
 // `backtrace.sources`) is registered as a lazy VFS entry (fs.js's
 // `registerLazy`), fetched from the CAS on first read, so mounting costs two
-// host calls regardless of how many files the deployment owns.
+// tool calls regardless of how many files the deployment owns.
 //
 // Called once at session mount (`replace = false`, via `mount`) and again by
 // `obelisk deployment refresh` (`replace = true`, re-registering every file
 // so a locally-read/edited copy is dropped for the current digest; the
 // initial mount instead leaves an already-present file alone).
-export function refreshDeploymentMount(fs, host, replace) {
-    const current = callValue(host, "obelisk-agent:tools/webapi.current-deployment-id", "[]");
-    const deploymentId = decodeString(current);
+export function refreshDeploymentMount(fs, controlPlane, replace) {
+    const deploymentId = decodeString(controlPlane.currentDeploymentId());
     if (deploymentId === "") return { deploymentId: null, files: 0 };
 
-    const checkout = decodeJson(
-        callValue(host, "obelisk-agent:tools/webapi.deployment-checkout", JSON.stringify([deploymentId])),
-    );
-    const manifest = checkout && typeof checkout === "object" ? checkout.deployment_toml : undefined;
-    if (typeof manifest !== "string") throw "deployment checkout returned no deployment_toml";
-    const indexedFiles = checkoutFileRefs(checkout);
+    const { deployment_toml: manifest, files: indexedFiles } = controlPlane.deploymentCheckout(deploymentId);
 
     const dir = `${DEPLOYMENT_ROOT}/${deploymentId}`;
     fs.mkdirp(dir);
@@ -111,8 +96,8 @@ export function refreshDeploymentMount(fs, host, replace) {
 
 // Convenience entry point for session mount: `refreshDeploymentMount` with
 // `replace = false`.
-export function mount(fs, host) {
-    return refreshDeploymentMount(fs, host, false);
+export function mount(fs, controlPlane) {
+    return refreshDeploymentMount(fs, controlPlane, false);
 }
 
 // Register the deployment tree as a deferred mount instead of fetching it at
@@ -121,10 +106,10 @@ export function mount(fs, host) {
 // `/workspace/deployment`, so a bash-only session never touches the target.
 // A failed mount records the reason in `/workspace/.mount-error`, matching
 // the old eager path.
-export function registerDeferredMount(fs, host) {
+export function registerDeferredMount(fs, controlPlane) {
     fs.registerDeferredMount(DEPLOYMENT_ROOT, (vfs) => {
         try {
-            refreshDeploymentMount(vfs, host, false);
+            refreshDeploymentMount(vfs, controlPlane, false);
         } catch (error) {
             const message = typeof error === "string" ? error : String(error?.message ?? error);
             try {
@@ -137,26 +122,10 @@ export function registerDeferredMount(fs, host) {
 }
 
 // The `Vfs` blob loader for a mounted session: fetch a deployment file's
-// bytes by content digest via `deployment-read-blob`, decoding the same way
-// the old eager mount did (`callValue` peels `callJson`'s JSON layer,
-// `coerceText` takes the verbatim string body). Install with
-// `fs.setBlobLoader(obelisk.blobLoader(host))`.
-export function blobLoader(host) {
-    return (digest) => coerceText(callValue(host, READ_BLOB_FFQN, JSON.stringify([digest])));
-}
-
-function checkoutFileRefs(checkout) {
-    const files = checkout && typeof checkout === "object" ? checkout.files : undefined;
-    if (!Array.isArray(files)) throw "deployment checkout returned no files index";
-    return files.map((file) => {
-        const path = file?.path;
-        if (typeof path !== "string") throw "deployment checkout file has no path";
-        const digest = file?.digest;
-        if (typeof digest !== "string") throw `deployment checkout file ${path} has no digest`;
-        const size = file?.size;
-        if (typeof size !== "number" || !Number.isFinite(size)) throw `deployment checkout file ${path} has no size`;
-        return { path, digest, size };
-    });
+// bytes by content digest via `deployment-read-blob`. Install with
+// `fs.setBlobLoader(obelisk.blobLoader(controlPlane))`.
+export function blobLoader(controlPlane) {
+    return (digest) => controlPlane.deploymentReadBlob(digest);
 }
 
 // ---------------------------------------------------------------------------
@@ -164,17 +133,17 @@ function checkoutFileRefs(checkout) {
 // ---------------------------------------------------------------------------
 
 // Directly callable by tests, mirroring the Rust test module's
-// `execute_obelisk(&mut interp, &words(...), stdin, &mut host)` - `args`
-// here does NOT include the command name itself (see `commandHandler`).
-export function executeObelisk(interp, args, stdin, host) {
+// `execute_obelisk(&mut interp, &words(...), stdin, &mut generate, &mut host)` -
+// `args` here does NOT include the command name itself (see `commandHandler`).
+export function executeObelisk(interp, args, stdin, controlPlane, generate) {
     try {
-        return tryExecuteObelisk(interp, args, stdin, host);
+        return tryExecuteObelisk(interp, args, stdin, controlPlane, generate);
     } catch (message) {
         return fail(`obelisk: ${typeof message === "string" ? message : String(message?.message ?? message)}\n`);
     }
 }
 
-function tryExecuteObelisk(interp, args, stdin, host) {
+function tryExecuteObelisk(interp, args, stdin, controlPlane, generate) {
     const group = args[0] ?? "";
     const action = args[1] ?? "";
     const rest = args.length > 2 ? args.slice(2) : [];
@@ -191,46 +160,30 @@ function tryExecuteObelisk(interp, args, stdin, host) {
     if (helpRequested(helpScan)) return ok(actionHelp(group, action));
 
     if (group === "functions" && action === "list") {
-        const params = [option(rest, "--prefix", ""), integerOption(rest, "--length", 100)];
-        if (flag(rest, "--json")) return jsonCall(host, "obelisk-agent:tools/webapi.list-functions", params);
-        return listFunctions(host, params);
+        const functions = controlPlane.listFunctions(option(rest, "--prefix", ""), integerOption(rest, "--length", 100));
+        if (flag(rest, "--json")) return ok(ensureTrailingNewline(prettyJson(functions)));
+        return listFunctions(functions);
     }
     if (group === "functions" && action === "wit") {
-        return jsonCall(host, "obelisk-agent:tools/webapi.get-function-wit", [required(rest[0], "ffqn")]);
+        return textOutput(controlPlane.getFunctionWit(required(rest[0], "ffqn")));
     }
     if (group === "executions" && action === "list") {
-        return jsonCall(host, "obelisk-agent:tools/webapi.list-executions", [
+        return textOutput(controlPlane.listExecutions(
             option(rest, "--ffqn-prefix", ""),
             option(rest, "--id-prefix", ""),
             flag(rest, "--show-derived"),
             flag(rest, "--hide-finished"),
-            "",
-            "",
-            "",
-            "",
-            false,
             integerOption(rest, "--length", 20),
-        ]);
+        ));
     }
     if (group === "executions" && action === "get") {
-        return jsonCall(host, "obelisk-agent:tools/webapi.get-execution", [required(rest[0], "execution id")]);
+        return textOutput(controlPlane.getExecution(required(rest[0], "execution id")));
     }
     if (group === "executions" && action === "logs") {
-        return jsonCall(host, "obelisk-agent:tools/webapi.get-logs", [
-            required(rest[0], "execution id"),
-            true,
-            true,
-            true,
-            [],
-            [],
-            "",
-            "",
-            false,
-            integerOption(rest, "--length", 200),
-        ]);
+        return textOutput(controlPlane.getLogs(required(rest[0], "execution id"), integerOption(rest, "--length", 200)));
     }
     if (group === "executions" && action === "result") {
-        return jsonCall(host, "obelisk-agent:tools/webapi.get-result-json", [required(rest[0], "execution id")]);
+        return textOutput(controlPlane.getResultJson(required(rest[0], "execution id")));
     }
     if (group === "call") {
         const ffqn = required(action, "ffqn");
@@ -242,7 +195,7 @@ function tryExecuteObelisk(interp, args, stdin, host) {
                     return argument;
                 }
             });
-            return targetCall(host, [ffqn, JSON.stringify(params)]);
+            return targetCall(controlPlane, ffqn, JSON.stringify(params));
         }
         if (rest.length > 1) {
             throw "call: expected one params JSON array, or `--` followed by positional parameters";
@@ -258,40 +211,114 @@ function tryExecuteObelisk(interp, args, stdin, host) {
             throw "call: params-json argument is empty (a shell expansion likely produced nothing); pass a JSON array such as [] explicitly";
         }
         const paramsJson = rest[0] !== undefined && rest[0] !== "" ? rest[0] : stdin && stdin !== "" ? stdin : "[]";
-        return targetCall(host, [ffqn, paramsJson]);
+        return targetCall(controlPlane, ffqn, paramsJson);
     }
-    if (group === "generate") return executeGenerate(action);
-    if (group === "deployment") return executeDeployment(interp, action, rest, host);
+    if (group === "generate") return executeGenerate(interp, action, rest, generate);
+    if (group === "deployment") return executeDeployment(interp, action, rest, controlPlane);
     return fail(`obelisk: unknown command '${args.join(" ")}'\n${helpText}`);
 }
 
-// Print a starter config file. Purely local: unlike the other groups it
-// never touches the target server, it just echoes a template baked in at
-// build time.
-function executeGenerate(action) {
+// `generate deployment` echoes a template baked in at build time;
+// `generate new` fetches the starter app from GitHub at `generate.obeliskVersion`.
+function executeGenerate(interp, action, args, generate) {
     if (action === "deployment") return ok(ensureTrailingNewline(DEPLOYMENT_TEMPLATE));
+    if (action === "new") return generateNew(interp, firstPositional(args, []), generate);
     if (action === "") return fail(`obelisk generate: a subcommand is required\n${generateHelp}`);
     return fail(`obelisk generate: unknown action '${action}'\n`);
 }
 
-function executeDeployment(interp, action, args, host) {
+// PORT: real obelisk `generate new [NAME]`. The template files are read from
+// the `obelisk` repo at the operator-pinned `OBELISK_VERSION` ref, so they
+// never drift from the target server.
+function generateNew(interp, name, generate) {
+    const appName = name !== undefined ? name : slugifyAppName(basename(interp.cwd));
+    validateAppName(appName);
+    const outputDir = name !== undefined ? interp.resolvePath(appName) : interp.cwd;
+    if (name !== undefined && interp.vfs.exists(outputDir)) {
+        throw `cannot create new app directory ${outputDir}: File exists`;
+    }
+
+    const gitRef = generate.obeliskVersion;
+    const repo = { owner: TEMPLATE_OWNER, repo: TEMPLATE_REPO, ref: gitRef };
+    const files = [];
+    try {
+        collectTemplateFiles(generate.githubContents, repo, "", files);
+    } catch (error) {
+        throw `cannot fetch the starter template from ${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${gitRef}:${TEMPLATE_PATH}: ${error}`;
+    }
+    if (files.length === 0) {
+        throw `${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${gitRef}:${TEMPLATE_PATH} contains no files`;
+    }
+    for (const [relative] of files) {
+        const path = `${outputDir}/${relative}`;
+        if (interp.vfs.exists(path)) throw `cannot generate app: ${path} already exists`;
+    }
+
+    let stdout = "";
+    for (const [relative, contents] of files) {
+        const path = `${outputDir}/${relative}`;
+        interp.vfs.writeFile(path, relative === "app.toml" ? contents.replaceAll("__APP_NAME__", appName) : contents);
+        stdout += `Generated ${JSON.stringify(path)}\n`;
+    }
+    return ok(stdout);
+}
+
+// Depth-first listing of the template tree; `relative` is the path under
+// TEMPLATE_PATH, collected as `[relative file path, contents]`.
+function collectTemplateFiles(githubContents, repo, relative, files) {
+    const remote = relative === "" ? TEMPLATE_PATH : `${TEMPLATE_PATH}/${relative}`;
+    const entries = decodeJson(githubContents("list", JSON.stringify({ ...repo, path: remote })));
+    if (!Array.isArray(entries)) throw "list did not return a JSON array";
+    for (const entry of entries) {
+        if (typeof entry?.name !== "string") throw `list entry without a name: ${JSON.stringify(entry)}`;
+        const child = relative === "" ? entry.name : `${relative}/${entry.name}`;
+        if (entry.type === "dir") {
+            collectTemplateFiles(githubContents, repo, child, files);
+        } else {
+            files.push([child, githubContents("read", JSON.stringify({ ...repo, path: `${TEMPLATE_PATH}/${child}` }))]);
+        }
+    }
+}
+
+// PORT: obelisk's `slugify_app_name`.
+function slugifyAppName(name) {
+    let slug = "";
+    for (const character of name) {
+        if (slug.length === 63) break;
+        if (/^[A-Za-z0-9]$/.test(character)) {
+            slug += character.toLowerCase();
+        } else if (slug !== "" && !slug.endsWith("-")) {
+            slug += "-";
+        }
+    }
+    return slug.replace(/-+$/, "");
+}
+
+// PORT: obelisk's `validate_app_name`.
+function validateAppName(name) {
+    if (!/^[a-z0-9-]{1,63}$/.test(name) || name.startsWith("-") || name.endsWith("-")) {
+        throw `invalid app name \`${name}\`: expected a DNS label (1-63 lowercase ASCII letters, digits, or interior hyphens)`;
+    }
+}
+
+function executeDeployment(interp, action, args, controlPlane) {
     if (action === "active") {
         // Print the active deployment id, or its JSON-quoted form with --json,
         // matching real obelisk `deployment active`.
-        const id = decodeString(callValue(host, "obelisk-agent:tools/webapi.current-deployment-id", "[]"));
+        const id = decodeString(controlPlane.currentDeploymentId());
         return ok(flag(args, "--json") ? `${JSON.stringify(id)}\n` : `${id}\n`);
     }
     if (action === "list") {
-        return deploymentList(host);
+        return deploymentList(controlPlane);
     }
     if (action === "show") {
-        return deploymentShow(host, args);
+        return deploymentShow(controlPlane, args);
     }
     if (action === "refresh") {
         // An explicit refresh populates the tree now, so drop the deferred
         // mount to keep a later deployment access from re-fetching it.
         interp.vfs.clearDeferredMount(DEPLOYMENT_ROOT);
-        const refreshed = refreshDeploymentMount(interp.vfs, host, true);
+        const refreshed = refreshDeploymentMount(interp.vfs, controlPlane, true);
         return ok(`${mountResultJson(refreshed)}\n`);
     }
     if (action === "check") {
@@ -320,15 +347,12 @@ function executeDeployment(interp, action, args, host) {
         const deploymentId = deploymentIdFromDir(dir);
         const description = option(args, "--description", "Submitted from workflow-agent VFS");
         const allowMissing = flagRuntimeConfig(args);
-        return submitDeployment(interp.vfs, host, dir, expanded, description, allowMissing, deploymentId);
+        return submitDeployment(interp.vfs, controlPlane, dir, expanded, description, allowMissing, deploymentId);
     }
     if (action === "enqueue") {
         // Stage the deployment for the next server restart (never hot-swaps),
         // mirroring real obelisk `deployment enqueue`'s wording exactly.
-        const outcome = switchOutcome(callValue(host, "obelisk-agent:tools/webapi.deployment-switch", JSON.stringify([
-            required(args[0], "deployment id"),
-            flagRuntimeConfig(args),
-        ])));
+        const outcome = switchOutcome(controlPlane.deploymentSwitch(required(args[0], "deployment id"), flagRuntimeConfig(args)));
         if (outcome === "switched") return ok("Deployment already active; it will remain active after restart.\n");
         if (outcome === "restart_required") return ok("Deployment enqueued. Restart the server to apply.\n");
         throw `unexpected outcome from server: ${outcome}`;
@@ -337,9 +361,7 @@ function executeDeployment(interp, action, args, host) {
         // Hot-redeploy now; a server that can only stage the switch reports
         // restart_required, which real obelisk `deployment apply` treats as a
         // failure rather than a silent enqueue.
-        const outcome = switchOutcome(callValue(host, "obelisk-agent:tools/webapi.apply-deployment", JSON.stringify([
-            required(args[0], "deployment id"),
-        ])));
+        const outcome = switchOutcome(controlPlane.applyDeployment(required(args[0], "deployment id")));
         if (outcome === "switched") return ok("Applied successfully.\n");
         if (outcome === "restart_required") throw "Could not apply immediately; deployment enqueued. Restart the server to apply.";
         throw `unexpected outcome from server: ${outcome}`;
@@ -364,9 +386,8 @@ function switchOutcome(value) {
 // PORT: real obelisk `deployment list` - a fixed-width table (newest first),
 // or "No deployments found.". The list-deployments tool returns the web API's
 // DeploymentStateSer array verbatim.
-function deploymentList(host) {
-    const value = callValue(host, "obelisk-agent:tools/webapi.list-deployments", JSON.stringify(["", false, 20]));
-    const deployments = decodeJson(value);
+function deploymentList(controlPlane) {
+    const deployments = decodeJson(controlPlane.listDeployments(20));
     if (!Array.isArray(deployments)) throw "deployment list returned a non-array response";
     if (deployments.length === 0) return ok("No deployments found.\n");
     const lines = [padColumn("ID", 32) + "  " + padColumn("STATUS", 12) + "  " + padColumn("CREATED_AT", 19) + "  " + padColumn("LAST_ACTIVE_AT", 19) + "  DESCRIPTION"];
@@ -384,9 +405,9 @@ function deploymentList(host) {
 // PORT: real obelisk `deployment show ID` - print the stored TOML manifest.
 // The real CLI's FILE and --json variants need a source-blob fetch and a
 // TOML parser (unavailable here), so only the default manifest form is shown.
-function deploymentShow(host, args) {
+function deploymentShow(controlPlane, args) {
     const id = required(firstPositional(args, []), "deployment id");
-    const record = decodeJson(callValue(host, "obelisk-agent:tools/webapi.get-deployment", JSON.stringify([id, null, null, null, null])));
+    const record = decodeJson(controlPlane.getDeployment(id));
     const toml = typeof record?.deployment_toml === "string" ? record.deployment_toml : "";
     return ok(ensureTrailingNewline(toml));
 }
@@ -412,34 +433,29 @@ function formatDeploymentTimestamp(value) {
 
 // The workflow half of the submit contract: drive the dumb
 // `deployment-submit` activity's preflight/attach loop. The first call
-// carries no blobs (a JSON preflight); each `permanent-missing-files` error
-// names the blobs the CAS lacks, which we read straight from the VFS and
+// carries no blobs (a JSON preflight); each `{ missingFiles }` error names
+// the blobs the CAS lacks, which we read straight from the VFS and
 // resubmit as a multipart package, until the server accepts it. A run that
 // keeps reporting the same files after they were attached is a digest
 // mismatch we cannot fix by resending, so it errors instead of looping.
-function submitDeployment(fs, host, dir, manifest, description, allowMissing, deploymentId) {
+function submitDeployment(fs, controlPlane, dir, manifest, description, allowMissing, deploymentId) {
     let attachments = [];
     let previous = null;
     for (;;) {
-        const params = [manifest, attachments, description, allowMissing, deploymentId];
         let missing;
         try {
-            const value = callValue(host, SUBMIT_FFQN, JSON.stringify(params));
-            return ok(`${prettyJson({ deployment_id: decodeString(value) })}\n`);
-        } catch (message) {
-            const parsed = parseMissingFiles(message);
-            if (parsed === null) throw message;
-            missing = parsed;
+            const id = controlPlane.deploymentSubmit(manifest, attachments, description, allowMissing, deploymentId);
+            return ok(`${prettyJson({ deployment_id: decodeString(id) })}\n`);
+        } catch (error) {
+            if (!Array.isArray(error?.missingFiles)) throw error;
+            missing = error.missingFiles;
         }
-        const paths = missing.map((m) => m?.path).filter((p) => typeof p === "string");
+        const paths = missing.map((m) => m.path);
         if (previous !== null && arraysEqual(previous, paths)) {
             throw `server still missing ${paths.length} file(s) after they were attached (digest mismatch?): ${paths.join(", ")}`;
         }
         const next = [];
-        for (const issue of missing) {
-            const path = issue?.path;
-            if (typeof path !== "string") throw "server reported a missing file with no path";
-            const digest = typeof issue?.digest === "string" ? issue.digest : "";
+        for (const { path, digest } of missing) {
             let content;
             try {
                 content = fs.readFile(`${dir}/${path}`);
@@ -451,25 +467,6 @@ function submitDeployment(fs, host, dir, manifest, description, allowMissing, de
         attachments = next;
         previous = paths;
     }
-}
-
-// Recover the `permanent-missing-files` error arm from the stringified
-// submit error. The host seam collapses an activity's error to text: this
-// arm arrives as verbatim JSON (`{"permanent_missing_files":[{path,digest},...]}`),
-// while a terminal permanent/transient error arrives as its plain message.
-// Returns the entries only for the former (accepting either key spelling),
-// else `null`.
-function parseMissingFiles(message) {
-    if (typeof message !== "string") return null;
-    let value;
-    try {
-        value = JSON.parse(message);
-    } catch {
-        return null;
-    }
-    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-    const entries = value.permanent_missing_files ?? value["permanent-missing-files"];
-    return Array.isArray(entries) ? entries : null;
 }
 
 function arraysEqual(a, b) {
@@ -569,40 +566,22 @@ function readManifest(fs, dir, file) {
     return fs.readFile(path);
 }
 
-function jsonCall(host, ffqn, params) {
-    const value = callValue(host, ffqn, JSON.stringify(params));
-    return ok(ensureTrailingNewline(renderOutput(value)));
+// A `string`-returning tool's result, rendered for the shell.
+function textOutput(text) {
+    return ok(ensureTrailingNewline(renderOutput(text)));
 }
 
-function targetCall(host, params) {
-    const value = callValue(host, "obelisk-control:tools/native.call", JSON.stringify(params));
-    return ok(ensureTrailingNewline(renderOutput(decodeJson(value))));
+function targetCall(controlPlane, ffqn, paramsJson) {
+    return ok(ensureTrailingNewline(renderOutput(decodeJson(controlPlane.nativeCall(ffqn, paramsJson)))));
 }
 
-function listFunctions(host, params) {
-    const value = callValue(host, "obelisk-agent:tools/webapi.list-functions", JSON.stringify(params));
-    const functions = decodeJson(value);
-    if (!Array.isArray(functions)) throw "functions list returned a non-array response";
-    const lines = [];
-    for (const fn of functions) {
-        if (fn?.extension !== undefined && fn?.extension !== null) continue;
-        const ffqn = fn?.ffqn;
-        if (typeof ffqn !== "string") throw "function metadata has no ffqn";
-        const parameterTypes = fn?.parameter_types;
-        if (!Array.isArray(parameterTypes)) throw `function metadata for ${ffqn} has no parameter_types`;
-        const parameters = parameterTypes
-            .map((parameter) => {
-                const name = parameter?.name;
-                if (typeof name !== "string") throw `function parameter for ${ffqn} has no name`;
-                const witType = parameter?.wit_type;
-                if (typeof witType !== "string") throw `function parameter ${name} for ${ffqn} has no wit_type`;
-                return `${name}: ${witType}`;
-            })
-            .join(", ");
-        const returnType = fn?.return_type;
-        if (typeof returnType !== "string") throw `function metadata for ${ffqn} has no return_type`;
-        lines.push(`${ffqn} : func(${parameters}) -> ${returnType}`);
-    }
+function listFunctions(functions) {
+    const lines = functions
+        .filter((fn) => fn.extension === undefined || fn.extension === null)
+        .map((fn) => {
+            const parameters = fn.parameter_types.map(({ name, wit_type }) => `${name}: ${wit_type}`).join(", ");
+            return `${fn.ffqn} : func(${parameters}) -> ${fn.return_type}`;
+        });
     return ok(lines.length ? `${lines.join("\n")}\n` : "");
 }
 
@@ -629,26 +608,6 @@ function prettyJson(value) {
     return JSON.stringify(value, null, 2);
 }
 
-// PORT: the JS `obelisk.call` builtin. `host.callJson` returns raw JSON text
-// (one layer higher than the already-deserialized value every caller
-// wants), so every pack consumer peels that single layer here before
-// decoding. A missing body (`null`) becomes JS `null`; text that is not
-// valid JSON (a non-JSON blob body) is kept as-is (a JS string).
-function callValue(host, ffqn, paramsJson) {
-    let text;
-    try {
-        text = host.callJson(ffqn, paramsJson);
-    } catch (error) {
-        throw typeof error === "string" ? error : String(error?.message ?? error);
-    }
-    if (text === null || text === undefined) return null;
-    try {
-        return JSON.parse(text);
-    } catch {
-        return text;
-    }
-}
-
 function ensureTrailingNewline(text) {
     return text.endsWith("\n") ? text : `${text}\n`;
 }
@@ -657,47 +616,30 @@ function mountResultJson(result) {
     return prettyJson({ deployment_id: result.deploymentId, files: result.files });
 }
 
-// PORT: `decodeString`. `value` is the already-peeled `callValue` result. A
-// string that itself parses as a JSON string yields the inner contents (the
-// `current-deployment-id` case, whose body is `resp.text()` of a JSON
-// string, so it arrives double-quoted); a string that parses as an object
-// falls back to its `deployment_id` field; anything else is the trimmed
-// string. A non-string value coerces to text.
-function decodeString(value) {
-    if (typeof value !== "string") return coerceText(value);
+// PORT: `decodeString`. A string that itself parses as a JSON string yields
+// the inner contents (the `current-deployment-id` case, whose body is
+// `resp.text()` of a JSON string, so it arrives double-quoted); a string that
+// parses as an object falls back to its `deployment_id` field; anything else
+// is the trimmed string.
+function decodeString(text) {
     try {
-        const inner = JSON.parse(value);
+        const inner = JSON.parse(text);
         if (typeof inner === "string") return inner;
         if (inner !== null && typeof inner === "object" && !Array.isArray(inner)) {
             return typeof inner.deployment_id === "string" ? inner.deployment_id : "";
         }
         return "";
     } catch {
-        return value.trim();
+        return text.trim();
     }
 }
 
-// PORT: `decodeJson`. An object/array passes through; a string is parsed
-// once. backcompat: 0.1.0 deployment-checkout returned its record as a JSON
-// string.
-function decodeJson(value) {
-    if (value !== null && typeof value === "object") return value;
-    if (typeof value === "string") {
-        try {
-            return JSON.parse(value);
-        } catch (error) {
-            throw `invalid JSON: ${error.message}`;
-        }
+function decodeJson(text) {
+    try {
+        return JSON.parse(text);
+    } catch (error) {
+        throw `invalid JSON: ${error.message}`;
     }
-    return value;
-}
-
-// PORT: JS `String(content)` for blob bodies: the peeled string verbatim (no
-// re-parse, no trim, unlike `decodeString`), or a coercion of a non-string.
-function coerceText(value) {
-    if (typeof value === "string") return value;
-    if (value === null || value === undefined) return "";
-    return JSON.stringify(value);
 }
 
 function required(value, label) {
@@ -775,6 +717,7 @@ function actionHelp(group, action) {
     if (group === "deployment" && action === "enqueue") return deploymentEnqueueHelp;
     if (group === "deployment" && action === "apply") return deploymentApplyHelp;
     if (group === "generate" && action === "deployment") return generateDeploymentHelp;
+    if (group === "generate" && action === "new") return generateNewHelp;
     return groupHelp(group);
 }
 
@@ -784,7 +727,7 @@ function actionHelp(group, action) {
 // subcommand names in the .rs source actually compile to unindented lines.
 // These JS literals must match that stripped (unindented) output exactly.
 const helpText =
-    "Usage: obelisk <command> [args]\n\nQuery and control the running Obelisk server, and edit the deployment checked\nout under /workspace/deployment/current.\n\nCommands:\nfunctions    List deployed functions, or print a function's WIT.\nexecutions   List executions, or show one execution's record, logs, or result.\ncall         Call a deployed function and print its result.\ndeployment   Inspect, edit, submit, and activate deployments.\ngenerate     Print a starter configuration file.\n\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
+    "Usage: obelisk <command> [args]\n\nQuery and control the running Obelisk server, and edit the deployment checked\nout under /workspace/deployment/current.\n\nCommands:\nfunctions    List deployed functions, or print a function's WIT.\nexecutions   List executions, or show one execution's record, logs, or result.\ncall         Call a deployed function and print its result.\ndeployment   Inspect, edit, submit, and activate deployments.\ngenerate     Print a starter configuration file, or create a new app.\n\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
 
 const functionsHelp =
     "Usage: obelisk functions <subcommand>\n\nList deployed functions, or print a single function's WIT interface.\n\nSubcommands:\nlist [--prefix PREFIX] [--length N] [--json]   List functions and their signatures.\nwit FFQN                                        Print the WIT interface for one function.\n";
@@ -811,7 +754,10 @@ const deploymentApplyHelp =
     "Usage: obelisk deployment apply ID\n\nHot-redeploy a stored deployment now (fails if it cannot be applied live).\n";
 
 const generateHelp =
-    "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\n";
+    "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file, or create a new app.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\nnew [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n";
+
+const generateNewHelp =
+    "Usage: obelisk generate new [NAME]\n\nCreate a runnable JS starter app (app.toml, deployment.toml, a webhook, a\nworkflow, and an HTTP activity). With NAME, the app is created in a new NAME\ndirectory; otherwise in the current directory, named after its slug. The files\nare fetched from the obelisk repository at the operator's OBELISK_VERSION.\n";
 
 const generateDeploymentHelp =
     "Usage: obelisk generate deployment\n\nPrint a default deployment.toml with every option documented as comments.\nRedirect it to a file to scaffold a new deployment, e.g.\n`obelisk generate deployment > deployment.toml`.\n";

@@ -3,6 +3,7 @@
 // These stay durable native calls (`webapi`, workflow schedule), unlike the
 // read-only polling GETs.
 
+import { runCancellableSchedule } from "obelisk-agent:workflow-obelisk-schedule/workflow";
 import { jsonError, jsonResponse } from "./http.js";
 import {
     cancelObeliskExecution,
@@ -12,24 +13,13 @@ import {
     unpauseObeliskExecution,
 } from "./obelisk-api.js";
 
-// Both the Rust and JS workflow backends export this same FFQN (see
+// Both the Rust and JS workflow backends export
+// obelisk-agent:workflow/workflow.run-cancellable (see
 // docs/js-backend-migration.md); which implementation actually runs it is a
 // deployment choice (deployment.rs.toml vs deployment.js.toml), not something
 // this file picks per request.
-const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
-
-let runtime;
-let dynamicRuntime;
-
-export function configureRuntime(obelisk, dynamic) {
-    runtime = obelisk;
-    dynamicRuntime = dynamic;
-}
-
 function scheduleSession(prompt, backend, effort) {
-    const execId = runtime.executionIdGenerate();
-    dynamicRuntime.schedule(execId, WORKFLOW_FFQN, [prompt, backend, null, effort, null], null);
-    return execId;
+    return runCancellableSchedule(null, prompt, backend, null, effort, null);
 }
 
 export async function submit(request) {

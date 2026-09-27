@@ -34,6 +34,8 @@ interface config {
     mcp-servers: list<mcp-server>,
     apps: list<app>,
     webhook-url: string,
+    // The obelisk repo ref (`vX.Y.Z` or `latest`) that `obelisk generate new` fetches the starter from.
+    obelisk-version: string,
     // The whole tail of the system prompt after "# Example apps": user-input
     // guidance, subagent delegation, deployment authoring, and the
     // per-session "# This session" text - single-sourced here (given

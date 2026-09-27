@@ -1,20 +1,17 @@
 //! PORT: packs/obelisk-control/workflow-pack.js
 //!
 //! The obelisk-control pack: one custom command, `obelisk`, whose subcommands
-//! (`functions`, `executions`, `call`, `deployment`) all bottom out in a
-//! single primitive - calling a deployed Obelisk FFQN and getting back its
-//! JSON result - via the `ObeliskHost` seam below. Everything under
-//! `packs/obelisk-control/tools/*.js` and `packs/obelisk-control/github/*.js`
-//! stays a separately-deployed JS activity/workflow reached *through* one of
-//! these FFQN calls (e.g. `obelisk-agent:tools/webapi.list-functions`); this
-//! module only ports the shell-command dispatcher that runs inside the
-//! session's own bash, not those targets, so it never needs to know how they
-//! are implemented.
+//! (`functions`, `executions`, `call`, `deployment`, `generate`) call the
+//! control-plane tools through the `ControlPlane` seam below, which the
+//! embedding workflow implements with the tools' WIT bindings. The tools
+//! themselves (`packs/obelisk-control/tools/*.js`) are separately-deployed
+//! activities; this module only ports the shell-command dispatcher.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 
+use serde::Serialize;
 use serde_json::{Value, json};
 use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike};
 
@@ -24,11 +21,13 @@ use crate::commands::sha256_hex;
 use crate::custom_command::CustomCommandHandler;
 use crate::fs::{BlobLoader, FsError, LazyFileRef, LazyOrigin, Sha256Digest, Vfs};
 use crate::interpreter::{CommandOutput, Interpreter};
-
-const READ_BLOB_FFQN: &str = "obelisk-agent:tools/webapi.deployment-read-blob";
-const SUBMIT_FFQN: &str = "obelisk-agent:tools/webapi.deployment-submit";
+use crate::obelisk_web::GithubContents;
 
 const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
+
+const TEMPLATE_OWNER: &str = "obeli-sk";
+const TEMPLATE_REPO: &str = "obelisk";
+const TEMPLATE_PATH: &str = "examples/templates/js-http";
 
 /// The placeholder value the agent sees in `component_files` maps in place of a
 /// pinned digest; `deployment submit` replaces each with the file's real digest.
@@ -40,23 +39,122 @@ const AUTO_DIGEST: &str = "auto";
 const DEPLOYMENT_TEMPLATE: &str =
     include_str!(concat!(env!("OUT_DIR"), "/deployment-template.toml"));
 
-/// The one primitive the whole pack needs: dynamically invoke a deployed FFQN
-/// and get back its JSON result. Mirrors Obelisk's real
-/// `workflow-support.call-json: func(function, params, ...) -> result<
-/// result<option<string>, option<string>>, schedule-json-error>` host import,
-/// flattened to `Ok(Some(json_text))` (success with a body) / `Ok(None)`
-/// (success, no body) / `Err(message)` (host or execution failure).
-///
-/// This is the seam phase 5's real `workflow/workflow-rs` component
-/// implements against the actual wit-bindgen binding once it exists; this
-/// crate defines only the trait and a test fake (`tests::FakeHost` below),
-/// never a real host import. `call_json`'s `Ok(Some(text))` is always raw
-/// JSON text (quoted for a string-typed result), never a pre-decoded native
-/// value - callers that need the underlying string or object use
-/// `decode_string`/`decode_json` below, same as upstream's own
-/// `decodeString`/`decodeJson` helpers.
+/// Dynamically invoke a deployed FFQN chosen at runtime (registry programs, MCP
+/// servers) and get back its JSON result: `Ok(Some(json_text))` (success with a
+/// body), `Ok(None)` (success, no body) or `Err(message)`. Mirrors Obelisk's
+/// `workflow-dynamic-support.call-json` host import. Functions known at build
+/// time go through `ControlPlane` instead.
 pub trait ObeliskHost {
     fn call_json(&mut self, ffqn: &str, params_json: &str) -> Result<Option<String>, String>;
+}
+
+/// The control-plane functions the pack calls: `obelisk-agent:tools/webapi`
+/// plus `obelisk-control:tools/native.call`, bound statically by the embedding
+/// workflow. Arguments the pack always leaves at their defaults (cursors,
+/// directions, log filters) are filled in by the binding.
+pub trait ControlPlane {
+    fn list_functions(
+        &mut self,
+        ffqn_prefix: &str,
+        length: u32,
+    ) -> Result<Vec<FunctionInfo>, String>;
+    fn get_function_wit(&mut self, ffqn: &str) -> Result<String, String>;
+    fn list_executions(
+        &mut self,
+        ffqn_prefix: &str,
+        execution_id_prefix: &str,
+        show_derived: bool,
+        hide_finished: bool,
+        length: u32,
+    ) -> Result<String, String>;
+    fn get_execution(&mut self, execution_id: &str) -> Result<String, String>;
+    fn get_logs(&mut self, execution_id: &str, length: u32) -> Result<String, String>;
+    fn get_result_json(&mut self, execution_id: &str) -> Result<String, String>;
+    fn list_deployments(&mut self, length: u32) -> Result<String, String>;
+    fn get_deployment(&mut self, deployment_id: &str) -> Result<String, String>;
+    fn current_deployment_id(&mut self) -> Result<String, String>;
+    fn deployment_checkout(&mut self, deployment_id: &str) -> Result<CheckoutResult, String>;
+    fn deployment_read_blob(&mut self, digest: &str) -> Result<String, String>;
+    fn deployment_submit(
+        &mut self,
+        deployment_toml: &str,
+        attachments: &[AttachedFile],
+        description: &str,
+        allow_missing_runtime_config: bool,
+        deployment_id: &str,
+    ) -> Result<String, SubmitError>;
+    fn deployment_switch(
+        &mut self,
+        deployment_id: &str,
+        allow_missing_runtime_config: bool,
+    ) -> Result<String, String>;
+    fn apply_deployment(&mut self, deployment_id: &str) -> Result<String, String>;
+    /// Call the target's `ffqn` with a JSON params array; the ok value is its result's JSON text.
+    fn native_call(&mut self, ffqn: &str, params_json: &str) -> Result<String, String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+pub struct FunctionInfo {
+    pub ffqn: String,
+    pub parameter_types: Vec<ParameterType>,
+    pub return_type: String,
+    pub extension: Option<ExtensionKind>,
+    pub wit: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+pub struct ParameterType {
+    pub name: String,
+    pub wit_type: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionKind {
+    Submit,
+    AwaitNext,
+    Schedule,
+    Stub,
+    Get,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+pub struct CheckoutResult {
+    pub deployment_toml: String,
+    pub files: Vec<CheckoutFile>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+pub struct CheckoutFile {
+    pub path: String,
+    pub digest: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AttachedFile {
+    pub path: String,
+    pub digest: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+pub struct MissingFile {
+    pub path: String,
+    pub digest: String,
+}
+
+/// `deployment-submit`'s error: the recoverable missing-files arm, or any other failure.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SubmitError {
+    MissingFiles(Vec<MissingFile>),
+    Failed(String),
 }
 
 /// Result of mounting (or refreshing) the active deployment into the VFS.
@@ -67,12 +165,22 @@ pub struct MountResult {
 }
 
 /// Build the `obelisk` custom-command handler. Register it with
-/// `bash.register_command("obelisk", obelisk_pack::command_handler(host))`.
+/// `bash.register_command("obelisk", obelisk_pack::command_handler(host, generate))`.
 /// The handler owns `host` for the life of the session (an `FnMut` closure,
 /// not `Rc<RefCell<_>>`, since only the command itself ever touches it).
-pub fn command_handler(host: Box<dyn ObeliskHost>) -> CustomCommandHandler {
+pub fn command_handler(host: Box<dyn ControlPlane>, generate: Generate) -> CustomCommandHandler {
     let mut host = host;
-    Box::new(move |interp, args, stdin| execute_obelisk(interp, args, &stdin, host.as_mut()))
+    let mut generate = generate;
+    Box::new(move |interp, args, stdin| {
+        execute_obelisk(interp, args, &stdin, &mut generate, host.as_mut())
+    })
+}
+
+/// What `generate new` fetches the starter app with: the obelisk repo ref and
+/// the GitHub contents transport.
+pub struct Generate {
+    pub obelisk_version: String,
+    pub github: GithubContents,
 }
 
 /// Check out the active deployment's `deployment.toml` plus the metadata index
@@ -90,15 +198,10 @@ pub fn command_handler(host: Box<dyn ObeliskHost>) -> CustomCommandHandler {
 /// mount instead leaves an already-present file alone).
 pub fn refresh_deployment_mount(
     fs: &mut Vfs,
-    host: &mut dyn ObeliskHost,
+    host: &mut dyn ControlPlane,
     replace: bool,
 ) -> Result<MountResult, String> {
-    let current = call_value(
-        host,
-        "obelisk-agent:tools/webapi.current-deployment-id",
-        "[]",
-    )?;
-    let deployment_id = decode_string(&current);
+    let deployment_id = decode_string(&host.current_deployment_id()?);
     if deployment_id.is_empty() {
         return Ok(MountResult {
             deployment_id: None,
@@ -106,18 +209,10 @@ pub fn refresh_deployment_mount(
         });
     }
 
-    let checkout = call_value(
-        host,
-        "obelisk-agent:tools/webapi.deployment-checkout",
-        &json!([deployment_id]).to_string(),
-    )?;
-    let checkout = decode_json(&checkout)?;
-    let manifest = checkout
-        .get("deployment_toml")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "deployment checkout returned no deployment_toml".to_string())?
-        .to_string();
-    let indexed_files = checkout_file_refs(&checkout)?;
+    let CheckoutResult {
+        deployment_toml: manifest,
+        files: indexed_files,
+    } = host.deployment_checkout(&deployment_id)?;
 
     let dir = format!("{DEPLOYMENT_ROOT}/{deployment_id}");
     fs.mkdir(&dir, true).map_err(fs_error_message)?;
@@ -154,7 +249,7 @@ pub fn refresh_deployment_mount(
 
 /// Convenience entry point for session mount: `refresh_deployment_mount` with
 /// `replace = false`.
-pub fn mount(fs: &mut Vfs, host: &mut dyn ObeliskHost) -> Result<MountResult, String> {
+pub fn mount(fs: &mut Vfs, host: &mut dyn ControlPlane) -> Result<MountResult, String> {
     refresh_deployment_mount(fs, host, false)
 }
 
@@ -164,7 +259,7 @@ pub fn mount(fs: &mut Vfs, host: &mut dyn ObeliskHost) -> Result<MountResult, St
 /// `/workspace/deployment`, so a bash-only session never touches the target.
 /// A failed mount records the reason in `/workspace/.mount-error`, matching the
 /// old eager path (there is no `console.log` to report it to; see `session.rs`).
-pub fn register_deferred_mount(fs: &mut Vfs, host: Box<dyn ObeliskHost>) {
+pub fn register_deferred_mount(fs: &mut Vfs, host: Box<dyn ControlPlane>) {
     let host = RefCell::new(host);
     let populate = Rc::new(move |fs: &mut Vfs| {
         let mut host = host.borrow_mut();
@@ -176,77 +271,40 @@ pub fn register_deferred_mount(fs: &mut Vfs, host: Box<dyn ObeliskHost>) {
 }
 
 /// The `Vfs` blob loader for a mounted session: fetch a deployment file's bytes
-/// by content digest via `deployment-read-blob`, decoding the same way the old
-/// eager mount did (`call_value` peels `call_json`'s JSON layer, `coerce_text`
-/// takes the verbatim string body). Install with `fs.set_blob_loader(...)`; it
+/// by content digest via `deployment-read-blob`. Install with `fs.set_blob_loader(...)`; it
 /// owns a host of its own (the shell's `obelisk` command owns a separate one)
 /// with interior mutability, since `BlobLoader::load` is a `&self` call reached
 /// from a plain file read.
 struct HostBlobLoader {
-    host: RefCell<Box<dyn ObeliskHost>>,
+    host: RefCell<Box<dyn ControlPlane>>,
 }
 
 impl BlobLoader for HostBlobLoader {
     fn load(&self, digest: &str) -> Result<Vec<u8>, String> {
-        let value = call_value(
-            &mut **self.host.borrow_mut(),
-            READ_BLOB_FFQN,
-            &json!([digest]).to_string(),
-        )?;
-        Ok(coerce_text(&value).into_bytes())
+        Ok(self
+            .host
+            .borrow_mut()
+            .deployment_read_blob(digest)?
+            .into_bytes())
     }
 }
 
 /// Build the session's lazy blob loader from an owned host (see
 /// `HostBlobLoader`).
-pub fn blob_loader(host: Box<dyn ObeliskHost>) -> Rc<dyn BlobLoader> {
+pub fn blob_loader(host: Box<dyn ControlPlane>) -> Rc<dyn BlobLoader> {
     Rc::new(HostBlobLoader {
         host: RefCell::new(host),
     })
-}
-
-struct IndexedFileRef {
-    path: String,
-    digest: String,
-    size: u64,
-}
-
-fn checkout_file_refs(checkout: &Value) -> Result<Vec<IndexedFileRef>, String> {
-    let files = checkout
-        .get("files")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "deployment checkout returned no files index".to_string())?;
-    files
-        .iter()
-        .map(|file| {
-            let path = file
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "deployment checkout file has no path".to_string())?;
-            let digest = file
-                .get("digest")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("deployment checkout file {path} has no digest"))?;
-            let size = file
-                .get("size")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| format!("deployment checkout file {path} has no size"))?;
-            Ok(IndexedFileRef {
-                path: path.to_string(),
-                digest: digest.to_string(),
-                size,
-            })
-        })
-        .collect()
 }
 
 fn execute_obelisk(
     interp: &mut Interpreter,
     args: &[String],
     stdin: &str,
-    host: &mut dyn ObeliskHost,
+    generate: &mut Generate,
+    host: &mut dyn ControlPlane,
 ) -> CommandOutput {
-    match try_execute_obelisk(interp, args, stdin, host) {
+    match try_execute_obelisk(interp, args, stdin, generate, host) {
         Ok(result) => result,
         Err(message) => fail(format!("obelisk: {message}\n")),
     }
@@ -256,7 +314,8 @@ fn try_execute_obelisk(
     interp: &mut Interpreter,
     args: &[String],
     stdin: &str,
-    host: &mut dyn ObeliskHost,
+    generate: &mut Generate,
+    host: &mut dyn ControlPlane,
 ) -> Result<CommandOutput, String> {
     let group = args.first().map(String::as_str).unwrap_or("");
     let action = args.get(1).map(String::as_str).unwrap_or("");
@@ -282,71 +341,42 @@ fn try_execute_obelisk(
     }
 
     if group == "functions" && action == "list" {
-        let params = json!([
+        let functions = host.list_functions(
             option(rest, "--prefix", ""),
-            integer_option(rest, "--length", 100)
-        ]);
+            length_option(rest, "--length", 100),
+        )?;
         if flag(rest, "--json") {
-            return json_call(host, "obelisk-agent:tools/webapi.list-functions", params);
+            let value = serde_json::to_value(&functions).map_err(|e| e.to_string())?;
+            return Ok(ok(ensure_trailing_newline(pretty_json(&value))));
         }
-        return list_functions(host, params);
+        return Ok(list_functions(&functions));
     }
     if group == "functions" && action == "wit" {
-        return json_call(
-            host,
-            "obelisk-agent:tools/webapi.get-function-wit",
-            json!([required(rest.first().map(String::as_str), "ffqn")?]),
-        );
+        let ffqn = required(rest.first().map(String::as_str), "ffqn")?;
+        return Ok(text_output(host.get_function_wit(ffqn)?));
     }
     if group == "executions" && action == "list" {
-        return json_call(
-            host,
-            "obelisk-agent:tools/webapi.list-executions",
-            json!([
-                option(rest, "--ffqn-prefix", ""),
-                option(rest, "--id-prefix", ""),
-                flag(rest, "--show-derived"),
-                flag(rest, "--hide-finished"),
-                "",
-                "",
-                "",
-                "",
-                false,
-                integer_option(rest, "--length", 20),
-            ]),
-        );
+        return Ok(text_output(host.list_executions(
+            option(rest, "--ffqn-prefix", ""),
+            option(rest, "--id-prefix", ""),
+            flag(rest, "--show-derived"),
+            flag(rest, "--hide-finished"),
+            length_option(rest, "--length", 20),
+        )?));
     }
     if group == "executions" && action == "get" {
-        return json_call(
-            host,
-            "obelisk-agent:tools/webapi.get-execution",
-            json!([required(rest.first().map(String::as_str), "execution id")?]),
-        );
+        let id = required(rest.first().map(String::as_str), "execution id")?;
+        return Ok(text_output(host.get_execution(id)?));
     }
     if group == "executions" && action == "logs" {
-        return json_call(
-            host,
-            "obelisk-agent:tools/webapi.get-logs",
-            json!([
-                required(rest.first().map(String::as_str), "execution id")?,
-                true,
-                true,
-                true,
-                Vec::<String>::new(),
-                Vec::<String>::new(),
-                "",
-                "",
-                false,
-                integer_option(rest, "--length", 200),
-            ]),
-        );
+        let id = required(rest.first().map(String::as_str), "execution id")?;
+        return Ok(text_output(
+            host.get_logs(id, length_option(rest, "--length", 200))?,
+        ));
     }
     if group == "executions" && action == "result" {
-        return json_call(
-            host,
-            "obelisk-agent:tools/webapi.get-result-json",
-            json!([required(rest.first().map(String::as_str), "execution id")?]),
-        );
+        let id = required(rest.first().map(String::as_str), "execution id")?;
+        return Ok(text_output(host.get_result_json(id)?));
     }
     if group == "call" {
         let ffqn = required(Some(action), "ffqn")?;
@@ -358,7 +388,7 @@ fn try_execute_obelisk(
                         .unwrap_or_else(|_| Value::String(argument.clone()))
                 })
                 .collect::<Vec<_>>();
-            return target_call(host, json!([ffqn, Value::Array(params).to_string()]));
+            return target_call(host, ffqn, &Value::Array(params).to_string());
         }
         if rest.len() > 1 {
             return Err(
@@ -381,10 +411,10 @@ fn try_execute_obelisk(
             .filter(|s| !s.is_empty())
             .or_else(|| Some(stdin).filter(|s| !s.is_empty()))
             .unwrap_or("[]");
-        return target_call(host, json!([ffqn, params_json]));
+        return target_call(host, ffqn, params_json);
     }
     if group == "generate" {
-        return execute_generate(action);
+        return execute_generate(interp, action, rest, generate);
     }
     if group == "deployment" {
         return execute_deployment(interp, action, rest, host);
@@ -396,11 +426,17 @@ fn try_execute_obelisk(
     )))
 }
 
-/// Print a starter config file. Purely local: unlike the other groups it never
-/// touches the target server, it just echoes a template baked in at build time.
-fn execute_generate(action: &str) -> Result<CommandOutput, String> {
+/// `generate deployment` echoes a template baked in at build time;
+/// `generate new` fetches the starter app from GitHub at `generate.obelisk_version`.
+fn execute_generate(
+    interp: &mut Interpreter,
+    action: &str,
+    args: &[String],
+    generate: &mut Generate,
+) -> Result<CommandOutput, String> {
     match action {
         "deployment" => Ok(ok(ensure_trailing_newline(DEPLOYMENT_TEMPLATE.to_string()))),
+        "new" => generate_new(interp, first_positional(args, &[]), generate),
         "" => Ok(fail(format!(
             "obelisk generate: a subcommand is required\n{}",
             generate_help()
@@ -411,22 +447,162 @@ fn execute_generate(action: &str) -> Result<CommandOutput, String> {
     }
 }
 
+/// PORT: real obelisk `generate new [NAME]`. The template files are read from
+/// the `obelisk` repo at the operator-pinned `OBELISK_VERSION` ref, so they
+/// never drift from the target server.
+fn generate_new(
+    interp: &mut Interpreter,
+    name: Option<&str>,
+    generate: &mut Generate,
+) -> Result<CommandOutput, String> {
+    let app_name = match name {
+        Some(name) => name.to_string(),
+        None => slugify_app_name(&basename(&interp.cwd)),
+    };
+    validate_app_name(&app_name)?;
+    let output_dir = match name {
+        Some(_) => normalize_path(&interp.cwd, &app_name),
+        None => interp.cwd.clone(),
+    };
+    if name.is_some() && interp.fs.exists(&output_dir) {
+        return Err(format!(
+            "cannot create new app directory {output_dir}: File exists"
+        ));
+    }
+
+    let git_ref = &generate.obelisk_version;
+    let repo = json!({ "owner": TEMPLATE_OWNER, "repo": TEMPLATE_REPO, "ref": git_ref });
+    let mut files = Vec::new();
+    collect_template_files(&mut generate.github, &repo, "", &mut files).map_err(|error| {
+        format!(
+            "cannot fetch the starter template from {TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{TEMPLATE_PATH}: {error}"
+        )
+    })?;
+    if files.is_empty() {
+        return Err(format!(
+            "{TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{TEMPLATE_PATH} contains no files"
+        ));
+    }
+    for (relative, _) in &files {
+        let path = format!("{output_dir}/{relative}");
+        if interp.fs.exists(&path) {
+            return Err(format!("cannot generate app: {path} already exists"));
+        }
+    }
+
+    let mut stdout = String::new();
+    for (relative, contents) in files {
+        let path = format!("{output_dir}/{relative}");
+        let contents = if relative == "app.toml" {
+            contents.replace("__APP_NAME__", &app_name)
+        } else {
+            contents
+        };
+        interp
+            .fs
+            .write_file(&path, contents.as_bytes())
+            .map_err(fs_error_message)?;
+        stdout.push_str(&format!("Generated {path:?}\n"));
+    }
+    Ok(ok(stdout))
+}
+
+/// Depth-first listing of the template tree; `relative` is the path under
+/// `TEMPLATE_PATH`, collected as `(relative file path, contents)`.
+fn collect_template_files(
+    github: &mut GithubContents,
+    repo: &Value,
+    relative: &str,
+    files: &mut Vec<(String, String)>,
+) -> Result<(), String> {
+    let remote = if relative.is_empty() {
+        TEMPLATE_PATH.to_string()
+    } else {
+        format!("{TEMPLATE_PATH}/{relative}")
+    };
+    let listing: Value = serde_json::from_str(&github_request(github, "list", repo, &remote)?)
+        .map_err(|e| format!("list did not return JSON: {e}"))?;
+    let entries = listing
+        .as_array()
+        .ok_or_else(|| "list did not return a JSON array".to_string())?;
+    for entry in entries {
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("list entry without a name: {entry}"))?;
+        let child = if relative.is_empty() {
+            name.to_string()
+        } else {
+            format!("{relative}/{name}")
+        };
+        match entry.get("type").and_then(Value::as_str) {
+            Some("dir") => collect_template_files(github, repo, &child, files)?,
+            _ => {
+                let body =
+                    github_request(github, "read", repo, &format!("{TEMPLATE_PATH}/{child}"))?;
+                files.push((child, body));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn github_request(
+    github: &mut GithubContents,
+    method: &str,
+    repo: &Value,
+    path: &str,
+) -> Result<String, String> {
+    let mut params = repo.clone();
+    params["path"] = Value::String(path.to_string());
+    github(method, &params.to_string())
+}
+
+/// PORT: obelisk's `slugify_app_name`.
+fn slugify_app_name(name: &str) -> String {
+    let mut slug = String::new();
+    for character in name.chars() {
+        if slug.len() == 63 {
+            break;
+        }
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_string()
+}
+
+/// PORT: obelisk's `validate_app_name`.
+fn validate_app_name(name: &str) -> Result<(), String> {
+    let valid = name.len() <= 63
+        && !name.is_empty()
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid app name `{name}`: expected a DNS label (1-63 lowercase ASCII letters, digits, or interior hyphens)"
+        ))
+    }
+}
+
 fn execute_deployment(
     interp: &mut Interpreter,
     action: &str,
     args: &[String],
-    host: &mut dyn ObeliskHost,
+    host: &mut dyn ControlPlane,
 ) -> Result<CommandOutput, String> {
     match action {
         "active" => {
             // Print the active deployment id, or its JSON-quoted form with
             // --json, matching real obelisk `deployment active`.
-            let value = call_value(
-                host,
-                "obelisk-agent:tools/webapi.current-deployment-id",
-                "[]",
-            )?;
-            let id = decode_string(&value);
+            let id = decode_string(&host.current_deployment_id()?);
             Ok(ok(if flag(args, "--json") {
                 format!("{}\n", serde_json::to_string(&id).expect("string encodes"))
             } else {
@@ -494,16 +670,9 @@ fn execute_deployment(
         "enqueue" => {
             // Stage the deployment for the next server restart (never
             // hot-swaps), mirroring real obelisk `deployment enqueue`.
-            let value = call_value(
-                host,
-                "obelisk-agent:tools/webapi.deployment-switch",
-                &json!([
-                    required(args.first().map(String::as_str), "deployment id")?,
-                    flag_runtime_config(args),
-                ])
-                .to_string(),
-            )?;
-            match switch_outcome(&value)?.as_str() {
+            let id = required(args.first().map(String::as_str), "deployment id")?;
+            let value = host.deployment_switch(id, flag_runtime_config(args))?;
+            match switch_outcome(&Value::String(value))?.as_str() {
                 "switched" => Ok(ok(
                     "Deployment already active; it will remain active after restart.\n".to_string(),
                 )),
@@ -517,12 +686,9 @@ fn execute_deployment(
             // Hot-redeploy now; a server that can only stage the switch reports
             // restart_required, which real obelisk `deployment apply` treats as
             // a failure rather than a silent enqueue.
-            let value = call_value(
-                host,
-                "obelisk-agent:tools/webapi.apply-deployment",
-                &json!([required(args.first().map(String::as_str), "deployment id")?]).to_string(),
-            )?;
-            match switch_outcome(&value)?.as_str() {
+            let id = required(args.first().map(String::as_str), "deployment id")?;
+            let value = host.apply_deployment(id)?;
+            match switch_outcome(&Value::String(value))?.as_str() {
                 "switched" => Ok(ok("Applied successfully.\n".to_string())),
                 "restart_required" => Err(
                     "Could not apply immediately; deployment enqueued. Restart the server to apply."
@@ -560,13 +726,8 @@ fn switch_outcome(value: &Value) -> Result<String, String> {
 /// PORT: real obelisk `deployment list` - a fixed-width table (newest first),
 /// or "No deployments found.". The list-deployments tool returns the web API's
 /// DeploymentStateSer array verbatim.
-fn deployment_list(host: &mut dyn ObeliskHost) -> Result<CommandOutput, String> {
-    let value = call_value(
-        host,
-        "obelisk-agent:tools/webapi.list-deployments",
-        &json!(["", false, 20]).to_string(),
-    )?;
-    let deployments = decode_json(&value)?;
+fn deployment_list(host: &mut dyn ControlPlane) -> Result<CommandOutput, String> {
+    let deployments = decode_json(&host.list_deployments(20)?)?;
     let deployments = deployments
         .as_array()
         .ok_or_else(|| "deployment list returned a non-array response".to_string())?;
@@ -604,14 +765,9 @@ fn deployment_list(host: &mut dyn ObeliskHost) -> Result<CommandOutput, String> 
 /// PORT: real obelisk `deployment show ID` - print the stored TOML manifest.
 /// The real CLI's FILE and --json variants need a source-blob fetch and a TOML
 /// parser (unavailable here), so only the default manifest form is shown.
-fn deployment_show(host: &mut dyn ObeliskHost, args: &[String]) -> Result<CommandOutput, String> {
-    let id = required(first_positional(args, &[]), "deployment id")?.to_string();
-    let value = call_value(
-        host,
-        "obelisk-agent:tools/webapi.get-deployment",
-        &json!([id, Value::Null, Value::Null, Value::Null, Value::Null]).to_string(),
-    )?;
-    let record = decode_json(&value)?;
+fn deployment_show(host: &mut dyn ControlPlane, args: &[String]) -> Result<CommandOutput, String> {
+    let id = required(first_positional(args, &[]), "deployment id")?;
+    let record = decode_json(&host.get_deployment(id)?)?;
     let toml = record
         .get("deployment_toml")
         .and_then(Value::as_str)
@@ -676,42 +832,35 @@ fn format_deployment_timestamp(value: Option<&str>) -> String {
 /// digest mismatch we cannot fix by resending, so it errors instead of looping.
 fn submit_deployment(
     fs: &Vfs,
-    host: &mut dyn ObeliskHost,
+    host: &mut dyn ControlPlane,
     dir: &str,
     manifest: &str,
     description: &str,
     allow_missing: bool,
     deployment_id: &str,
 ) -> Result<CommandOutput, String> {
-    let mut attachments: Vec<Value> = Vec::new();
+    let mut attachments: Vec<AttachedFile> = Vec::new();
     let mut previous: Option<Vec<String>> = None;
     loop {
-        let params = json!([
+        let missing = match host.deployment_submit(
             manifest,
-            attachments,
+            &attachments,
             description,
             allow_missing,
-            deployment_id
-        ]);
-        let missing = match call_value(host, SUBMIT_FFQN, &params.to_string()) {
+            deployment_id,
+        ) {
             // Ok side is the new deployment id.
-            Ok(value) => {
+            Ok(id) => {
                 return Ok(ok(format!(
                     "{}\n",
-                    pretty_json(&json!({ "deployment_id": decode_string(&value) }))
+                    pretty_json(&json!({ "deployment_id": decode_string(&id) }))
                 )));
             }
-            // The `permanent-missing-files` error arm is recoverable; any other
-            // error is terminal (permanent/transient tool-error) and propagates.
-            Err(message) => match parse_missing_files(&message) {
-                Some(missing) => missing,
-                None => return Err(message),
-            },
+            // The missing-files arm is recoverable; any other error is terminal.
+            Err(SubmitError::MissingFiles(missing)) => missing,
+            Err(SubmitError::Failed(message)) => return Err(message),
         };
-        let paths: Vec<String> = missing
-            .iter()
-            .filter_map(|m| m.get("path").and_then(Value::as_str).map(String::from))
-            .collect();
+        let paths: Vec<String> = missing.iter().map(|m| m.path.clone()).collect();
         if previous.as_ref() == Some(&paths) {
             return Err(format!(
                 "server still missing {} file(s) after they were attached (digest mismatch?): {}",
@@ -720,38 +869,19 @@ fn submit_deployment(
             ));
         }
         let mut next = Vec::with_capacity(missing.len());
-        for issue in &missing {
-            let path = issue
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "server reported a missing file with no path".to_string())?;
-            let digest = issue.get("digest").and_then(Value::as_str).unwrap_or("");
+        for MissingFile { path, digest } in missing {
             let bytes = fs.read_file(&format!("{dir}/{path}")).ok_or_else(|| {
                 format!("server needs {path} but it is not in the deployment tree; write the file before submitting")
             })?;
-            next.push(json!({
-                "path": path,
-                "digest": digest,
-                "content": String::from_utf8_lossy(&bytes),
-            }));
+            next.push(AttachedFile {
+                content: String::from_utf8_lossy(&bytes).into_owned(),
+                path,
+                digest,
+            });
         }
         attachments = next;
         previous = Some(paths);
     }
-}
-
-/// Recover the `permanent-missing-files` error arm from the stringified submit
-/// error. The host seam collapses an activity's `Err` to text: this arm arrives
-/// as verbatim JSON (`{"permanent_missing_files":[{path,digest},...]}`), while a
-/// terminal permanent/transient error arrives as its plain message. Returns the
-/// entries only for the former (accepting either key spelling), else `None`.
-fn parse_missing_files(message: &str) -> Option<Vec<Value>> {
-    let value: Value = serde_json::from_str(message).ok()?;
-    let entries = value
-        .get("permanent_missing_files")
-        .or_else(|| value.get("permanent-missing-files"))?
-        .as_array()?;
-    Some(entries.clone())
 }
 
 /// Every deployment-owned source location a submit tracks: each component's
@@ -1246,77 +1376,42 @@ fn read_manifest(fs: &Vfs, dir: &str, file: &str) -> Result<String, String> {
     }
 }
 
-fn json_call(
-    host: &mut dyn ObeliskHost,
+/// A `string`-returning tool's result, rendered for the shell.
+fn text_output(text: String) -> CommandOutput {
+    ok(ensure_trailing_newline(render_output(Value::String(text))))
+}
+
+fn target_call(
+    host: &mut dyn ControlPlane,
     ffqn: &str,
-    params: Value,
+    params_json: &str,
 ) -> Result<CommandOutput, String> {
-    let value = call_value(host, ffqn, &params.to_string())?;
+    let value = decode_json(&host.native_call(ffqn, params_json)?)?;
     Ok(ok(ensure_trailing_newline(render_output(value))))
 }
 
-fn target_call(host: &mut dyn ObeliskHost, params: Value) -> Result<CommandOutput, String> {
-    let value = call_value(
-        host,
-        "obelisk-control:tools/native.call",
-        &params.to_string(),
-    )?;
-    Ok(ok(ensure_trailing_newline(render_output(decode_json(
-        &value,
-    )?))))
-}
-
-fn list_functions(host: &mut dyn ObeliskHost, params: Value) -> Result<CommandOutput, String> {
-    let value = call_value(
-        host,
-        "obelisk-agent:tools/webapi.list-functions",
-        &params.to_string(),
-    )?;
-    let functions = decode_json(&value)?;
-    let functions = functions
-        .as_array()
-        .ok_or_else(|| "functions list returned a non-array response".to_string())?;
-    let mut lines = Vec::new();
-    for function in functions {
-        if !function.get("extension").is_none_or(Value::is_null) {
-            continue;
-        }
-        let ffqn = function
-            .get("ffqn")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "function metadata has no ffqn".to_string())?;
-        let parameter_types = function
-            .get("parameter_types")
-            .and_then(Value::as_array)
-            .ok_or_else(|| format!("function metadata for {ffqn} has no parameter_types"))?;
-        let parameters = parameter_types
-            .iter()
-            .map(|parameter| {
-                let name = parameter
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("function parameter for {ffqn} has no name"))?;
-                let wit_type = parameter
-                    .get("wit_type")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        format!("function parameter {name} for {ffqn} has no wit_type")
-                    })?;
-                Ok(format!("{name}: {wit_type}"))
-            })
-            .collect::<Result<Vec<_>, String>>()?
-            .join(", ");
-        let return_type = function
-            .get("return_type")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("function metadata for {ffqn} has no return_type"))?;
-        lines.push(format!("{ffqn} : func({parameters}) -> {return_type}"));
-    }
-    Ok(ok(if lines.is_empty() {
+fn list_functions(functions: &[FunctionInfo]) -> CommandOutput {
+    let lines: Vec<String> = functions
+        .iter()
+        .filter(|function| function.extension.is_none())
+        .map(|function| {
+            let parameters = function
+                .parameter_types
+                .iter()
+                .map(|parameter| format!("{}: {}", parameter.name, parameter.wit_type))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{} : func({parameters}) -> {}",
+                function.ffqn, function.return_type
+            )
+        })
+        .collect();
+    ok(if lines.is_empty() {
         String::new()
     } else {
         format!("{}\n", lines.join("\n"))
-    }))
+    })
 }
 
 /// Render an FFQN result for the shell. The endpoints return JSON *text*, so a
@@ -1339,19 +1434,6 @@ fn pretty_json(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
-/// PORT: the JS `obelisk.call` builtin. `RealHost::call_json` returns raw JSON
-/// text (one layer higher than JS's already-deserialized `obelisk.call`), so
-/// every pack consumer peels that single layer here before decoding; see
-/// port-findings.md section A. A missing body (`Ok(None)`) becomes
-/// `Value::Null`; text that is not valid JSON (a non-JSON blob body) is kept
-/// as-is by wrapping it in a string.
-fn call_value(host: &mut dyn ObeliskHost, ffqn: &str, params_json: &str) -> Result<Value, String> {
-    match host.call_json(ffqn, params_json)? {
-        Some(text) => Ok(serde_json::from_str(&text).unwrap_or(Value::String(text))),
-        None => Ok(Value::Null),
-    }
-}
-
 fn ensure_trailing_newline(text: String) -> String {
     if text.ends_with('\n') {
         text
@@ -1367,45 +1449,25 @@ fn mount_result_json(result: &MountResult) -> String {
     }))
 }
 
-/// PORT: `decodeString`. `value` is the already-peeled `call_value` result. A
-/// string that itself parses as a JSON string yields the inner contents (the
-/// `current-deployment-id` case, whose body is `resp.text()` of a JSON string,
-/// so it arrives double-quoted); a string that parses as an object falls back
-/// to its `deployment_id` field; anything else is the trimmed string. A
-/// non-string value coerces to text.
-fn decode_string(value: &Value) -> String {
-    let Value::String(s) = value else {
-        return coerce_text(value);
-    };
-    match serde_json::from_str::<Value>(s) {
+/// PORT: `decodeString`. A string that itself parses as a JSON string yields
+/// the inner contents (the `current-deployment-id` case, whose body is
+/// `resp.text()` of a JSON string, so it arrives double-quoted); a string that
+/// parses as an object falls back to its `deployment_id` field; anything else
+/// is the trimmed string.
+fn decode_string(text: &str) -> String {
+    match serde_json::from_str::<Value>(text) {
         Ok(Value::String(inner)) => inner,
         Ok(other) => other
             .get("deployment_id")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
-        Err(_) => s.trim().to_string(),
+        Err(_) => text.trim().to_string(),
     }
 }
 
-/// PORT: `decodeJson`. An object/array passes through; a string is parsed once.
-/// backcompat: 0.1.0 deployment-checkout returned its record as a JSON string.
-fn decode_json(value: &Value) -> Result<Value, String> {
-    match value {
-        Value::Object(_) | Value::Array(_) => Ok(value.clone()),
-        Value::String(s) => serde_json::from_str(s).map_err(|e| format!("invalid JSON: {e}")),
-        other => serde_json::from_str(&other.to_string()).map_err(|e| format!("invalid JSON: {e}")),
-    }
-}
-
-/// PORT: JS `String(content)` for blob bodies: the peeled string verbatim (no
-/// re-parse, no trim, unlike `decode_string`), or a coercion of a non-string.
-fn coerce_text(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
+fn decode_json(text: &str) -> Result<Value, String> {
+    serde_json::from_str(text).map_err(|e| format!("invalid JSON: {e}"))
 }
 
 fn required<'a>(value: Option<&'a str>, label: &str) -> Result<&'a str, String> {
@@ -1423,17 +1485,13 @@ fn option<'a>(args: &'a [String], name: &str, fallback: &'a str) -> &'a str {
         .unwrap_or(fallback)
 }
 
-fn integer_option(args: &[String], name: &str, fallback: i64) -> i64 {
+fn length_option(args: &[String], name: &str, fallback: u32) -> u32 {
     match args
         .iter()
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1))
     {
-        Some(raw) => raw
-            .parse::<i64>()
-            .ok()
-            .filter(|n| *n >= 0)
-            .unwrap_or(fallback),
+        Some(raw) => raw.parse::<u32>().unwrap_or(fallback),
         None => fallback,
     }
 }
@@ -1507,6 +1565,7 @@ fn action_help(group: &str, action: &str) -> String {
         ("deployment", "enqueue") => deployment_enqueue_help(),
         ("deployment", "apply") => deployment_apply_help(),
         ("generate", "deployment") => generate_deployment_help(),
+        ("generate", "new") => generate_new_help(),
         _ => group_help(group),
     }
 }
@@ -1522,7 +1581,7 @@ Commands:\n\
   executions   List executions, or show one execution's record, logs, or result.\n\
   call         Call a deployed function and print its result.\n\
   deployment   Inspect, edit, submit, and activate deployments.\n\
-  generate     Print a starter configuration file.\n\
+  generate     Print a starter configuration file, or create a new app.\n\
 \n\
 Run `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n"
         .to_string()
@@ -1630,10 +1689,21 @@ Hot-redeploy a stored deployment now (fails if it cannot be applied live).\n"
 fn generate_help() -> String {
     "Usage: obelisk generate <subcommand>\n\
 \n\
-Print a starter Obelisk configuration file.\n\
+Print a starter Obelisk configuration file, or create a new app.\n\
 \n\
 Subcommands:\n\
-  deployment   Print a default deployment.toml with every option documented.\n"
+  deployment   Print a default deployment.toml with every option documented.\n\
+  new [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n"
+        .to_string()
+}
+
+fn generate_new_help() -> String {
+    "Usage: obelisk generate new [NAME]\n\
+\n\
+Create a runnable JS starter app (app.toml, deployment.toml, a webhook, a\n\
+workflow, and an HTTP activity). With NAME, the app is created in a new NAME\n\
+directory; otherwise in the current directory, named after its slug. The files\n\
+are fetched from the obelisk repository at the operator's OBELISK_VERSION.\n"
         .to_string()
 }
 
@@ -1712,6 +1782,184 @@ mod tests {
         }
     }
 
+    const SUBMIT_FFQN: &str = "obelisk-agent:tools/webapi.deployment-submit";
+
+    /// The pack's `ControlPlane` over the ffqn-keyed fixtures: each method sends
+    /// the same params array its WIT function takes and decodes the fixture.
+    impl FakeHost {
+        fn call(&mut self, function: &str, params: Value) -> Result<Value, String> {
+            call_value(
+                self,
+                &format!("obelisk-agent:tools/webapi.{function}"),
+                &params.to_string(),
+            )
+        }
+
+        fn text(&mut self, function: &str, params: Value) -> Result<String, String> {
+            Ok(match self.call(function, params)? {
+                Value::String(text) => text,
+                Value::Null => String::new(),
+                other => other.to_string(),
+            })
+        }
+
+        fn typed<T: serde::de::DeserializeOwned>(
+            &mut self,
+            function: &str,
+            params: Value,
+        ) -> Result<T, String> {
+            let value = match self.call(function, params)? {
+                Value::String(text) => decode_json(&text)?,
+                other => other,
+            };
+            serde_json::from_value(value).map_err(|e| e.to_string())
+        }
+    }
+
+    impl ControlPlane for FakeHost {
+        fn list_functions(
+            &mut self,
+            ffqn_prefix: &str,
+            length: u32,
+        ) -> Result<Vec<FunctionInfo>, String> {
+            self.typed("list-functions", json!([ffqn_prefix, length]))
+        }
+        fn get_function_wit(&mut self, ffqn: &str) -> Result<String, String> {
+            self.text("get-function-wit", json!([ffqn]))
+        }
+        fn list_executions(
+            &mut self,
+            ffqn_prefix: &str,
+            execution_id_prefix: &str,
+            show_derived: bool,
+            hide_finished: bool,
+            length: u32,
+        ) -> Result<String, String> {
+            self.text(
+                "list-executions",
+                json!([
+                    ffqn_prefix,
+                    execution_id_prefix,
+                    show_derived,
+                    hide_finished,
+                    "",
+                    "",
+                    "",
+                    "",
+                    false,
+                    length
+                ]),
+            )
+        }
+        fn get_execution(&mut self, execution_id: &str) -> Result<String, String> {
+            self.text("get-execution", json!([execution_id]))
+        }
+        fn get_logs(&mut self, execution_id: &str, length: u32) -> Result<String, String> {
+            self.text(
+                "get-logs",
+                json!([
+                    execution_id,
+                    true,
+                    true,
+                    true,
+                    [],
+                    [],
+                    "",
+                    "",
+                    false,
+                    length
+                ]),
+            )
+        }
+        fn get_result_json(&mut self, execution_id: &str) -> Result<String, String> {
+            self.text("get-result-json", json!([execution_id]))
+        }
+        fn list_deployments(&mut self, length: u32) -> Result<String, String> {
+            self.text("list-deployments", json!(["", false, length]))
+        }
+        fn get_deployment(&mut self, deployment_id: &str) -> Result<String, String> {
+            self.text(
+                "get-deployment",
+                json!([deployment_id, null, null, null, null]),
+            )
+        }
+        fn current_deployment_id(&mut self) -> Result<String, String> {
+            self.text("current-deployment-id", json!([]))
+        }
+        fn deployment_checkout(&mut self, deployment_id: &str) -> Result<CheckoutResult, String> {
+            self.typed("deployment-checkout", json!([deployment_id]))
+        }
+        fn deployment_read_blob(&mut self, digest: &str) -> Result<String, String> {
+            self.text("deployment-read-blob", json!([digest]))
+        }
+        fn deployment_submit(
+            &mut self,
+            deployment_toml: &str,
+            attachments: &[AttachedFile],
+            description: &str,
+            allow_missing_runtime_config: bool,
+            deployment_id: &str,
+        ) -> Result<String, SubmitError> {
+            let params = json!([
+                deployment_toml,
+                attachments,
+                description,
+                allow_missing_runtime_config,
+                deployment_id
+            ]);
+            self.text("deployment-submit", params).map_err(|message| {
+                // The fixture error arm is the verbatim `permanent_missing_files` JSON.
+                serde_json::from_str::<Value>(&message)
+                    .ok()
+                    .and_then(|value| value.get("permanent_missing_files").cloned())
+                    .and_then(|files| serde_json::from_value(files).ok())
+                    .map_or(SubmitError::Failed(message), SubmitError::MissingFiles)
+            })
+        }
+        fn deployment_switch(
+            &mut self,
+            deployment_id: &str,
+            allow_missing_runtime_config: bool,
+        ) -> Result<String, String> {
+            self.text(
+                "deployment-switch",
+                json!([deployment_id, allow_missing_runtime_config]),
+            )
+        }
+        fn apply_deployment(&mut self, deployment_id: &str) -> Result<String, String> {
+            self.text("apply-deployment", json!([deployment_id]))
+        }
+        fn native_call(&mut self, ffqn: &str, params_json: &str) -> Result<String, String> {
+            Ok(
+                match call_value(
+                    self,
+                    "obelisk-control:tools/native.call",
+                    &json!([ffqn, params_json]).to_string(),
+                )? {
+                    Value::String(text) => text,
+                    other => other.to_string(),
+                },
+            )
+        }
+    }
+
+    /// PORT: the JS `obelisk.call` builtin. `RealHost::call_json` returns raw JSON
+    /// text (one layer higher than JS's already-deserialized `obelisk.call`), so
+    /// every pack consumer peels that single layer here before decoding; see
+    /// port-findings.md section A. A missing body (`Ok(None)`) becomes
+    /// `Value::Null`; text that is not valid JSON (a non-JSON blob body) is kept
+    /// as-is by wrapping it in a string.
+    fn call_value(
+        host: &mut dyn ObeliskHost,
+        ffqn: &str,
+        params_json: &str,
+    ) -> Result<Value, String> {
+        match host.call_json(ffqn, params_json)? {
+            Some(text) => Ok(serde_json::from_str(&text).unwrap_or(Value::String(text))),
+            None => Ok(Value::Null),
+        }
+    }
+
     /// A digest-addressed blob loader for the lazy-mount tests: mount now only
     /// registers file *structure*, so a test that wants a file's bytes installs
     /// one of these (mirroring the real CAS, keyed by content digest).
@@ -1758,7 +2006,7 @@ mod tests {
     fn bare_obelisk_prints_command_list() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &[], "", &mut host);
+        let out = execute_obelisk(&mut i, &[], "", &mut no_generate(), &mut host);
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.starts_with("Usage: obelisk <command>"));
     }
@@ -1769,12 +2017,18 @@ mod tests {
         let mut i = interp("/workspace");
         // Top level.
         for case in [words(&["--help"]), words(&["-h"])] {
-            let out = execute_obelisk(&mut i, &case, "", &mut host);
+            let out = execute_obelisk(&mut i, &case, "", &mut no_generate(), &mut host);
             assert_eq!(out.exit_code, 0);
             assert!(out.stdout.starts_with("Usage: obelisk <command>"));
         }
         // Group help (`obelisk deployment -h`).
-        let out = execute_obelisk(&mut i, &words(&["deployment", "-h"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "-h"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.starts_with("Usage: obelisk deployment"));
         // Subcommand help (`obelisk deployment submit --help`).
@@ -1782,13 +2036,20 @@ mod tests {
             &mut i,
             &words(&["deployment", "submit", "--help"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.contains("PATH-TO-DEPLOYMENT.TOML"));
         // `call -h` reaches the call help even though the ffqn sits in the
         // action slot, but a help flag after `--` is a positional parameter.
-        let out = execute_obelisk(&mut i, &words(&["call", "-h"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["call", "-h"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.starts_with("Usage: obelisk call"));
         // No help path ever hits the host.
@@ -1800,7 +2061,7 @@ mod tests {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
         for group in ["functions", "executions", "deployment"] {
-            let out = execute_obelisk(&mut i, &words(&[group]), "", &mut host);
+            let out = execute_obelisk(&mut i, &words(&[group]), "", &mut no_generate(), &mut host);
             assert_eq!(out.exit_code, 2);
             assert!(!out.stderr.is_empty());
         }
@@ -1811,7 +2072,13 @@ mod tests {
     fn unknown_command_reports_help() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["nonsense"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["nonsense"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert!(out.stderr.contains("unknown command 'nonsense'"));
         assert!(out.stderr.contains("Usage: obelisk <command>"));
@@ -1846,6 +2113,7 @@ mod tests {
             &mut i,
             &words(&["functions", "list", "--prefix", "foo", "--length", "5"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
@@ -1866,19 +2134,20 @@ mod tests {
     fn functions_list_json_preserves_structured_output() {
         let mut host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.list-functions",
-            r#"[{"ffqn":"a","extension":null}]"#,
+            r#"[{"ffqn":"a","parameter_types":[{"name":"x","wit_type":"u32"}],"return_type":"result","extension":"await_next","wit":""}]"#,
         );
         let mut i = interp("/workspace");
         let out = execute_obelisk(
             &mut i,
             &words(&["functions", "list", "--json"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
         assert_eq!(
             out.stdout,
-            "[\n  {\n    \"ffqn\": \"a\",\n    \"extension\": null\n  }\n]\n"
+            "[\n  {\n    \"ffqn\": \"a\",\n    \"parameter_types\": [\n      {\n        \"name\": \"x\",\n        \"wit_type\": \"u32\"\n      }\n    ],\n    \"return_type\": \"result\",\n    \"extension\": \"await_next\",\n    \"wit\": \"\"\n  }\n]\n"
         );
     }
 
@@ -1886,21 +2155,14 @@ mod tests {
     fn functions_list_defaults_when_flags_absent() {
         let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.list-functions", "[]");
         let mut i = interp("/workspace");
-        execute_obelisk(&mut i, &words(&["functions", "list"]), "", &mut host);
-        assert_eq!(host.calls[0].1, "[\"\",100]");
-    }
-
-    #[test]
-    fn functions_list_formats_a_json_string_body() {
-        // backcompat: 0.1.0 list-functions returned its array as a JSON string.
-        let mut host = FakeHost::new().with(
-            "obelisk-agent:tools/webapi.list-functions",
-            "\"[{\\\"ffqn\\\":\\\"a\\\",\\\"parameter_types\\\":[],\\\"return_type\\\":\\\"string\\\",\\\"extension\\\":null}]\"",
+        execute_obelisk(
+            &mut i,
+            &words(&["functions", "list"]),
+            "",
+            &mut no_generate(),
+            &mut host,
         );
-        let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["functions", "list"]), "", &mut host);
-        assert_eq!(out.exit_code, 0);
-        assert_eq!(out.stdout, "a : func() -> string\n");
+        assert_eq!(host.calls[0].1, "[\"\",100]");
     }
 
     #[test]
@@ -1914,6 +2176,7 @@ mod tests {
             &mut i,
             &words(&["functions", "wit", "a:b/c.d"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
@@ -1924,7 +2187,13 @@ mod tests {
     fn functions_wit_requires_ffqn() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["functions", "wit"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["functions", "wit"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: ffqn is required\n");
     }
@@ -1945,6 +2214,7 @@ mod tests {
                 "7",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(
@@ -1957,7 +2227,13 @@ mod tests {
     fn executions_get_requires_id() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["executions", "get"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["executions", "get"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: execution id is required\n");
     }
@@ -1970,6 +2246,7 @@ mod tests {
             &mut i,
             &words(&["executions", "logs", "exec-1", "--length", "50"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         // The string body prints verbatim; the `call_json` JSON layer is peeled.
@@ -1989,6 +2266,7 @@ mod tests {
             &mut i,
             &words(&["executions", "result", "exec-1"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.stdout, "{\n  \"ok\": 1\n}\n");
@@ -2002,6 +2280,7 @@ mod tests {
             &mut i,
             &words(&["call", "some:ffqn", "[1]"]),
             "[2]",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.stdout, "42\n");
@@ -2013,12 +2292,24 @@ mod tests {
         let mut host =
             FakeHost::new().with("obelisk-control:tools/native.call", r#""{\"answer\":42}""#);
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["call", "some:ffqn", "[]"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["call", "some:ffqn", "[]"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.stdout, "{\n  \"answer\": 42\n}\n");
 
         let mut host =
             FakeHost::new().with("obelisk-control:tools/native.call", r#""\"plain result\"""#);
-        let out = execute_obelisk(&mut i, &words(&["call", "some:ffqn", "[]"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["call", "some:ffqn", "[]"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.stdout, "plain result\n");
     }
 
@@ -2026,7 +2317,13 @@ mod tests {
     fn call_failure_is_a_command_error_not_a_result() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["call", "some:ffqn", "[]"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["call", "some:ffqn", "[]"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert!(out.stdout.is_empty());
         assert!(out.stderr.starts_with("obelisk: no fixture for"));
@@ -2036,11 +2333,23 @@ mod tests {
     fn call_falls_back_to_stdin_then_to_empty_array() {
         let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
         let mut i = interp("/workspace");
-        execute_obelisk(&mut i, &words(&["call", "some:ffqn"]), "[9]", &mut host);
+        execute_obelisk(
+            &mut i,
+            &words(&["call", "some:ffqn"]),
+            "[9]",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(host.calls[0].1, "[\"some:ffqn\",\"[9]\"]");
 
         let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
-        execute_obelisk(&mut i, &words(&["call", "some:ffqn"]), "", &mut host);
+        execute_obelisk(
+            &mut i,
+            &words(&["call", "some:ffqn"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(host.calls[0].1, "[\"some:ffqn\",\"[]\"]");
     }
 
@@ -2062,6 +2371,7 @@ mod tests {
                 r#""42""#,
             ]),
             "ignored stdin",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(
@@ -2078,6 +2388,7 @@ mod tests {
             &mut i,
             &words(&["call", "some:ffqn", "1", "2"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2092,7 +2403,13 @@ mod tests {
         // rejects with a confusing cardinality mismatch).
         let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["call", "some:ffqn", ""]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["call", "some:ffqn", ""]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert!(
             out.stderr.contains("params-json argument is empty"),
@@ -2106,7 +2423,7 @@ mod tests {
     fn call_requires_ffqn() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["call"]), "", &mut host);
+        let out = execute_obelisk(&mut i, &words(&["call"]), "", &mut no_generate(), &mut host);
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: ffqn is required\n");
     }
@@ -2118,7 +2435,13 @@ mod tests {
             "\"dep-1\"",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "active"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "active"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.stdout, "dep-1\n");
     }
 
@@ -2133,6 +2456,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "active", "--json"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.stdout, "\"dep-1\"\n");
@@ -2142,7 +2466,13 @@ mod tests {
     fn deployment_enqueue_requires_id_forwards_flag_and_reports_outcome() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "enqueue"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "enqueue"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: deployment id is required\n");
 
@@ -2159,6 +2489,7 @@ mod tests {
                 "--allow-missing-runtime-config",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"dep-2\",true]");
@@ -2179,6 +2510,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "enqueue", "dep-2"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(
@@ -2191,7 +2523,13 @@ mod tests {
     fn deployment_apply_requires_id() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "apply"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "apply"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: deployment id is required\n");
     }
@@ -2207,6 +2545,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "apply", "dep-2"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"dep-2\"]");
@@ -2224,6 +2563,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "apply", "dep-2"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2240,7 +2580,13 @@ mod tests {
             "[{\"deployment_id\":\"Dep_2\",\"description\":\"second\",\"status\":\"active\",\"created_at\":\"2026-09-14T08:22:17.592Z\",\"last_active_at\":\"2026-09-14T09:00:00.000Z\"},{\"deployment_id\":\"Dep_1\",\"description\":\"\",\"status\":\"inactive\",\"created_at\":\"2026-09-13T07:00:00.000Z\",\"last_active_at\":null}]",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "list"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "list"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(host.calls[0].1, "[\"\",false,20]");
         let lines: Vec<&str> = out.stdout.split('\n').collect();
         assert_eq!(
@@ -2261,7 +2607,13 @@ mod tests {
     fn deployment_list_reports_empty_catalog() {
         let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.list-deployments", "[]");
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "list"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "list"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.stdout, "No deployments found.\n");
     }
 
@@ -2276,6 +2628,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "show", "Dep_1"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"Dep_1\",null,null,null,null]");
@@ -2286,7 +2639,13 @@ mod tests {
     fn deployment_show_requires_id() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "show"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "show"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: deployment id is required\n");
     }
@@ -2295,7 +2654,13 @@ mod tests {
     fn deployment_unknown_action() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "bogus"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "bogus"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk deployment: unknown action 'bogus'\n");
     }
@@ -2307,22 +2672,148 @@ mod tests {
         // that it never touches the host (it is a purely local echo).
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["generate", "deployment"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["generate", "deployment"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.contains("[[activity_wasm]]"), "{}", out.stdout);
         assert!(out.stdout.ends_with('\n'));
         assert!(host.calls.is_empty());
     }
 
+    /// A `Generate` for tests that never run `generate new`.
+    fn no_generate() -> Generate {
+        Generate {
+            obelisk_version: "latest".to_string(),
+            github: Box::new(|_, _| Err("no GitHub in this test".to_string())),
+        }
+    }
+
+    /// A fake `apps.request` serving a two-level template tree, recording calls.
+    fn template_generate(calls: &Rc<RefCell<Vec<(String, String)>>>) -> Generate {
+        let calls = calls.clone();
+        Generate {
+            obelisk_version: "v0.42.0".to_string(),
+            github: Box::new(move |method, params| {
+                calls
+                    .borrow_mut()
+                    .push((method.to_string(), params.to_string()));
+                let params: Value = serde_json::from_str(params).unwrap();
+                Ok(match params["path"].as_str().unwrap() {
+                    "examples/templates/js-http" => json!([
+                        {"name": "app.toml", "type": "file"},
+                        {"name": "workflow", "type": "dir"}
+                    ])
+                    .to_string(),
+                    "examples/templates/js-http/app.toml" => {
+                        "app_name = \"__APP_NAME__\"\n".to_string()
+                    }
+                    "examples/templates/js-http/workflow" => {
+                        json!([{"name": "run.js", "type": "file"}]).to_string()
+                    }
+                    "examples/templates/js-http/workflow/run.js" => "42\n".to_string(),
+                    other => panic!("unexpected path {other}"),
+                })
+            }),
+        }
+    }
+
+    #[test]
+    fn generate_new_fetches_the_template_at_obelisk_version() {
+        let mut host = FakeHost::new();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut i = interp("/workspace/My Cool_App");
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["generate", "new"]),
+            "",
+            &mut template_generate(&calls),
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(
+            out.stdout,
+            "Generated \"/workspace/My Cool_App/app.toml\"\nGenerated \"/workspace/My Cool_App/workflow/run.js\"\n"
+        );
+        assert_eq!(
+            i.fs.read_file("/workspace/My Cool_App/app.toml").unwrap(),
+            b"app_name = \"my-cool-app\"\n"
+        );
+        assert_eq!(
+            i.fs.read_file("/workspace/My Cool_App/workflow/run.js")
+                .unwrap(),
+            b"42\n"
+        );
+        assert_eq!(
+            calls.borrow()[3],
+            (
+                "read".to_string(),
+                r#"{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/js-http/workflow/run.js"}"#.to_string()
+            )
+        );
+        assert!(host.calls.is_empty());
+
+        // A second run must not overwrite anything.
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["generate", "new"]),
+            "",
+            &mut template_generate(&calls),
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stderr.contains("already exists"), "{}", out.stderr);
+
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["generate", "new", "chosen-app"]),
+            "",
+            &mut template_generate(&calls),
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(
+            i.fs.read_file("/workspace/My Cool_App/chosen-app/app.toml")
+                .unwrap(),
+            b"app_name = \"chosen-app\"\n"
+        );
+
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["generate", "new", "Bad Name"]),
+            "",
+            &mut template_generate(&calls),
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stderr.contains("invalid app name"), "{}", out.stderr);
+    }
+
     #[test]
     fn generate_requires_a_known_subcommand() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["generate"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["generate"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert!(out.stderr.contains("a subcommand is required"));
 
-        let out = execute_obelisk(&mut i, &words(&["generate", "bogus"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["generate", "bogus"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk generate: unknown action 'bogus'\n");
         assert!(host.calls.is_empty());
@@ -2332,7 +2823,13 @@ mod tests {
     fn host_error_propagates_with_obelisk_prefix() {
         let mut host = FakeHost::new(); // no fixtures registered
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["functions", "list"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["functions", "list"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert!(out.stderr.starts_with("obelisk: no fixture for"));
     }
@@ -2664,7 +3161,13 @@ content_digest = \"sha256:1\"\n\
                 &json!("bytes").to_string(),
             );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["deployment", "refresh"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "refresh"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 0);
         assert_eq!(
             out.stdout,
@@ -2692,6 +3195,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/dep-1/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -2710,7 +3214,13 @@ content_digest = \"sha256:1\"\n\
         )
         .unwrap();
         let mut host = FakeHost::new();
-        let out = execute_obelisk(&mut i, &words(&["deployment", "check"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "check"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         let parsed: Value = serde_json::from_str(&out.stdout).unwrap();
         assert_eq!(parsed["directory"], "/workspace/deployment/current");
@@ -2745,6 +3255,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/dep-1/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -2786,6 +3297,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
@@ -2814,6 +3326,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -2834,7 +3347,13 @@ content_digest = \"sha256:1\"\n\
         )
         .unwrap();
         let mut host = FakeHost::new();
-        let out = execute_obelisk(&mut i, &words(&["deployment", "submit"]), "", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "submit"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert!(
             out.stderr.contains("PATH-TO-DEPLOYMENT.TOML is required"),
@@ -2856,6 +3375,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "submit", "/workspace/deployment/current"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2885,6 +3405,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/dep-1/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -2913,6 +3434,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "submit", "deployment.js.toml"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -2940,6 +3462,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "submit", "deployment.js.toml"]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -2987,6 +3510,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3041,6 +3565,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         // Preflight sends no blobs; the retry attaches only the edited a.js, never
@@ -3099,6 +3624,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3152,6 +3678,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3205,6 +3732,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "submit", &manifest_path]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3266,6 +3794,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "submit", &manifest_path]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3370,6 +3899,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3403,6 +3933,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -3440,6 +3971,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -3462,7 +3994,7 @@ content_digest = \"sha256:1\"\n\
             cwd: "/workspace".into(),
             ..Default::default()
         });
-        bash.register_command("obelisk", command_handler(Box::new(host)));
+        bash.register_command("obelisk", command_handler(Box::new(host), no_generate()));
         let out = bash.exec("obelisk functions list | cat", Default::default());
         assert_eq!(out.exit_code, 0);
         assert_eq!(out.stdout, "");

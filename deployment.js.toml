@@ -70,6 +70,8 @@ ${APPS_JSON:-[
 ]}
 ''' },
   { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
+  # The obelisk repo ref `obelisk generate new` fetches its starter app from.
+  { key = "OBELISK_VERSION", value = "${OBELISK_VERSION:-latest}" },
 ]
 exec.lock_expiry.seconds = 30
 
@@ -91,7 +93,8 @@ replace_in = ["headers"]
 # of a GitHub contents mount. Two pieces:
 #
 #   * OBELISK_VERSION pins the doc set to the target runtime's version (e.g.
-#     "v0.41.3", matching the site's versioned doc directories). Empty falls
+#     "v0.41.3", matching the site's versioned doc directories and the obelisk
+#     repo tag `obelisk generate new` fetches its starter from). Empty falls
 #     back to `latest`. Set it from the flake lock when pinning matters
 #     (https://obeli.sk/docs/${OBELISK_VERSION}/llms.txt/).
 #   * DOCS_URLS_JSON lists llms.txt-style indexes; the descriptor inlines their
@@ -151,11 +154,7 @@ replace_in = ["headers"]
 # (obelisk-control pack). A workflow, so obelisk.call runs durably in-loop.
 [[workflow_js]]
 ffqn = "obelisk-control:tools/native.call"
-params = [
-  { name = "ffqn",        type = "string" },
-  { name = "params-json", type = "string" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "packs/obelisk-control/native-call.js"
 
 # --- Reference mounts: GitHub repo trees ---------------------------------------
@@ -170,11 +169,7 @@ location = "packs/obelisk-control/native-call.js"
 [[activity_js]]
 name = "mount_apps"
 ffqn = "obelisk-agent:mounts/apps.request"
-params = [
-  { name = "method",      type = "string" },
-  { name = "params-json", type = "string" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "activity/github-contents.js"
 exec.lock_expiry.seconds = 30
 [[activity_js.allowed_host]]

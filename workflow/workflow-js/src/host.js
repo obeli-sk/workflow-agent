@@ -1,23 +1,12 @@
-// PORT: workflow/workflow-rs/src/host.rs (the `RealHost` half only; the
-// `ask-user` native-call interception lives in session.js since it needs the
-// session's own Notifications/join-set state, which this file deliberately
-// stays free of).
+// PORT: workflow/workflow-rs/src/host.rs.
 //
-// Bridges the generic `callJson(ffqn, paramsJson) -> string|null` seam that
-// vendor/just-bash's obelisk-pack.js/obelisk-mcp.js/obelisk-web.js/
-// obelisk-program.js are written against (mirroring workflow-rs's
-// `ObeliskHost` trait / the `obelisk:workflow/workflow-support.call-json` WIT
-// host import, which returns a value's raw JSON text) onto `obelisk.call`,
-// whose JS binding already returns the *decoded* value. Re-encoding that
-// value with `JSON.stringify` here reproduces call-json's contract (JSON
-// text, quoted for a string result; `null` for a void result) so every
-// consumer's `decodeString`/`decodeJson`-style peeling ports unchanged from
-// the Rust source instead of needing a second, JS-specific decode path.
+// `createHost` bridges the generic `callJson(ffqn, paramsJson) -> string|null`
+// seam (obelisk-program.js/obelisk-mcp.js, for functions chosen at runtime)
+// onto `dynamic.call`, re-encoding the decoded value as JSON text so the
+// consumers' decoding ports unchanged from the Rust source.
 //
-// `obelisk-control:tools/native.call` needs no special case here: it is just
-// another ffqn, called the same way as any `obelisk-agent:tools/webapi.*`
-// call (see obelisk-pack.js's `targetCall`, which calls this seam with
-// `ffqn = "obelisk-control:tools/native.call"`).
+// `createControlPlane` backs obelisk-pack.js's control plane with the
+// statically imported tools, turning child errors into plain messages.
 
 export function createHost(dynamic, obelisk) {
     return {
@@ -39,10 +28,56 @@ export function createHost(dynamic, obelisk) {
     };
 }
 
+// PORT: host.rs's `ControlPlane for RealHost`. `webapi` is the
+// `obelisk-agent:tools/webapi` namespace import, `nativeCall` the
+// `obelisk-control:tools/native.call` import, and `askUser(paramsJson)`
+// answers `obelisk call obelisk-agent:stub/stub.ask-user` on this instance.
+export function createControlPlane(webapi, nativeCall, obelisk, askUser) {
+    const plain = (fn) => (...args) => {
+        try {
+            return fn(...args);
+        } catch (error) {
+            throw childErrorMessage(error, obelisk);
+        }
+    };
+    return {
+        listFunctions: plain(webapi.listFunctions),
+        getFunctionWit: plain(webapi.getFunctionWit),
+        listExecutions: plain((ffqnPrefix, idPrefix, showDerived, hideFinished, length) =>
+            webapi.listExecutions(ffqnPrefix, idPrefix, showDerived, hideFinished, "", "", "", "", false, length)),
+        getExecution: plain(webapi.getExecution),
+        getLogs: plain((id, length) => webapi.getLogs(id, true, true, true, [], [], "", "", false, length)),
+        getResultJson: plain(webapi.getResultJson),
+        listDeployments: plain((length) => webapi.listDeployments("", false, length)),
+        getDeployment: plain((id) => webapi.getDeployment(id, null, null, null, null)),
+        currentDeploymentId: plain(webapi.currentDeploymentId),
+        deploymentCheckout: plain(webapi.deploymentCheckout),
+        deploymentReadBlob: plain(webapi.deploymentReadBlob),
+        deploymentSubmit(manifest, attachments, description, allowMissing, deploymentId) {
+            try {
+                return webapi.deploymentSubmit(manifest, attachments, description, allowMissing, deploymentId);
+            } catch (error) {
+                const missingFiles = isChildError(error, obelisk) ? error.value?.permanent_missing_files : undefined;
+                if (Array.isArray(missingFiles)) throw { missingFiles };
+                throw childErrorMessage(error, obelisk);
+            }
+        },
+        deploymentSwitch: plain(webapi.deploymentSwitch),
+        applyDeployment: plain(webapi.applyDeployment),
+        nativeCall: (ffqn, paramsJson) => (ffqn === ASK_USER_FFQN ? askUser(paramsJson) : plain(nativeCall)(ffqn, paramsJson)),
+    };
+}
+
+const ASK_USER_FFQN = "obelisk-agent:stub/stub.ask-user";
+
+function isChildError(error, obelisk) {
+    return typeof obelisk?.ChildError === "function" && error instanceof obelisk.ChildError;
+}
+
 // PORT: support.rs's `child_error_message` / the JS callers' inline
 // equivalent (e.g. packs/obelisk-control/native-call.js's `callErrorMessage`).
-function childErrorMessage(error, obelisk) {
-    if (typeof obelisk?.ChildError === "function" && error instanceof obelisk.ChildError) {
+export function childErrorMessage(error, obelisk) {
+    if (isChildError(error, obelisk)) {
         if (error.value !== undefined) {
             return decodeChildErrorValue(error.value);
         }

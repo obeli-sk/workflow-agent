@@ -36,9 +36,10 @@ use crate::chat;
 use crate::generated::obelisk::log::log::debug as log_line;
 use crate::generated::obelisk::types::time::Duration;
 use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
-use crate::generated::obelisk_agent::config::config::input_accepted_at;
+use crate::generated::obelisk_agent::config::config::{discover, input_accepted_at};
 use crate::generated::obelisk_agent::llm::chat::CompletionResult;
 use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
+use crate::generated::obelisk_agent::mounts::apps;
 use crate::generated::obelisk_agent::stub::stub::{
     AgentErrorEvent, AgentStatusEvent, AssistantReplyEvent, HumanInputRequestedEvent,
     HumanInputResolvedEvent, InputOfferedEvent, OutputChunk, PromptInput, SessionEvent,
@@ -74,8 +75,6 @@ const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const SESSION_EVENTS_JOIN_SET: &str = "session-events";
 /// Renames ride here alone, never on `session-events`.
 const SESSION_NAME_JOIN_SET: &str = "session-name";
-const CONFIG_DISCOVER_FFQN: &str = "obelisk-agent:config/config.discover";
-const APPS_MOUNT_FFQN: &str = "obelisk-agent:mounts/apps.request";
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace. Control flow: if/elif/else, for, while, until, case, break, continue. Not supported: [[ ]], function definitions, arrays, background jobs.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"},"timeout":{"type":"string","description":"Optional wall-clock cap for this script (forms like 30s, 500ms, 5m, 1h30m). When it elapses the script stops at its next command boundary or sleep with exit code 124 and interrupted=\"timeout\"."}},"required":["script"]}}]"#;
 
 // `concat!` (not `\`-continuation) so each entry keeps its leading two-space
@@ -186,6 +185,8 @@ struct SessionConfig {
     apps: Vec<App>,
     /// Base URL of the target's webhook listener; empty when not configured.
     webhook_url: String,
+    /// The obelisk repo ref `obelisk generate new` fetches the starter from.
+    obelisk_version: String,
     /// The whole tail of the system prompt after "# Example apps" (user
     /// input, subagents, deployment authoring, and the per-session
     /// "# This session" text), single-sourced in config-discover.js given
@@ -194,94 +195,57 @@ struct SessionConfig {
     prompt_tail: String,
 }
 
+/// The statically bound GitHub contents transport (`obelisk-agent:mounts/apps.request`).
+fn github_contents() -> obelisk_web::GithubContents {
+    Box::new(apps::request)
+}
+
 /// Load all operator-owned session settings in one activity call so environment
 /// changes do not require rebuilding this deterministic workflow component.
 /// `execution_id`/`backend`/`effort`/`name` are this session's own identity,
 /// needed only to render the "# This session" paragraph inside `prompt_tail`.
 fn discover_session_config(
-    host: &mut dyn ObeliskHost,
     execution_id: &str,
     backend: &str,
     effort: &str,
     name: Option<&str>,
 ) -> Result<SessionConfig, String> {
-    let params = json!([execution_id, backend, effort, name]).to_string();
-    let json = host
-        .call_json(CONFIG_DISCOVER_FFQN, &params)?
-        .ok_or_else(|| "session config activity returned no value".to_string())?;
-    parse_session_config(&json)
-}
-
-fn parse_session_config(json: &str) -> Result<SessionConfig, String> {
-    let value: Value = serde_json::from_str(json)
-        .map_err(|e| format!("session config returned invalid JSON: {e}"))?;
-    let max_steps = value
-        .get("max_steps")
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| "session config has invalid max_steps".to_string())?;
-    let programs = parse_programs(
-        value
-            .get("programs")
-            .ok_or_else(|| "session config has no programs".to_string())?,
-    )?;
-    let mcp_servers = parse_mcp_servers(
-        value
-            .get("mcp_servers")
-            .ok_or_else(|| "session config has no mcp_servers".to_string())?,
-    )?;
-    let apps = parse_apps(
-        value
-            .get("apps")
-            .ok_or_else(|| "session config has no apps".to_string())?,
-    )?;
-    let webhook_url = value
-        .get("webhook_url")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let prompt_tail = value
-        .get("prompt_tail")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "session config has no prompt_tail".to_string())?
-        .to_string();
+    let config = discover(execution_id, backend, effort, name)?;
+    if config.max_steps == 0 {
+        return Err("session config has invalid max_steps".to_string());
+    }
     Ok(SessionConfig {
-        max_steps,
-        programs,
-        mcp_servers,
-        apps,
-        webhook_url,
-        prompt_tail,
-    })
-}
-
-fn parse_programs(value: &Value) -> Result<Vec<Program>, String> {
-    let entries = value
-        .as_array()
-        .ok_or_else(|| "session config programs is not an array".to_string())?;
-    entries
-        .iter()
-        .map(|entry| {
-            let name = entry
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "program entry has no name".to_string())?;
-            let ffqn = entry
-                .get("ffqn")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("program {name} has no ffqn"))?;
-            let description = entry
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            Ok(Program {
-                name: name.to_string(),
-                ffqn: ffqn.to_string(),
-                description: description.to_string(),
+        max_steps: config.max_steps,
+        programs: config
+            .programs
+            .into_iter()
+            .map(|program| Program {
+                name: program.name,
+                ffqn: program.ffqn,
+                description: program.description,
             })
-        })
-        .collect()
+            .collect(),
+        mcp_servers: config
+            .mcp_servers
+            .into_iter()
+            .map(|server| (server.name, server.ffqn))
+            .collect(),
+        apps: config
+            .apps
+            .into_iter()
+            .map(|app| App {
+                name: app.name,
+                owner: app.owner,
+                repo: app.repo,
+                git_ref: app.ref_,
+                description: app.description,
+                resolved: Rc::new(RefCell::new(None)),
+            })
+            .collect(),
+        webhook_url: config.webhook_url,
+        obelisk_version: config.obelisk_version,
+        prompt_tail: config.prompt_tail,
+    })
 }
 
 /// The `# Shell` system-prompt paragraph, listing the discovered programs so the
@@ -335,65 +299,6 @@ Read-only, mounted at /workspace/apps/<name>; each repo's own README.md has the 
     }
     text.push('\n');
     text
-}
-
-fn parse_mcp_servers(value: &Value) -> Result<Vec<(String, String)>, String> {
-    let entries = value
-        .as_array()
-        .ok_or_else(|| "session config mcp_servers is not an array".to_string())?;
-    entries
-        .iter()
-        .map(|entry| {
-            let name = entry
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "mcp server entry has no name".to_string())?;
-            let ffqn = entry
-                .get("ffqn")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("mcp server {name} has no ffqn"))?;
-            Ok((name.to_string(), ffqn.to_string()))
-        })
-        .collect()
-}
-
-fn parse_apps(value: &Value) -> Result<Vec<App>, String> {
-    let entries = value
-        .as_array()
-        .ok_or_else(|| "session config apps is not an array".to_string())?;
-    entries
-        .iter()
-        .map(|entry| {
-            let name = entry
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "app entry has no name".to_string())?;
-            let owner = entry
-                .get("owner")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("app {name} has no owner"))?;
-            let repo = entry
-                .get("repo")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("app {name} has no repo"))?;
-            let git_ref = entry
-                .get("ref")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("app {name} has no ref"))?;
-            let description = entry
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            Ok(App {
-                name: name.to_string(),
-                owner: owner.to_string(),
-                repo: repo.to_string(),
-                git_ref: git_ref.to_string(),
-                description: description.to_string(),
-                resolved: Rc::new(RefCell::new(None)),
-            })
-        })
-        .collect()
 }
 
 /// The terminal error raised when a turn burns through its step budget without
@@ -700,8 +605,6 @@ pub fn agent_loop(
         log_debug: log_line,
         ..Default::default()
     });
-    bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(host())));
-
     // A session created with a slug label (`chat create --name`) starts
     // already renamed; anything else arrives unnamed.
     let initial_name = if name.is_empty() {
@@ -712,13 +615,17 @@ pub fn agent_loop(
         Some(name.clone())
     };
     let execution_id = workflow_support::execution_id_current().id;
-    let config = discover_session_config(
-        &mut host(),
-        &execution_id,
-        &model,
-        &effort,
-        initial_name.as_deref(),
-    )?;
+    let config = discover_session_config(&execution_id, &model, &effort, initial_name.as_deref())?;
+    bash.register_command(
+        "obelisk",
+        obelisk_pack::command_handler(
+            Box::new(host()),
+            obelisk_pack::Generate {
+                obelisk_version: config.obelisk_version,
+                github: github_contents(),
+            },
+        ),
+    );
     let max_steps = config.max_steps;
     let programs = config.programs;
     let mcp_servers = config.mcp_servers;
@@ -900,8 +807,7 @@ pub fn agent_loop(
             for app in &apps {
                 obelisk_web::mount(
                     bash.fs_mut(),
-                    Box::new(host()),
-                    APPS_MOUNT_FFQN,
+                    github_contents(),
                     &format!("/workspace/apps/{}", app.name),
                     obelisk_web::RepoRef {
                         owner: app.owner.clone(),
@@ -1652,121 +1558,6 @@ mod tests {
         // Leading whitespace means it is not a shell command (same rule as
         // the composer's raw startsWith check).
         assert_eq!(opening_shell_script("\n$ pwd"), None);
-    }
-
-    #[test]
-    fn parse_mcp_servers_reads_name_and_ffqn() {
-        let servers = parse_mcp_servers(&json!([{"name":"a","ffqn":"ns:mcp/server.a"}])).unwrap();
-        assert_eq!(
-            servers,
-            vec![("a".to_string(), "ns:mcp/server.a".to_string())]
-        );
-        assert!(parse_mcp_servers(&json!([])).unwrap().is_empty());
-    }
-
-    #[test]
-    fn parse_mcp_servers_rejects_bad_shapes() {
-        assert!(parse_mcp_servers(&json!({"name":"a"})).is_err());
-        assert!(parse_mcp_servers(&json!([{"ffqn":"x"}])).is_err());
-        assert!(parse_mcp_servers(&json!([{"name":"a"}])).is_err());
-    }
-
-    #[test]
-    fn parse_apps_reads_name_owner_repo_and_ref() {
-        let apps = parse_apps(&json!([
-            {"name":"components","owner":"obeli-sk","repo":"components","ref":"main"}
-        ]))
-        .unwrap();
-        assert_eq!(apps.len(), 1);
-        assert_eq!(apps[0].name, "components");
-        assert_eq!(apps[0].owner, "obeli-sk");
-        assert_eq!(apps[0].repo, "components");
-        assert_eq!(apps[0].git_ref, "main");
-        // description is optional, defaulting to empty.
-        assert_eq!(apps[0].description, "");
-        assert!(parse_apps(&json!([])).unwrap().is_empty());
-    }
-
-    #[test]
-    fn parse_apps_reads_description_when_present() {
-        let apps = parse_apps(&json!([
-            {"name":"components","owner":"obeli-sk","repo":"components","ref":"main","description":"example activities"}
-        ]))
-        .unwrap();
-        assert_eq!(apps[0].description, "example activities");
-    }
-
-    #[test]
-    fn parse_apps_rejects_bad_shapes() {
-        assert!(parse_apps(&json!({"name":"a"})).is_err());
-        assert!(parse_apps(&json!([{"owner":"o","repo":"r","ref":"main"}])).is_err());
-        assert!(parse_apps(&json!([{"name":"a","repo":"r","ref":"main"}])).is_err());
-        assert!(parse_apps(&json!([{"name":"a","owner":"o","ref":"main"}])).is_err());
-        assert!(parse_apps(&json!([{"name":"a","owner":"o","repo":"r"}])).is_err());
-    }
-
-    #[test]
-    fn parse_programs_reads_name_ffqn_and_description() {
-        let programs = parse_programs(&json!([
-            {"name":"curl","ffqn":"ns:programs/program.curl","description":"GET-only HTTP client"}
-        ]))
-        .unwrap();
-        assert_eq!(programs.len(), 1);
-        assert_eq!(programs[0].name, "curl");
-        assert_eq!(programs[0].ffqn, "ns:programs/program.curl");
-        assert_eq!(programs[0].description, "GET-only HTTP client");
-        // description is optional, defaulting to empty.
-        let bare = parse_programs(&json!([
-            {"name":"curl","ffqn":"ns:programs/program.curl"}
-        ]))
-        .unwrap();
-        assert_eq!(bare[0].description, "");
-        assert!(parse_programs(&json!([])).unwrap().is_empty());
-    }
-
-    #[test]
-    fn parse_programs_rejects_bad_shapes() {
-        assert!(parse_programs(&json!({"name":"curl"})).is_err());
-        assert!(parse_programs(&json!([{"ffqn":"x"}])).is_err());
-        assert!(parse_programs(&json!([{"name":"curl"}])).is_err());
-    }
-
-    #[test]
-    fn parse_session_config_reads_step_limit_and_registries() {
-        const PROMPTS: &str = r#""prompt_tail":"prompt tail""#;
-        let config = parse_session_config(&format!(
-            r#"{{"max_steps":25,"programs":[],"mcp_servers":[],"apps":[],"webhook_url":"http://x:9290",{PROMPTS}}}"#
-        ))
-        .unwrap();
-        assert_eq!(config.max_steps, 25);
-        assert!(config.programs.is_empty());
-        assert!(config.mcp_servers.is_empty());
-        assert!(config.apps.is_empty());
-        assert_eq!(config.webhook_url, "http://x:9290");
-        assert_eq!(config.prompt_tail, "prompt tail");
-
-        // webhook_url is optional and defaults to empty.
-        let bare = parse_session_config(&format!(
-            r#"{{"max_steps":25,"programs":[],"mcp_servers":[],"apps":[],{PROMPTS}}}"#
-        ))
-        .unwrap();
-        assert_eq!(bare.webhook_url, "");
-
-        assert!(
-            parse_session_config(&format!(
-                r#"{{"max_steps":0,"programs":[],"mcp_servers":[],"apps":[],{PROMPTS}}}"#
-            ))
-            .is_err()
-        );
-        assert!(parse_session_config(r#"{"max_steps":10,"programs":[]}"#).is_err());
-        assert!(
-            parse_session_config(r#"{"max_steps":10,"programs":[],"mcp_servers":[]}"#).is_err()
-        );
-        // prompt_tail is required, not optional.
-        assert!(
-            parse_session_config(r#"{"max_steps":10,"programs":[],"mcp_servers":[],"apps":[]}"#)
-                .is_err()
-        );
     }
 
     #[test]

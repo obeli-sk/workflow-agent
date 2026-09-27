@@ -32,7 +32,10 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 
 use crate::fs::{DirProvider, Vfs, WebEntry, WebEntryKind};
-use crate::obelisk_pack::ObeliskHost;
+
+/// The `obelisk-agent:mounts/apps.request` activity, `(method, params-json) ->
+/// result<string, string>`, bound statically by the embedding workflow.
+pub type GithubContents = Box<dyn FnMut(&str, &str) -> Result<String, String>>;
 
 /// Identifies the GitHub repo (and requested ref) a mount browses; sent as
 /// fixed extra params alongside `path` on every `list`/`read` call, after
@@ -44,12 +47,10 @@ pub struct RepoRef {
     pub git_ref: String,
 }
 
-/// A web mount backed by a `(method, params-json)` transport activity. Owns its
-/// own `ObeliskHost` (interior-mutable, since `DirProvider` is a `&self` seam),
-/// like `obelisk_mcp`'s resource loader.
+/// A web mount backed by the `(method, params-json)` transport activity
+/// (interior-mutable, since `DirProvider` is a `&self` seam).
 struct GithubMount {
-    host: RefCell<Box<dyn ObeliskHost>>,
-    ffqn: String,
+    github: RefCell<GithubContents>,
     repo: RepoRef,
     /// The commit SHA `repo.git_ref` resolved to, filled in by the first
     /// `list`/`read` call. Shared with the caller so it can report whether
@@ -81,10 +82,8 @@ impl DirProvider for GithubMount {
 
 impl GithubMount {
     /// One transport call: hand `(method, {"owner", "repo", "ref", "path"})` to
-    /// the activity and return the string it produced. The activity's ok arm
-    /// is a `string`, so `call_json` returns it as JSON text (quoted); peeling
-    /// that single layer yields the activity's own return value (a JSON array
-    /// for `list`, a raw file body for `read`).
+    /// the activity and return the string it produced (a JSON array for
+    /// `list`, a raw file body for `read`).
     fn call(&self, method: &str, remote_path: &str) -> Result<String, String> {
         let git_ref = self.pinned_ref()?;
         let params = json!({
@@ -94,15 +93,7 @@ impl GithubMount {
             "path": remote_path,
         })
         .to_string();
-        let args = json!([method, params]).to_string();
-        match self.host.borrow_mut().call_json(&self.ffqn, &args)? {
-            Some(raw) => match serde_json::from_str::<Value>(&raw) {
-                Ok(Value::String(body)) => Ok(body),
-                Ok(other) => Ok(other.to_string()),
-                Err(_) => Ok(raw),
-            },
-            None => Ok(String::new()),
-        }
+        (self.github.borrow_mut())(method, &params)
     }
 
     /// Resolve `repo.git_ref` to a commit SHA on first use, caching it in
@@ -118,23 +109,7 @@ impl GithubMount {
             "ref": self.repo.git_ref,
         })
         .to_string();
-        let args = json!(["resolve-ref", params]).to_string();
-        let raw = self
-            .host
-            .borrow_mut()
-            .call_json(&self.ffqn, &args)?
-            .ok_or_else(|| {
-                format!(
-                    "commit lookup returned no value for {}/{}@{}",
-                    self.repo.owner, self.repo.repo, self.repo.git_ref
-                )
-            })?;
-        let sha = serde_json::from_str::<String>(&raw).map_err(|error| {
-            format!(
-                "could not decode commit for {}/{}@{}: {error}",
-                self.repo.owner, self.repo.repo, self.repo.git_ref
-            )
-        })?;
+        let sha = (self.github.borrow_mut())("resolve-ref", &params)?;
         if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(format!(
                 "could not resolve {}/{}@{} to a commit SHA",
@@ -171,22 +146,20 @@ fn parse_entry(entry: &Value) -> Result<WebEntry, String> {
     })
 }
 
-/// Mount the transport `ffqn` as a lazily-listed tree at `mount_dir`, browsing
+/// Mount `github` as a lazily-listed tree at `mount_dir`, browsing
 /// `repo`. The whole remote repo is shown at its root (`base` is empty).
 /// `repo.git_ref` is resolved to a commit SHA on first access and cached into
 /// `resolved`, not at mount time, so registering a mount that the session
 /// never touches makes no network call.
 pub fn mount(
     fs: &mut Vfs,
-    host: Box<dyn ObeliskHost>,
-    ffqn: &str,
+    github: GithubContents,
     mount_dir: &str,
     repo: RepoRef,
     resolved: Rc<RefCell<Option<String>>>,
 ) {
     let provider = Rc::new(GithubMount {
-        host: RefCell::new(host),
-        ffqn: ffqn.to_string(),
+        github: RefCell::new(github),
         repo,
         resolved,
     });
@@ -199,28 +172,20 @@ mod tests {
 
     use super::*;
 
-    struct FakeHost {
+    /// A fake transport serving fixtures keyed by `[method, params-json]`,
+    /// recording every call.
+    fn fake_github(
         reads: BTreeMap<String, String>,
-        calls: Rc<RefCell<Vec<(String, String)>>>,
-    }
-
-    impl ObeliskHost for FakeHost {
-        fn call_json(&mut self, ffqn: &str, params_json: &str) -> Result<Option<String>, String> {
-            self.calls
-                .borrow_mut()
-                .push((ffqn.to_string(), params_json.to_string()));
-            self.reads
-                .get(params_json)
+        calls: Rc<RefCell<Vec<String>>>,
+    ) -> GithubContents {
+        Box::new(move |method, params| {
+            let key = json!([method, params]).to_string();
+            calls.borrow_mut().push(key.clone());
+            reads
+                .get(&key)
                 .cloned()
-                .map(Some)
-                .ok_or_else(|| format!("no fixture for {params_json}"))
-        }
-    }
-
-    /// The activity ok arm is a JSON string, so `call_json` returns it quoted:
-    /// double-encode the payload the mount will parse (matches `obelisk_mcp`).
-    fn ok_arm(payload: Value) -> String {
-        serde_json::to_string(&payload.to_string()).unwrap()
+                .ok_or_else(|| format!("no fixture for {key}"))
+        })
     }
 
     const RESOLVED_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -252,35 +217,32 @@ mod tests {
 
     #[test]
     fn lists_and_reads_through_the_transport() {
-        let ffqn = "obelisk-agent:mounts/apps.request";
         let calls = Rc::new(RefCell::new(Vec::new()));
-        let host = FakeHost {
-            reads: BTreeMap::from([
-                (resolve_args(), serde_json::to_string(RESOLVED_SHA).unwrap()),
+        let github = fake_github(
+            BTreeMap::from([
+                (resolve_args(), RESOLVED_SHA.to_string()),
                 (
                     args("list", ""),
-                    ok_arm(json!([
+                    json!([
                         {"name": "obelisk", "type": "dir"},
                         {"name": "README.md", "type": "file", "sha": "git:readme", "size": 5}
-                    ])),
+                    ])
+                    .to_string(),
                 ),
-                // `read`'s ok arm is the raw file body (a plain string result),
-                // so the fixture is a single JSON-encoded string, not double. The
-                // body is deliberately not valid JSON to guard the regression
+                // The body is deliberately not valid JSON to guard the regression
                 // where the transport tried to re-parse it.
                 (
                     args("read", "README.md"),
-                    serde_json::to_string("# Components\nnot json {").unwrap(),
+                    "# Components\nnot json {".to_string(),
                 ),
             ]),
-            calls: calls.clone(),
-        };
+            calls.clone(),
+        );
         let mut fs = Vfs::new();
         let resolved = Rc::new(RefCell::new(None));
         mount(
             &mut fs,
-            Box::new(host),
-            ffqn,
+            github,
             "/workspace/components",
             test_repo(),
             resolved.clone(),
@@ -306,7 +268,7 @@ mod tests {
         let resolve_calls = calls
             .borrow()
             .iter()
-            .filter(|(_, params)| params.starts_with("[\"resolve-ref\""))
+            .filter(|key| key.starts_with("[\"resolve-ref\""))
             .count();
         assert_eq!(resolve_calls, 1);
     }
@@ -323,59 +285,40 @@ mod tests {
         );
     }
 
-    /// Like `FakeHost`, but panics on any `read` call instead of returning an
-    /// error, so a wrongly-eager `cp -r` fails loudly instead of silently
-    /// swallowing a failed fetch (`copy_tree` ignores `copy_file`'s result).
-    struct PanicsOnReadHost {
-        reads: BTreeMap<String, String>,
-    }
-
-    impl ObeliskHost for PanicsOnReadHost {
-        fn call_json(&mut self, ffqn: &str, params_json: &str) -> Result<Option<String>, String> {
-            let _ = ffqn;
-            let method = serde_json::from_str::<Value>(params_json)
-                .ok()
-                .and_then(|v| v.as_array().and_then(|a| a.first().cloned()))
-                .and_then(|v| v.as_str().map(str::to_string));
-            assert_ne!(
-                method.as_deref(),
-                Some("read"),
-                "cp -r must not fetch file content"
-            );
-            self.reads
-                .get(params_json)
-                .cloned()
-                .map(Some)
-                .ok_or_else(|| format!("no fixture for {params_json}"))
-        }
-    }
-
     #[test]
     fn recursive_cp_of_a_nested_mount_fetches_nothing() {
-        let ffqn = "obelisk-agent:mounts/apps.request";
-        let host = PanicsOnReadHost {
-            reads: BTreeMap::from([
-                (resolve_args(), serde_json::to_string(RESOLVED_SHA).unwrap()),
-                (
-                    args("list", ""),
-                    ok_arm(json!([
-                        {"name": "sub", "type": "dir"},
-                        {"name": "README.md", "type": "file", "sha": "git:readme", "size": 5}
-                    ])),
-                ),
-                (
-                    args("list", "sub"),
-                    ok_arm(json!([
-                        {"name": "a.txt", "type": "file", "sha": "git:a", "size": 3}
-                    ])),
-                ),
-            ]),
-        };
+        // A wrongly-eager `cp -r` must fail loudly: `copy_tree` ignores
+        // `copy_file`'s result, so a failed fetch would otherwise go unnoticed.
+        let reads = BTreeMap::from([
+            (resolve_args(), RESOLVED_SHA.to_string()),
+            (
+                args("list", ""),
+                json!([
+                    {"name": "sub", "type": "dir"},
+                    {"name": "README.md", "type": "file", "sha": "git:readme", "size": 5}
+                ])
+                .to_string(),
+            ),
+            (
+                args("list", "sub"),
+                json!([
+                    {"name": "a.txt", "type": "file", "sha": "git:a", "size": 3}
+                ])
+                .to_string(),
+            ),
+        ]);
+        let github: GithubContents = Box::new(move |method, params| {
+            assert_ne!(method, "read", "cp -r must not fetch file content");
+            let key = json!([method, params]).to_string();
+            reads
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| format!("no fixture for {key}"))
+        });
         let mut bash = crate::bash::Bash::new(crate::types::BashOptions::default());
         mount(
             bash.fs_mut(),
-            Box::new(host),
-            ffqn,
+            github,
             "/workspace/components",
             test_repo(),
             Rc::new(RefCell::new(None)),

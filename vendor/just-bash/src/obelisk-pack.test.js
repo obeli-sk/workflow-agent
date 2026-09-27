@@ -44,7 +44,58 @@ function fakeHost() {
             if (!entry.ok) throw entry.value;
             return entry.value;
         },
+        // The pack's control plane over the ffqn-keyed fixtures: each method
+        // sends the same params array its WIT function takes.
+        listFunctions: (prefix, length) => decodeFixture(webapi("list-functions", [prefix, length])),
+        getFunctionWit: (ffqn) => text(webapi("get-function-wit", [ffqn])),
+        listExecutions: (ffqnPrefix, idPrefix, showDerived, hideFinished, length) =>
+            text(webapi("list-executions", [ffqnPrefix, idPrefix, showDerived, hideFinished, "", "", "", "", false, length])),
+        getExecution: (id) => text(webapi("get-execution", [id])),
+        getLogs: (id, length) => text(webapi("get-logs", [id, true, true, true, [], [], "", "", false, length])),
+        getResultJson: (id) => text(webapi("get-result-json", [id])),
+        listDeployments: (length) => text(webapi("list-deployments", ["", false, length])),
+        getDeployment: (id) => text(webapi("get-deployment", [id, null, null, null, null])),
+        currentDeploymentId: () => text(webapi("current-deployment-id", [])),
+        deploymentCheckout: (id) => decodeFixture(webapi("deployment-checkout", [id])),
+        deploymentReadBlob: (digest) => text(webapi("deployment-read-blob", [digest])),
+        deploymentSubmit(manifest, attachments, description, allowMissing, deploymentId) {
+            try {
+                return text(webapi("deployment-submit", [manifest, attachments, description, allowMissing, deploymentId]));
+            } catch (message) {
+                // The fixture error arm is the verbatim `permanent_missing_files` JSON.
+                let missingFiles;
+                try {
+                    missingFiles = JSON.parse(message).permanent_missing_files;
+                } catch {
+                    throw message;
+                }
+                if (!Array.isArray(missingFiles)) throw message;
+                throw { missingFiles };
+            }
+        },
+        deploymentSwitch: (id, allowMissing) => text(webapi("deployment-switch", [id, allowMissing])),
+        applyDeployment: (id) => text(webapi("apply-deployment", [id])),
+        nativeCall: (ffqn, paramsJson) => text(call("obelisk-control:tools/native.call", [ffqn, paramsJson])),
     };
+    function call(ffqn, params) {
+        const raw = host.callJson(ffqn, JSON.stringify(params));
+        if (raw === null) return null;
+        try {
+            return JSON.parse(raw);
+        } catch {
+            return raw;
+        }
+    }
+    function webapi(fn, params) {
+        return call(`obelisk-agent:tools/webapi.${fn}`, params);
+    }
+    function text(value) {
+        if (typeof value === "string") return value;
+        return value === null ? "" : JSON.stringify(value);
+    }
+    function decodeFixture(value) {
+        return typeof value === "string" ? JSON.parse(value) : value;
+    }
     return host;
 }
 
@@ -175,16 +226,6 @@ test("functions list defaults when flags absent", () => {
     const host = fakeHost().with("obelisk-agent:tools/webapi.list-functions", "[]");
     executeObelisk(interp(), words("functions list"), "", host);
     assert.equal(host.calls[0][1], JSON.stringify(["", 100]));
-});
-
-test("functions list formats a double-JSON-encoded body (backcompat)", () => {
-    const host = fakeHost().with(
-        "obelisk-agent:tools/webapi.list-functions",
-        JSON.stringify(JSON.stringify([{ ffqn: "a", parameter_types: [], return_type: "string", extension: null }])),
-    );
-    const out = executeObelisk(interp(), words("functions list"), "", host);
-    assert.equal(out.exitCode, 0);
-    assert.equal(out.stdout, "a : func() -> string\n");
 });
 
 test("functions wit prints non-JSON text verbatim", () => {
@@ -390,6 +431,51 @@ test("generate deployment prints the embedded template", () => {
     assert.match(out.stdout, /\[\[activity_wasm\]\]/);
     assert.ok(out.stdout.endsWith("\n"));
     assert.equal(host.calls.length, 0);
+});
+
+// A fake `obelisk-agent:mounts/apps.request` serving a two-level template tree.
+function templateSource() {
+    const bodies = {
+        "examples/templates/js-http": JSON.stringify([{ name: "app.toml", type: "file" }, { name: "workflow", type: "dir" }]),
+        "examples/templates/js-http/app.toml": 'app_name = "__APP_NAME__"\n',
+        "examples/templates/js-http/workflow": JSON.stringify([{ name: "run.js", type: "file" }]),
+        "examples/templates/js-http/workflow/run.js": "42\n",
+    };
+    const calls = [];
+    const githubContents = (method, paramsJson) => {
+        calls.push([method, paramsJson]);
+        return bodies[JSON.parse(paramsJson).path];
+    };
+    return { calls, generate: { obeliskVersion: "v0.42.0", githubContents } };
+}
+
+test("generate new fetches the template at OBELISK_VERSION", () => {
+    const i = interp("/workspace/My Cool_App");
+    const host = fakeHost();
+    let source = templateSource();
+    let out = executeObelisk(i, ["generate", "new"], "", host, source.generate);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stdout, 'Generated "/workspace/My Cool_App/app.toml"\nGenerated "/workspace/My Cool_App/workflow/run.js"\n');
+    assert.equal(i.vfs.readFile("/workspace/My Cool_App/app.toml"), 'app_name = "my-cool-app"\n');
+    assert.equal(i.vfs.readFile("/workspace/My Cool_App/workflow/run.js"), "42\n");
+    assert.deepEqual(source.calls[3], [
+        "read",
+        '{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/js-http/workflow/run.js"}',
+    ]);
+    assert.deepEqual(host.calls, []);
+
+    // A second run must not overwrite anything.
+    out = executeObelisk(i, ["generate", "new"], "", host, templateSource().generate);
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /already exists/);
+
+    out = executeObelisk(i, ["generate", "new", "chosen-app"], "", host, templateSource().generate);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(i.vfs.readFile("/workspace/My Cool_App/chosen-app/app.toml"), 'app_name = "chosen-app"\n');
+
+    out = executeObelisk(i, ["generate", "new", "Bad Name"], "", host, templateSource().generate);
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /invalid app name/);
 });
 
 test("generate requires a known subcommand", () => {
