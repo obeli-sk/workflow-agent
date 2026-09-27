@@ -1,6 +1,3 @@
-[database.sqlite]
-directory = "sqlite"
-
 [limits]
 # Deployment calls carry the manifest and source attachments, exceeding the 1 MiB default for this app.
 max_persisted_value_size_bytes = 2097152
