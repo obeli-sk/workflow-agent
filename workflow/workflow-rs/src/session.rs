@@ -39,6 +39,7 @@ use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, Sched
 use crate::generated::obelisk_agent::config::config::{discover, input_accepted_at};
 use crate::generated::obelisk_agent::llm::chat::CompletionResult;
 use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
+use crate::generated::obelisk_agent::mounts::apps;
 use crate::generated::obelisk_agent::stub::stub::{
     AgentErrorEvent, AgentStatusEvent, AssistantReplyEvent, HumanInputRequestedEvent,
     HumanInputResolvedEvent, InputOfferedEvent, OutputChunk, PromptInput, SessionEvent,
@@ -74,7 +75,6 @@ const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const SESSION_EVENTS_JOIN_SET: &str = "session-events";
 /// Renames ride here alone, never on `session-events`.
 const SESSION_NAME_JOIN_SET: &str = "session-name";
-const APPS_MOUNT_FFQN: &str = "obelisk-agent:mounts/apps.request";
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace. Control flow: if/elif/else, for, while, until, case, break, continue. Not supported: [[ ]], function definitions, arrays, background jobs.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"},"timeout":{"type":"string","description":"Optional wall-clock cap for this script (forms like 30s, 500ms, 5m, 1h30m). When it elapses the script stops at its next command boundary or sleep with exit code 124 and interrupted=\"timeout\"."}},"required":["script"]}}]"#;
 
 // `concat!` (not `\`-continuation) so each entry keeps its leading two-space
@@ -193,6 +193,11 @@ struct SessionConfig {
     /// this execution's identity, so it is not hand-duplicated between this
     /// backend and workflow-js's session-logic.js.
     prompt_tail: String,
+}
+
+/// The statically bound GitHub contents transport (`obelisk-agent:mounts/apps.request`).
+fn github_contents() -> obelisk_web::GithubContents {
+    Box::new(apps::request)
 }
 
 /// Load all operator-owned session settings in one activity call so environment
@@ -613,7 +618,13 @@ pub fn agent_loop(
     let config = discover_session_config(&execution_id, &model, &effort, initial_name.as_deref())?;
     bash.register_command(
         "obelisk",
-        obelisk_pack::command_handler(Box::new(host()), config.obelisk_version),
+        obelisk_pack::command_handler(
+            Box::new(host()),
+            obelisk_pack::Generate {
+                obelisk_version: config.obelisk_version,
+                github: github_contents(),
+            },
+        ),
     );
     let max_steps = config.max_steps;
     let programs = config.programs;
@@ -796,8 +807,7 @@ pub fn agent_loop(
             for app in &apps {
                 obelisk_web::mount(
                     bash.fs_mut(),
-                    Box::new(host()),
-                    APPS_MOUNT_FFQN,
+                    github_contents(),
                     &format!("/workspace/apps/{}", app.name),
                     obelisk_web::RepoRef {
                         owner: app.owner.clone(),

@@ -24,14 +24,13 @@ use crate::commands::sha256_hex;
 use crate::custom_command::CustomCommandHandler;
 use crate::fs::{BlobLoader, FsError, LazyFileRef, LazyOrigin, Sha256Digest, Vfs};
 use crate::interpreter::{CommandOutput, Interpreter};
+use crate::obelisk_web::GithubContents;
 
 const READ_BLOB_FFQN: &str = "obelisk-agent:tools/webapi.deployment-read-blob";
 const SUBMIT_FFQN: &str = "obelisk-agent:tools/webapi.deployment-submit";
 
 const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
 
-/// `generate new` reads the starter app through the GitHub mount activity.
-const GITHUB_CONTENTS_FFQN: &str = "obelisk-agent:mounts/apps.request";
 const TEMPLATE_OWNER: &str = "obeli-sk";
 const TEMPLATE_REPO: &str = "obelisk";
 const TEMPLATE_PATH: &str = "examples/templates/js-http";
@@ -73,18 +72,22 @@ pub struct MountResult {
 }
 
 /// Build the `obelisk` custom-command handler. Register it with
-/// `bash.register_command("obelisk", obelisk_pack::command_handler(host, version))`.
+/// `bash.register_command("obelisk", obelisk_pack::command_handler(host, generate))`.
 /// The handler owns `host` for the life of the session (an `FnMut` closure,
 /// not `Rc<RefCell<_>>`, since only the command itself ever touches it).
-/// `obelisk_version` is the obelisk repo ref `generate new` fetches the starter from.
-pub fn command_handler(
-    host: Box<dyn ObeliskHost>,
-    obelisk_version: String,
-) -> CustomCommandHandler {
+pub fn command_handler(host: Box<dyn ObeliskHost>, generate: Generate) -> CustomCommandHandler {
     let mut host = host;
+    let mut generate = generate;
     Box::new(move |interp, args, stdin| {
-        execute_obelisk(interp, args, &stdin, &obelisk_version, host.as_mut())
+        execute_obelisk(interp, args, &stdin, &mut generate, host.as_mut())
     })
+}
+
+/// What `generate new` fetches the starter app with: the obelisk repo ref and
+/// the GitHub contents transport.
+pub struct Generate {
+    pub obelisk_version: String,
+    pub github: GithubContents,
 }
 
 /// Check out the active deployment's `deployment.toml` plus the metadata index
@@ -256,10 +259,10 @@ fn execute_obelisk(
     interp: &mut Interpreter,
     args: &[String],
     stdin: &str,
-    obelisk_version: &str,
+    generate: &mut Generate,
     host: &mut dyn ObeliskHost,
 ) -> CommandOutput {
-    match try_execute_obelisk(interp, args, stdin, obelisk_version, host) {
+    match try_execute_obelisk(interp, args, stdin, generate, host) {
         Ok(result) => result,
         Err(message) => fail(format!("obelisk: {message}\n")),
     }
@@ -269,7 +272,7 @@ fn try_execute_obelisk(
     interp: &mut Interpreter,
     args: &[String],
     stdin: &str,
-    obelisk_version: &str,
+    generate: &mut Generate,
     host: &mut dyn ObeliskHost,
 ) -> Result<CommandOutput, String> {
     let group = args.first().map(String::as_str).unwrap_or("");
@@ -398,7 +401,7 @@ fn try_execute_obelisk(
         return target_call(host, json!([ffqn, params_json]));
     }
     if group == "generate" {
-        return execute_generate(interp, action, rest, obelisk_version, host);
+        return execute_generate(interp, action, rest, generate);
     }
     if group == "deployment" {
         return execute_deployment(interp, action, rest, host);
@@ -411,17 +414,16 @@ fn try_execute_obelisk(
 }
 
 /// `generate deployment` echoes a template baked in at build time;
-/// `generate new` fetches the starter app from GitHub at `obelisk_version`.
+/// `generate new` fetches the starter app from GitHub at `generate.obelisk_version`.
 fn execute_generate(
     interp: &mut Interpreter,
     action: &str,
     args: &[String],
-    obelisk_version: &str,
-    host: &mut dyn ObeliskHost,
+    generate: &mut Generate,
 ) -> Result<CommandOutput, String> {
     match action {
         "deployment" => Ok(ok(ensure_trailing_newline(DEPLOYMENT_TEMPLATE.to_string()))),
-        "new" => generate_new(interp, first_positional(args, &[]), obelisk_version, host),
+        "new" => generate_new(interp, first_positional(args, &[]), generate),
         "" => Ok(fail(format!(
             "obelisk generate: a subcommand is required\n{}",
             generate_help()
@@ -438,8 +440,7 @@ fn execute_generate(
 fn generate_new(
     interp: &mut Interpreter,
     name: Option<&str>,
-    git_ref: &str,
-    host: &mut dyn ObeliskHost,
+    generate: &mut Generate,
 ) -> Result<CommandOutput, String> {
     let app_name = match name {
         Some(name) => name.to_string(),
@@ -456,9 +457,10 @@ fn generate_new(
         ));
     }
 
+    let git_ref = &generate.obelisk_version;
     let repo = json!({ "owner": TEMPLATE_OWNER, "repo": TEMPLATE_REPO, "ref": git_ref });
     let mut files = Vec::new();
-    collect_template_files(host, &repo, "", &mut files).map_err(|error| {
+    collect_template_files(&mut generate.github, &repo, "", &mut files).map_err(|error| {
         format!(
             "cannot fetch the starter template from {TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{TEMPLATE_PATH}: {error}"
         )
@@ -495,7 +497,7 @@ fn generate_new(
 /// Depth-first listing of the template tree; `relative` is the path under
 /// `TEMPLATE_PATH`, collected as `(relative file path, contents)`.
 fn collect_template_files(
-    host: &mut dyn ObeliskHost,
+    github: &mut GithubContents,
     repo: &Value,
     relative: &str,
     files: &mut Vec<(String, String)>,
@@ -505,7 +507,8 @@ fn collect_template_files(
     } else {
         format!("{TEMPLATE_PATH}/{relative}")
     };
-    let listing = decode_json(&github_request(host, "list", repo, &remote)?)?;
+    let listing: Value = serde_json::from_str(&github_request(github, "list", repo, &remote)?)
+        .map_err(|e| format!("list did not return JSON: {e}"))?;
     let entries = listing
         .as_array()
         .ok_or_else(|| "list did not return a JSON array".to_string())?;
@@ -520,17 +523,10 @@ fn collect_template_files(
             format!("{relative}/{name}")
         };
         match entry.get("type").and_then(Value::as_str) {
-            Some("dir") => collect_template_files(host, repo, &child, files)?,
+            Some("dir") => collect_template_files(github, repo, &child, files)?,
             _ => {
-                let body = match github_request(
-                    host,
-                    "read",
-                    repo,
-                    &format!("{TEMPLATE_PATH}/{child}"),
-                )? {
-                    Value::String(body) => body,
-                    other => other.to_string(),
-                };
+                let body =
+                    github_request(github, "read", repo, &format!("{TEMPLATE_PATH}/{child}"))?;
                 files.push((child, body));
             }
         }
@@ -539,18 +535,14 @@ fn collect_template_files(
 }
 
 fn github_request(
-    host: &mut dyn ObeliskHost,
+    github: &mut GithubContents,
     method: &str,
     repo: &Value,
     path: &str,
-) -> Result<Value, String> {
+) -> Result<String, String> {
     let mut params = repo.clone();
     params["path"] = Value::String(path.to_string());
-    call_value(
-        host,
-        GITHUB_CONTENTS_FFQN,
-        &json!([method, params.to_string()]).to_string(),
-    )
+    github(method, &params.to_string())
 }
 
 /// PORT: obelisk's `slugify_app_name`.
@@ -1946,7 +1938,7 @@ mod tests {
     fn bare_obelisk_prints_command_list() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &[], "", "latest", &mut host);
+        let out = execute_obelisk(&mut i, &[], "", &mut no_generate(), &mut host);
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.starts_with("Usage: obelisk <command>"));
     }
@@ -1957,7 +1949,7 @@ mod tests {
         let mut i = interp("/workspace");
         // Top level.
         for case in [words(&["--help"]), words(&["-h"])] {
-            let out = execute_obelisk(&mut i, &case, "", "latest", &mut host);
+            let out = execute_obelisk(&mut i, &case, "", &mut no_generate(), &mut host);
             assert_eq!(out.exit_code, 0);
             assert!(out.stdout.starts_with("Usage: obelisk <command>"));
         }
@@ -1966,7 +1958,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "-h"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
@@ -1976,14 +1968,20 @@ mod tests {
             &mut i,
             &words(&["deployment", "submit", "--help"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.contains("PATH-TO-DEPLOYMENT.TOML"));
         // `call -h` reaches the call help even though the ffqn sits in the
         // action slot, but a help flag after `--` is a positional parameter.
-        let out = execute_obelisk(&mut i, &words(&["call", "-h"]), "", "latest", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["call", "-h"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.starts_with("Usage: obelisk call"));
         // No help path ever hits the host.
@@ -1995,7 +1993,7 @@ mod tests {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
         for group in ["functions", "executions", "deployment"] {
-            let out = execute_obelisk(&mut i, &words(&[group]), "", "latest", &mut host);
+            let out = execute_obelisk(&mut i, &words(&[group]), "", &mut no_generate(), &mut host);
             assert_eq!(out.exit_code, 2);
             assert!(!out.stderr.is_empty());
         }
@@ -2006,7 +2004,13 @@ mod tests {
     fn unknown_command_reports_help() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["nonsense"]), "", "latest", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["nonsense"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert!(out.stderr.contains("unknown command 'nonsense'"));
         assert!(out.stderr.contains("Usage: obelisk <command>"));
@@ -2041,7 +2045,7 @@ mod tests {
             &mut i,
             &words(&["functions", "list", "--prefix", "foo", "--length", "5"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
@@ -2069,7 +2073,7 @@ mod tests {
             &mut i,
             &words(&["functions", "list", "--json"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
@@ -2087,7 +2091,7 @@ mod tests {
             &mut i,
             &words(&["functions", "list"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"\",100]");
@@ -2105,7 +2109,7 @@ mod tests {
             &mut i,
             &words(&["functions", "list"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
@@ -2123,7 +2127,7 @@ mod tests {
             &mut i,
             &words(&["functions", "wit", "a:b/c.d"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
@@ -2138,7 +2142,7 @@ mod tests {
             &mut i,
             &words(&["functions", "wit"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2161,7 +2165,7 @@ mod tests {
                 "7",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(
@@ -2178,7 +2182,7 @@ mod tests {
             &mut i,
             &words(&["executions", "get"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2193,7 +2197,7 @@ mod tests {
             &mut i,
             &words(&["executions", "logs", "exec-1", "--length", "50"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         // The string body prints verbatim; the `call_json` JSON layer is peeled.
@@ -2213,7 +2217,7 @@ mod tests {
             &mut i,
             &words(&["executions", "result", "exec-1"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.stdout, "{\n  \"ok\": 1\n}\n");
@@ -2227,7 +2231,7 @@ mod tests {
             &mut i,
             &words(&["call", "some:ffqn", "[1]"]),
             "[2]",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.stdout, "42\n");
@@ -2243,7 +2247,7 @@ mod tests {
             &mut i,
             &words(&["call", "some:ffqn", "[]"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.stdout, "{\n  \"answer\": 42\n}\n");
@@ -2254,7 +2258,7 @@ mod tests {
             &mut i,
             &words(&["call", "some:ffqn", "[]"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.stdout, "plain result\n");
@@ -2268,7 +2272,7 @@ mod tests {
             &mut i,
             &words(&["call", "some:ffqn", "[]"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2284,7 +2288,7 @@ mod tests {
             &mut i,
             &words(&["call", "some:ffqn"]),
             "[9]",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"some:ffqn\",\"[9]\"]");
@@ -2294,7 +2298,7 @@ mod tests {
             &mut i,
             &words(&["call", "some:ffqn"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"some:ffqn\",\"[]\"]");
@@ -2318,7 +2322,7 @@ mod tests {
                 r#""42""#,
             ]),
             "ignored stdin",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(
@@ -2335,7 +2339,7 @@ mod tests {
             &mut i,
             &words(&["call", "some:ffqn", "1", "2"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2354,7 +2358,7 @@ mod tests {
             &mut i,
             &words(&["call", "some:ffqn", ""]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2370,7 +2374,7 @@ mod tests {
     fn call_requires_ffqn() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["call"]), "", "latest", &mut host);
+        let out = execute_obelisk(&mut i, &words(&["call"]), "", &mut no_generate(), &mut host);
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: ffqn is required\n");
     }
@@ -2386,7 +2390,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "active"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.stdout, "dep-1\n");
@@ -2403,7 +2407,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "active", "--json"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.stdout, "\"dep-1\"\n");
@@ -2417,7 +2421,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "enqueue"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2436,7 +2440,7 @@ mod tests {
                 "--allow-missing-runtime-config",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"dep-2\",true]");
@@ -2457,7 +2461,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "enqueue", "dep-2"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(
@@ -2474,7 +2478,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "apply"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2492,7 +2496,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "apply", "dep-2"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"dep-2\"]");
@@ -2510,7 +2514,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "apply", "dep-2"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2531,7 +2535,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "list"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"\",false,20]");
@@ -2558,7 +2562,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "list"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.stdout, "No deployments found.\n");
@@ -2575,7 +2579,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "show", "Dep_1"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(host.calls[0].1, "[\"Dep_1\",null,null,null,null]");
@@ -2590,7 +2594,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "show"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2605,7 +2609,7 @@ mod tests {
             &mut i,
             &words(&["deployment", "bogus"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2623,7 +2627,7 @@ mod tests {
             &mut i,
             &words(&["generate", "deployment"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
@@ -2632,36 +2636,53 @@ mod tests {
         assert!(host.calls.is_empty());
     }
 
-    fn template_host() -> FakeHost {
-        let listing = |entries: Value| serde_json::to_string(&entries.to_string()).unwrap();
-        FakeHost::new()
-            .with(
-                GITHUB_CONTENTS_FFQN,
-                &listing(json!([
-                    {"name": "app.toml", "type": "file"},
-                    {"name": "workflow", "type": "dir"}
-                ])),
-            )
-            .with(
-                GITHUB_CONTENTS_FFQN,
-                "\"app_name = \\\"__APP_NAME__\\\"\\n\"",
-            )
-            .with(
-                GITHUB_CONTENTS_FFQN,
-                &listing(json!([{"name": "run.js", "type": "file"}])),
-            )
-            .with(GITHUB_CONTENTS_FFQN, "\"42\\n\"")
+    /// A `Generate` for tests that never run `generate new`.
+    fn no_generate() -> Generate {
+        Generate {
+            obelisk_version: "latest".to_string(),
+            github: Box::new(|_, _| Err("no GitHub in this test".to_string())),
+        }
+    }
+
+    /// A fake `apps.request` serving a two-level template tree, recording calls.
+    fn template_generate(calls: &Rc<RefCell<Vec<(String, String)>>>) -> Generate {
+        let calls = calls.clone();
+        Generate {
+            obelisk_version: "v0.42.0".to_string(),
+            github: Box::new(move |method, params| {
+                calls
+                    .borrow_mut()
+                    .push((method.to_string(), params.to_string()));
+                let params: Value = serde_json::from_str(params).unwrap();
+                Ok(match params["path"].as_str().unwrap() {
+                    "examples/templates/js-http" => json!([
+                        {"name": "app.toml", "type": "file"},
+                        {"name": "workflow", "type": "dir"}
+                    ])
+                    .to_string(),
+                    "examples/templates/js-http/app.toml" => {
+                        "app_name = \"__APP_NAME__\"\n".to_string()
+                    }
+                    "examples/templates/js-http/workflow" => {
+                        json!([{"name": "run.js", "type": "file"}]).to_string()
+                    }
+                    "examples/templates/js-http/workflow/run.js" => "42\n".to_string(),
+                    other => panic!("unexpected path {other}"),
+                })
+            }),
+        }
     }
 
     #[test]
     fn generate_new_fetches_the_template_at_obelisk_version() {
-        let mut host = template_host();
+        let mut host = FakeHost::new();
+        let calls = Rc::new(RefCell::new(Vec::new()));
         let mut i = interp("/workspace/My Cool_App");
         let out = execute_obelisk(
             &mut i,
             &words(&["generate", "new"]),
             "",
-            "v0.42.0",
+            &mut template_generate(&calls),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
@@ -2678,35 +2699,31 @@ mod tests {
                 .unwrap(),
             b"42\n"
         );
-        let github_calls: Vec<_> = host
-            .calls
-            .iter()
-            .filter(|(ffqn, _)| ffqn == GITHUB_CONTENTS_FFQN)
-            .map(|(_, params)| params.as_str())
-            .collect();
         assert_eq!(
-            github_calls[3],
-            r#"["read","{\"owner\":\"obeli-sk\",\"repo\":\"obelisk\",\"ref\":\"v0.42.0\",\"path\":\"examples/templates/js-http/workflow/run.js\"}"]"#
+            calls.borrow()[3],
+            (
+                "read".to_string(),
+                r#"{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/js-http/workflow/run.js"}"#.to_string()
+            )
         );
+        assert!(host.calls.is_empty());
 
         // A second run must not overwrite anything.
-        let mut host = template_host();
         let out = execute_obelisk(
             &mut i,
             &words(&["generate", "new"]),
             "",
-            "v0.42.0",
+            &mut template_generate(&calls),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
         assert!(out.stderr.contains("already exists"), "{}", out.stderr);
 
-        let mut host = template_host();
         let out = execute_obelisk(
             &mut i,
             &words(&["generate", "new", "chosen-app"]),
             "",
-            "v0.42.0",
+            &mut template_generate(&calls),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
@@ -2720,7 +2737,7 @@ mod tests {
             &mut i,
             &words(&["generate", "new", "Bad Name"]),
             "",
-            "v0.42.0",
+            &mut template_generate(&calls),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2731,7 +2748,13 @@ mod tests {
     fn generate_requires_a_known_subcommand() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["generate"]), "", "latest", &mut host);
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["generate"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
         assert_eq!(out.exit_code, 2);
         assert!(out.stderr.contains("a subcommand is required"));
 
@@ -2739,7 +2762,7 @@ mod tests {
             &mut i,
             &words(&["generate", "bogus"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -2755,7 +2778,7 @@ mod tests {
             &mut i,
             &words(&["functions", "list"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -3093,7 +3116,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "refresh"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0);
@@ -3123,7 +3146,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/dep-1/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3146,7 +3169,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "check"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3183,7 +3206,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/dep-1/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3225,7 +3248,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
@@ -3254,7 +3277,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3279,7 +3302,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "submit"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -3303,7 +3326,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "submit", "/workspace/deployment/current"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -3333,7 +3356,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/dep-1/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3362,7 +3385,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "submit", "deployment.js.toml"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3390,7 +3413,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "submit", "deployment.js.toml"]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3438,7 +3461,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3493,7 +3516,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         // Preflight sends no blobs; the retry attaches only the edited a.js, never
@@ -3552,7 +3575,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3606,7 +3629,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3660,7 +3683,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "submit", &manifest_path]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3722,7 +3745,7 @@ content_digest = \"sha256:1\"\n\
             &mut i,
             &words(&["deployment", "submit", &manifest_path]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3827,7 +3850,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -3861,7 +3884,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -3899,7 +3922,7 @@ content_digest = \"sha256:1\"\n\
                 "/workspace/deployment/current/deployment.toml",
             ]),
             "",
-            "latest",
+            &mut no_generate(),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
@@ -3922,10 +3945,7 @@ content_digest = \"sha256:1\"\n\
             cwd: "/workspace".into(),
             ..Default::default()
         });
-        bash.register_command(
-            "obelisk",
-            command_handler(Box::new(host), "latest".to_string()),
-        );
+        bash.register_command("obelisk", command_handler(Box::new(host), no_generate()));
         let out = bash.exec("obelisk functions list | cat", Default::default());
         assert_eq!(out.exit_code, 0);
         assert_eq!(out.stdout, "");

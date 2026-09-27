@@ -173,11 +173,7 @@ location = "packs/obelisk-control/native-call.js"
 [[activity_js]]
 name = "mount_apps"
 ffqn = "obelisk-agent:mounts/apps.request"
-params = [
-  { name = "method",      type = "string" },
-  { name = "params-json", type = "string" },
-]
-return_type = "result<string, string>"
+wit = "wit"
 location = "activity/github-contents.js"
 exec.lock_expiry.seconds = 30
 [[activity_js.allowed_host]]

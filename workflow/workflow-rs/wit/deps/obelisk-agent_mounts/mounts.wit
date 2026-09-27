@@ -1,0 +1,8 @@
+package obelisk-agent:mounts;
+
+// The GitHub contents transport behind every /workspace/apps/<name> mount and
+// `obelisk generate new` (activity/github-contents.js).
+interface apps {
+  // `list`, `read`, or `resolve-ref` with `{owner, repo, ref, path}` params.
+  request: func(method: string, params-json: string) -> result<string, string>;
+}

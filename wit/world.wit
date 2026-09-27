@@ -5,4 +5,5 @@ world exports {
   export obelisk-agent:llm/chat;
   export obelisk-agent:tools/webapi;
   export obelisk-agent:config/config;
+  export obelisk-agent:mounts/apps;
 }

@@ -22,7 +22,7 @@
 // tested; this file is the host-facing orchestration only.
 
 import { discover, inputAcceptedAt } from "obelisk-agent:config/config";
-import { request as githubContents } from "obelisk-agent:mounts/apps";
+import { request as appsRequest } from "obelisk-agent:mounts/apps";
 import * as obelisk from "obelisk:workflow@1.0.0";
 import * as dynamic from "obelisk:workflow-dynamic@1.0.0";
 import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
@@ -72,12 +72,15 @@ import {
 
 chat.configureRuntime(obelisk);
 
-// obelisk-agent:mounts/apps.request: one deployed activity backing every
-// lazily-mounted GitHub repo tree, mounted at /workspace/apps/<name> per the
-// operator-configured APPS_JSON registry (see obelisk-pack.js's
-// SYSTEM_PROMPT). Fixed FFQN; which repo each mount browses travels in
-// params-json instead.
-const APPS_MOUNT_FFQN = "obelisk-agent:mounts/apps.request";
+// obelisk-agent:mounts/apps.request backs every /workspace/apps/<name> mount
+// and `obelisk generate new`; a failure surfaces as a plain message.
+function githubContents(method, paramsJson) {
+    try {
+        return appsRequest(method, paramsJson);
+    } catch (error) {
+        throw childErrorMessage(error, obelisk);
+    }
+}
 
 const DEFAULT_DESCRIPTOR_FFQN = "obelisk-control:agent/pack.describe";
 const SESSION_EVENTS_JOIN_SET = "session-events";
@@ -386,7 +389,7 @@ function mountPacks(bash, config) {
         // `resolvedRef` onto it, once the mount is first used, is visible to
         // `renderMountOutput`/`mountCommandHandler` below, which share this
         // same `config.apps` array.
-        obeliskWeb.mount(fs, createHost(dynamic, obelisk), APPS_MOUNT_FFQN, `/workspace/apps/${app.name}`, app);
+        obeliskWeb.mount(fs, githubContents, `/workspace/apps/${app.name}`, app);
     }
     for (const { name, ffqn } of config.mcpServers) {
         obeliskMcp.registerDeferredMount(fs, createHost(dynamic, obelisk), createHost(dynamic, obelisk), ffqn, `/workspace/mcp/${name}`);
@@ -618,13 +621,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     // route through it, so a plain createHost() is enough for those.
     bash.registerCommand("obelisk", obeliskPack.commandHandler(askUserAwareHost(notifications), {
         obeliskVersion: config.obeliskVersion,
-        githubContents: (method, paramsJson) => {
-            try {
-                return githubContents(method, paramsJson);
-            } catch (error) {
-                throw childErrorMessage(error, obelisk);
-            }
-        },
+        githubContents,
     }));
     const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
     // PORT: chat.rs's create_child's workflow_ext::run_cancellable_submit

@@ -3,16 +3,16 @@ import assert from "node:assert/strict";
 import { Vfs } from "./fs.js";
 import { mount } from "./obelisk-web.js";
 
-function fakeHost(fixtures) {
+// A fake `apps.request` serving fixtures keyed by `[method, paramsJson]`.
+function fakeGithub(fixtures) {
     const calls = [];
-    return {
-        calls,
-        callJson(ffqn, paramsJson) {
-            calls.push([ffqn, paramsJson]);
-            if (!(paramsJson in fixtures)) throw `no fixture for ${paramsJson}`;
-            return fixtures[paramsJson];
-        },
+    const githubContents = (method, paramsJson) => {
+        const key = JSON.stringify([method, paramsJson]);
+        calls.push(key);
+        if (!(key in fixtures)) throw `no fixture for ${key}`;
+        return fixtures[key];
     };
+    return { calls, githubContents };
 }
 
 const RESOLVED_SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -35,25 +35,21 @@ function args(method, path) {
 }
 
 test("lists and reads through the transport, lazily, pinning the ref on first use", () => {
-    const ffqn = "obelisk-agent:mounts/apps.request";
-    const host = fakeHost({
-        [resolveArgs()]: JSON.stringify(RESOLVED_SHA),
-        [args("list", "")]: JSON.stringify(
-            JSON.stringify([
-                { name: "obelisk", type: "dir" },
-                { name: "README.md", type: "file", sha: "git:readme", size: 5 },
-            ]),
-        ),
-        // "read"'s ok arm is the raw file body (a plain string result), so the
-        // fixture is single-JSON-encoded, not double; deliberately not valid
-        // JSON itself to guard the regression where the transport re-parsed it.
-        [args("read", "README.md")]: JSON.stringify("# Components\nnot json {"),
+    const github = fakeGithub({
+        [resolveArgs()]: RESOLVED_SHA,
+        [args("list", "")]: JSON.stringify([
+            { name: "obelisk", type: "dir" },
+            { name: "README.md", type: "file", sha: "git:readme", size: 5 },
+        ]),
+        // Deliberately not valid JSON to guard the regression where the
+        // transport re-parsed the body.
+        [args("read", "README.md")]: "# Components\nnot json {",
     });
     const fs = new Vfs();
     const repo = testRepo();
-    mount(fs, host, ffqn, "/workspace/components", repo);
+    mount(fs, github.githubContents, "/workspace/components", repo);
 
-    assert.equal(host.calls.length, 0, "mounting itself makes no network call");
+    assert.equal(github.calls.length, 0, "mounting itself makes no network call");
     assert.equal(repo.resolvedRef, undefined, "mounting itself must not resolve the ref");
 
     assert.deepEqual(fs.readdir("/workspace/components"), ["README.md", "obelisk"]);
@@ -65,7 +61,7 @@ test("lists and reads through the transport, lazily, pinning the ref on first us
     assert.equal(fs.readFile("/workspace/components/README.md"), "# Components\nnot json {");
 
     // The ref resolves exactly once, even across the list and the read.
-    const resolveCalls = host.calls.filter(([, params]) => params.startsWith('["resolve-ref"'));
+    const resolveCalls = github.calls.filter((key) => key.startsWith('["resolve-ref"'));
     assert.equal(resolveCalls.length, 1);
 });
 
@@ -74,12 +70,11 @@ test("an unknown entry type fails the listing silently, like any other list() er
     // directory expanded with no children, never retries) rather than
     // propagating - matching fs.rs's `if let Ok(entries) = entries`. The
     // directory lists empty rather than raising through readdir.
-    const ffqn = "obelisk-agent:mounts/apps.request";
-    const host = fakeHost({
-        [resolveArgs()]: JSON.stringify(RESOLVED_SHA),
-        [args("list", "")]: JSON.stringify(JSON.stringify([{ name: "weird", type: "symlink" }])),
+    const github = fakeGithub({
+        [resolveArgs()]: RESOLVED_SHA,
+        [args("list", "")]: JSON.stringify([{ name: "weird", type: "symlink" }]),
     });
     const fs = new Vfs();
-    mount(fs, host, ffqn, "/workspace/components", testRepo());
+    mount(fs, github.githubContents, "/workspace/components", testRepo());
     assert.deepEqual(fs.readdir("/workspace/components"), []);
 });

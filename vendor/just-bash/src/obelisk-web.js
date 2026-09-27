@@ -24,17 +24,17 @@
 // call (and anything reading the same `repo` object, e.g. the `mount`
 // listing) at that commit for the rest of the session.
 //
-// `host` is duck-typed as `{ callJson(ffqn, paramsJson) -> string|null }`
-// (throws on error); see obelisk-program.js's header comment for why.
+// `githubContents(method, paramsJson) -> string` is the statically imported
+// `obelisk-agent:mounts/apps.request` (throws a string on error).
 
 // `repo` is `{owner, repo, ref}` (extra fields are ignored), the fixed extra
 // params sent alongside `path` on every list/read call; mutated in place with
 // `resolvedRef` once the ref pins to a commit, so callers holding the same
 // object (e.g. the app registry backing the `mount` listing) see it too.
-export function mount(fs, host, ffqn, mountDir, repo) {
+export function mount(fs, githubContents, mountDir, repo) {
     const provider = {
         list(remotePath) {
-            const body = call(host, ffqn, "list", remotePath, repo);
+            const body = call(githubContents, "list", remotePath, repo);
             let entries;
             try {
                 entries = JSON.parse(body);
@@ -45,50 +45,33 @@ export function mount(fs, host, ffqn, mountDir, repo) {
             return entries.map(parseEntry);
         },
         read(remotePath) {
-            return call(host, ffqn, "read", remotePath, repo);
+            return call(githubContents, "read", remotePath, repo);
         },
     };
     fs.registerWebMount(mountDir.replace(/\/+$/, ""), "", provider);
 }
 
 // One transport call: hand `(method, {owner, repo, ref, path: remote})` to the
-// activity and return the string it produced. `host.callJson`'s result is
-// already the activity's JSON-text return value (a `string` WIT type), so it
-// arrives quoted; peeling that single layer yields the activity's own string
-// (a JSON array's text for "list", a raw file body for "read").
-function call(host, ffqn, method, remotePath, repo) {
-    const gitRef = pinnedRef(host, ffqn, repo);
+// activity and return the string it produced (a JSON array's text for
+// "list", a raw file body for "read").
+function call(githubContents, method, remotePath, repo) {
+    const gitRef = pinnedRef(githubContents, repo);
     const params = JSON.stringify({
         owner: repo.owner,
         repo: repo.repo,
         ref: gitRef,
         path: remotePath,
     });
-    const args = JSON.stringify([method, params]);
-    const raw = host.callJson(ffqn, args);
-    if (raw === null) return "";
-    try {
-        const parsed = JSON.parse(raw);
-        return typeof parsed === "string" ? parsed : JSON.stringify(parsed);
-    } catch {
-        return raw;
-    }
+    return githubContents(method, params);
 }
 
 // Resolve `repo.ref` to a commit SHA on first use, caching it onto
 // `repo.resolvedRef` so this mount stays frozen at that commit for the rest
 // of the session.
-function pinnedRef(host, ffqn, repo) {
+function pinnedRef(githubContents, repo) {
     if (repo.resolvedRef) return repo.resolvedRef;
     const params = JSON.stringify({ owner: repo.owner, repo: repo.repo, ref: repo.ref });
-    const args = JSON.stringify(["resolve-ref", params]);
-    const raw = host.callJson(ffqn, args);
-    let sha;
-    try {
-        sha = JSON.parse(raw ?? "null");
-    } catch (e) {
-        throw `could not decode commit for ${repo.owner}/${repo.repo}@${repo.ref}: ${String(e)}`;
-    }
+    const sha = githubContents("resolve-ref", params);
     if (typeof sha !== "string" || !/^[0-9a-f]{40}$/i.test(sha)) {
         throw `could not resolve ${repo.owner}/${repo.repo}@${repo.ref} to a commit SHA`;
     }

@@ -41,7 +41,16 @@ impl Guest for Component {
         });
         bash.register_command(
             "obelisk",
-            obelisk_pack::command_handler(Box::new(UnavailableHost), "latest".to_string()),
+            obelisk_pack::command_handler(
+                Box::new(UnavailableHost),
+                obelisk_pack::Generate {
+                    obelisk_version: "latest".to_string(),
+                    github: Box::new(|_, _| {
+                        Err("GitHub is not available in this proof-of-concept component"
+                            .to_string())
+                    }),
+                },
+            ),
         );
         let result = bash.exec(&script, ExecOptions { stdin, cwd: None });
         let payload = serde_json::json!({
