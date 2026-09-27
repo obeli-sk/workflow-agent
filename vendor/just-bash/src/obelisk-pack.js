@@ -284,7 +284,6 @@ function executeGenerate(interp, action, args, generate) {
 // the `obelisk` repo at the operator-pinned `OBELISK_VERSION` ref, so they
 // never drift from the target server.
 function generateNew(interp, name, generate) {
-    if (typeof generate?.githubContents !== "function") throw "generate new: GitHub access is not configured";
     const appName = name !== undefined ? name : slugifyAppName(basename(interp.cwd));
     validateAppName(appName);
     const outputDir = name !== undefined ? interp.resolvePath(appName) : interp.cwd;
@@ -292,7 +291,7 @@ function generateNew(interp, name, generate) {
         throw `cannot create new app directory ${outputDir}: File exists`;
     }
 
-    const gitRef = generate.obeliskVersion || "latest";
+    const gitRef = generate.obeliskVersion;
     const repo = { owner: TEMPLATE_OWNER, repo: TEMPLATE_REPO, ref: gitRef };
     const files = [];
     try {

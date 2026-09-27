@@ -246,8 +246,7 @@ fn parse_session_config(json: &str) -> Result<SessionConfig, String> {
     let obelisk_version = value
         .get("obelisk_version")
         .and_then(Value::as_str)
-        .filter(|version| !version.is_empty())
-        .unwrap_or("latest")
+        .ok_or_else(|| "session config has no obelisk_version".to_string())?
         .to_string();
     let prompt_tail = value
         .get("prompt_tail")
@@ -1744,7 +1743,7 @@ mod tests {
 
     #[test]
     fn parse_session_config_reads_step_limit_and_registries() {
-        const PROMPTS: &str = r#""prompt_tail":"prompt tail""#;
+        const PROMPTS: &str = r#""obelisk_version":"latest","prompt_tail":"prompt tail""#;
         let config = parse_session_config(&format!(
             r#"{{"max_steps":25,"programs":[],"mcp_servers":[],"apps":[],"webhook_url":"http://x:9290",{PROMPTS}}}"#
         ))

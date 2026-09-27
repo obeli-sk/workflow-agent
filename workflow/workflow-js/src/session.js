@@ -315,7 +315,7 @@ function loadSessionConfig(executionId, backend, effort, name) {
         // never pays for the resolve-ref round trip.
         apps: config.apps ?? [],
         webhookUrl: config.webhook_url ?? "",
-        obeliskVersion: config.obelisk_version || "latest",
+        obeliskVersion: config.obelisk_version,
         promptTail: config.prompt_tail,
     };
 }
