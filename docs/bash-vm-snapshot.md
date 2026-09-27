@@ -70,10 +70,11 @@ both by the public docs and by the concrete WIT/wiring in this repo:
 - **The `obelisk` command and target-Obelisk RPCs** (`obelisk functions`,
   `executions`, `call`, `deployment`, and the `obelisk-control:tools/*`
   programs that read `TARGET_OBELISK_API_URL`/`_TOKEN`, see `README.md:58-90`)
-  all bottom out in the same `call_json` seam via
-  `obelisk-control:tools/native.call` (`vendor/just-bash-rs/src/obelisk_pack.rs:1018-1024`).
-  `ask-user` additionally calls `workflow_support::join_set_create`/
-  `submit_json`/`join_next` directly (`host.rs:38-46`).
+  go through the pack's `ControlPlane` seam, which `RealHost` implements
+  with the statically imported `obelisk-agent:tools/webapi` and
+  `obelisk-control:tools/native.call` bindings: again child executions.
+  `ask-user` additionally calls `workflow_support::join_set_create`, the
+  generated `ask_user_submit`, and `join_next` directly (`host.rs`).
 - **The component wiring reflects this.** `workflow-rs`'s only WIT world
   (`workflow/workflow-rs/wit/impl.wit:1-13`) imports
   `obelisk:workflow/workflow-support@6.0.0`; that's what `RealHost` and
