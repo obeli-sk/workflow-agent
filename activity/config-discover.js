@@ -58,7 +58,7 @@ const PACK_SYSTEM_PROMPT =
     "- Add a component by writing its source plus an `[[activity_js]]`/`[[workflow_js]]` table (name, location, params, return_type); add a bundled file by writing it and listing its path in `component_files` as \"auto\".\n" +
     "- Run `obelisk generate deployment` for a fully-commented starter deployment.toml.\n" +
     "- `obelisk executions list` hides webhook-spawned child executions unless `--show-derived` is passed.\n" +
-    "- Fetch the docs index at https://obeli.sk/docs/latest/llms.txt/ with curl, then fetch any page it lists before writing components; never guess API signatures.\n" +
+    "- Follow the rendered llms.txt authoring guidance in the system prompt and fetch relevant linked pages before writing components; never guess API signatures.\n" +
     "- Read-only reference repos for authoring are mounted at /workspace/apps/<name> (see \"Example apps\" above).\n" +
     "- Asked to build an agent (a chat/tool loop of its own), start from /workspace/apps/agent-template rather than from scratch: it is a complete minimal JS agent (session workflow with the durable loop, LLM client activity, one example tool activity, the stub notification channel, and a web UI webhook). Read its README.md and deployment.toml, copy the pieces into the target deployment, then adapt the tool set, system prompt, and env vars to the task.\n" +
     "\n" +

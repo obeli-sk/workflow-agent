@@ -148,9 +148,9 @@ point `LLM_BASE_URL` at it and add catalog entries.
 ## Documentation
 
 The agent reads the Obelisk docs from the rendered site, not a GitHub mount.
-The `pack.describe` activity inlines each URL in `DOCS_URLS_JSON` into the
-system prompt as a pointer (never the index body, so the prompt stays slim);
-the model fetches the indexes and detail pages itself through the GET-only
+The `pack.describe` activity fetches each URL in `DOCS_URLS_JSON` and inlines
+the rendered index, including its authoring guidance, into the system prompt;
+the model fetches detail pages through the GET-only
 `curl` program, whose allowlist covers `https://obeli.sk`:
 
 ```sh
@@ -158,7 +158,7 @@ curl https://obeli.sk/docs/latest/js/js-workflows/
 ```
 
 `OBELISK_VERSION` pins the doc set to the target runtime's version
-(`https://obeli.sk/docs/v${OBELISK_VERSION}/llms.txt/`); empty means `latest`.
+(`https://obeli.sk/docs/${OBELISK_VERSION}/llms.txt/`); empty means `latest`.
 Override the whole list with `DOCS_URLS_JSON` (a JSON array of URLs). No GitHub
 credential is involved; the former `/workspace/docs` mount is gone.
 
@@ -170,16 +170,13 @@ under `/workspace/apps/<name>`, sourced from the GitHub contents API
 (one deployed activity backs every mount; which repo each one browses travels
 in the request, not a fixed env var). A directory lists on first `ls` and a
 file's bytes fetch on first `cat`, one recorded activity call each. The
-default list mounts a handful of `obeli-sk` repos (`agent-template`,
-`components`, `agent-backed-llm-server`, `demo-stargazers`, `demo-tutorial`,
-`obelisk-version-monitor`, and `workflow-agent` itself) from `main`, curated
-for authoring value: a JS repo is directly copy-and-adapt, a Rust one only
-makes the cut when it publishes reusable OCI components (`components`) or
-demonstrates a pattern worth rewriting to JS (`demo-stargazers`); override
-it to mount a different set, private forks, or pinned refs:
+default list mounts the active examples from the
+[app catalog](https://obeli.sk/docs/latest/apps/), including `agent-template`,
+`demo-playwright`, `demo-tutorial`, and `workflow-agent` itself. Override it
+to mount a different set, private forks, or pinned refs:
 
 ```sh
-export APPS_JSON='[{"name":"components","repo":"components","ref":"v0.3.0"}]'
+export APPS_JSON='[{"name":"demo-playwright","repo":"demo-playwright","ref":"main"}]'
 ```
 
 Each entry is `{name, repo}` plus optional `owner` (default `obeli-sk`),

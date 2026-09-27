@@ -54,15 +54,14 @@ ${PROGRAMS_JSON:-[
   # a terse "Lang: phrase" surfaced verbatim as a bullet in the system
   # prompt (session.rs's render_app_help / session-logic.js's renderAppHelp) -
   # keep it short, the repo's own README.md is the place for detail. The
-  # default list is curated for authoring value: JS repos are directly
-  # copy-and-adapt, Rust ones only make the cut when they publish reusable
-  # OCI components or demonstrate a pattern worth rewriting to JS - no
-  # Go/Python-only material. Override the whole list to mount a different
-  # set of repos, private forks, or pinned refs.
+  # default list covers the active example apps. Override the whole list to
+  # mount a different set of repos, private forks, or pinned refs.
   { key = "APPS_JSON", value = '''
 ${APPS_JSON:-[
   {"name":"agent-template","repo":"agent-template","description":"JS: the minimal copy-to-start agent (durable loop workflow, LLM client, one tool activity, stub channel, web UI); copy it when asked to build a new agent deployment"},
-  {"name":"components","repo":"components","description":"Rust: reusable OCI activities for HTTP, GitHub, Fly.io, Docker, OpenAI, and browser automation; copy a `*-oci.toml` block straight into a deployment.toml instead of writing the activity from scratch"},
+  {"name":"demo-playwright","repo":"demo-playwright","description":"JS: durable Playwright browser automation with exec activities and cleanup"},
+  {"name":"benchmark-fibo","repo":"benchmark-fibo","description":"Rust: Fibonacci workload for comparing workflow implementations"},
+  {"name":"webui","repo":"webui","description":"Rust/Yew: source for the Obelisk execution and deployment UI"},
   {"name":"agent-backed-llm-server","repo":"agent-backed-llm-server","description":"JS: an OpenAI-compatible LLM endpoint backed by a Claude/Codex CLI subscription; copy the webhook+activity pair when bridging a similar CLI tool"},
   {"name":"demo-stargazers","repo":"demo-stargazers","description":"Rust: a full webhook -> workflow -> external-API pattern (GitHub star notifications with persistent side effects); a reference before writing a similar workflow in JS"},
   {"name":"demo-tutorial","repo":"demo-tutorial","description":"JS: a small serial/parallel durable workflow tutorial; the fastest way to see the obelisk.* host API used correctly"},

@@ -50,10 +50,7 @@ const SYSTEM_PROMPT = [
     '',
     '# Authoring JS workflows',
     '',
-    'Read the `/js/js-workflows/` docs page first: its signatures are exact.',
-    '',
-    '- Prefer static ES-module imports of child functions over `obelisk.call`.',
-    '- Never invoke a host function speculatively to probe its signature: a malformed durable call traps the whole execution at commit time and cannot be caught in JS. Validate shapes against the docs instead - validation errors from correct-shaped calls ARE catchable.',
+    'Follow the Obelisk authoring guidance in the rendered llms.txt below. Fetch the linked API pages before writing components or calling unfamiliar host functions.',
     '',
     WIT_JSON_MAPPING,
 ].join(nl);
@@ -61,10 +58,7 @@ const SYSTEM_PROMPT = [
 const DOCS_SECTION = [
     '# Obelisk documentation (rendered llms.txt)',
     '',
-    'The full index is inlined below, listing every docs page as a URL. Fetch a page with the GET-only curl program, e.g. `curl https://obeli.sk/docs/latest/js/js-workflows/ | sed -n 1,200p` (pages are HTML; read selectively).',
-    '',
-    '- Read `/js/js-activities/`, `/js/js-workflows/`, and `/js/js-webhooks/` before writing components.',
-    '- Never guess a workflow host API signature (`obelisk.call`, `obelisk.sleep`, join sets); they are all on `/js/js-workflows/`.',
+    'The rendered index below is the source of truth for app authoring and links every docs page. Fetch relevant pages with the GET-only curl program, e.g. `curl https://obeli.sk/docs/latest/js/js-workflows/ | sed -n 1,200p`.',
 ].join(nl);
 
 // Docs indexes fetched once at session start and inlined into the prompt.
