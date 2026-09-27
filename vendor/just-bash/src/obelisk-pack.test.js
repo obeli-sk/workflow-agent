@@ -392,44 +392,47 @@ test("generate deployment prints the embedded template", () => {
     assert.equal(host.calls.length, 0);
 });
 
-const GITHUB_CONTENTS_FFQN = "obelisk-agent:mounts/apps.request";
-
-function templateHost() {
-    const listing = (entries) => JSON.stringify(JSON.stringify(entries));
-    return fakeHost()
-        .with("obelisk-agent:tools/webapi.current-deployment-id", '"Dep_1"')
-        .with("obelisk-agent:tools/webapi.get-deployment", JSON.stringify(JSON.stringify({ obelisk_version: "0.42.0" })))
-        .with(GITHUB_CONTENTS_FFQN, listing([{ name: "app.toml", type: "file" }, { name: "workflow", type: "dir" }]))
-        .with(GITHUB_CONTENTS_FFQN, JSON.stringify('app_name = "__APP_NAME__"\n'))
-        .with(GITHUB_CONTENTS_FFQN, listing([{ name: "run.js", type: "file" }]))
-        .with(GITHUB_CONTENTS_FFQN, JSON.stringify("42\n"));
+// A fake `obelisk-agent:mounts/apps.request` serving a two-level template tree.
+function templateSource() {
+    const bodies = {
+        "examples/templates/js-http": JSON.stringify([{ name: "app.toml", type: "file" }, { name: "workflow", type: "dir" }]),
+        "examples/templates/js-http/app.toml": 'app_name = "__APP_NAME__"\n',
+        "examples/templates/js-http/workflow": JSON.stringify([{ name: "run.js", type: "file" }]),
+        "examples/templates/js-http/workflow/run.js": "42\n",
+    };
+    const calls = [];
+    const githubContents = (method, paramsJson) => {
+        calls.push([method, paramsJson]);
+        return bodies[JSON.parse(paramsJson).path];
+    };
+    return { calls, generate: { obeliskVersion: "v0.42.0", githubContents } };
 }
 
-test("generate new fetches the template at the target version", () => {
+test("generate new fetches the template at OBELISK_VERSION", () => {
     const i = interp("/workspace/My Cool_App");
-    let host = templateHost();
-    let out = executeObelisk(i, ["generate", "new"], "", host);
+    const host = fakeHost();
+    let source = templateSource();
+    let out = executeObelisk(i, ["generate", "new"], "", host, source.generate);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(out.stdout, 'Generated "/workspace/My Cool_App/app.toml"\nGenerated "/workspace/My Cool_App/workflow/run.js"\n');
     assert.equal(i.vfs.readFile("/workspace/My Cool_App/app.toml"), 'app_name = "my-cool-app"\n');
     assert.equal(i.vfs.readFile("/workspace/My Cool_App/workflow/run.js"), "42\n");
-    const githubCalls = host.calls.filter(([ffqn]) => ffqn === GITHUB_CONTENTS_FFQN).map(([, params]) => params);
-    assert.equal(
-        githubCalls[3],
-        '["read","{\\"owner\\":\\"obeli-sk\\",\\"repo\\":\\"obelisk\\",\\"ref\\":\\"v0.42.0\\",\\"path\\":\\"examples/templates/js-http/workflow/run.js\\"}"]',
-    );
+    assert.deepEqual(source.calls[3], [
+        "read",
+        '{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/js-http/workflow/run.js"}',
+    ]);
+    assert.deepEqual(host.calls, []);
 
     // A second run must not overwrite anything.
-    out = executeObelisk(i, ["generate", "new"], "", templateHost());
+    out = executeObelisk(i, ["generate", "new"], "", host, templateSource().generate);
     assert.equal(out.exitCode, 2);
     assert.match(out.stderr, /already exists/);
 
-    host = templateHost();
-    out = executeObelisk(i, ["generate", "new", "chosen-app"], "", host);
+    out = executeObelisk(i, ["generate", "new", "chosen-app"], "", host, templateSource().generate);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(i.vfs.readFile("/workspace/My Cool_App/chosen-app/app.toml"), 'app_name = "chosen-app"\n');
 
-    out = executeObelisk(i, ["generate", "new", "Bad Name"], "", host);
+    out = executeObelisk(i, ["generate", "new", "Bad Name"], "", host, templateSource().generate);
     assert.equal(out.exitCode, 2);
     assert.match(out.stderr, /invalid app name/);
 });

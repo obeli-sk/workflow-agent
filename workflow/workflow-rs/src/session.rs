@@ -186,6 +186,8 @@ struct SessionConfig {
     apps: Vec<App>,
     /// Base URL of the target's webhook listener; empty when not configured.
     webhook_url: String,
+    /// The obelisk repo ref `obelisk generate new` fetches the starter from.
+    obelisk_version: String,
     /// The whole tail of the system prompt after "# Example apps" (user
     /// input, subagents, deployment authoring, and the per-session
     /// "# This session" text), single-sourced in config-discover.js given
@@ -241,6 +243,12 @@ fn parse_session_config(json: &str) -> Result<SessionConfig, String> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
+    let obelisk_version = value
+        .get("obelisk_version")
+        .and_then(Value::as_str)
+        .filter(|version| !version.is_empty())
+        .unwrap_or("latest")
+        .to_string();
     let prompt_tail = value
         .get("prompt_tail")
         .and_then(Value::as_str)
@@ -252,6 +260,7 @@ fn parse_session_config(json: &str) -> Result<SessionConfig, String> {
         mcp_servers,
         apps,
         webhook_url,
+        obelisk_version,
         prompt_tail,
     })
 }
@@ -700,8 +709,6 @@ pub fn agent_loop(
         log_debug: log_line,
         ..Default::default()
     });
-    bash.register_command("obelisk", obelisk_pack::command_handler(Box::new(host())));
-
     // A session created with a slug label (`chat create --name`) starts
     // already renamed; anything else arrives unnamed.
     let initial_name = if name.is_empty() {
@@ -719,6 +726,10 @@ pub fn agent_loop(
         &effort,
         initial_name.as_deref(),
     )?;
+    bash.register_command(
+        "obelisk",
+        obelisk_pack::command_handler(Box::new(host()), config.obelisk_version),
+    );
     let max_steps = config.max_steps;
     let programs = config.programs;
     let mcp_servers = config.mcp_servers;

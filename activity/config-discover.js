@@ -6,6 +6,7 @@
 //     mcp-servers: list<record { name: string, ffqn: string }>,
 //     apps: list<record { name: string, owner: string, repo: string, ref: string, description: string }>,
 //     webhook-url: string,
+//     obelisk-version: string,
 //     prompt-tail: string
 //   }, string>
 //
@@ -121,6 +122,7 @@ export default async function discover(executionId, backend, effort, name) {
         mcp_servers: parseRegistry("MCP_SERVERS_JSON", parseMcpServer),
         apps: parseRegistry("APPS_JSON", parseApp),
         webhook_url: (process.env["TARGET_OBELISK_WEBHOOK_URL"] ?? "").trim(),
+        obelisk_version: (process.env["OBELISK_VERSION"] ?? "").trim() || "latest",
         // STATIC_SECTIONS already ends in one "\n" (from PACK_SYSTEM_PROMPT);
         // one more here yields the same blank-line gap as every other
         // section boundary in this prompt.

@@ -22,6 +22,7 @@
 // tested; this file is the host-facing orchestration only.
 
 import { discover, inputAcceptedAt } from "obelisk-agent:config/config";
+import { request as githubContents } from "obelisk-agent:mounts/apps";
 import * as obelisk from "obelisk:workflow@1.0.0";
 import * as dynamic from "obelisk:workflow-dynamic@1.0.0";
 import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
@@ -40,7 +41,7 @@ import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
 import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
 import * as obeliskMcp from "../../../vendor/just-bash/src/obelisk-mcp.js";
 import * as obeliskWeb from "../../../vendor/just-bash/src/obelisk-web.js";
-import { createHost } from "./host.js";
+import { childErrorMessage, createHost } from "./host.js";
 import { arm as armScriptWatch } from "./script-watch.js";
 import * as chat from "./chat.js";
 import {
@@ -314,6 +315,7 @@ function loadSessionConfig(executionId, backend, effort, name) {
         // never pays for the resolve-ref round trip.
         apps: config.apps ?? [],
         webhookUrl: config.webhook_url ?? "",
+        obeliskVersion: config.obelisk_version || "latest",
         promptTail: config.prompt_tail,
     };
 }
@@ -601,13 +603,6 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
 
     const notifications = new Notifications();
     const bash = new Bash({ cwd: "/workspace", nowMs: hostNowMs, sleepMs: hostSleepMs });
-    // Always registered, independent of operator config (mirrors session.rs
-    // registering obelisk_pack unconditionally right after Bash::new). Only
-    // this registration's host needs the ask-user interception: it's the
-    // only path that ever dispatches through native.call (obelisk-pack.js's
-    // `targetCall`, backing `obelisk call FFQN`); programs/MCP commands never
-    // route through it, so a plain createHost() is enough for those.
-    bash.registerCommand("obelisk", obeliskPack.commandHandler(askUserAwareHost(notifications)));
 
     // A session created with a slug label (`chat create --name`) starts
     // already renamed; anything else arrives unnamed. PORT: session.rs's
@@ -616,6 +611,21 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const initialName = name || null;
     const config = loadSessionConfig(executionId, model, effort, initialName);
     const maxSteps = config.maxSteps;
+    // Always registered, independent of operator config (mirrors session.rs).
+    // Only this registration's host needs the ask-user interception: it's the
+    // only path that ever dispatches through native.call (obelisk-pack.js's
+    // `targetCall`, backing `obelisk call FFQN`); programs/MCP commands never
+    // route through it, so a plain createHost() is enough for those.
+    bash.registerCommand("obelisk", obeliskPack.commandHandler(askUserAwareHost(notifications), {
+        obeliskVersion: config.obeliskVersion,
+        githubContents: (method, paramsJson) => {
+            try {
+                return githubContents(method, paramsJson);
+            } catch (error) {
+                throw childErrorMessage(error, obelisk);
+            }
+        },
+    }));
     const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
     // PORT: chat.rs's create_child's workflow_ext::run_cancellable_submit
     // call, with the descriptor-ffqn positional argument fixed to null

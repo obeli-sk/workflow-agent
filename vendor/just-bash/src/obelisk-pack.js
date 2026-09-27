@@ -38,8 +38,6 @@ const SUBMIT_FFQN = "obelisk-agent:tools/webapi.deployment-submit";
 
 const DEPLOYMENT_ROOT = "/workspace/deployment";
 
-// `generate new` reads the starter app through the GitHub mount activity.
-const GITHUB_CONTENTS_FFQN = "obelisk-agent:mounts/apps.request";
 const TEMPLATE_OWNER = "obeli-sk";
 const TEMPLATE_REPO = "obelisk";
 const TEMPLATE_PATH = "examples/templates/js-http";
@@ -54,12 +52,14 @@ const AUTO_DIGEST = "auto";
 // ---------------------------------------------------------------------------
 
 // Build the `obelisk` custom-command handler. Register it with
-// `commands.set("obelisk", obelisk.commandHandler(host))`. The handler owns
+// `commands.set("obelisk", obelisk.commandHandler(host, generate))`. The handler owns
 // `host` for the life of the session (a plain closure capture, not an
 // Rc<RefCell<_>> as in the Rust port, since JS closures already close over a
-// shared mutable reference).
-export function commandHandler(host) {
-    return (interp, args, stdin) => executeObelisk(interp, args.slice(1), stdin, host);
+// shared mutable reference). `generate` is `{ obeliskVersion, githubContents }`:
+// the obelisk repo ref and the statically imported `obelisk-agent:mounts/apps.request`
+// that `generate new` fetches the starter app with.
+export function commandHandler(host, generate) {
+    return (interp, args, stdin) => executeObelisk(interp, args.slice(1), stdin, host, generate);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,15 +172,15 @@ function checkoutFileRefs(checkout) {
 // Directly callable by tests, mirroring the Rust test module's
 // `execute_obelisk(&mut interp, &words(...), stdin, &mut host)` - `args`
 // here does NOT include the command name itself (see `commandHandler`).
-export function executeObelisk(interp, args, stdin, host) {
+export function executeObelisk(interp, args, stdin, host, generate) {
     try {
-        return tryExecuteObelisk(interp, args, stdin, host);
+        return tryExecuteObelisk(interp, args, stdin, host, generate);
     } catch (message) {
         return fail(`obelisk: ${typeof message === "string" ? message : String(message?.message ?? message)}\n`);
     }
 }
 
-function tryExecuteObelisk(interp, args, stdin, host) {
+function tryExecuteObelisk(interp, args, stdin, host, generate) {
     const group = args[0] ?? "";
     const action = args[1] ?? "";
     const rest = args.length > 2 ? args.slice(2) : [];
@@ -266,24 +266,25 @@ function tryExecuteObelisk(interp, args, stdin, host) {
         const paramsJson = rest[0] !== undefined && rest[0] !== "" ? rest[0] : stdin && stdin !== "" ? stdin : "[]";
         return targetCall(host, [ffqn, paramsJson]);
     }
-    if (group === "generate") return executeGenerate(interp, action, rest, host);
+    if (group === "generate") return executeGenerate(interp, action, rest, generate);
     if (group === "deployment") return executeDeployment(interp, action, rest, host);
     return fail(`obelisk: unknown command '${args.join(" ")}'\n${helpText}`);
 }
 
 // `generate deployment` echoes a template baked in at build time;
-// `generate new` fetches the starter app from GitHub at the target's version.
-function executeGenerate(interp, action, args, host) {
+// `generate new` fetches the starter app from GitHub at `generate.obeliskVersion`.
+function executeGenerate(interp, action, args, generate) {
     if (action === "deployment") return ok(ensureTrailingNewline(DEPLOYMENT_TEMPLATE));
-    if (action === "new") return generateNew(interp, firstPositional(args, []), host);
+    if (action === "new") return generateNew(interp, firstPositional(args, []), generate);
     if (action === "") return fail(`obelisk generate: a subcommand is required\n${generateHelp}`);
     return fail(`obelisk generate: unknown action '${action}'\n`);
 }
 
 // PORT: real obelisk `generate new [NAME]`. The template files are read from
-// the `obelisk` repo tag matching the active deployment's `obelisk_version`,
-// so they never drift from the target server.
-function generateNew(interp, name, host) {
+// the `obelisk` repo at the operator-pinned `OBELISK_VERSION` ref, so they
+// never drift from the target server.
+function generateNew(interp, name, generate) {
+    if (typeof generate?.githubContents !== "function") throw "generate new: GitHub access is not configured";
     const appName = name !== undefined ? name : slugifyAppName(basename(interp.cwd));
     validateAppName(appName);
     const outputDir = name !== undefined ? interp.resolvePath(appName) : interp.cwd;
@@ -291,11 +292,11 @@ function generateNew(interp, name, host) {
         throw `cannot create new app directory ${outputDir}: File exists`;
     }
 
-    const gitRef = `v${targetObeliskVersion(host)}`;
+    const gitRef = generate.obeliskVersion || "latest";
     const repo = { owner: TEMPLATE_OWNER, repo: TEMPLATE_REPO, ref: gitRef };
     const files = [];
     try {
-        collectTemplateFiles(host, repo, "", files);
+        collectTemplateFiles(generate.githubContents, repo, "", files);
     } catch (error) {
         throw `cannot fetch the starter template from ${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${gitRef}:${TEMPLATE_PATH}: ${error}`;
     }
@@ -316,35 +317,21 @@ function generateNew(interp, name, host) {
     return ok(stdout);
 }
 
-function targetObeliskVersion(host) {
-    const deploymentId = decodeString(callValue(host, "obelisk-agent:tools/webapi.current-deployment-id", "[]"));
-    if (deploymentId === "") throw "cannot determine the target Obelisk version: no active deployment";
-    const record = decodeJson(callValue(host, "obelisk-agent:tools/webapi.get-deployment", JSON.stringify([deploymentId, null, null, null, null])));
-    const version = record?.obelisk_version;
-    if (typeof version !== "string" || version === "") throw `deployment ${deploymentId} has no obelisk_version`;
-    return version;
-}
-
 // Depth-first listing of the template tree; `relative` is the path under
 // TEMPLATE_PATH, collected as `[relative file path, contents]`.
-function collectTemplateFiles(host, repo, relative, files) {
+function collectTemplateFiles(githubContents, repo, relative, files) {
     const remote = relative === "" ? TEMPLATE_PATH : `${TEMPLATE_PATH}/${relative}`;
-    const entries = decodeJson(githubRequest(host, "list", repo, remote));
+    const entries = decodeJson(githubContents("list", JSON.stringify({ ...repo, path: remote })));
     if (!Array.isArray(entries)) throw "list did not return a JSON array";
     for (const entry of entries) {
         if (typeof entry?.name !== "string") throw `list entry without a name: ${JSON.stringify(entry)}`;
         const child = relative === "" ? entry.name : `${relative}/${entry.name}`;
         if (entry.type === "dir") {
-            collectTemplateFiles(host, repo, child, files);
+            collectTemplateFiles(githubContents, repo, child, files);
         } else {
-            const body = githubRequest(host, "read", repo, `${TEMPLATE_PATH}/${child}`);
-            files.push([child, typeof body === "string" ? body : JSON.stringify(body)]);
+            files.push([child, githubContents("read", JSON.stringify({ ...repo, path: `${TEMPLATE_PATH}/${child}` }))]);
         }
     }
-}
-
-function githubRequest(host, method, repo, path) {
-    return callValue(host, GITHUB_CONTENTS_FFQN, JSON.stringify([method, JSON.stringify({ ...repo, path })]));
 }
 
 // PORT: obelisk's `slugify_app_name`.
@@ -909,7 +896,7 @@ const generateHelp =
     "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file, or create a new app.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\nnew [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n";
 
 const generateNewHelp =
-    "Usage: obelisk generate new [NAME]\n\nCreate a runnable JS starter app (app.toml, deployment.toml, a webhook, a\nworkflow, and an HTTP activity). With NAME, the app is created in a new NAME\ndirectory; otherwise in the current directory, named after its slug. The files\nare fetched from the obelisk repository at the target server's version.\n";
+    "Usage: obelisk generate new [NAME]\n\nCreate a runnable JS starter app (app.toml, deployment.toml, a webhook, a\nworkflow, and an HTTP activity). With NAME, the app is created in a new NAME\ndirectory; otherwise in the current directory, named after its slug. The files\nare fetched from the obelisk repository at the operator's OBELISK_VERSION.\n";
 
 const generateDeploymentHelp =
     "Usage: obelisk generate deployment\n\nPrint a default deployment.toml with every option documented as comments.\nRedirect it to a file to scaffold a new deployment, e.g.\n`obelisk generate deployment > deployment.toml`.\n";
