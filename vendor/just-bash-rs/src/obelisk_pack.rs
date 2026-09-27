@@ -30,6 +30,12 @@ const SUBMIT_FFQN: &str = "obelisk-agent:tools/webapi.deployment-submit";
 
 const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
 
+/// `generate new` reads the starter app through the GitHub mount activity.
+const GITHUB_CONTENTS_FFQN: &str = "obelisk-agent:mounts/apps.request";
+const TEMPLATE_OWNER: &str = "obeli-sk";
+const TEMPLATE_REPO: &str = "obelisk";
+const TEMPLATE_PATH: &str = "examples/templates/js-http";
+
 /// The placeholder value the agent sees in `component_files` maps in place of a
 /// pinned digest; `deployment submit` replaces each with the file's real digest.
 const AUTO_DIGEST: &str = "auto";
@@ -384,7 +390,7 @@ fn try_execute_obelisk(
         return target_call(host, json!([ffqn, params_json]));
     }
     if group == "generate" {
-        return execute_generate(action);
+        return execute_generate(interp, action, rest, host);
     }
     if group == "deployment" {
         return execute_deployment(interp, action, rest, host);
@@ -396,11 +402,17 @@ fn try_execute_obelisk(
     )))
 }
 
-/// Print a starter config file. Purely local: unlike the other groups it never
-/// touches the target server, it just echoes a template baked in at build time.
-fn execute_generate(action: &str) -> Result<CommandOutput, String> {
+/// `generate deployment` echoes a template baked in at build time;
+/// `generate new` fetches the starter app from GitHub at the target's version.
+fn execute_generate(
+    interp: &mut Interpreter,
+    action: &str,
+    args: &[String],
+    host: &mut dyn ObeliskHost,
+) -> Result<CommandOutput, String> {
     match action {
         "deployment" => Ok(ok(ensure_trailing_newline(DEPLOYMENT_TEMPLATE.to_string()))),
+        "new" => generate_new(interp, first_positional(args, &[]), host),
         "" => Ok(fail(format!(
             "obelisk generate: a subcommand is required\n{}",
             generate_help()
@@ -408,6 +420,193 @@ fn execute_generate(action: &str) -> Result<CommandOutput, String> {
         _ => Ok(fail(format!(
             "obelisk generate: unknown action '{action}'\n"
         ))),
+    }
+}
+
+/// PORT: real obelisk `generate new [NAME]`. The template files are read from
+/// the `obelisk` repo tag matching the active deployment's `obelisk_version`,
+/// so they never drift from the target server.
+fn generate_new(
+    interp: &mut Interpreter,
+    name: Option<&str>,
+    host: &mut dyn ObeliskHost,
+) -> Result<CommandOutput, String> {
+    let app_name = match name {
+        Some(name) => name.to_string(),
+        None => slugify_app_name(&basename(&interp.cwd)),
+    };
+    validate_app_name(&app_name)?;
+    let output_dir = match name {
+        Some(_) => normalize_path(&interp.cwd, &app_name),
+        None => interp.cwd.clone(),
+    };
+    if name.is_some() && interp.fs.exists(&output_dir) {
+        return Err(format!(
+            "cannot create new app directory {output_dir}: File exists"
+        ));
+    }
+
+    let git_ref = format!("v{}", target_obelisk_version(host)?);
+    let repo = json!({ "owner": TEMPLATE_OWNER, "repo": TEMPLATE_REPO, "ref": git_ref });
+    let mut files = Vec::new();
+    collect_template_files(host, &repo, "", &mut files).map_err(|error| {
+        format!(
+            "cannot fetch the starter template from {TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{TEMPLATE_PATH}: {error}"
+        )
+    })?;
+    if files.is_empty() {
+        return Err(format!(
+            "{TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{TEMPLATE_PATH} contains no files"
+        ));
+    }
+    for (relative, _) in &files {
+        let path = format!("{output_dir}/{relative}");
+        if interp.fs.exists(&path) {
+            return Err(format!("cannot generate app: {path} already exists"));
+        }
+    }
+
+    let mut stdout = String::new();
+    for (relative, contents) in files {
+        let path = format!("{output_dir}/{relative}");
+        let contents = if relative == "app.toml" {
+            contents.replace("__APP_NAME__", &app_name)
+        } else {
+            contents
+        };
+        interp
+            .fs
+            .write_file(&path, contents.as_bytes())
+            .map_err(fs_error_message)?;
+        stdout.push_str(&format!("Generated {path:?}\n"));
+    }
+    Ok(ok(stdout))
+}
+
+fn target_obelisk_version(host: &mut dyn ObeliskHost) -> Result<String, String> {
+    let current = call_value(
+        host,
+        "obelisk-agent:tools/webapi.current-deployment-id",
+        "[]",
+    )?;
+    let deployment_id = decode_string(&current);
+    if deployment_id.is_empty() {
+        return Err(
+            "cannot determine the target Obelisk version: no active deployment".to_string(),
+        );
+    }
+    let value = call_value(
+        host,
+        "obelisk-agent:tools/webapi.get-deployment",
+        &json!([
+            deployment_id,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null
+        ])
+        .to_string(),
+    )?;
+    decode_json(&value)?
+        .get("obelisk_version")
+        .and_then(Value::as_str)
+        .filter(|version| !version.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("deployment {deployment_id} has no obelisk_version"))
+}
+
+/// Depth-first listing of the template tree; `relative` is the path under
+/// `TEMPLATE_PATH`, collected as `(relative file path, contents)`.
+fn collect_template_files(
+    host: &mut dyn ObeliskHost,
+    repo: &Value,
+    relative: &str,
+    files: &mut Vec<(String, String)>,
+) -> Result<(), String> {
+    let remote = if relative.is_empty() {
+        TEMPLATE_PATH.to_string()
+    } else {
+        format!("{TEMPLATE_PATH}/{relative}")
+    };
+    let listing = decode_json(&github_request(host, "list", repo, &remote)?)?;
+    let entries = listing
+        .as_array()
+        .ok_or_else(|| "list did not return a JSON array".to_string())?;
+    for entry in entries {
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("list entry without a name: {entry}"))?;
+        let child = if relative.is_empty() {
+            name.to_string()
+        } else {
+            format!("{relative}/{name}")
+        };
+        match entry.get("type").and_then(Value::as_str) {
+            Some("dir") => collect_template_files(host, repo, &child, files)?,
+            _ => {
+                let body = match github_request(
+                    host,
+                    "read",
+                    repo,
+                    &format!("{TEMPLATE_PATH}/{child}"),
+                )? {
+                    Value::String(body) => body,
+                    other => other.to_string(),
+                };
+                files.push((child, body));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn github_request(
+    host: &mut dyn ObeliskHost,
+    method: &str,
+    repo: &Value,
+    path: &str,
+) -> Result<Value, String> {
+    let mut params = repo.clone();
+    params["path"] = Value::String(path.to_string());
+    call_value(
+        host,
+        GITHUB_CONTENTS_FFQN,
+        &json!([method, params.to_string()]).to_string(),
+    )
+}
+
+/// PORT: obelisk's `slugify_app_name`.
+fn slugify_app_name(name: &str) -> String {
+    let mut slug = String::new();
+    for character in name.chars() {
+        if slug.len() == 63 {
+            break;
+        }
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_string()
+}
+
+/// PORT: obelisk's `validate_app_name`.
+fn validate_app_name(name: &str) -> Result<(), String> {
+    let valid = name.len() <= 63
+        && !name.is_empty()
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid app name `{name}`: expected a DNS label (1-63 lowercase ASCII letters, digits, or interior hyphens)"
+        ))
     }
 }
 
@@ -1507,6 +1706,7 @@ fn action_help(group: &str, action: &str) -> String {
         ("deployment", "enqueue") => deployment_enqueue_help(),
         ("deployment", "apply") => deployment_apply_help(),
         ("generate", "deployment") => generate_deployment_help(),
+        ("generate", "new") => generate_new_help(),
         _ => group_help(group),
     }
 }
@@ -1522,7 +1722,7 @@ Commands:\n\
   executions   List executions, or show one execution's record, logs, or result.\n\
   call         Call a deployed function and print its result.\n\
   deployment   Inspect, edit, submit, and activate deployments.\n\
-  generate     Print a starter configuration file.\n\
+  generate     Print a starter configuration file, or create a new app.\n\
 \n\
 Run `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n"
         .to_string()
@@ -1630,10 +1830,21 @@ Hot-redeploy a stored deployment now (fails if it cannot be applied live).\n"
 fn generate_help() -> String {
     "Usage: obelisk generate <subcommand>\n\
 \n\
-Print a starter Obelisk configuration file.\n\
+Print a starter Obelisk configuration file, or create a new app.\n\
 \n\
 Subcommands:\n\
-  deployment   Print a default deployment.toml with every option documented.\n"
+  deployment   Print a default deployment.toml with every option documented.\n\
+  new [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n"
+        .to_string()
+}
+
+fn generate_new_help() -> String {
+    "Usage: obelisk generate new [NAME]\n\
+\n\
+Create a runnable JS starter app (app.toml, deployment.toml, a webhook, a\n\
+workflow, and an HTTP activity). With NAME, the app is created in a new NAME\n\
+directory; otherwise in the current directory, named after its slug. The files\n\
+are fetched from the obelisk repository at the target server's version.\n"
         .to_string()
 }
 
@@ -2312,6 +2523,95 @@ mod tests {
         assert!(out.stdout.contains("[[activity_wasm]]"), "{}", out.stdout);
         assert!(out.stdout.ends_with('\n'));
         assert!(host.calls.is_empty());
+    }
+
+    fn template_host() -> FakeHost {
+        let listing = |entries: Value| serde_json::to_string(&entries.to_string()).unwrap();
+        FakeHost::new()
+            .with(
+                "obelisk-agent:tools/webapi.current-deployment-id",
+                "\"Dep_1\"",
+            )
+            .with(
+                "obelisk-agent:tools/webapi.get-deployment",
+                &serde_json::to_string(&json!({"obelisk_version": "0.42.0"}).to_string()).unwrap(),
+            )
+            .with(
+                GITHUB_CONTENTS_FFQN,
+                &listing(json!([
+                    {"name": "app.toml", "type": "file"},
+                    {"name": "workflow", "type": "dir"}
+                ])),
+            )
+            .with(
+                GITHUB_CONTENTS_FFQN,
+                "\"app_name = \\\"__APP_NAME__\\\"\\n\"",
+            )
+            .with(
+                GITHUB_CONTENTS_FFQN,
+                &listing(json!([{"name": "run.js", "type": "file"}])),
+            )
+            .with(GITHUB_CONTENTS_FFQN, "\"42\\n\"")
+    }
+
+    #[test]
+    fn generate_new_fetches_the_template_at_the_target_version() {
+        let mut host = template_host();
+        let mut i = interp("/workspace/My Cool_App");
+        let out = execute_obelisk(&mut i, &words(&["generate", "new"]), "", &mut host);
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(
+            out.stdout,
+            "Generated \"/workspace/My Cool_App/app.toml\"\nGenerated \"/workspace/My Cool_App/workflow/run.js\"\n"
+        );
+        assert_eq!(
+            i.fs.read_file("/workspace/My Cool_App/app.toml").unwrap(),
+            b"app_name = \"my-cool-app\"\n"
+        );
+        assert_eq!(
+            i.fs.read_file("/workspace/My Cool_App/workflow/run.js")
+                .unwrap(),
+            b"42\n"
+        );
+        let github_calls: Vec<_> = host
+            .calls
+            .iter()
+            .filter(|(ffqn, _)| ffqn == GITHUB_CONTENTS_FFQN)
+            .map(|(_, params)| params.as_str())
+            .collect();
+        assert_eq!(
+            github_calls[3],
+            r#"["read","{\"owner\":\"obeli-sk\",\"repo\":\"obelisk\",\"ref\":\"v0.42.0\",\"path\":\"examples/templates/js-http/workflow/run.js\"}"]"#
+        );
+
+        // A second run must not overwrite anything.
+        let mut host = template_host();
+        let out = execute_obelisk(&mut i, &words(&["generate", "new"]), "", &mut host);
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stderr.contains("already exists"), "{}", out.stderr);
+
+        let mut host = template_host();
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["generate", "new", "chosen-app"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(
+            i.fs.read_file("/workspace/My Cool_App/chosen-app/app.toml")
+                .unwrap(),
+            b"app_name = \"chosen-app\"\n"
+        );
+
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["generate", "new", "Bad Name"]),
+            "",
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stderr.contains("invalid app name"), "{}", out.stderr);
     }
 
     #[test]

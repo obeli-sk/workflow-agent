@@ -38,6 +38,12 @@ const SUBMIT_FFQN = "obelisk-agent:tools/webapi.deployment-submit";
 
 const DEPLOYMENT_ROOT = "/workspace/deployment";
 
+// `generate new` reads the starter app through the GitHub mount activity.
+const GITHUB_CONTENTS_FFQN = "obelisk-agent:mounts/apps.request";
+const TEMPLATE_OWNER = "obeli-sk";
+const TEMPLATE_REPO = "obelisk";
+const TEMPLATE_PATH = "examples/templates/js-http";
+
 // The placeholder value the agent sees in `component_files` maps in place of
 // a pinned digest; `deployment submit` replaces each with the file's real
 // digest.
@@ -260,18 +266,106 @@ function tryExecuteObelisk(interp, args, stdin, host) {
         const paramsJson = rest[0] !== undefined && rest[0] !== "" ? rest[0] : stdin && stdin !== "" ? stdin : "[]";
         return targetCall(host, [ffqn, paramsJson]);
     }
-    if (group === "generate") return executeGenerate(action);
+    if (group === "generate") return executeGenerate(interp, action, rest, host);
     if (group === "deployment") return executeDeployment(interp, action, rest, host);
     return fail(`obelisk: unknown command '${args.join(" ")}'\n${helpText}`);
 }
 
-// Print a starter config file. Purely local: unlike the other groups it
-// never touches the target server, it just echoes a template baked in at
-// build time.
-function executeGenerate(action) {
+// `generate deployment` echoes a template baked in at build time;
+// `generate new` fetches the starter app from GitHub at the target's version.
+function executeGenerate(interp, action, args, host) {
     if (action === "deployment") return ok(ensureTrailingNewline(DEPLOYMENT_TEMPLATE));
+    if (action === "new") return generateNew(interp, firstPositional(args, []), host);
     if (action === "") return fail(`obelisk generate: a subcommand is required\n${generateHelp}`);
     return fail(`obelisk generate: unknown action '${action}'\n`);
+}
+
+// PORT: real obelisk `generate new [NAME]`. The template files are read from
+// the `obelisk` repo tag matching the active deployment's `obelisk_version`,
+// so they never drift from the target server.
+function generateNew(interp, name, host) {
+    const appName = name !== undefined ? name : slugifyAppName(basename(interp.cwd));
+    validateAppName(appName);
+    const outputDir = name !== undefined ? interp.resolvePath(appName) : interp.cwd;
+    if (name !== undefined && interp.vfs.exists(outputDir)) {
+        throw `cannot create new app directory ${outputDir}: File exists`;
+    }
+
+    const gitRef = `v${targetObeliskVersion(host)}`;
+    const repo = { owner: TEMPLATE_OWNER, repo: TEMPLATE_REPO, ref: gitRef };
+    const files = [];
+    try {
+        collectTemplateFiles(host, repo, "", files);
+    } catch (error) {
+        throw `cannot fetch the starter template from ${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${gitRef}:${TEMPLATE_PATH}: ${error}`;
+    }
+    if (files.length === 0) {
+        throw `${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${gitRef}:${TEMPLATE_PATH} contains no files`;
+    }
+    for (const [relative] of files) {
+        const path = `${outputDir}/${relative}`;
+        if (interp.vfs.exists(path)) throw `cannot generate app: ${path} already exists`;
+    }
+
+    let stdout = "";
+    for (const [relative, contents] of files) {
+        const path = `${outputDir}/${relative}`;
+        interp.vfs.writeFile(path, relative === "app.toml" ? contents.replaceAll("__APP_NAME__", appName) : contents);
+        stdout += `Generated ${JSON.stringify(path)}\n`;
+    }
+    return ok(stdout);
+}
+
+function targetObeliskVersion(host) {
+    const deploymentId = decodeString(callValue(host, "obelisk-agent:tools/webapi.current-deployment-id", "[]"));
+    if (deploymentId === "") throw "cannot determine the target Obelisk version: no active deployment";
+    const record = decodeJson(callValue(host, "obelisk-agent:tools/webapi.get-deployment", JSON.stringify([deploymentId, null, null, null, null])));
+    const version = record?.obelisk_version;
+    if (typeof version !== "string" || version === "") throw `deployment ${deploymentId} has no obelisk_version`;
+    return version;
+}
+
+// Depth-first listing of the template tree; `relative` is the path under
+// TEMPLATE_PATH, collected as `[relative file path, contents]`.
+function collectTemplateFiles(host, repo, relative, files) {
+    const remote = relative === "" ? TEMPLATE_PATH : `${TEMPLATE_PATH}/${relative}`;
+    const entries = decodeJson(githubRequest(host, "list", repo, remote));
+    if (!Array.isArray(entries)) throw "list did not return a JSON array";
+    for (const entry of entries) {
+        if (typeof entry?.name !== "string") throw `list entry without a name: ${JSON.stringify(entry)}`;
+        const child = relative === "" ? entry.name : `${relative}/${entry.name}`;
+        if (entry.type === "dir") {
+            collectTemplateFiles(host, repo, child, files);
+        } else {
+            const body = githubRequest(host, "read", repo, `${TEMPLATE_PATH}/${child}`);
+            files.push([child, typeof body === "string" ? body : JSON.stringify(body)]);
+        }
+    }
+}
+
+function githubRequest(host, method, repo, path) {
+    return callValue(host, GITHUB_CONTENTS_FFQN, JSON.stringify([method, JSON.stringify({ ...repo, path })]));
+}
+
+// PORT: obelisk's `slugify_app_name`.
+function slugifyAppName(name) {
+    let slug = "";
+    for (const character of name) {
+        if (slug.length === 63) break;
+        if (/^[A-Za-z0-9]$/.test(character)) {
+            slug += character.toLowerCase();
+        } else if (slug !== "" && !slug.endsWith("-")) {
+            slug += "-";
+        }
+    }
+    return slug.replace(/-+$/, "");
+}
+
+// PORT: obelisk's `validate_app_name`.
+function validateAppName(name) {
+    if (!/^[a-z0-9-]{1,63}$/.test(name) || name.startsWith("-") || name.endsWith("-")) {
+        throw `invalid app name \`${name}\`: expected a DNS label (1-63 lowercase ASCII letters, digits, or interior hyphens)`;
+    }
 }
 
 function executeDeployment(interp, action, args, host) {
@@ -775,6 +869,7 @@ function actionHelp(group, action) {
     if (group === "deployment" && action === "enqueue") return deploymentEnqueueHelp;
     if (group === "deployment" && action === "apply") return deploymentApplyHelp;
     if (group === "generate" && action === "deployment") return generateDeploymentHelp;
+    if (group === "generate" && action === "new") return generateNewHelp;
     return groupHelp(group);
 }
 
@@ -784,7 +879,7 @@ function actionHelp(group, action) {
 // subcommand names in the .rs source actually compile to unindented lines.
 // These JS literals must match that stripped (unindented) output exactly.
 const helpText =
-    "Usage: obelisk <command> [args]\n\nQuery and control the running Obelisk server, and edit the deployment checked\nout under /workspace/deployment/current.\n\nCommands:\nfunctions    List deployed functions, or print a function's WIT.\nexecutions   List executions, or show one execution's record, logs, or result.\ncall         Call a deployed function and print its result.\ndeployment   Inspect, edit, submit, and activate deployments.\ngenerate     Print a starter configuration file.\n\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
+    "Usage: obelisk <command> [args]\n\nQuery and control the running Obelisk server, and edit the deployment checked\nout under /workspace/deployment/current.\n\nCommands:\nfunctions    List deployed functions, or print a function's WIT.\nexecutions   List executions, or show one execution's record, logs, or result.\ncall         Call a deployed function and print its result.\ndeployment   Inspect, edit, submit, and activate deployments.\ngenerate     Print a starter configuration file, or create a new app.\n\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
 
 const functionsHelp =
     "Usage: obelisk functions <subcommand>\n\nList deployed functions, or print a single function's WIT interface.\n\nSubcommands:\nlist [--prefix PREFIX] [--length N] [--json]   List functions and their signatures.\nwit FFQN                                        Print the WIT interface for one function.\n";
@@ -811,7 +906,10 @@ const deploymentApplyHelp =
     "Usage: obelisk deployment apply ID\n\nHot-redeploy a stored deployment now (fails if it cannot be applied live).\n";
 
 const generateHelp =
-    "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\n";
+    "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file, or create a new app.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\nnew [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n";
+
+const generateNewHelp =
+    "Usage: obelisk generate new [NAME]\n\nCreate a runnable JS starter app (app.toml, deployment.toml, a webhook, a\nworkflow, and an HTTP activity). With NAME, the app is created in a new NAME\ndirectory; otherwise in the current directory, named after its slug. The files\nare fetched from the obelisk repository at the target server's version.\n";
 
 const generateDeploymentHelp =
     "Usage: obelisk generate deployment\n\nPrint a default deployment.toml with every option documented as comments.\nRedirect it to a file to scaffold a new deployment, e.g.\n`obelisk generate deployment > deployment.toml`.\n";

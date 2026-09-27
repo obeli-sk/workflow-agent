@@ -392,6 +392,48 @@ test("generate deployment prints the embedded template", () => {
     assert.equal(host.calls.length, 0);
 });
 
+const GITHUB_CONTENTS_FFQN = "obelisk-agent:mounts/apps.request";
+
+function templateHost() {
+    const listing = (entries) => JSON.stringify(JSON.stringify(entries));
+    return fakeHost()
+        .with("obelisk-agent:tools/webapi.current-deployment-id", '"Dep_1"')
+        .with("obelisk-agent:tools/webapi.get-deployment", JSON.stringify(JSON.stringify({ obelisk_version: "0.42.0" })))
+        .with(GITHUB_CONTENTS_FFQN, listing([{ name: "app.toml", type: "file" }, { name: "workflow", type: "dir" }]))
+        .with(GITHUB_CONTENTS_FFQN, JSON.stringify('app_name = "__APP_NAME__"\n'))
+        .with(GITHUB_CONTENTS_FFQN, listing([{ name: "run.js", type: "file" }]))
+        .with(GITHUB_CONTENTS_FFQN, JSON.stringify("42\n"));
+}
+
+test("generate new fetches the template at the target version", () => {
+    const i = interp("/workspace/My Cool_App");
+    let host = templateHost();
+    let out = executeObelisk(i, ["generate", "new"], "", host);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stdout, 'Generated "/workspace/My Cool_App/app.toml"\nGenerated "/workspace/My Cool_App/workflow/run.js"\n');
+    assert.equal(i.vfs.readFile("/workspace/My Cool_App/app.toml"), 'app_name = "my-cool-app"\n');
+    assert.equal(i.vfs.readFile("/workspace/My Cool_App/workflow/run.js"), "42\n");
+    const githubCalls = host.calls.filter(([ffqn]) => ffqn === GITHUB_CONTENTS_FFQN).map(([, params]) => params);
+    assert.equal(
+        githubCalls[3],
+        '["read","{\\"owner\\":\\"obeli-sk\\",\\"repo\\":\\"obelisk\\",\\"ref\\":\\"v0.42.0\\",\\"path\\":\\"examples/templates/js-http/workflow/run.js\\"}"]',
+    );
+
+    // A second run must not overwrite anything.
+    out = executeObelisk(i, ["generate", "new"], "", templateHost());
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /already exists/);
+
+    host = templateHost();
+    out = executeObelisk(i, ["generate", "new", "chosen-app"], "", host);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(i.vfs.readFile("/workspace/My Cool_App/chosen-app/app.toml"), 'app_name = "chosen-app"\n');
+
+    out = executeObelisk(i, ["generate", "new", "Bad Name"], "", host);
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /invalid app name/);
+});
+
 test("generate requires a known subcommand", () => {
     let out = executeObelisk(interp(), words("generate"), "", fakeHost());
     assert.equal(out.exitCode, 2);
