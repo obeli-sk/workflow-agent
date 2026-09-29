@@ -61,6 +61,9 @@ fi
 
 source "$ROOT/scripts/e2e-lib.sh"
 
+# Obelisk 0.42.0-rc.7 aborts when a prewarmed V8 activity isolate posts a delayed task; drop once fixed.
+export OBELISK_JS_RUNTIME=boa-wasm
+
 BACKEND="${1:-rs}"
 PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
 API_PORT=$((28040 + PORT_OFFSET))
