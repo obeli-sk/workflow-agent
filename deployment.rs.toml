@@ -58,7 +58,7 @@ ${PROGRAMS_JSON:-[
   # mount a different set of repos, private forks, or pinned refs.
   { key = "APPS_JSON", value = '''
 ${APPS_JSON:-[
-  {"name":"agent-template","repo":"agent-template","description":"JS: the minimal copy-to-start agent (durable loop workflow, LLM client, one tool activity, stub channel, web UI); copy it when asked to build a new agent deployment"},
+  {"name":"demo-agent","repo":"demo-agent","description":"JS: the minimal copy-to-start agent (durable loop workflow, LLM client, one tool activity, stub channel, web UI); copy it when asked to build a new agent deployment"},
   {"name":"demo-playwright","repo":"demo-playwright","description":"JS: durable Playwright browser automation with exec activities and cleanup"},
   {"name":"benchmark-fibo","repo":"benchmark-fibo","description":"Rust: Fibonacci workload for comparing workflow implementations"},
   {"name":"webui","repo":"webui","description":"Rust/Yew: source for the Obelisk execution and deployment UI"},

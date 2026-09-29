@@ -61,7 +61,6 @@ const PACK_SYSTEM_PROMPT =
     "- `obelisk executions list` hides webhook-spawned child executions unless `--show-derived` is passed.\n" +
     "- Follow the rendered llms.txt authoring guidance in the system prompt and fetch relevant linked pages before writing components; never guess API signatures.\n" +
     "- Read-only reference repos for authoring are mounted at /workspace/apps/<name> (see \"Example apps\" above).\n" +
-    "- Asked to build an agent (a chat/tool loop of its own), start from /workspace/apps/agent-template rather than from scratch: it is a complete minimal JS agent (session workflow with the durable loop, LLM client activity, one example tool activity, the stub notification channel, and a web UI webhook). Read its README.md and deployment.toml, copy the pieces into the target deployment, then adapt the tool set, system prompt, and env vars to the task.\n" +
     "\n" +
     "# Mounts and network access\n\n" +
     "Run `mount` to see every mounted app, the network-backed mount points, and whether each MCP server is responding.\n\n" +

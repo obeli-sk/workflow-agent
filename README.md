@@ -171,7 +171,7 @@ under `/workspace/apps/<name>`, sourced from the GitHub contents API
 in the request, not a fixed env var). A directory lists on first `ls` and a
 file's bytes fetch on first `cat`, one recorded activity call each. The
 default list mounts the active examples from the
-[app catalog](https://obeli.sk/docs/latest/apps/), including `agent-template`,
+[app catalog](https://obeli.sk/docs/latest/apps/), including `demo-agent`,
 `demo-playwright`, `demo-tutorial`, and `workflow-agent` itself. Override it
 to mount a different set, private forks, or pinned refs:
 
