@@ -396,6 +396,7 @@ struct LlmReply {
     content_json: String,
     duration_milliseconds: u64,
     request_message_count: usize,
+    completion_id: String,
     prompt_queued: bool,
 }
 
@@ -702,7 +703,7 @@ pub fn agent_loop(
     // command: it runs directly in this session's bash and never reaches the
     // model (see `opening_shell_script`).
     let mut pending_shell = opening_shell_script(&prompt);
-    let mut messages: Vec<Value> = if pending_shell.is_none() && !prompt.trim().is_empty() {
+    let mut pending_messages: Vec<Value> = if pending_shell.is_none() && !prompt.trim().is_empty() {
         vec![user_text(prompt.trim())]
     } else {
         Vec::new()
@@ -749,7 +750,8 @@ pub fn agent_loop(
     let mut empty_reply_nudged_turn = u64::MAX;
     // Turn index that already consumed the step-budget warning; MAX means none.
     let mut step_warned_turn = u64::MAX;
-    let mut should_call_llm = !messages.is_empty();
+    let mut should_call_llm = !pending_messages.is_empty();
+    let mut history_ids: Vec<String> = Vec::new();
     let mut agent_steps = 0u32;
     let mut session = open_session(turn_index, &notifications)?;
     publish_agent_status(&notifications, should_call_llm, turn_index)?;
@@ -764,7 +766,7 @@ pub fn agent_loop(
             let error = step_limit_error(turn_index, max_steps);
             // A user, not assistant, message: a synthetic assistant turn would poison the
             // agent-backed-llm-server's prefix-hash pairing, so `continue` cannot re-pair (409).
-            messages.push(user_text(&error.text));
+            pending_messages.push(user_text(&error.text));
             notifications.notify(SESSION_EVENTS_JOIN_SET, &SessionEvent::AgentError(error))?;
             should_call_llm = false;
             publish_agent_status(&notifications, false, turn_index)?;
@@ -780,7 +782,7 @@ pub fn agent_loop(
             && step_warned_turn != turn_index
         {
             step_warned_turn = turn_index;
-            messages.push(user_text(&step_warning_text(max_steps)));
+            pending_messages.push(user_text(&step_warning_text(max_steps)));
         }
 
         let mut turn_complete = false;
@@ -862,7 +864,7 @@ pub fn agent_loop(
                 true,
                 &notifications,
                 &mut bash,
-                &mut messages,
+                &mut pending_messages,
             )?;
             if should_call_llm {
                 publish_agent_status(&notifications, true, turn_index)?;
@@ -875,7 +877,8 @@ pub fn agent_loop(
             let reply = match call_llm_with_user(
                 &mut session,
                 &system,
-                &mut messages,
+                &mut pending_messages,
+                &history_ids,
                 &model,
                 &effort,
                 &mut bash,
@@ -899,7 +902,7 @@ pub fn agent_loop(
                     // later "continue" has something to act on), delivered as a user message so
                     // it rides in the next delta instead of poisoning backend prefix-hash pairing.
                     let error = interrupted_error(turn_index);
-                    messages.push(user_text(&error.text));
+                    pending_messages.push(user_text(&error.text));
                     notifications
                         .notify(SESSION_EVENTS_JOIN_SET, &SessionEvent::AgentError(error))?;
                     should_call_llm = false;
@@ -950,10 +953,8 @@ pub fn agent_loop(
                     turn_complete: assistant_completes_turn,
                 }),
             )?;
-            messages.insert(
-                reply.request_message_count,
-                json!({"role": "assistant", "content": reply.content}),
-            );
+            pending_messages.drain(..reply.request_message_count);
+            history_ids.push(reply.completion_id);
 
             if !calls.is_empty() {
                 let mut result_blocks = Vec::with_capacity(calls.len());
@@ -982,17 +983,11 @@ pub fn agent_loop(
                     )?;
                     result_blocks.push(block.into_message_value());
                 }
-                messages.insert(
-                    reply.request_message_count + 1,
-                    json!({"role": "user", "content": result_blocks}),
-                );
+                pending_messages.insert(0, json!({"role": "user", "content": result_blocks}));
                 should_call_llm = true;
             } else if nudge_empty_reply {
                 empty_reply_nudged_turn = turn_index;
-                messages.insert(
-                    reply.request_message_count + 1,
-                    user_text(EMPTY_REPLY_NUDGE),
-                );
+                pending_messages.insert(0, user_text(EMPTY_REPLY_NUDGE));
                 should_call_llm = true;
             } else {
                 if !reply.prompt_queued && !has_user_visible_text(&reply.content) {
@@ -1099,7 +1094,7 @@ fn apply_session_input(
     shell_completes_turn: bool,
     notifications: &Notifications,
     bash: &mut Bash,
-    messages: &mut Vec<Value>,
+    pending_messages: &mut Vec<Value>,
 ) -> Result<bool, String> {
     match event {
         SessionInput::Shell(ShellInput { id, script, stdin }) => {
@@ -1130,7 +1125,7 @@ fn apply_session_input(
                 SESSION_EVENTS_JOIN_SET,
                 &SessionEvent::ShellOutput(record.clone()),
             )?;
-            append_shell_exchange(messages, &record, &stdin);
+            append_shell_exchange(pending_messages, &record, &stdin);
             Ok(false)
         }
         SessionInput::Prompt(PromptInput { id, text }) => {
@@ -1142,7 +1137,7 @@ fn apply_session_input(
                     turn_index,
                 }),
             )?;
-            messages.push(user_text(&text));
+            pending_messages.push(user_text(&text));
             Ok(true)
         }
         // Nothing is iterating while the session is idle; the composer only
@@ -1275,7 +1270,8 @@ fn shell_result(result: ExecResult) -> ShellResult {
 fn call_llm_with_user(
     session: &mut Session,
     system: &str,
-    messages: &mut Vec<Value>,
+    pending_messages: &mut Vec<Value>,
+    history_ids: &[String],
     model: &str,
     effort: &str,
     bash: &mut Bash,
@@ -1284,21 +1280,23 @@ fn call_llm_with_user(
     let mut prompt_queued = false;
     loop {
         notifications.flush()?;
-        let request_message_count = messages.len();
-        let messages_json = serde_json::to_string(messages).expect("json");
+        let request_message_count = pending_messages.len();
+        let delta_json = serde_json::to_string(pending_messages).expect("json");
         let started_at = host_now_ms();
         log_line(&format!(
-            "turn={} llm.completion submit (messages={request_message_count}, messages_json.len={})",
+            "turn={} llm.completion submit (delta={request_message_count}, history={}, delta_json.len={})",
             session.turn_index,
-            messages_json.len()
+            history_ids.len(),
+            delta_json.len()
         ));
         let completion_execution_id = llm_ext::completion_submit(
             session.join_set.as_ref().expect("turn join set is open"),
             system,
-            &messages_json,
+            &delta_json,
             BASH_TOOLS_JSON,
             model,
             effort,
+            history_ids,
         )
         .map_err(|e| format!("llm.completion submit failed: {e:?}"))?;
 
@@ -1362,7 +1360,7 @@ fn call_llm_with_user(
                     false,
                     notifications,
                     bash,
-                    messages,
+                    pending_messages,
                 )?;
             } else {
                 return Err(format!("unexpected session response: {completed_id}"));
@@ -1389,6 +1387,7 @@ fn call_llm_with_user(
                     content_json: reply.content_json,
                     duration_milliseconds: elapsed_milliseconds(started_at, host_now_ms()),
                     request_message_count,
+                    completion_id: completion_execution_id.id,
                     prompt_queued,
                 }));
             }
@@ -1406,7 +1405,7 @@ fn tool_ok(id: &str, result: ShellResult) -> ToolResultBlock {
     let json_string = serde_json::to_string(&result).expect("json");
     // The extra `to_string` mirrors JS's `JSON.stringify(s).length`: the
     // encoded-bytes estimate is how large `s` becomes once embedded (quoted,
-    // escaped) in the outer `messages-json` payload.
+    // escaped) in the outer `delta-json` payload.
     let encoded_len = serde_json::to_string(&json_string).expect("json").len();
     if encoded_len > MAX_TOOL_RESULT_BYTES {
         return tool_error(

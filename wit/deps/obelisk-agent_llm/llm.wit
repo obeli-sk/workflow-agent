@@ -16,12 +16,14 @@ interface chat {
     rate-limited(rate-limit),
   }
 
+  // Carries new messages and accepted LLM execution IDs; the activity reconstructs history.
   completion: func(
     system: string,
-    messages-json: string,
+    delta-json: string,
     tools-json: string,
     model: string,
     effort: string,
+    history-ids: list<string>,
   ) -> result<completion-result, string>;
 }
 

@@ -133,11 +133,11 @@ echo ">>> chat create inside a session schedules a child of it"
 CREATE_OUT="$(shell_turn "$PARENT_ID" "shell-chat-create" 'chat create --model fake')"
 CHILD_ID="$(head -n 1 <<<"$CREATE_OUT")"
 [[ "$CHILD_ID" == E_* ]] || { echo "unexpected child create output: $CREATE_OUT" >&2; exit 1; }
-if "$OBELISK" execution list -j -a "$E2E_API_URL" --limit 200 | grep -q "\"$CHILD_ID\""; then
+if "$OBELISK" execution list -j -a "$E2E_API_URL" --limit 200 | grep "\"$CHILD_ID\"" >/dev/null; then
     echo "child session was listed without --show-derived" >&2
     exit 1
 fi
-"$OBELISK" execution list -j -a "$E2E_API_URL" --show-derived --limit 200 | grep -q "$CHILD_ID"
+"$OBELISK" execution list -j -a "$E2E_API_URL" --show-derived --limit 200 | grep "$CHILD_ID" >/dev/null
 
 echo ">>> chat create --name with a \$-prefixed prompt opens a labeled child in bash"
 SHELL_OUT="$(shell_turn "$PARENT_ID" "shell-chat-create-bash" 'chat create --model fake --name e2e-child $ echo opened-in-bash')"
