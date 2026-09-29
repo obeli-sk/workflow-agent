@@ -3,8 +3,8 @@
 > [!NOTE]
 > **Preview only.** APIs and design are unstable and subject to change.
 
-A durable [Obelisk](https://obeli.sk) workflow that *is* an agent loop. It holds
-a provider-neutral chat history and a persistent virtual filesystem, and exposes
+A durable [Obelisk](https://obeli.sk) workflow that *is* an agent loop. It records
+a provider-neutral chat history in LLM execution events, keeps a persistent virtual filesystem, and exposes
 exactly one tool to the model: `bash`.
 
 The shell is a Rust rewrite of [just-bash](https://justbash.dev), vendored at

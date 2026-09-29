@@ -4,7 +4,8 @@
 // behind an HTTP endpoint.
 //
 // obelisk-agent:llm/chat.completion:
-//   func(system: string, messages-json: string, tools-json: string, model: string, effort: string)
+//   func(system: string, delta-json: string, tools-json: string, model: string,
+//        effort: string, history-ids: list<string>)
 //     -> result<variant {
 //          reply(record { content-json: string, stop-reason: string }),
 //          rate-limited(record { retry-after-seconds: u32, message: string }),
@@ -23,9 +24,10 @@
 // A 429 is returned in-band as `rate-limited` so the workflow can durably sleep.
 
 const DEFAULT_MAX_TOKENS = 8192;
+import { loadMessages, obeliskApi } from "./llm-history.js";
 
-export default async function completion(system, messagesJson, toolsJson, model, effort) {
-    const messages = parseJson(messagesJson, 'messages-json', []);
+export default async function completion(system, deltaJson, toolsJson, model, effort, historyIds) {
+    const messages = await loadMessages(historyIds, deltaJson, historyIds.length ? obeliskApi() : null);
     const tools = parseJson(toolsJson, 'tools-json', []);
     const cfg = resolveModel(model);
     const level = resolveEffort(effort);

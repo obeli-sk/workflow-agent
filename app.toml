@@ -50,6 +50,14 @@ request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
+# llm_chat: history reconstruction from prior LLM executions.
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["POST"]
+request_url_regex = "^POST ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/events/batch$"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
 # tool_pause_execution
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
