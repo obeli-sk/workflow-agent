@@ -408,6 +408,19 @@ request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1
 secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
+[[activity_js]]
+name = "tool_get_app_config"
+ffqn = "obelisk-agent:tools/webapi.get-app-config"
+wit = "wit"
+location = "packs/obelisk-control/tools/get-app-config.js"
+env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+[[activity_js.allowed_host]]
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/app-config$"
+secrets = ["TARGET_OBELISK_TOKEN"]
+replace_in = ["headers"]
+
 # --- Deployment editing: checkout -> edit one component -> submit -------------
 # The workflow holds the checked-out deployment.toml in memory, split into
 # per-component blocks, and edits one component at a time (see

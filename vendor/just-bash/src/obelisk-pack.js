@@ -22,6 +22,8 @@ import { isCasNamespacedDigest } from "./fs.js";
 
 
 const DEPLOYMENT_ROOT = "/workspace/deployment";
+// The target's app policy, written next to each mounted deployment.toml.
+const APP_POLICY_FILE = "app-policy.json";
 
 const TEMPLATE_OWNER = "obeli-sk";
 const TEMPLATE_REPO = "obelisk";
@@ -40,9 +42,9 @@ const AUTO_DIGEST = "auto";
 // `commands.set("obelisk", obelisk.commandHandler(controlPlane, generate))`. The handler owns
 // `controlPlane` for the life of the session (a plain closure capture, not an
 // Rc<RefCell<_>> as in the Rust port, since JS closures already close over a
-// shared mutable reference). `generate` is `{ obeliskVersion, githubContents }`:
+// shared mutable reference). `generate` is `{ obeliskVersion, githubContents, webhookUrl }`:
 // the obelisk repo ref and the statically imported `obelisk-agent:mounts/apps.request`
-// that `generate new` fetches the starter app with.
+// that `generate new` fetches the starter app with, and the target's webhook URL for its README.
 export function commandHandler(controlPlane, generate) {
     return (interp, args, stdin) => executeObelisk(interp, args.slice(1), stdin, controlPlane, generate);
 }
@@ -78,6 +80,13 @@ export function refreshDeploymentMount(fs, controlPlane, replace) {
     const manifestPath = `${dir}/deployment.toml`;
     if (replace || !fs.exists(manifestPath)) {
         fs.writeFile(manifestPath, simplifyManifest(manifest));
+    }
+
+    const policyPath = `${dir}/${APP_POLICY_FILE}`;
+    if (replace || !fs.exists(policyPath)) {
+        const policy = controlPlane.getAppConfig();
+        if (policy !== null) fs.writeFile(policyPath, policy);
+        else if (fs.exists(policyPath)) fs.remove(policyPath);
     }
 
     let files = 1;
@@ -218,6 +227,39 @@ function tryExecuteObelisk(interp, args, stdin, controlPlane, generate) {
     return fail(`obelisk: unknown command '${args.join(" ")}'\n${helpText}`);
 }
 
+// Written in place of the template's README.md, whose `obelisk server run` steps do not apply here.
+function sandboxReadme(webhookUrl) {
+    const trigger =
+        webhookUrl === ""
+            ? "Then run the workflow with `obelisk call FFQN` (see `obelisk functions list`).\n"
+            : "Then trigger the webhook, or run the workflow with `obelisk call FFQN` (see\n" +
+              `\`obelisk functions list\`):\n\n\`\`\`sh\ncurl ${webhookUrl}/run\n\`\`\`\n`;
+    return `# JavaScript HTTP starter
+
+This app has one webhook, one durable workflow, and one HTTP activity. The webhook calls the
+workflow, which asks the activity to GET \`https://example.com/\` and returns its status code.
+
+\`obelisk\` in this shell talks to the target Obelisk instance. Deploy from this directory:
+
+\`\`\`sh
+obelisk deployment apply deployment.toml
+\`\`\`
+
+This submits the manifest and replaces the target's whole active deployment. To keep what already
+runs there, merge this app's components into \`/workspace/deployment/current/deployment.toml\` and
+apply that instead.
+
+${trigger}
+## App policy
+
+The target's app policy caps the hosts, secrets, environment variables, and exec activities any
+deployment may use. Read it in \`${DEPLOYMENT_ROOT}/current/${APP_POLICY_FILE}\` (\`obelisk deployment
+refresh\` re-fetches it) and check that it allows what \`deployment.toml\` requests, here GET
+\`https://example.com\`. A deployment cannot widen the policy: if something is missing, ask the user
+to allow it (e.g. another host or secret) in the target server's app config.
+`;
+}
+
 // `generate deployment` echoes a template baked in at build time;
 // `generate new` fetches the starter app from GitHub at `generate.obeliskVersion`.
 function executeGenerate(interp, action, args, generate) {
@@ -249,6 +291,7 @@ function generateNew(interp, name, generate) {
     if (files.length === 0) {
         throw `${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${gitRef}:${TEMPLATE_PATH} contains no files`;
     }
+    files.push(["README.md", sandboxReadme(generate.webhookUrl)]);
     for (const [relative] of files) {
         const path = `${outputDir}/${relative}`;
         if (interp.vfs.exists(path)) throw `cannot generate app: ${path} already exists`;
@@ -257,7 +300,7 @@ function generateNew(interp, name, generate) {
     let stdout = "";
     for (const [relative, contents] of files) {
         const path = `${outputDir}/${relative}`;
-        interp.vfs.writeFile(path, relative === "app.toml" ? contents.replaceAll("__APP_NAME__", appName) : contents);
+        interp.vfs.writeFile(path, contents);
         stdout += `Generated ${JSON.stringify(path)}\n`;
     }
     return ok(stdout);
@@ -274,6 +317,8 @@ function collectTemplateFiles(githubContents, repo, relative, files) {
         const child = relative === "" ? entry.name : `${relative}/${entry.name}`;
         if (entry.type === "dir") {
             collectTemplateFiles(githubContents, repo, child, files);
+        } else if (child === "app.toml" || child === "README.md") {
+            // The app policy lives on the target server, see `sandboxReadme`.
         } else {
             files.push([child, githubContents("read", JSON.stringify({ ...repo, path: `${TEMPLATE_PATH}/${child}` }))]);
         }
@@ -336,18 +381,9 @@ function executeDeployment(interp, action, args, controlPlane) {
         // The PATH is positional, so skip flags (and `--description`'s
         // value) when finding it; otherwise `submit --description X` reads
         // `X`, or even `--description` itself, as the deployment directory.
-        const { dir, file } = resolveDeploymentManifest(interp, firstPositional(args, ["--description"]));
-        const manifest = readManifest(interp.vfs, dir, file);
-        const prepared = manifestWithGeneratedFiles(interp.vfs, dir, manifest);
-        // Expand the digest-free view back to what the server stores: every
-        // `content_digest`, `component_files` value, and `backtrace.sources`
-        // table, each digest recomputed from the file's current bytes (an
-        // unchanged file keeps its CAS digest, a changed one is re-hashed).
-        const expanded = manifestWithDigests(interp.vfs, dir, prepared);
-        const deploymentId = deploymentIdFromDir(dir);
-        const description = option(args, "--description", "Submitted from workflow-agent VFS");
-        const allowMissing = flagRuntimeConfig(args);
-        return submitDeployment(interp.vfs, controlPlane, dir, expanded, description, allowMissing, deploymentId);
+        const path = firstPositional(args, ["--description"]);
+        const id = submitManifest(interp, controlPlane, path, args, flagRuntimeConfig(args));
+        return ok(`${prettyJson({ deployment_id: id })}\n`);
     }
     if (action === "enqueue") {
         // Stage the deployment for the next server restart (never hot-swaps),
@@ -358,13 +394,30 @@ function executeDeployment(interp, action, args, controlPlane) {
         throw `unexpected outcome from server: ${outcome}`;
     }
     if (action === "apply") {
+        // Like real obelisk, a `Dep_` ID is applied as is, while a manifest
+        // path is submitted first (never allowing missing runtime config).
+        const source = required(firstPositional(args, ["--description"]), "deployment id or PATH-TO-DEPLOYMENT.TOML");
+        let id = source;
+        let submitted = "";
+        if (!source.startsWith("Dep_")) {
+            id = submitManifest(interp, controlPlane, source, args, false);
+            submitted = `Submitted as ${id}\n`;
+        }
         // Hot-redeploy now; a server that can only stage the switch reports
         // restart_required, which real obelisk `deployment apply` treats as a
         // failure rather than a silent enqueue.
-        const outcome = switchOutcome(controlPlane.applyDeployment(required(args[0], "deployment id")));
-        if (outcome === "switched") return ok("Applied successfully.\n");
-        if (outcome === "restart_required") throw "Could not apply immediately; deployment enqueued. Restart the server to apply.";
-        throw `unexpected outcome from server: ${outcome}`;
+        let error;
+        try {
+            const outcome = switchOutcome(controlPlane.applyDeployment(id));
+            if (outcome === "switched") return ok(`${submitted}Applied successfully.\n`);
+            error =
+                outcome === "restart_required"
+                    ? "Could not apply immediately; deployment enqueued. Restart the server to apply."
+                    : `unexpected outcome from server: ${outcome}`;
+        } catch (thrown) {
+            error = thrown;
+        }
+        return { stdout: submitted, stderr: `obelisk: ${error}\n`, exitCode: 2 };
     }
     return fail(`obelisk deployment: unknown action '${action}'\n`);
 }
@@ -431,6 +484,20 @@ function formatDeploymentTimestamp(value) {
     return match ? `${match[1]} ${match[2]}` : value;
 }
 
+// Submit the manifest at `path` from the VFS and return the new deployment ID.
+function submitManifest(interp, controlPlane, path, args, allowMissing) {
+    const { dir, file } = resolveDeploymentManifest(interp, path);
+    const manifest = readManifest(interp.vfs, dir, file);
+    const prepared = manifestWithGeneratedFiles(interp.vfs, dir, manifest);
+    // Expand the digest-free view back to what the server stores: every
+    // `content_digest`, `component_files` value, and `backtrace.sources`
+    // table, each digest recomputed from the file's current bytes (an
+    // unchanged file keeps its CAS digest, a changed one is re-hashed).
+    const expanded = manifestWithDigests(interp.vfs, dir, prepared);
+    const description = option(args, "--description", "Submitted from workflow-agent VFS");
+    return submitDeployment(interp.vfs, controlPlane, dir, expanded, description, allowMissing, deploymentIdFromDir(dir));
+}
+
 // The workflow half of the submit contract: drive the dumb
 // `deployment-submit` activity's preflight/attach loop. The first call
 // carries no blobs (a JSON preflight); each `{ missingFiles }` error names
@@ -445,7 +512,7 @@ function submitDeployment(fs, controlPlane, dir, manifest, description, allowMis
         let missing;
         try {
             const id = controlPlane.deploymentSubmit(manifest, attachments, description, allowMissing, deploymentId);
-            return ok(`${prettyJson({ deployment_id: decodeString(id) })}\n`);
+            return decodeString(id);
         } catch (error) {
             if (!Array.isArray(error?.missingFiles)) throw error;
             missing = error.missingFiles;
@@ -739,7 +806,7 @@ const callHelp =
     "Usage: obelisk call FFQN [PARAMS_JSON]\nobelisk call FFQN -- PARAM...\n\nCall a deployed function and print its result. Pass parameters as one JSON array\nin WIT parameter order, or after `--` as positional values (each parsed as JSON\nwhen valid, otherwise as a string). With neither, parameters are read from stdin,\ndefaulting to `[]`.\n";
 
 const deploymentHelp =
-    "Usage: obelisk deployment <subcommand>\n\nInspect, edit, submit, and activate deployments. Edits under\n/workspace/deployment/current are local until `submit` or `apply`.\n\nSubcommands:\nactive [--json]           Print the active deployment ID.\nlist                      List recent deployments.\nshow ID                   Print a stored deployment's TOML manifest.\nrefresh                   Re-fetch the active deployment, discarding local edits.\ncheck [PATH]              Report a deployment's manifest and locally-edited sources.\nsubmit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\nenqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\napply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\nRun `obelisk deployment <subcommand> --help` for a subcommand's options.\n";
+    "Usage: obelisk deployment <subcommand>\n\nInspect, edit, submit, and activate deployments. Edits under\n/workspace/deployment/current are local until `submit` or `apply`.\n\nSubcommands:\nactive [--json]           Print the active deployment ID.\nlist                      List recent deployments.\nshow ID                   Print a stored deployment's TOML manifest.\nrefresh                   Re-fetch the active deployment, discarding local edits.\ncheck [PATH]              Report a deployment's manifest and locally-edited sources.\nsubmit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\nenqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\napply PATH|ID             Submit-and-apply: hot-redeploy a manifest or stored deployment now.\n\nRun `obelisk deployment <subcommand> --help` for a subcommand's options.\n";
 
 const deploymentSubmitHelp =
     "Usage: obelisk deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML\n\nStore the edited deployment as a new inactive deployment and print its ID. PATH\nis the path to the deployment TOML file to submit (any filename -- not just the\nliteral \"deployment.toml\"); it must be a file, not a directory, matching real\nobelisk. Digests are recomputed from the files, so leave them out.\n\nOptions:\n--description TEXT               Human-readable description for the new deployment.\n--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n(alias: --allow-unavailable-runtime-config)\n";
@@ -751,13 +818,13 @@ const deploymentEnqueueHelp =
     "Usage: obelisk deployment enqueue [OPTIONS] ID\n\nEnqueue a stored deployment; it is verified and applied on the next server\nrestart. Use `apply` to hot-redeploy without a restart.\n\nOptions:\n--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n(alias: --allow-unavailable-runtime-config)\n";
 
 const deploymentApplyHelp =
-    "Usage: obelisk deployment apply ID\n\nHot-redeploy a stored deployment now (fails if it cannot be applied live).\n";
+    "Usage: obelisk deployment apply [OPTIONS] PATH|ID\n\nHot-redeploy now (fails if it cannot be applied live). A deployment TOML PATH is\nsubmitted first, like `submit`; a `Dep_` ID applies a stored deployment.\n\nOptions:\n--description TEXT   Human-readable description for a newly submitted deployment.\n";
 
 const generateHelp =
     "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file, or create a new app.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\nnew [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n";
 
 const generateNewHelp =
-    "Usage: obelisk generate new [NAME]\n\nCreate a runnable JS starter app (app.toml, deployment.toml, a webhook, a\nworkflow, and an HTTP activity). With NAME, the app is created in a new NAME\ndirectory; otherwise in the current directory, named after its slug. The files\nare fetched from the obelisk repository at the operator's OBELISK_VERSION.\n";
+    "Usage: obelisk generate new [NAME]\n\nCreate a runnable JS starter app (deployment.toml, a webhook, a workflow, an\nHTTP activity, and a README). With NAME, the app is created in a new NAME\ndirectory; otherwise in the current directory, named after its slug. The files\nare fetched from the obelisk repository at the operator's OBELISK_VERSION. There\nis no app.toml: the target's app policy is in\n/workspace/deployment/current/app-policy.json.\n";
 
 const generateDeploymentHelp =
     "Usage: obelisk generate deployment\n\nPrint a default deployment.toml with every option documented as comments.\nRedirect it to a file to scaffold a new deployment, e.g.\n`obelisk generate deployment > deployment.toml`.\n";

@@ -51,6 +51,7 @@ export function createControlPlane(webapi, nativeCall, obelisk, askUser) {
         listDeployments: plain((length) => webapi.listDeployments("", false, length)),
         getDeployment: plain((id) => webapi.getDeployment(id, null, null, null, null)),
         currentDeploymentId: plain(webapi.currentDeploymentId),
+        getAppConfig: plain(webapi.getAppConfig),
         deploymentCheckout: plain(webapi.deploymentCheckout),
         deploymentReadBlob: plain(webapi.deploymentReadBlob),
         deploymentSubmit(manifest, attachments, description, allowMissing, deploymentId) {

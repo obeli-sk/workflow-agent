@@ -24,6 +24,8 @@ use crate::interpreter::{CommandOutput, Interpreter};
 use crate::obelisk_web::GithubContents;
 
 const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
+/// The target's app policy, written next to each mounted deployment.toml.
+const APP_POLICY_FILE: &str = "app-policy.json";
 
 const TEMPLATE_OWNER: &str = "obeli-sk";
 const TEMPLATE_REPO: &str = "obelisk";
@@ -73,6 +75,8 @@ pub trait ControlPlane {
     fn list_deployments(&mut self, length: u32) -> Result<String, String>;
     fn get_deployment(&mut self, deployment_id: &str) -> Result<String, String>;
     fn current_deployment_id(&mut self) -> Result<String, String>;
+    /// The target's app policy JSON, `None` when it runs without an app config.
+    fn get_app_config(&mut self) -> Result<Option<String>, String>;
     fn deployment_checkout(&mut self, deployment_id: &str) -> Result<CheckoutResult, String>;
     fn deployment_read_blob(&mut self, digest: &str) -> Result<String, String>;
     fn deployment_submit(
@@ -181,6 +185,8 @@ pub fn command_handler(host: Box<dyn ControlPlane>, generate: Generate) -> Custo
 pub struct Generate {
     pub obelisk_version: String,
     pub github: GithubContents,
+    /// The target's webhook listener, written into the starter README.
+    pub webhook_url: String,
 }
 
 /// Check out the active deployment's `deployment.toml` plus the metadata index
@@ -224,6 +230,19 @@ pub fn refresh_deployment_mount(
     if replace || !fs.exists(&manifest_path) {
         fs.write_file(&manifest_path, simplify_manifest(&manifest).as_bytes())
             .map_err(fs_error_message)?;
+    }
+
+    let policy_path = format!("{dir}/{APP_POLICY_FILE}");
+    if replace || !fs.exists(&policy_path) {
+        match host.get_app_config()? {
+            Some(policy) => fs
+                .write_file(&policy_path, policy.as_bytes())
+                .map_err(fs_error_message)?,
+            None if fs.exists(&policy_path) => {
+                fs.remove(&policy_path, false).map_err(fs_error_message)?
+            }
+            None => {}
+        }
     }
 
     let mut files = 1u32;
@@ -483,6 +502,10 @@ fn generate_new(
             "{TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{TEMPLATE_PATH} contains no files"
         ));
     }
+    files.push((
+        "README.md".to_string(),
+        sandbox_readme(&generate.webhook_url),
+    ));
     for (relative, _) in &files {
         let path = format!("{output_dir}/{relative}");
         if interp.fs.exists(&path) {
@@ -493,11 +516,6 @@ fn generate_new(
     let mut stdout = String::new();
     for (relative, contents) in files {
         let path = format!("{output_dir}/{relative}");
-        let contents = if relative == "app.toml" {
-            contents.replace("__APP_NAME__", &app_name)
-        } else {
-            contents
-        };
         interp
             .fs
             .write_file(&path, contents.as_bytes())
@@ -505,6 +523,45 @@ fn generate_new(
         stdout.push_str(&format!("Generated {path:?}\n"));
     }
     Ok(ok(stdout))
+}
+
+/// Written in place of the template's README.md, whose `obelisk server run` steps do not apply here.
+fn sandbox_readme(webhook_url: &str) -> String {
+    let trigger = if webhook_url.is_empty() {
+        "Then run the workflow with `obelisk call FFQN` (see `obelisk functions list`).\n"
+            .to_string()
+    } else {
+        format!(
+            "Then trigger the webhook, or run the workflow with `obelisk call FFQN` (see\n\
+             `obelisk functions list`):\n\n```sh\ncurl {webhook_url}/run\n```\n"
+        )
+    };
+    format!(
+        r#"# JavaScript HTTP starter
+
+This app has one webhook, one durable workflow, and one HTTP activity. The webhook calls the
+workflow, which asks the activity to GET `https://example.com/` and returns its status code.
+
+`obelisk` in this shell talks to the target Obelisk instance. Deploy from this directory:
+
+```sh
+obelisk deployment apply deployment.toml
+```
+
+This submits the manifest and replaces the target's whole active deployment. To keep what already
+runs there, merge this app's components into `/workspace/deployment/current/deployment.toml` and
+apply that instead.
+
+{trigger}
+## App policy
+
+The target's app policy caps the hosts, secrets, environment variables, and exec activities any
+deployment may use. Read it in `{DEPLOYMENT_ROOT}/current/{APP_POLICY_FILE}` (`obelisk deployment
+refresh` re-fetches it) and check that it allows what `deployment.toml` requests, here GET
+`https://example.com`. A deployment cannot widen the policy: if something is missing, ask the user
+to allow it (e.g. another host or secret) in the target server's app config.
+"#
+    )
 }
 
 /// Depth-first listing of the template tree; `relative` is the path under
@@ -537,6 +594,8 @@ fn collect_template_files(
         };
         match entry.get("type").and_then(Value::as_str) {
             Some("dir") => collect_template_files(github, repo, &child, files)?,
+            // The app policy lives on the target server, see `sandbox_readme`.
+            _ if child == "app.toml" || child == "README.md" => {}
             _ => {
                 let body =
                     github_request(github, "read", repo, &format!("{TEMPLATE_PATH}/{child}"))?;
@@ -643,29 +702,12 @@ fn execute_deployment(
             // The PATH is positional, so skip flags (and `--description`'s value)
             // when finding it; otherwise `submit --description X` reads `X`, or
             // even `--description` itself, as the deployment directory.
-            let (dir, file) =
-                resolve_deployment_manifest(interp, first_positional(args, &["--description"]))?;
-            let manifest = read_manifest(&interp.fs, &dir, &file)?;
-            let manifest =
-                manifest_with_generated_files(&interp.fs, &dir, &manifest, interp.log_debug)?;
-            // Expand the digest-free view back to what the server stores: every
-            // `content_digest`, `component_files` value, and `backtrace.sources`
-            // table, each digest recomputed from the file's current bytes (an
-            // unchanged file keeps its CAS digest, a changed one is re-hashed).
-            let manifest = manifest_with_digests(&interp.fs, &dir, &manifest, interp.log_debug);
-            let deployment_id = deployment_id_from_dir(&dir);
-            let description =
-                option(args, "--description", "Submitted from workflow-agent VFS").to_string();
-            let allow_missing = flag_runtime_config(args);
-            submit_deployment(
-                &interp.fs,
-                host,
-                &dir,
-                &manifest,
-                &description,
-                allow_missing,
-                &deployment_id,
-            )
+            let path = first_positional(args, &["--description"]);
+            let id = submit_manifest(interp, host, path, args, flag_runtime_config(args))?;
+            Ok(ok(format!(
+                "{}\n",
+                pretty_json(&json!({ "deployment_id": id }))
+            )))
         }
         "enqueue" => {
             // Stage the deployment for the next server restart (never
@@ -683,19 +725,41 @@ fn execute_deployment(
             }
         }
         "apply" => {
+            // Like real obelisk, a `Dep_` ID is applied as is, while a manifest
+            // path is submitted first (never allowing missing runtime config).
+            let source = required(
+                first_positional(args, &["--description"]),
+                "deployment id or PATH-TO-DEPLOYMENT.TOML",
+            )?;
+            let (id, submitted) = if source.starts_with("Dep_") {
+                (source.to_string(), String::new())
+            } else {
+                let id = submit_manifest(interp, host, Some(source), args, false)?;
+                let submitted = format!("Submitted as {id}\n");
+                (id, submitted)
+            };
             // Hot-redeploy now; a server that can only stage the switch reports
             // restart_required, which real obelisk `deployment apply` treats as
             // a failure rather than a silent enqueue.
-            let id = required(args.first().map(String::as_str), "deployment id")?;
-            let value = host.apply_deployment(id)?;
-            match switch_outcome(&Value::String(value))?.as_str() {
-                "switched" => Ok(ok("Applied successfully.\n".to_string())),
-                "restart_required" => Err(
+            let outcome = host
+                .apply_deployment(&id)
+                .and_then(|value| switch_outcome(&Value::String(value)));
+            let error = match outcome.as_deref() {
+                Ok("switched") => {
+                    return Ok(ok(format!("{submitted}Applied successfully.\n")));
+                }
+                Ok("restart_required") => {
                     "Could not apply immediately; deployment enqueued. Restart the server to apply."
-                        .to_string(),
-                ),
-                other => Err(format!("unexpected outcome from server: {other}")),
-            }
+                        .to_string()
+                }
+                Ok(other) => format!("unexpected outcome from server: {other}"),
+                Err(error) => error.clone(),
+            };
+            Ok(CommandOutput {
+                stdout: submitted,
+                stderr: format!("obelisk: {error}\n"),
+                exit_code: 2,
+            })
         }
         _ => Ok(fail(format!(
             "obelisk deployment: unknown action '{action}'\n"
@@ -824,6 +888,35 @@ fn format_deployment_timestamp(value: Option<&str>) -> String {
     value.to_string()
 }
 
+/// Submit the manifest at `path` from the VFS and return the new deployment ID.
+fn submit_manifest(
+    interp: &Interpreter,
+    host: &mut dyn ControlPlane,
+    path: Option<&str>,
+    args: &[String],
+    allow_missing: bool,
+) -> Result<String, String> {
+    let (dir, file) = resolve_deployment_manifest(interp, path)?;
+    let manifest = read_manifest(&interp.fs, &dir, &file)?;
+    let manifest = manifest_with_generated_files(&interp.fs, &dir, &manifest, interp.log_debug)?;
+    // Expand the digest-free view back to what the server stores: every
+    // `content_digest`, `component_files` value, and `backtrace.sources`
+    // table, each digest recomputed from the file's current bytes (an
+    // unchanged file keeps its CAS digest, a changed one is re-hashed).
+    let manifest = manifest_with_digests(&interp.fs, &dir, &manifest, interp.log_debug);
+    let deployment_id = deployment_id_from_dir(&dir);
+    let description = option(args, "--description", "Submitted from workflow-agent VFS");
+    submit_deployment(
+        &interp.fs,
+        host,
+        &dir,
+        &manifest,
+        description,
+        allow_missing,
+        &deployment_id,
+    )
+}
+
 /// The workflow half of the submit contract: drive the dumb `deployment-submit`
 /// activity's preflight/attach loop. The first call carries no blobs (a JSON
 /// preflight); each 409 names the blobs the CAS lacks, which we read straight
@@ -838,7 +931,7 @@ fn submit_deployment(
     description: &str,
     allow_missing: bool,
     deployment_id: &str,
-) -> Result<CommandOutput, String> {
+) -> Result<String, String> {
     let mut attachments: Vec<AttachedFile> = Vec::new();
     let mut previous: Option<Vec<String>> = None;
     loop {
@@ -850,12 +943,7 @@ fn submit_deployment(
             deployment_id,
         ) {
             // Ok side is the new deployment id.
-            Ok(id) => {
-                return Ok(ok(format!(
-                    "{}\n",
-                    pretty_json(&json!({ "deployment_id": decode_string(&id) }))
-                )));
-            }
+            Ok(id) => return Ok(decode_string(&id)),
             // The missing-files arm is recoverable; any other error is terminal.
             Err(SubmitError::MissingFiles(missing)) => missing,
             Err(SubmitError::Failed(message)) => return Err(message),
@@ -1637,7 +1725,7 @@ Subcommands:\n\
   check [PATH]              Report a deployment's manifest and locally-edited sources.\n\
   submit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\n\
   enqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\n\
-  apply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\
+  apply PATH|ID             Submit-and-apply: hot-redeploy a manifest or stored deployment now.\n\
 \n\
 Run `obelisk deployment <subcommand> --help` for a subcommand's options.\n"
         .to_string()
@@ -1680,9 +1768,13 @@ Options:\n\
 }
 
 fn deployment_apply_help() -> String {
-    "Usage: obelisk deployment apply ID\n\
+    "Usage: obelisk deployment apply [OPTIONS] PATH|ID\n\
 \n\
-Hot-redeploy a stored deployment now (fails if it cannot be applied live).\n"
+Hot-redeploy now (fails if it cannot be applied live). A deployment TOML PATH is\n\
+submitted first, like `submit`; a `Dep_` ID applies a stored deployment.\n\
+\n\
+Options:\n\
+      --description TEXT   Human-readable description for a newly submitted deployment.\n"
         .to_string()
 }
 
@@ -1700,10 +1792,12 @@ Subcommands:\n\
 fn generate_new_help() -> String {
     "Usage: obelisk generate new [NAME]\n\
 \n\
-Create a runnable JS starter app (app.toml, deployment.toml, a webhook, a\n\
-workflow, and an HTTP activity). With NAME, the app is created in a new NAME\n\
+Create a runnable JS starter app (deployment.toml, a webhook, a workflow, an\n\
+HTTP activity, and a README). With NAME, the app is created in a new NAME\n\
 directory; otherwise in the current directory, named after its slug. The files\n\
-are fetched from the obelisk repository at the operator's OBELISK_VERSION.\n"
+are fetched from the obelisk repository at the operator's OBELISK_VERSION. There\n\
+is no app.toml: the target's app policy is in\n\
+/workspace/deployment/current/app-policy.json.\n"
         .to_string()
 }
 
@@ -1783,6 +1877,7 @@ mod tests {
     }
 
     const SUBMIT_FFQN: &str = "obelisk-agent:tools/webapi.deployment-submit";
+    const APP_CONFIG_FFQN: &str = "obelisk-agent:tools/webapi.get-app-config";
 
     /// The pack's `ControlPlane` over the ffqn-keyed fixtures: each method sends
     /// the same params array its WIT function takes and decodes the fixture.
@@ -1885,6 +1980,17 @@ mod tests {
         }
         fn current_deployment_id(&mut self) -> Result<String, String> {
             self.text("current-deployment-id", json!([]))
+        }
+        /// Unfixtured means no app config, so mount tests need not stub it.
+        fn get_app_config(&mut self) -> Result<Option<String>, String> {
+            if !self.responses.contains_key(APP_CONFIG_FFQN) {
+                return Ok(None);
+            }
+            Ok(match self.call("get-app-config", json!([]))? {
+                Value::Null => None,
+                Value::String(policy) => Some(policy),
+                other => Some(other.to_string()),
+            })
         }
         fn deployment_checkout(&mut self, deployment_id: &str) -> Result<CheckoutResult, String> {
             self.typed("deployment-checkout", json!([deployment_id]))
@@ -2531,7 +2637,10 @@ mod tests {
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
-        assert_eq!(out.stderr, "obelisk: deployment id is required\n");
+        assert_eq!(
+            out.stderr,
+            "obelisk: deployment id or PATH-TO-DEPLOYMENT.TOML is required\n"
+        );
     }
 
     #[test]
@@ -2543,13 +2652,39 @@ mod tests {
         let mut i = interp("/workspace");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "apply", "dep-2"]),
+            &words(&["deployment", "apply", "Dep_2"]),
             "",
             &mut no_generate(),
             &mut host,
         );
-        assert_eq!(host.calls[0].1, "[\"dep-2\"]");
+        assert_eq!(host.calls[0].1, "[\"Dep_2\"]");
         assert_eq!(out.stdout, "Applied successfully.\n");
+    }
+
+    #[test]
+    fn deployment_apply_submits_a_manifest_path_first() {
+        let mut i = interp("/workspace/app");
+        i.fs.write_file(
+            "/workspace/app/deployment.toml",
+            b"[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n",
+        )
+        .unwrap();
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"").with(
+            "obelisk-agent:tools/webapi.apply-deployment",
+            "{\"ok\":\"switched\"}",
+        );
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "apply", "deployment.toml"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(out.stdout, "Submitted as Dep_new\nApplied successfully.\n");
+        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        assert_eq!(params[3], false);
+        assert_eq!(host.calls[1].1, "[\"Dep_new\"]");
     }
 
     #[test]
@@ -2561,7 +2696,7 @@ mod tests {
         let mut i = interp("/workspace");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "apply", "dep-2"]),
+            &words(&["deployment", "apply", "Dep_2"]),
             "",
             &mut no_generate(),
             &mut host,
@@ -2690,6 +2825,7 @@ mod tests {
         Generate {
             obelisk_version: "latest".to_string(),
             github: Box::new(|_, _| Err("no GitHub in this test".to_string())),
+            webhook_url: String::new(),
         }
     }
 
@@ -2698,6 +2834,7 @@ mod tests {
         let calls = calls.clone();
         Generate {
             obelisk_version: "v0.42.0".to_string(),
+            webhook_url: "http://target:9290".to_string(),
             github: Box::new(move |method, params| {
                 calls
                     .borrow_mut()
@@ -2706,12 +2843,10 @@ mod tests {
                 Ok(match params["path"].as_str().unwrap() {
                     "examples/templates/js-http" => json!([
                         {"name": "app.toml", "type": "file"},
+                        {"name": "README.md", "type": "file"},
                         {"name": "workflow", "type": "dir"}
                     ])
                     .to_string(),
-                    "examples/templates/js-http/app.toml" => {
-                        "app_name = \"__APP_NAME__\"\n".to_string()
-                    }
                     "examples/templates/js-http/workflow" => {
                         json!([{"name": "run.js", "type": "file"}]).to_string()
                     }
@@ -2737,19 +2872,19 @@ mod tests {
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
         assert_eq!(
             out.stdout,
-            "Generated \"/workspace/My Cool_App/app.toml\"\nGenerated \"/workspace/My Cool_App/workflow/run.js\"\n"
+            "Generated \"/workspace/My Cool_App/workflow/run.js\"\nGenerated \"/workspace/My Cool_App/README.md\"\n"
         );
-        assert_eq!(
-            i.fs.read_file("/workspace/My Cool_App/app.toml").unwrap(),
-            b"app_name = \"my-cool-app\"\n"
-        );
+        let readme =
+            String::from_utf8(i.fs.read_file("/workspace/My Cool_App/README.md").unwrap()).unwrap();
+        assert!(readme.contains("curl http://target:9290/run\n"), "{readme}");
+        assert!(!i.fs.exists("/workspace/My Cool_App/app.toml"));
         assert_eq!(
             i.fs.read_file("/workspace/My Cool_App/workflow/run.js")
                 .unwrap(),
             b"42\n"
         );
         assert_eq!(
-            calls.borrow()[3],
+            calls.borrow()[2],
             (
                 "read".to_string(),
                 r#"{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/js-http/workflow/run.js"}"#.to_string()
@@ -2776,11 +2911,7 @@ mod tests {
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
-        assert_eq!(
-            i.fs.read_file("/workspace/My Cool_App/chosen-app/app.toml")
-                .unwrap(),
-            b"app_name = \"chosen-app\"\n"
-        );
+        assert!(i.fs.is_file("/workspace/My Cool_App/chosen-app/workflow/run.js"));
 
         let out = execute_obelisk(
             &mut i,
@@ -3101,6 +3232,10 @@ content_digest = \"sha256:1\"\n\
                     "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 2}]
                 })
                 .to_string(),
+            )
+            .with(
+                APP_CONFIG_FFQN,
+                &json!("{\"outbound_http\":[]}\n").to_string(),
             );
         let mut fs = Vfs::new();
         // A single digest-addressed loader stands in for the CAS across both
@@ -3123,7 +3258,8 @@ content_digest = \"sha256:1\"\n\
                     "files": [{"path": "a.wasm", "digest": "sha256:2", "size": 2}]
                 })
                 .to_string(),
-            );
+            )
+            .with(APP_CONFIG_FFQN, "null");
         let result = refresh_deployment_mount(&mut fs, &mut host_v2, true).unwrap();
         assert_eq!(result.deployment_id.as_deref(), Some("dep-2"));
         // The old deployment dir is untouched; `current` now resolves to the new
@@ -3138,6 +3274,13 @@ content_digest = \"sha256:1\"\n\
                 .as_deref(),
             Some(&b"v2"[..])
         );
+        assert_eq!(
+            fs.read_file("/workspace/deployment/dep-1/app-policy.json")
+                .as_deref(),
+            Some(&b"{\"outbound_http\":[]}\n"[..])
+        );
+        // The target of dep-2 runs without an app config.
+        assert!(!fs.exists("/workspace/deployment/current/app-policy.json"));
     }
 
     #[test]
