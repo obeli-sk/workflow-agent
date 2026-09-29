@@ -21,6 +21,8 @@ const { executeObelisk, commandHandler, mount, refreshDeploymentMount, registerD
 // reports missing files then a retry that succeeds); the last response
 // repeats once the queue is down to one. Records every call so tests can
 // assert on the exact params sent.
+const APP_CONFIG_FFQN = "obelisk-agent:tools/webapi.get-app-config";
+
 function fakeHost() {
     const responses = new Map();
     const calls = [];
@@ -56,6 +58,8 @@ function fakeHost() {
         listDeployments: (length) => text(webapi("list-deployments", ["", false, length])),
         getDeployment: (id) => text(webapi("get-deployment", [id, null, null, null, null])),
         currentDeploymentId: () => text(webapi("current-deployment-id", [])),
+        // Unfixtured means no app config, so mount tests need not stub it.
+        getAppConfig: () => (responses.has(APP_CONFIG_FFQN) ? webapi("get-app-config", []) : null),
         deploymentCheckout: (id) => decodeFixture(webapi("deployment-checkout", [id])),
         deploymentReadBlob: (digest) => text(webapi("deployment-read-blob", [digest])),
         deploymentSubmit(manifest, attachments, description, allowMissing, deploymentId) {
@@ -441,7 +445,6 @@ function templateSource() {
             { name: "README.md", type: "file" },
             { name: "workflow", type: "dir" },
         ]),
-        "examples/templates/js-http/app.toml": 'app_name = "__APP_NAME__"\n',
         "examples/templates/js-http/workflow": JSON.stringify([{ name: "run.js", type: "file" }]),
         "examples/templates/js-http/workflow/run.js": "42\n",
     };
@@ -450,7 +453,7 @@ function templateSource() {
         calls.push([method, paramsJson]);
         return bodies[JSON.parse(paramsJson).path];
     };
-    return { calls, generate: { obeliskVersion: "v0.42.0", githubContents } };
+    return { calls, generate: { obeliskVersion: "v0.42.0", githubContents, webhookUrl: "http://target:9290" } };
 }
 
 test("generate new fetches the template at OBELISK_VERSION", () => {
@@ -461,12 +464,12 @@ test("generate new fetches the template at OBELISK_VERSION", () => {
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(
         out.stdout,
-        'Generated "/workspace/My Cool_App/app.toml"\nGenerated "/workspace/My Cool_App/README.md"\nGenerated "/workspace/My Cool_App/workflow/run.js"\n',
+        'Generated "/workspace/My Cool_App/workflow/run.js"\nGenerated "/workspace/My Cool_App/README.md"\n',
     );
-    assert.doesNotMatch(i.vfs.readFile("/workspace/My Cool_App/README.md"), /obelisk server run/);
-    assert.equal(i.vfs.readFile("/workspace/My Cool_App/app.toml"), 'app_name = "my-cool-app"\n');
+    assert.match(i.vfs.readFile("/workspace/My Cool_App/README.md"), /curl http:\/\/target:9290\/run\n/);
+    assert.equal(i.vfs.exists("/workspace/My Cool_App/app.toml"), false);
     assert.equal(i.vfs.readFile("/workspace/My Cool_App/workflow/run.js"), "42\n");
-    assert.deepEqual(source.calls[3], [
+    assert.deepEqual(source.calls[2], [
         "read",
         '{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/js-http/workflow/run.js"}',
     ]);
@@ -479,7 +482,7 @@ test("generate new fetches the template at OBELISK_VERSION", () => {
 
     out = executeObelisk(i, ["generate", "new", "chosen-app"], "", host, templateSource().generate);
     assert.equal(out.exitCode, 0, out.stderr);
-    assert.equal(i.vfs.readFile("/workspace/My Cool_App/chosen-app/app.toml"), 'app_name = "chosen-app"\n');
+    assert.equal(i.vfs.isFile("/workspace/My Cool_App/chosen-app/workflow/run.js"), true);
 
     out = executeObelisk(i, ["generate", "new", "Bad Name"], "", host, templateSource().generate);
     assert.equal(out.exitCode, 2);
@@ -811,7 +814,8 @@ test("refresh replaces the manifest and repoints current at the new dir", () => 
         .with(
             "obelisk-agent:tools/webapi.deployment-checkout",
             JSON.stringify({ deployment_toml: v1, files: [{ path: "a.wasm", digest: "sha256:1", size: 2 }] }),
-        );
+        )
+        .with(APP_CONFIG_FFQN, JSON.stringify('{"outbound_http":[]}\n'));
     mount(fs, host1);
 
     const host2 = fakeHost()
@@ -819,11 +823,15 @@ test("refresh replaces the manifest and repoints current at the new dir", () => 
         .with(
             "obelisk-agent:tools/webapi.deployment-checkout",
             JSON.stringify({ deployment_toml: v2, files: [{ path: "a.wasm", digest: "sha256:2", size: 2 }] }),
-        );
+        )
+        .with(APP_CONFIG_FFQN, "null");
     const result = refreshDeploymentMount(fs, host2, true);
     assert.equal(result.deploymentId, "dep-2");
     assert.equal(fs.readFile("/workspace/deployment/dep-1/a.wasm"), "v1");
     assert.equal(fs.readFile("/workspace/deployment/current/a.wasm"), "v2");
+    assert.equal(fs.readFile("/workspace/deployment/dep-1/app-policy.json"), '{"outbound_http":[]}\n');
+    // The target of dep-2 runs without an app config.
+    assert.equal(fs.exists("/workspace/deployment/current/app-policy.json"), false);
 });
 
 test("blobLoader decodes a plain string body via the read-blob ffqn", () => {

@@ -63,6 +63,7 @@ echo ">>> target starts empty: ${TARGET_ORIG_ID}"
 AUTHORED_ID="$("$OBELISK" generate deployment-id)"
 AUTHOR_DIR="/workspace/deployment/$AUTHORED_ID"
 AUTHOR_SCRIPT="$(printf '%s\n' \
+    "grep -o obelisk-app-config-v1 /workspace/deployment/current/app-policy.json" \
     "mkdir -p $AUTHOR_DIR/src $AUTHOR_DIR/wit" \
     "printf '%s\\n' '[[activity_js]]' 'name = \"generated\"' 'ffqn = \"test:generated/api.run\"' 'wit = \"wit\"' 'location = \"src/index.js\"' > $AUTHOR_DIR/deployment.toml" \
     "printf '%s\\n' 'import { value } from \"./lib.js\"; export default function run() { return value; }' > $AUTHOR_DIR/src/index.js" \
@@ -89,6 +90,7 @@ while true; do
 done
 OUTPUT="$(node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION")"
 [[ "$OUTPUT" == *"$AUTHORED_ID"* ]] || { echo "authored submit+apply script output unexpected: $PROJECTION" >&2; exit 1; }
+[[ "$OUTPUT" == *obelisk-app-config-v1* ]] || { echo "the target's app policy was not mounted: $PROJECTION" >&2; exit 1; }
 echo ">>> agent session E2E PASS: authored, submitted, and applied a deployment against the target"
 
 # Verify independently against the target's own API - not the agent's

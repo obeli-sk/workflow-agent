@@ -24,33 +24,12 @@ use crate::interpreter::{CommandOutput, Interpreter};
 use crate::obelisk_web::GithubContents;
 
 const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
+/// The target's app policy, written next to each mounted deployment.toml.
+const APP_POLICY_FILE: &str = "app-policy.json";
 
 const TEMPLATE_OWNER: &str = "obeli-sk";
 const TEMPLATE_REPO: &str = "obelisk";
 const TEMPLATE_PATH: &str = "examples/templates/js-http";
-/// Written in place of the template's README.md, whose `obelisk server run` steps do not apply here.
-const SANDBOX_README: &str = r#"# JavaScript HTTP starter
-
-This app has one webhook, one durable workflow, and one HTTP activity. The webhook calls the
-workflow, which asks the activity to GET `https://example.com/` and returns its status code.
-
-There is no local server in this shell: `obelisk` talks to the target Obelisk instance. Deploy it
-from this directory:
-
-```sh
-obelisk deployment submit deployment.toml   # prints the new deployment ID
-obelisk deployment apply ID
-```
-
-`apply` replaces the target's whole active deployment. To keep what already runs there, merge this
-app's components into `/workspace/deployment/current/deployment.toml` and submit that instead.
-
-Then run the workflow with `obelisk call FFQN` (see `obelisk functions list`), or GET `/run` on the
-target's webhook listener with `curl` (`mount` prints its URL).
-
-`app.toml` is not uploaded. The target server's own app config must also allow
-`https://example.com`, since it caps what any deployment may request.
-"#;
 
 /// The placeholder value the agent sees in `component_files` maps in place of a
 /// pinned digest; `deployment submit` replaces each with the file's real digest.
@@ -96,6 +75,8 @@ pub trait ControlPlane {
     fn list_deployments(&mut self, length: u32) -> Result<String, String>;
     fn get_deployment(&mut self, deployment_id: &str) -> Result<String, String>;
     fn current_deployment_id(&mut self) -> Result<String, String>;
+    /// The target's app policy JSON, `None` when it runs without an app config.
+    fn get_app_config(&mut self) -> Result<Option<String>, String>;
     fn deployment_checkout(&mut self, deployment_id: &str) -> Result<CheckoutResult, String>;
     fn deployment_read_blob(&mut self, digest: &str) -> Result<String, String>;
     fn deployment_submit(
@@ -204,6 +185,8 @@ pub fn command_handler(host: Box<dyn ControlPlane>, generate: Generate) -> Custo
 pub struct Generate {
     pub obelisk_version: String,
     pub github: GithubContents,
+    /// The target's webhook listener, written into the starter README.
+    pub webhook_url: String,
 }
 
 /// Check out the active deployment's `deployment.toml` plus the metadata index
@@ -247,6 +230,19 @@ pub fn refresh_deployment_mount(
     if replace || !fs.exists(&manifest_path) {
         fs.write_file(&manifest_path, simplify_manifest(&manifest).as_bytes())
             .map_err(fs_error_message)?;
+    }
+
+    let policy_path = format!("{dir}/{APP_POLICY_FILE}");
+    if replace || !fs.exists(&policy_path) {
+        match host.get_app_config()? {
+            Some(policy) => fs
+                .write_file(&policy_path, policy.as_bytes())
+                .map_err(fs_error_message)?,
+            None if fs.exists(&policy_path) => {
+                fs.remove(&policy_path, false).map_err(fs_error_message)?
+            }
+            None => {}
+        }
     }
 
     let mut files = 1u32;
@@ -506,6 +502,10 @@ fn generate_new(
             "{TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{TEMPLATE_PATH} contains no files"
         ));
     }
+    files.push((
+        "README.md".to_string(),
+        sandbox_readme(&generate.webhook_url),
+    ));
     for (relative, _) in &files {
         let path = format!("{output_dir}/{relative}");
         if interp.fs.exists(&path) {
@@ -516,11 +516,6 @@ fn generate_new(
     let mut stdout = String::new();
     for (relative, contents) in files {
         let path = format!("{output_dir}/{relative}");
-        let contents = if relative == "app.toml" {
-            contents.replace("__APP_NAME__", &app_name)
-        } else {
-            contents
-        };
         interp
             .fs
             .write_file(&path, contents.as_bytes())
@@ -528,6 +523,45 @@ fn generate_new(
         stdout.push_str(&format!("Generated {path:?}\n"));
     }
     Ok(ok(stdout))
+}
+
+/// Written in place of the template's README.md, whose `obelisk server run` steps do not apply here.
+fn sandbox_readme(webhook_url: &str) -> String {
+    let trigger = if webhook_url.is_empty() {
+        "Then run the workflow with `obelisk call FFQN` (see `obelisk functions list`).\n"
+            .to_string()
+    } else {
+        format!(
+            "Then trigger the webhook, or run the workflow with `obelisk call FFQN` (see\n\
+             `obelisk functions list`):\n\n```sh\ncurl {webhook_url}/run\n```\n"
+        )
+    };
+    format!(
+        r#"# JavaScript HTTP starter
+
+This app has one webhook, one durable workflow, and one HTTP activity. The webhook calls the
+workflow, which asks the activity to GET `https://example.com/` and returns its status code.
+
+`obelisk` in this shell talks to the target Obelisk instance. Deploy from this directory:
+
+```sh
+obelisk deployment submit deployment.toml   # prints the new deployment ID
+obelisk deployment apply ID
+```
+
+`apply` replaces the target's whole active deployment. To keep what already runs there, merge this
+app's components into `/workspace/deployment/current/deployment.toml` and submit that instead.
+
+{trigger}
+## App policy
+
+The target's app policy caps the hosts, secrets, environment variables, and exec activities any
+deployment may use. Read it in `{DEPLOYMENT_ROOT}/current/{APP_POLICY_FILE}` (`obelisk deployment
+refresh` re-fetches it) and check that it allows what `deployment.toml` requests, here GET
+`https://example.com`. A deployment cannot widen the policy: if something is missing, ask the user
+to allow it (e.g. another host or secret) in the target server's app config.
+"#
+    )
 }
 
 /// Depth-first listing of the template tree; `relative` is the path under
@@ -560,7 +594,8 @@ fn collect_template_files(
         };
         match entry.get("type").and_then(Value::as_str) {
             Some("dir") => collect_template_files(github, repo, &child, files)?,
-            _ if child == "README.md" => files.push((child, SANDBOX_README.to_string())),
+            // The app policy lives on the target server, see `sandbox_readme`.
+            _ if child == "app.toml" || child == "README.md" => {}
             _ => {
                 let body =
                     github_request(github, "read", repo, &format!("{TEMPLATE_PATH}/{child}"))?;
@@ -1724,10 +1759,12 @@ Subcommands:\n\
 fn generate_new_help() -> String {
     "Usage: obelisk generate new [NAME]\n\
 \n\
-Create a runnable JS starter app (app.toml, deployment.toml, a webhook, a\n\
-workflow, and an HTTP activity). With NAME, the app is created in a new NAME\n\
+Create a runnable JS starter app (deployment.toml, a webhook, a workflow, an\n\
+HTTP activity, and a README). With NAME, the app is created in a new NAME\n\
 directory; otherwise in the current directory, named after its slug. The files\n\
-are fetched from the obelisk repository at the operator's OBELISK_VERSION.\n"
+are fetched from the obelisk repository at the operator's OBELISK_VERSION. There\n\
+is no app.toml: the target's app policy is in\n\
+/workspace/deployment/current/app-policy.json.\n"
         .to_string()
 }
 
@@ -1807,6 +1844,7 @@ mod tests {
     }
 
     const SUBMIT_FFQN: &str = "obelisk-agent:tools/webapi.deployment-submit";
+    const APP_CONFIG_FFQN: &str = "obelisk-agent:tools/webapi.get-app-config";
 
     /// The pack's `ControlPlane` over the ffqn-keyed fixtures: each method sends
     /// the same params array its WIT function takes and decodes the fixture.
@@ -1909,6 +1947,17 @@ mod tests {
         }
         fn current_deployment_id(&mut self) -> Result<String, String> {
             self.text("current-deployment-id", json!([]))
+        }
+        /// Unfixtured means no app config, so mount tests need not stub it.
+        fn get_app_config(&mut self) -> Result<Option<String>, String> {
+            if !self.responses.contains_key(APP_CONFIG_FFQN) {
+                return Ok(None);
+            }
+            Ok(match self.call("get-app-config", json!([]))? {
+                Value::Null => None,
+                Value::String(policy) => Some(policy),
+                other => Some(other.to_string()),
+            })
         }
         fn deployment_checkout(&mut self, deployment_id: &str) -> Result<CheckoutResult, String> {
             self.typed("deployment-checkout", json!([deployment_id]))
@@ -2714,6 +2763,7 @@ mod tests {
         Generate {
             obelisk_version: "latest".to_string(),
             github: Box::new(|_, _| Err("no GitHub in this test".to_string())),
+            webhook_url: String::new(),
         }
     }
 
@@ -2722,6 +2772,7 @@ mod tests {
         let calls = calls.clone();
         Generate {
             obelisk_version: "v0.42.0".to_string(),
+            webhook_url: "http://target:9290".to_string(),
             github: Box::new(move |method, params| {
                 calls
                     .borrow_mut()
@@ -2734,9 +2785,6 @@ mod tests {
                         {"name": "workflow", "type": "dir"}
                     ])
                     .to_string(),
-                    "examples/templates/js-http/app.toml" => {
-                        "app_name = \"__APP_NAME__\"\n".to_string()
-                    }
                     "examples/templates/js-http/workflow" => {
                         json!([{"name": "run.js", "type": "file"}]).to_string()
                     }
@@ -2762,23 +2810,19 @@ mod tests {
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
         assert_eq!(
             out.stdout,
-            "Generated \"/workspace/My Cool_App/app.toml\"\nGenerated \"/workspace/My Cool_App/README.md\"\nGenerated \"/workspace/My Cool_App/workflow/run.js\"\n"
+            "Generated \"/workspace/My Cool_App/workflow/run.js\"\nGenerated \"/workspace/My Cool_App/README.md\"\n"
         );
-        assert_eq!(
-            i.fs.read_file("/workspace/My Cool_App/README.md").unwrap(),
-            SANDBOX_README.as_bytes()
-        );
-        assert_eq!(
-            i.fs.read_file("/workspace/My Cool_App/app.toml").unwrap(),
-            b"app_name = \"my-cool-app\"\n"
-        );
+        let readme =
+            String::from_utf8(i.fs.read_file("/workspace/My Cool_App/README.md").unwrap()).unwrap();
+        assert!(readme.contains("curl http://target:9290/run\n"), "{readme}");
+        assert!(!i.fs.exists("/workspace/My Cool_App/app.toml"));
         assert_eq!(
             i.fs.read_file("/workspace/My Cool_App/workflow/run.js")
                 .unwrap(),
             b"42\n"
         );
         assert_eq!(
-            calls.borrow()[3],
+            calls.borrow()[2],
             (
                 "read".to_string(),
                 r#"{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/js-http/workflow/run.js"}"#.to_string()
@@ -2805,11 +2849,7 @@ mod tests {
             &mut host,
         );
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
-        assert_eq!(
-            i.fs.read_file("/workspace/My Cool_App/chosen-app/app.toml")
-                .unwrap(),
-            b"app_name = \"chosen-app\"\n"
-        );
+        assert!(i.fs.is_file("/workspace/My Cool_App/chosen-app/workflow/run.js"));
 
         let out = execute_obelisk(
             &mut i,
@@ -3130,6 +3170,10 @@ content_digest = \"sha256:1\"\n\
                     "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 2}]
                 })
                 .to_string(),
+            )
+            .with(
+                APP_CONFIG_FFQN,
+                &json!("{\"outbound_http\":[]}\n").to_string(),
             );
         let mut fs = Vfs::new();
         // A single digest-addressed loader stands in for the CAS across both
@@ -3152,7 +3196,8 @@ content_digest = \"sha256:1\"\n\
                     "files": [{"path": "a.wasm", "digest": "sha256:2", "size": 2}]
                 })
                 .to_string(),
-            );
+            )
+            .with(APP_CONFIG_FFQN, "null");
         let result = refresh_deployment_mount(&mut fs, &mut host_v2, true).unwrap();
         assert_eq!(result.deployment_id.as_deref(), Some("dep-2"));
         // The old deployment dir is untouched; `current` now resolves to the new
@@ -3167,6 +3212,13 @@ content_digest = \"sha256:1\"\n\
                 .as_deref(),
             Some(&b"v2"[..])
         );
+        assert_eq!(
+            fs.read_file("/workspace/deployment/dep-1/app-policy.json")
+                .as_deref(),
+            Some(&b"{\"outbound_http\":[]}\n"[..])
+        );
+        // The target of dep-2 runs without an app config.
+        assert!(!fs.exists("/workspace/deployment/current/app-policy.json"));
     }
 
     #[test]

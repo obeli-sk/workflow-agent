@@ -585,6 +585,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     bash.registerCommand("obelisk", obeliskPack.commandHandler(controlPlane, {
         obeliskVersion: config.obeliskVersion,
         githubContents,
+        webhookUrl: config.webhookUrl,
     }));
     const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
     // PORT: chat.rs's create_child's workflow_ext::run_cancellable_submit

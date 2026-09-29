@@ -140,6 +140,10 @@ impl ControlPlane for RealHost {
         webapi::current_deployment_id()
     }
 
+    fn get_app_config(&mut self) -> Result<Option<String>, String> {
+        webapi::get_app_config()
+    }
+
     fn deployment_checkout(&mut self, deployment_id: &str) -> Result<CheckoutResult, String> {
         let checkout = webapi::deployment_checkout(deployment_id).map_err(tool_error)?;
         Ok(CheckoutResult {

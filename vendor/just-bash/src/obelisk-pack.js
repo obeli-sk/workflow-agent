@@ -22,6 +22,8 @@ import { isCasNamespacedDigest } from "./fs.js";
 
 
 const DEPLOYMENT_ROOT = "/workspace/deployment";
+// The target's app policy, written next to each mounted deployment.toml.
+const APP_POLICY_FILE = "app-policy.json";
 
 const TEMPLATE_OWNER = "obeli-sk";
 const TEMPLATE_REPO = "obelisk";
@@ -40,9 +42,9 @@ const AUTO_DIGEST = "auto";
 // `commands.set("obelisk", obelisk.commandHandler(controlPlane, generate))`. The handler owns
 // `controlPlane` for the life of the session (a plain closure capture, not an
 // Rc<RefCell<_>> as in the Rust port, since JS closures already close over a
-// shared mutable reference). `generate` is `{ obeliskVersion, githubContents }`:
+// shared mutable reference). `generate` is `{ obeliskVersion, githubContents, webhookUrl }`:
 // the obelisk repo ref and the statically imported `obelisk-agent:mounts/apps.request`
-// that `generate new` fetches the starter app with.
+// that `generate new` fetches the starter app with, and the target's webhook URL for its README.
 export function commandHandler(controlPlane, generate) {
     return (interp, args, stdin) => executeObelisk(interp, args.slice(1), stdin, controlPlane, generate);
 }
@@ -78,6 +80,13 @@ export function refreshDeploymentMount(fs, controlPlane, replace) {
     const manifestPath = `${dir}/deployment.toml`;
     if (replace || !fs.exists(manifestPath)) {
         fs.writeFile(manifestPath, simplifyManifest(manifest));
+    }
+
+    const policyPath = `${dir}/${APP_POLICY_FILE}`;
+    if (replace || !fs.exists(policyPath)) {
+        const policy = controlPlane.getAppConfig();
+        if (policy !== null) fs.writeFile(policyPath, policy);
+        else if (fs.exists(policyPath)) fs.remove(policyPath);
     }
 
     let files = 1;
@@ -219,13 +228,18 @@ function tryExecuteObelisk(interp, args, stdin, controlPlane, generate) {
 }
 
 // Written in place of the template's README.md, whose `obelisk server run` steps do not apply here.
-const SANDBOX_README = `# JavaScript HTTP starter
+function sandboxReadme(webhookUrl) {
+    const trigger =
+        webhookUrl === ""
+            ? "Then run the workflow with `obelisk call FFQN` (see `obelisk functions list`).\n"
+            : "Then trigger the webhook, or run the workflow with `obelisk call FFQN` (see\n" +
+              `\`obelisk functions list\`):\n\n\`\`\`sh\ncurl ${webhookUrl}/run\n\`\`\`\n`;
+    return `# JavaScript HTTP starter
 
 This app has one webhook, one durable workflow, and one HTTP activity. The webhook calls the
 workflow, which asks the activity to GET \`https://example.com/\` and returns its status code.
 
-There is no local server in this shell: \`obelisk\` talks to the target Obelisk instance. Deploy it
-from this directory:
+\`obelisk\` in this shell talks to the target Obelisk instance. Deploy from this directory:
 
 \`\`\`sh
 obelisk deployment submit deployment.toml   # prints the new deployment ID
@@ -235,12 +249,16 @@ obelisk deployment apply ID
 \`apply\` replaces the target's whole active deployment. To keep what already runs there, merge this
 app's components into \`/workspace/deployment/current/deployment.toml\` and submit that instead.
 
-Then run the workflow with \`obelisk call FFQN\` (see \`obelisk functions list\`), or GET \`/run\` on the
-target's webhook listener with \`curl\` (\`mount\` prints its URL).
+${trigger}
+## App policy
 
-\`app.toml\` is not uploaded. The target server's own app config must also allow
-\`https://example.com\`, since it caps what any deployment may request.
+The target's app policy caps the hosts, secrets, environment variables, and exec activities any
+deployment may use. Read it in \`${DEPLOYMENT_ROOT}/current/${APP_POLICY_FILE}\` (\`obelisk deployment
+refresh\` re-fetches it) and check that it allows what \`deployment.toml\` requests, here GET
+\`https://example.com\`. A deployment cannot widen the policy: if something is missing, ask the user
+to allow it (e.g. another host or secret) in the target server's app config.
 `;
+}
 
 // `generate deployment` echoes a template baked in at build time;
 // `generate new` fetches the starter app from GitHub at `generate.obeliskVersion`.
@@ -273,6 +291,7 @@ function generateNew(interp, name, generate) {
     if (files.length === 0) {
         throw `${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${gitRef}:${TEMPLATE_PATH} contains no files`;
     }
+    files.push(["README.md", sandboxReadme(generate.webhookUrl)]);
     for (const [relative] of files) {
         const path = `${outputDir}/${relative}`;
         if (interp.vfs.exists(path)) throw `cannot generate app: ${path} already exists`;
@@ -281,7 +300,7 @@ function generateNew(interp, name, generate) {
     let stdout = "";
     for (const [relative, contents] of files) {
         const path = `${outputDir}/${relative}`;
-        interp.vfs.writeFile(path, relative === "app.toml" ? contents.replaceAll("__APP_NAME__", appName) : contents);
+        interp.vfs.writeFile(path, contents);
         stdout += `Generated ${JSON.stringify(path)}\n`;
     }
     return ok(stdout);
@@ -298,8 +317,8 @@ function collectTemplateFiles(githubContents, repo, relative, files) {
         const child = relative === "" ? entry.name : `${relative}/${entry.name}`;
         if (entry.type === "dir") {
             collectTemplateFiles(githubContents, repo, child, files);
-        } else if (child === "README.md") {
-            files.push([child, SANDBOX_README]);
+        } else if (child === "app.toml" || child === "README.md") {
+            // The app policy lives on the target server, see `sandboxReadme`.
         } else {
             files.push([child, githubContents("read", JSON.stringify({ ...repo, path: `${TEMPLATE_PATH}/${child}` }))]);
         }
@@ -783,7 +802,7 @@ const generateHelp =
     "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file, or create a new app.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\nnew [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n";
 
 const generateNewHelp =
-    "Usage: obelisk generate new [NAME]\n\nCreate a runnable JS starter app (app.toml, deployment.toml, a webhook, a\nworkflow, and an HTTP activity). With NAME, the app is created in a new NAME\ndirectory; otherwise in the current directory, named after its slug. The files\nare fetched from the obelisk repository at the operator's OBELISK_VERSION.\n";
+    "Usage: obelisk generate new [NAME]\n\nCreate a runnable JS starter app (deployment.toml, a webhook, a workflow, an\nHTTP activity, and a README). With NAME, the app is created in a new NAME\ndirectory; otherwise in the current directory, named after its slug. The files\nare fetched from the obelisk repository at the operator's OBELISK_VERSION. There\nis no app.toml: the target's app policy is in\n/workspace/deployment/current/app-policy.json.\n";
 
 const generateDeploymentHelp =
     "Usage: obelisk generate deployment\n\nPrint a default deployment.toml with every option documented as comments.\nRedirect it to a file to scaffold a new deployment, e.g.\n`obelisk generate deployment > deployment.toml`.\n";
