@@ -242,12 +242,12 @@ workflow, which asks the activity to GET \`https://example.com/\` and returns it
 \`obelisk\` in this shell talks to the target Obelisk instance. Deploy from this directory:
 
 \`\`\`sh
-obelisk deployment submit deployment.toml   # prints the new deployment ID
-obelisk deployment apply ID
+obelisk deployment apply deployment.toml
 \`\`\`
 
-\`apply\` replaces the target's whole active deployment. To keep what already runs there, merge this
-app's components into \`/workspace/deployment/current/deployment.toml\` and submit that instead.
+This submits the manifest and replaces the target's whole active deployment. To keep what already
+runs there, merge this app's components into \`/workspace/deployment/current/deployment.toml\` and
+apply that instead.
 
 ${trigger}
 ## App policy
@@ -381,18 +381,9 @@ function executeDeployment(interp, action, args, controlPlane) {
         // The PATH is positional, so skip flags (and `--description`'s
         // value) when finding it; otherwise `submit --description X` reads
         // `X`, or even `--description` itself, as the deployment directory.
-        const { dir, file } = resolveDeploymentManifest(interp, firstPositional(args, ["--description"]));
-        const manifest = readManifest(interp.vfs, dir, file);
-        const prepared = manifestWithGeneratedFiles(interp.vfs, dir, manifest);
-        // Expand the digest-free view back to what the server stores: every
-        // `content_digest`, `component_files` value, and `backtrace.sources`
-        // table, each digest recomputed from the file's current bytes (an
-        // unchanged file keeps its CAS digest, a changed one is re-hashed).
-        const expanded = manifestWithDigests(interp.vfs, dir, prepared);
-        const deploymentId = deploymentIdFromDir(dir);
-        const description = option(args, "--description", "Submitted from workflow-agent VFS");
-        const allowMissing = flagRuntimeConfig(args);
-        return submitDeployment(interp.vfs, controlPlane, dir, expanded, description, allowMissing, deploymentId);
+        const path = firstPositional(args, ["--description"]);
+        const id = submitManifest(interp, controlPlane, path, args, flagRuntimeConfig(args));
+        return ok(`${prettyJson({ deployment_id: id })}\n`);
     }
     if (action === "enqueue") {
         // Stage the deployment for the next server restart (never hot-swaps),
@@ -403,13 +394,30 @@ function executeDeployment(interp, action, args, controlPlane) {
         throw `unexpected outcome from server: ${outcome}`;
     }
     if (action === "apply") {
+        // Like real obelisk, a `Dep_` ID is applied as is, while a manifest
+        // path is submitted first (never allowing missing runtime config).
+        const source = required(firstPositional(args, ["--description"]), "deployment id or PATH-TO-DEPLOYMENT.TOML");
+        let id = source;
+        let submitted = "";
+        if (!source.startsWith("Dep_")) {
+            id = submitManifest(interp, controlPlane, source, args, false);
+            submitted = `Submitted as ${id}\n`;
+        }
         // Hot-redeploy now; a server that can only stage the switch reports
         // restart_required, which real obelisk `deployment apply` treats as a
         // failure rather than a silent enqueue.
-        const outcome = switchOutcome(controlPlane.applyDeployment(required(args[0], "deployment id")));
-        if (outcome === "switched") return ok("Applied successfully.\n");
-        if (outcome === "restart_required") throw "Could not apply immediately; deployment enqueued. Restart the server to apply.";
-        throw `unexpected outcome from server: ${outcome}`;
+        let error;
+        try {
+            const outcome = switchOutcome(controlPlane.applyDeployment(id));
+            if (outcome === "switched") return ok(`${submitted}Applied successfully.\n`);
+            error =
+                outcome === "restart_required"
+                    ? "Could not apply immediately; deployment enqueued. Restart the server to apply."
+                    : `unexpected outcome from server: ${outcome}`;
+        } catch (thrown) {
+            error = thrown;
+        }
+        return { stdout: submitted, stderr: `obelisk: ${error}\n`, exitCode: 2 };
     }
     return fail(`obelisk deployment: unknown action '${action}'\n`);
 }
@@ -476,6 +484,20 @@ function formatDeploymentTimestamp(value) {
     return match ? `${match[1]} ${match[2]}` : value;
 }
 
+// Submit the manifest at `path` from the VFS and return the new deployment ID.
+function submitManifest(interp, controlPlane, path, args, allowMissing) {
+    const { dir, file } = resolveDeploymentManifest(interp, path);
+    const manifest = readManifest(interp.vfs, dir, file);
+    const prepared = manifestWithGeneratedFiles(interp.vfs, dir, manifest);
+    // Expand the digest-free view back to what the server stores: every
+    // `content_digest`, `component_files` value, and `backtrace.sources`
+    // table, each digest recomputed from the file's current bytes (an
+    // unchanged file keeps its CAS digest, a changed one is re-hashed).
+    const expanded = manifestWithDigests(interp.vfs, dir, prepared);
+    const description = option(args, "--description", "Submitted from workflow-agent VFS");
+    return submitDeployment(interp.vfs, controlPlane, dir, expanded, description, allowMissing, deploymentIdFromDir(dir));
+}
+
 // The workflow half of the submit contract: drive the dumb
 // `deployment-submit` activity's preflight/attach loop. The first call
 // carries no blobs (a JSON preflight); each `{ missingFiles }` error names
@@ -490,7 +512,7 @@ function submitDeployment(fs, controlPlane, dir, manifest, description, allowMis
         let missing;
         try {
             const id = controlPlane.deploymentSubmit(manifest, attachments, description, allowMissing, deploymentId);
-            return ok(`${prettyJson({ deployment_id: decodeString(id) })}\n`);
+            return decodeString(id);
         } catch (error) {
             if (!Array.isArray(error?.missingFiles)) throw error;
             missing = error.missingFiles;
@@ -784,7 +806,7 @@ const callHelp =
     "Usage: obelisk call FFQN [PARAMS_JSON]\nobelisk call FFQN -- PARAM...\n\nCall a deployed function and print its result. Pass parameters as one JSON array\nin WIT parameter order, or after `--` as positional values (each parsed as JSON\nwhen valid, otherwise as a string). With neither, parameters are read from stdin,\ndefaulting to `[]`.\n";
 
 const deploymentHelp =
-    "Usage: obelisk deployment <subcommand>\n\nInspect, edit, submit, and activate deployments. Edits under\n/workspace/deployment/current are local until `submit` or `apply`.\n\nSubcommands:\nactive [--json]           Print the active deployment ID.\nlist                      List recent deployments.\nshow ID                   Print a stored deployment's TOML manifest.\nrefresh                   Re-fetch the active deployment, discarding local edits.\ncheck [PATH]              Report a deployment's manifest and locally-edited sources.\nsubmit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\nenqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\napply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\nRun `obelisk deployment <subcommand> --help` for a subcommand's options.\n";
+    "Usage: obelisk deployment <subcommand>\n\nInspect, edit, submit, and activate deployments. Edits under\n/workspace/deployment/current are local until `submit` or `apply`.\n\nSubcommands:\nactive [--json]           Print the active deployment ID.\nlist                      List recent deployments.\nshow ID                   Print a stored deployment's TOML manifest.\nrefresh                   Re-fetch the active deployment, discarding local edits.\ncheck [PATH]              Report a deployment's manifest and locally-edited sources.\nsubmit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\nenqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\napply PATH|ID             Submit-and-apply: hot-redeploy a manifest or stored deployment now.\n\nRun `obelisk deployment <subcommand> --help` for a subcommand's options.\n";
 
 const deploymentSubmitHelp =
     "Usage: obelisk deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML\n\nStore the edited deployment as a new inactive deployment and print its ID. PATH\nis the path to the deployment TOML file to submit (any filename -- not just the\nliteral \"deployment.toml\"); it must be a file, not a directory, matching real\nobelisk. Digests are recomputed from the files, so leave them out.\n\nOptions:\n--description TEXT               Human-readable description for the new deployment.\n--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n(alias: --allow-unavailable-runtime-config)\n";
@@ -796,7 +818,7 @@ const deploymentEnqueueHelp =
     "Usage: obelisk deployment enqueue [OPTIONS] ID\n\nEnqueue a stored deployment; it is verified and applied on the next server\nrestart. Use `apply` to hot-redeploy without a restart.\n\nOptions:\n--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n(alias: --allow-unavailable-runtime-config)\n";
 
 const deploymentApplyHelp =
-    "Usage: obelisk deployment apply ID\n\nHot-redeploy a stored deployment now (fails if it cannot be applied live).\n";
+    "Usage: obelisk deployment apply [OPTIONS] PATH|ID\n\nHot-redeploy now (fails if it cannot be applied live). A deployment TOML PATH is\nsubmitted first, like `submit`; a `Dep_` ID applies a stored deployment.\n\nOptions:\n--description TEXT   Human-readable description for a newly submitted deployment.\n";
 
 const generateHelp =
     "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file, or create a new app.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\nnew [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n";

@@ -373,19 +373,32 @@ test("deployment enqueue reports an already-active deployment", () => {
 test("deployment apply requires id", () => {
     const out = executeObelisk(interp(), words("deployment apply"), "", fakeHost());
     assert.equal(out.exitCode, 2);
-    assert.equal(out.stderr, "obelisk: deployment id is required\n");
+    assert.equal(out.stderr, "obelisk: deployment id or PATH-TO-DEPLOYMENT.TOML is required\n");
 });
 
 test("deployment apply reports success", () => {
     const host = fakeHost().with("obelisk-agent:tools/webapi.apply-deployment", JSON.stringify({ ok: "switched" }));
-    const out = executeObelisk(interp(), words("deployment apply dep-2"), "", host);
-    assert.equal(host.calls[0][1], JSON.stringify(["dep-2"]));
+    const out = executeObelisk(interp(), words("deployment apply Dep_2"), "", host);
+    assert.equal(host.calls[0][1], JSON.stringify(["Dep_2"]));
     assert.equal(out.stdout, "Applied successfully.\n");
+});
+
+test("deployment apply submits a manifest path first, like real obelisk", () => {
+    const i = interp("/workspace/app");
+    i.vfs.writeFile("/workspace/app/deployment.toml", '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n');
+    const host = fakeHost()
+        .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"))
+        .with("obelisk-agent:tools/webapi.apply-deployment", JSON.stringify({ ok: "switched" }));
+    const out = executeObelisk(i, words("deployment apply deployment.toml"), "", host);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stdout, "Submitted as Dep_new\nApplied successfully.\n");
+    assert.equal(JSON.parse(host.calls[0][1])[3], false);
+    assert.deepEqual(host.calls[1], ["obelisk-agent:tools/webapi.apply-deployment", JSON.stringify(["Dep_new"])]);
 });
 
 test("deployment apply fails when only a restart could apply it", () => {
     const host = fakeHost().with("obelisk-agent:tools/webapi.apply-deployment", JSON.stringify({ ok: "restart_required" }));
-    const out = executeObelisk(interp(), words("deployment apply dep-2"), "", host);
+    const out = executeObelisk(interp(), words("deployment apply Dep_2"), "", host);
     assert.equal(out.exitCode, 2);
     assert.equal(out.stderr, "obelisk: Could not apply immediately; deployment enqueued. Restart the server to apply.\n");
 });

@@ -545,12 +545,12 @@ workflow, which asks the activity to GET `https://example.com/` and returns its 
 `obelisk` in this shell talks to the target Obelisk instance. Deploy from this directory:
 
 ```sh
-obelisk deployment submit deployment.toml   # prints the new deployment ID
-obelisk deployment apply ID
+obelisk deployment apply deployment.toml
 ```
 
-`apply` replaces the target's whole active deployment. To keep what already runs there, merge this
-app's components into `/workspace/deployment/current/deployment.toml` and submit that instead.
+This submits the manifest and replaces the target's whole active deployment. To keep what already
+runs there, merge this app's components into `/workspace/deployment/current/deployment.toml` and
+apply that instead.
 
 {trigger}
 ## App policy
@@ -702,29 +702,12 @@ fn execute_deployment(
             // The PATH is positional, so skip flags (and `--description`'s value)
             // when finding it; otherwise `submit --description X` reads `X`, or
             // even `--description` itself, as the deployment directory.
-            let (dir, file) =
-                resolve_deployment_manifest(interp, first_positional(args, &["--description"]))?;
-            let manifest = read_manifest(&interp.fs, &dir, &file)?;
-            let manifest =
-                manifest_with_generated_files(&interp.fs, &dir, &manifest, interp.log_debug)?;
-            // Expand the digest-free view back to what the server stores: every
-            // `content_digest`, `component_files` value, and `backtrace.sources`
-            // table, each digest recomputed from the file's current bytes (an
-            // unchanged file keeps its CAS digest, a changed one is re-hashed).
-            let manifest = manifest_with_digests(&interp.fs, &dir, &manifest, interp.log_debug);
-            let deployment_id = deployment_id_from_dir(&dir);
-            let description =
-                option(args, "--description", "Submitted from workflow-agent VFS").to_string();
-            let allow_missing = flag_runtime_config(args);
-            submit_deployment(
-                &interp.fs,
-                host,
-                &dir,
-                &manifest,
-                &description,
-                allow_missing,
-                &deployment_id,
-            )
+            let path = first_positional(args, &["--description"]);
+            let id = submit_manifest(interp, host, path, args, flag_runtime_config(args))?;
+            Ok(ok(format!(
+                "{}\n",
+                pretty_json(&json!({ "deployment_id": id }))
+            )))
         }
         "enqueue" => {
             // Stage the deployment for the next server restart (never
@@ -742,19 +725,41 @@ fn execute_deployment(
             }
         }
         "apply" => {
+            // Like real obelisk, a `Dep_` ID is applied as is, while a manifest
+            // path is submitted first (never allowing missing runtime config).
+            let source = required(
+                first_positional(args, &["--description"]),
+                "deployment id or PATH-TO-DEPLOYMENT.TOML",
+            )?;
+            let (id, submitted) = if source.starts_with("Dep_") {
+                (source.to_string(), String::new())
+            } else {
+                let id = submit_manifest(interp, host, Some(source), args, false)?;
+                let submitted = format!("Submitted as {id}\n");
+                (id, submitted)
+            };
             // Hot-redeploy now; a server that can only stage the switch reports
             // restart_required, which real obelisk `deployment apply` treats as
             // a failure rather than a silent enqueue.
-            let id = required(args.first().map(String::as_str), "deployment id")?;
-            let value = host.apply_deployment(id)?;
-            match switch_outcome(&Value::String(value))?.as_str() {
-                "switched" => Ok(ok("Applied successfully.\n".to_string())),
-                "restart_required" => Err(
+            let outcome = host
+                .apply_deployment(&id)
+                .and_then(|value| switch_outcome(&Value::String(value)));
+            let error = match outcome.as_deref() {
+                Ok("switched") => {
+                    return Ok(ok(format!("{submitted}Applied successfully.\n")));
+                }
+                Ok("restart_required") => {
                     "Could not apply immediately; deployment enqueued. Restart the server to apply."
-                        .to_string(),
-                ),
-                other => Err(format!("unexpected outcome from server: {other}")),
-            }
+                        .to_string()
+                }
+                Ok(other) => format!("unexpected outcome from server: {other}"),
+                Err(error) => error.clone(),
+            };
+            Ok(CommandOutput {
+                stdout: submitted,
+                stderr: format!("obelisk: {error}\n"),
+                exit_code: 2,
+            })
         }
         _ => Ok(fail(format!(
             "obelisk deployment: unknown action '{action}'\n"
@@ -883,6 +888,35 @@ fn format_deployment_timestamp(value: Option<&str>) -> String {
     value.to_string()
 }
 
+/// Submit the manifest at `path` from the VFS and return the new deployment ID.
+fn submit_manifest(
+    interp: &Interpreter,
+    host: &mut dyn ControlPlane,
+    path: Option<&str>,
+    args: &[String],
+    allow_missing: bool,
+) -> Result<String, String> {
+    let (dir, file) = resolve_deployment_manifest(interp, path)?;
+    let manifest = read_manifest(&interp.fs, &dir, &file)?;
+    let manifest = manifest_with_generated_files(&interp.fs, &dir, &manifest, interp.log_debug)?;
+    // Expand the digest-free view back to what the server stores: every
+    // `content_digest`, `component_files` value, and `backtrace.sources`
+    // table, each digest recomputed from the file's current bytes (an
+    // unchanged file keeps its CAS digest, a changed one is re-hashed).
+    let manifest = manifest_with_digests(&interp.fs, &dir, &manifest, interp.log_debug);
+    let deployment_id = deployment_id_from_dir(&dir);
+    let description = option(args, "--description", "Submitted from workflow-agent VFS");
+    submit_deployment(
+        &interp.fs,
+        host,
+        &dir,
+        &manifest,
+        description,
+        allow_missing,
+        &deployment_id,
+    )
+}
+
 /// The workflow half of the submit contract: drive the dumb `deployment-submit`
 /// activity's preflight/attach loop. The first call carries no blobs (a JSON
 /// preflight); each 409 names the blobs the CAS lacks, which we read straight
@@ -897,7 +931,7 @@ fn submit_deployment(
     description: &str,
     allow_missing: bool,
     deployment_id: &str,
-) -> Result<CommandOutput, String> {
+) -> Result<String, String> {
     let mut attachments: Vec<AttachedFile> = Vec::new();
     let mut previous: Option<Vec<String>> = None;
     loop {
@@ -909,12 +943,7 @@ fn submit_deployment(
             deployment_id,
         ) {
             // Ok side is the new deployment id.
-            Ok(id) => {
-                return Ok(ok(format!(
-                    "{}\n",
-                    pretty_json(&json!({ "deployment_id": decode_string(&id) }))
-                )));
-            }
+            Ok(id) => return Ok(decode_string(&id)),
             // The missing-files arm is recoverable; any other error is terminal.
             Err(SubmitError::MissingFiles(missing)) => missing,
             Err(SubmitError::Failed(message)) => return Err(message),
@@ -1696,7 +1725,7 @@ Subcommands:\n\
   check [PATH]              Report a deployment's manifest and locally-edited sources.\n\
   submit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\n\
   enqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\n\
-  apply ID                  Submit-and-apply: hot-redeploy a stored deployment now.\n\
+  apply PATH|ID             Submit-and-apply: hot-redeploy a manifest or stored deployment now.\n\
 \n\
 Run `obelisk deployment <subcommand> --help` for a subcommand's options.\n"
         .to_string()
@@ -1739,9 +1768,13 @@ Options:\n\
 }
 
 fn deployment_apply_help() -> String {
-    "Usage: obelisk deployment apply ID\n\
+    "Usage: obelisk deployment apply [OPTIONS] PATH|ID\n\
 \n\
-Hot-redeploy a stored deployment now (fails if it cannot be applied live).\n"
+Hot-redeploy now (fails if it cannot be applied live). A deployment TOML PATH is\n\
+submitted first, like `submit`; a `Dep_` ID applies a stored deployment.\n\
+\n\
+Options:\n\
+      --description TEXT   Human-readable description for a newly submitted deployment.\n"
         .to_string()
 }
 
@@ -2604,7 +2637,10 @@ mod tests {
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
-        assert_eq!(out.stderr, "obelisk: deployment id is required\n");
+        assert_eq!(
+            out.stderr,
+            "obelisk: deployment id or PATH-TO-DEPLOYMENT.TOML is required\n"
+        );
     }
 
     #[test]
@@ -2616,13 +2652,39 @@ mod tests {
         let mut i = interp("/workspace");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "apply", "dep-2"]),
+            &words(&["deployment", "apply", "Dep_2"]),
             "",
             &mut no_generate(),
             &mut host,
         );
-        assert_eq!(host.calls[0].1, "[\"dep-2\"]");
+        assert_eq!(host.calls[0].1, "[\"Dep_2\"]");
         assert_eq!(out.stdout, "Applied successfully.\n");
+    }
+
+    #[test]
+    fn deployment_apply_submits_a_manifest_path_first() {
+        let mut i = interp("/workspace/app");
+        i.fs.write_file(
+            "/workspace/app/deployment.toml",
+            b"[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n",
+        )
+        .unwrap();
+        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"").with(
+            "obelisk-agent:tools/webapi.apply-deployment",
+            "{\"ok\":\"switched\"}",
+        );
+        let out = execute_obelisk(
+            &mut i,
+            &words(&["deployment", "apply", "deployment.toml"]),
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(out.stdout, "Submitted as Dep_new\nApplied successfully.\n");
+        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        assert_eq!(params[3], false);
+        assert_eq!(host.calls[1].1, "[\"Dep_new\"]");
     }
 
     #[test]
@@ -2634,7 +2696,7 @@ mod tests {
         let mut i = interp("/workspace");
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "apply", "dep-2"]),
+            &words(&["deployment", "apply", "Dep_2"]),
             "",
             &mut no_generate(),
             &mut host,
