@@ -436,7 +436,11 @@ test("generate deployment prints the embedded template", () => {
 // A fake `obelisk-agent:mounts/apps.request` serving a two-level template tree.
 function templateSource() {
     const bodies = {
-        "examples/templates/js-http": JSON.stringify([{ name: "app.toml", type: "file" }, { name: "workflow", type: "dir" }]),
+        "examples/templates/js-http": JSON.stringify([
+            { name: "app.toml", type: "file" },
+            { name: "README.md", type: "file" },
+            { name: "workflow", type: "dir" },
+        ]),
         "examples/templates/js-http/app.toml": 'app_name = "__APP_NAME__"\n',
         "examples/templates/js-http/workflow": JSON.stringify([{ name: "run.js", type: "file" }]),
         "examples/templates/js-http/workflow/run.js": "42\n",
@@ -455,7 +459,11 @@ test("generate new fetches the template at OBELISK_VERSION", () => {
     let source = templateSource();
     let out = executeObelisk(i, ["generate", "new"], "", host, source.generate);
     assert.equal(out.exitCode, 0, out.stderr);
-    assert.equal(out.stdout, 'Generated "/workspace/My Cool_App/app.toml"\nGenerated "/workspace/My Cool_App/workflow/run.js"\n');
+    assert.equal(
+        out.stdout,
+        'Generated "/workspace/My Cool_App/app.toml"\nGenerated "/workspace/My Cool_App/README.md"\nGenerated "/workspace/My Cool_App/workflow/run.js"\n',
+    );
+    assert.doesNotMatch(i.vfs.readFile("/workspace/My Cool_App/README.md"), /obelisk server run/);
     assert.equal(i.vfs.readFile("/workspace/My Cool_App/app.toml"), 'app_name = "my-cool-app"\n');
     assert.equal(i.vfs.readFile("/workspace/My Cool_App/workflow/run.js"), "42\n");
     assert.deepEqual(source.calls[3], [

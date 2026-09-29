@@ -28,6 +28,29 @@ const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
 const TEMPLATE_OWNER: &str = "obeli-sk";
 const TEMPLATE_REPO: &str = "obelisk";
 const TEMPLATE_PATH: &str = "examples/templates/js-http";
+/// Written in place of the template's README.md, whose `obelisk server run` steps do not apply here.
+const SANDBOX_README: &str = r#"# JavaScript HTTP starter
+
+This app has one webhook, one durable workflow, and one HTTP activity. The webhook calls the
+workflow, which asks the activity to GET `https://example.com/` and returns its status code.
+
+There is no local server in this shell: `obelisk` talks to the target Obelisk instance. Deploy it
+from this directory:
+
+```sh
+obelisk deployment submit deployment.toml   # prints the new deployment ID
+obelisk deployment apply ID
+```
+
+`apply` replaces the target's whole active deployment. To keep what already runs there, merge this
+app's components into `/workspace/deployment/current/deployment.toml` and submit that instead.
+
+Then run the workflow with `obelisk call FFQN` (see `obelisk functions list`), or GET `/run` on the
+target's webhook listener with `curl` (`mount` prints its URL).
+
+`app.toml` is not uploaded. The target server's own app config must also allow
+`https://example.com`, since it caps what any deployment may request.
+"#;
 
 /// The placeholder value the agent sees in `component_files` maps in place of a
 /// pinned digest; `deployment submit` replaces each with the file's real digest.
@@ -537,6 +560,7 @@ fn collect_template_files(
         };
         match entry.get("type").and_then(Value::as_str) {
             Some("dir") => collect_template_files(github, repo, &child, files)?,
+            _ if child == "README.md" => files.push((child, SANDBOX_README.to_string())),
             _ => {
                 let body =
                     github_request(github, "read", repo, &format!("{TEMPLATE_PATH}/{child}"))?;
@@ -2706,6 +2730,7 @@ mod tests {
                 Ok(match params["path"].as_str().unwrap() {
                     "examples/templates/js-http" => json!([
                         {"name": "app.toml", "type": "file"},
+                        {"name": "README.md", "type": "file"},
                         {"name": "workflow", "type": "dir"}
                     ])
                     .to_string(),
@@ -2737,7 +2762,11 @@ mod tests {
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
         assert_eq!(
             out.stdout,
-            "Generated \"/workspace/My Cool_App/app.toml\"\nGenerated \"/workspace/My Cool_App/workflow/run.js\"\n"
+            "Generated \"/workspace/My Cool_App/app.toml\"\nGenerated \"/workspace/My Cool_App/README.md\"\nGenerated \"/workspace/My Cool_App/workflow/run.js\"\n"
+        );
+        assert_eq!(
+            i.fs.read_file("/workspace/My Cool_App/README.md").unwrap(),
+            SANDBOX_README.as_bytes()
         );
         assert_eq!(
             i.fs.read_file("/workspace/My Cool_App/app.toml").unwrap(),

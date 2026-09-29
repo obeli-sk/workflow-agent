@@ -218,6 +218,30 @@ function tryExecuteObelisk(interp, args, stdin, controlPlane, generate) {
     return fail(`obelisk: unknown command '${args.join(" ")}'\n${helpText}`);
 }
 
+// Written in place of the template's README.md, whose `obelisk server run` steps do not apply here.
+const SANDBOX_README = `# JavaScript HTTP starter
+
+This app has one webhook, one durable workflow, and one HTTP activity. The webhook calls the
+workflow, which asks the activity to GET \`https://example.com/\` and returns its status code.
+
+There is no local server in this shell: \`obelisk\` talks to the target Obelisk instance. Deploy it
+from this directory:
+
+\`\`\`sh
+obelisk deployment submit deployment.toml   # prints the new deployment ID
+obelisk deployment apply ID
+\`\`\`
+
+\`apply\` replaces the target's whole active deployment. To keep what already runs there, merge this
+app's components into \`/workspace/deployment/current/deployment.toml\` and submit that instead.
+
+Then run the workflow with \`obelisk call FFQN\` (see \`obelisk functions list\`), or GET \`/run\` on the
+target's webhook listener with \`curl\` (\`mount\` prints its URL).
+
+\`app.toml\` is not uploaded. The target server's own app config must also allow
+\`https://example.com\`, since it caps what any deployment may request.
+`;
+
 // `generate deployment` echoes a template baked in at build time;
 // `generate new` fetches the starter app from GitHub at `generate.obeliskVersion`.
 function executeGenerate(interp, action, args, generate) {
@@ -274,6 +298,8 @@ function collectTemplateFiles(githubContents, repo, relative, files) {
         const child = relative === "" ? entry.name : `${relative}/${entry.name}`;
         if (entry.type === "dir") {
             collectTemplateFiles(githubContents, repo, child, files);
+        } else if (child === "README.md") {
+            files.push([child, SANDBOX_README]);
         } else {
             files.push([child, githubContents("read", JSON.stringify({ ...repo, path: `${TEMPLATE_PATH}/${child}` }))]);
         }
