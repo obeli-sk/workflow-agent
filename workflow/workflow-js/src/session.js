@@ -24,7 +24,6 @@
 import { discover, inputAcceptedAt } from "obelisk-agent:config/config";
 import { request as appsRequest } from "obelisk-agent:mounts/apps";
 import * as webapi from "obelisk-agent:tools/webapi";
-import { call as nativeCall } from "obelisk-control:tools/native";
 import * as obelisk from "obelisk:workflow@1.0.0";
 import * as dynamic from "obelisk:workflow-dynamic@1.0.0";
 import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
@@ -37,7 +36,6 @@ import {
     sessionRenamedSubmit,
 } from "obelisk-agent:stub-obelisk-ext/stub";
 import { recordOutputStub, sessionRenamedStub } from "obelisk-agent:stub-obelisk-stub/stub";
-import { runCancellableSubmit } from "obelisk-agent:workflow-obelisk-ext/workflow";
 import { Bash } from "../../../vendor/just-bash/src/bash.js";
 import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
 import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
@@ -71,8 +69,6 @@ import {
     toolResultMessageValue,
     userText,
 } from "./session-logic.js";
-
-chat.configureRuntime(obelisk);
 
 // obelisk-agent:mounts/apps.request backs every /workspace/apps/<name> mount
 // and `obelisk generate new`; a failure surfaces as a plain message.
@@ -226,9 +222,9 @@ class Notifications {
 
 // PORT: host.rs's RealHost::ask_user. Answers `obelisk call
 // obelisk-agent:stub/stub.ask-user [...]` with a real join-set-based
-// question/answer exchange instead of native.call's HTTP bridge to the target
-// instance, which has no such function. Returns the answer's JSON text, like
-// native.call.
+// question/answer exchange instead of webapi.call-target's HTTP bridge to the
+// target instance, which has no such function. Returns the answer's JSON text,
+// like a target call.
 function askUser(paramsJson, notifications) {
     let params;
     try {
@@ -299,11 +295,11 @@ function loadSessionConfig(executionId, backend, effort, name) {
 // is CHAT_PROGRAM_FFQN is wrapped so caller-aware subcommands
 // (current/rename/create/watch) are answered by this session itself (PORT:
 // session.rs's per-program loop).
-function registerProgramsAndMcp(bash, config, ownSession, notifications, submitFn) {
+function registerProgramsAndMcp(bash, config, ownSession, notifications) {
     for (const program of config.programs) {
         const plainHandler = obeliskProgram.commandHandler(program.name, program.ffqn, createHost(dynamic, obelisk));
         const handler = program.ffqn === CHAT_PROGRAM_FFQN
-            ? chat.commandHandler(plainHandler, ownSession, notifications, submitFn)
+            ? chat.commandHandler(plainHandler, ownSession, notifications)
             : plainHandler;
         bash.registerCommand(program.name, handler);
     }
@@ -581,20 +577,14 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const config = loadSessionConfig(executionId, model, effort, initialName);
     const maxSteps = config.maxSteps;
     // Always registered, independent of operator config (mirrors session.rs).
-    const controlPlane = createControlPlane(webapi, nativeCall, obelisk, (paramsJson) => askUser(paramsJson, notifications));
+    const controlPlane = createControlPlane(webapi, obelisk, (paramsJson) => askUser(paramsJson, notifications));
     bash.registerCommand("obelisk", obeliskPack.commandHandler(controlPlane, {
         obeliskVersion: config.obeliskVersion,
         githubContents,
         webhookUrl: config.webhookUrl,
     }));
     const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
-    // PORT: chat.rs's create_child's workflow_ext::run_cancellable_submit
-    // call, with the descriptor-ffqn positional argument fixed to null
-    // (matching Rust's `None`) since a child session always uses the default
-    // descriptor.
-    const submitFn = (joinSet, childPrompt, childModel, childEffort, childName) =>
-        runCancellableSubmit(joinSet, childPrompt, childModel, null, childEffort, childName);
-    registerProgramsAndMcp(bash, config, ownSession, notifications, submitFn);
+    registerProgramsAndMcp(bash, config, ownSession, notifications);
 
     const startupMount = renderMountOutput(config.apps, config.mcpServers, config.webhookUrl);
     const system = renderSystemPrompt(systemPrompt, config.programs, config.apps, startupMount, config.promptTail);

@@ -13,7 +13,6 @@ use serde_json::Value;
 use crate::generated::obelisk::workflow::{workflow_dynamic_support, workflow_support};
 use crate::generated::obelisk_agent::stub_obelisk_ext::stub as stub_ext;
 use crate::generated::obelisk_agent::tools::webapi;
-use crate::generated::obelisk_control::tools::native;
 use crate::session::Notifications;
 use crate::support::{child_error_message, last_response_execution_id, split_ffqn};
 
@@ -30,7 +29,7 @@ impl RealHost {
 
     /// Answer `obelisk call obelisk-agent:stub/stub.ask-user` with a real
     /// question/answer exchange on this instance (the target has no such
-    /// function); returns the answer's JSON text, like `native.call`.
+    /// function); returns the answer's JSON text, like a target call.
     fn ask_user(&self, params_json: &str) -> Result<String, String> {
         let question = serde_json::from_str::<Value>(params_json)
             .ok()
@@ -217,11 +216,87 @@ impl ControlPlane for RealHost {
         webapi::apply_deployment(deployment_id)
     }
 
-    fn native_call(&mut self, ffqn: &str, params_json: &str) -> Result<String, String> {
+    fn call_target(&mut self, ffqn: &str, params_json: &str) -> Result<String, String> {
         if ffqn == ASK_USER_FFQN {
             return self.ask_user(params_json);
         }
-        native::call(ffqn, params_json)
+        call_target(ffqn, params_json)
+    }
+}
+
+/// Unwrap the `webapi.call-target` response like `obelisk.call`: the ok
+/// value's JSON text, or a message for every other outcome.
+fn call_target(ffqn: &str, params_json: &str) -> Result<String, String> {
+    if ffqn.is_empty() {
+        return Err("ffqn is required".to_string());
+    }
+    let params_json = if params_json.is_empty() {
+        "[]"
+    } else {
+        params_json
+    };
+    let params = match serde_json::from_str::<Value>(params_json) {
+        Ok(params @ Value::Array(_)) => params,
+        Ok(_) => {
+            return Err(wit_hint(
+                ffqn,
+                "params_json must be a JSON array of positional parameters",
+            ));
+        }
+        Err(err) => {
+            return Err(wit_hint(
+                ffqn,
+                &format!("params_json must be valid JSON: {err}"),
+            ));
+        }
+    };
+
+    let call_text = webapi::call_target(ffqn, &params.to_string()).map_err(tool_error)?;
+    let call_result = serde_json::from_str::<Value>(&call_text)
+        .map_err(|err| format!("invalid call-target response: {err}: {call_text}"))?;
+    if let Some(reason) = call_result["submission_rejected"].as_str() {
+        return Err(wit_hint(ffqn, reason));
+    }
+    let execution_id = call_result["execution_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| format!("call-target response has no execution id: {call_text}"))?;
+    if let Some(error) = call_result["result_error"].as_str() {
+        return Err(format!(
+            "execution {execution_id} was accepted, but fetching its result failed: {error}"
+        ));
+    }
+
+    let result = call_result["result"].as_str().unwrap_or_default();
+    let envelope = serde_json::from_str::<Value>(result).map_err(|err| {
+        format!("execution {execution_id} returned an invalid result: {err}: {result}")
+    })?;
+    if let Some(ok) = envelope.get("ok") {
+        return Ok(ok.to_string());
+    }
+    if let Some(err) = envelope.get("err") {
+        let error = err.as_str().map_or_else(|| err.to_string(), str::to_string);
+        return Err(format!(
+            "execution {execution_id} finished with Err: {error}"
+        ));
+    }
+    if let Some(failed) = envelope.get("execution_failed").filter(|f| !f.is_null()) {
+        let reason = [&failed["reason"], &failed["kind"]]
+            .into_iter()
+            .find_map(|value| value.as_str().filter(|s| !s.is_empty()))
+            .unwrap_or("execution failed");
+        return Err(format!("execution {execution_id} failed: {reason}"));
+    }
+    Err(format!(
+        "execution {execution_id} returned an unexpected result: {result}"
+    ))
+}
+
+/// A rejected submission means the call never started, so recap the signature.
+fn wit_hint(ffqn: &str, message: &str) -> String {
+    match webapi::get_function_wit(ffqn) {
+        Ok(wit) => format!("{message}\n\nWIT for {ffqn}:\n{wit}"),
+        Err(err) => format!("{message}\n\nCould not fetch WIT for {ffqn}: {err}"),
     }
 }
 

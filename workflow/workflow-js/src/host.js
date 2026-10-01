@@ -29,10 +29,9 @@ export function createHost(dynamic, obelisk) {
 }
 
 // PORT: host.rs's `ControlPlane for RealHost`. `webapi` is the
-// `obelisk-agent:tools/webapi` namespace import, `nativeCall` the
-// `obelisk-control:tools/native.call` import, and `askUser(paramsJson)`
+// `obelisk-agent:tools/webapi` namespace import and `askUser(paramsJson)`
 // answers `obelisk call obelisk-agent:stub/stub.ask-user` on this instance.
-export function createControlPlane(webapi, nativeCall, obelisk, askUser) {
+export function createControlPlane(webapi, obelisk, askUser) {
     const plain = (fn) => (...args) => {
         try {
             return fn(...args);
@@ -65,18 +64,69 @@ export function createControlPlane(webapi, nativeCall, obelisk, askUser) {
         },
         deploymentSwitch: plain(webapi.deploymentSwitch),
         applyDeployment: plain(webapi.applyDeployment),
-        nativeCall: (ffqn, paramsJson) => (ffqn === ASK_USER_FFQN ? askUser(paramsJson) : plain(nativeCall)(ffqn, paramsJson)),
+        callTarget: (ffqn, paramsJson) => (ffqn === ASK_USER_FFQN
+            ? askUser(paramsJson)
+            : callTarget(webapi, ffqn, paramsJson, (error) => childErrorMessage(error, obelisk))),
     };
 }
 
 const ASK_USER_FFQN = "obelisk-agent:stub/stub.ask-user";
 
+// PORT: host.rs's `call_target`. Unwraps the webapi.call-target response like
+// `obelisk.call`: returns the ok value's JSON text, throws a message otherwise.
+function callTarget(webapi, ffqn, paramsJson, errorMessage) {
+    if (typeof ffqn !== "string" || !ffqn) throw "ffqn is required";
+    let params;
+    try { params = JSON.parse(paramsJson || "[]"); }
+    catch (e) { throw witHint(webapi, ffqn, `params_json must be valid JSON: ${e.message}`); }
+    if (!Array.isArray(params)) throw witHint(webapi, ffqn, "params_json must be a JSON array of positional parameters");
+
+    let callText;
+    try { callText = webapi.callTarget(ffqn, JSON.stringify(params)); }
+    catch (e) { throw errorMessage(e); }
+
+    let callResult;
+    try { callResult = JSON.parse(callText); }
+    catch (e) { throw `invalid call-target response: ${e.message}: ${callText}`; }
+    if (typeof callResult?.submission_rejected === "string") {
+        throw witHint(webapi, ffqn, callResult.submission_rejected);
+    }
+    const executionId = callResult?.execution_id;
+    if (typeof executionId !== "string" || !executionId) {
+        throw `call-target response has no execution id: ${callText}`;
+    }
+    if (typeof callResult.result_error === "string") {
+        throw `execution ${executionId} was accepted, but fetching its result failed: ${callResult.result_error}`;
+    }
+
+    let envelope;
+    try { envelope = JSON.parse(callResult.result); }
+    catch (e) { throw `execution ${executionId} returned an invalid result: ${e.message}: ${callResult.result}`; }
+    if (envelope && Object.prototype.hasOwnProperty.call(envelope, "ok")) {
+        return JSON.stringify(envelope.ok === undefined ? null : envelope.ok);
+    }
+    if (envelope && Object.prototype.hasOwnProperty.call(envelope, "err")) {
+        const error = typeof envelope.err === "string" ? envelope.err : JSON.stringify(envelope.err);
+        throw `execution ${executionId} finished with Err: ${error}`;
+    }
+    if (envelope && envelope.execution_failed) {
+        const f = envelope.execution_failed;
+        throw `execution ${executionId} failed: ${f.reason || f.kind || "execution failed"}`;
+    }
+    throw `execution ${executionId} returned an unexpected result: ${callResult.result}`;
+}
+
+// A rejected submission means the call never started, so recap the signature.
+function witHint(webapi, ffqn, message) {
+    try { return `${message}\n\nWIT for ${ffqn}:\n${webapi.getFunctionWit(ffqn)}`; }
+    catch (e) { return `${message}\n\nCould not fetch WIT for ${ffqn}: ${String(e)}`; }
+}
+
 function isChildError(error, obelisk) {
     return typeof obelisk?.ChildError === "function" && error instanceof obelisk.ChildError;
 }
 
-// PORT: support.rs's `child_error_message` / the JS callers' inline
-// equivalent (e.g. packs/obelisk-control/native-call.js's `callErrorMessage`).
+// PORT: support.rs's `child_error_message`.
 export function childErrorMessage(error, obelisk) {
     if (isChildError(error, obelisk)) {
         if (error.value !== undefined) {

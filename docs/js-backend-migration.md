@@ -107,7 +107,8 @@ core subset session.rs exercises day to day.
   way `support.rs`'s `decode_string_or_raw` needs in Rust.
 - A pre-existing `[[workflow_js]]` block already lived in this deployment.toml
   before this project (`obelisk-control:tools/native.call`,
-  `packs/obelisk-control/native-call.js`) — real proof-in-production of static
+  `packs/obelisk-control/native-call.js`, since removed: `obelisk call` now
+  goes straight to the `webapi.call-target` activity) — real proof-in-production of static
   imports (`import * as webapi from 'obelisk-agent:tools/webapi'`) and
   `obelisk.ChildError` usage, and confirms **no `wit = "..."` field is needed**
   on a `[[workflow_js]]` block for its static imports to resolve (resolution
@@ -260,9 +261,8 @@ core subset session.rs exercises day to day.
         reproducing the WIT `call-json` host import's raw-JSON-text contract
         (quoted for a string, `null` for void) so every module's
         `decodeString`/`decodeJson`-style peeling ports unchanged from Rust.
-        `obelisk-control:tools/native.call` needs no special case: it's just
-        another ffqn through the same seam (see `obelisk-pack.js`'s
-        `targetCall`, backing `obelisk call FFQN --`).
+        `obelisk call FFQN --` goes through the control plane's `callTarget`
+        instead (`host.js`, backed by the `webapi.call-target` activity).
       - `vendor/just-bash/src/fs.js` (VFS) was extended first, as prerequisite
         shared infrastructure: `symlink`/`isSymlink`; `registerLazy`/
         `registerLazyWithLoader`/`setBlobLoader`/`isPending`/`lazyFileRef`
@@ -377,11 +377,10 @@ core subset session.rs exercises day to day.
       - `ask-user` (PORT: `host.rs`'s `RealHost::ask_user`/`native_ask_user`):
         a new `askUserAwareHost(notifications)` in `session.js` wraps a plain
         `createHost()` and is used **only** for the `obelisk` command's own
-        host registration (the sole path that ever dispatches through
-        `obelisk-control:tools/native.call` — see `obelisk-pack.js`'s
-        `targetCall`, backing `obelisk call FFQN`). A call to
+        host registration (the control plane's `callTarget`, backing
+        `obelisk call FFQN`). A call to
         `obelisk-agent:stub/stub.ask-user` is intercepted before it would
-        otherwise fall through to native.call's HTTP bridge to the target
+        otherwise fall through to webapi.call-target's HTTP bridge to the target
         instance (which has no such function): it submits the real
         `askUserSubmit` child, publishes `human_input_requested`, blocks on
         the join set, then publishes `human_input_resolved`. The system
@@ -413,8 +412,9 @@ core subset session.rs exercises day to day.
       effort, name || null)` before registering programs; a new
       `CHAT_PROGRAM_FFQN` constant makes `registerProgramsAndMcp` wrap only
       the program whose ffqn matches with `chat.commandHandler(plainHandler,
-      ownSession, notifications, submitFn)`; `submitFn` closes over the
-      self-referential static import `runCancellableSubmit` from
+      ownSession, notifications)`; `chat.js` itself statically imports the
+      self-referential `runCancellableSubmit` (originally injected from
+      `session.js` as a `submitFn`) from
       `"obelisk-agent:workflow-js-obelisk-ext/workflow"` (the JS analogue of
       Rust's `workflow_obelisk_ext::workflow::run_cancellable_submit`,
       confirmed correct — see verification note below, not just guessed by
@@ -476,8 +476,9 @@ core subset session.rs exercises day to day.
       `${WORKFLOW_FFQN:-obelisk-agent:workflow/workflow.run-cancellable}`
       interpolation pattern as `TARGET_OBELISK_WEBHOOK_URL` etc. A session's
       own `chat create` (the workflow-side interception from Phase 5) is
-      unaffected — it always schedules its own kind via the injected
-      `submitFn`, no env var involved, matching Rust's `chat.rs`.
+      unaffected: it always schedules its own kind via the static
+      `runCancellableSubmit` import, no env var involved, matching Rust's
+      `chat.rs`.
       **Verification**: like Phase 5's self-referential submit, `just verify`
       does not exercise `webhook_endpoint_js`/`activity_js` code paths at
       runtime (no static/WIT check on `obelisk.schedule` call sites), so a

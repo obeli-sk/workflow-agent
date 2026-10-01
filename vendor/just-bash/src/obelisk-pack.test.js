@@ -79,7 +79,7 @@ function fakeHost() {
         },
         deploymentSwitch: (id, allowMissing) => text(webapi("deployment-switch", [id, allowMissing])),
         applyDeployment: (id) => text(webapi("apply-deployment", [id])),
-        nativeCall: (ffqn, paramsJson) => text(call("obelisk-control:tools/native.call", [ffqn, paramsJson])),
+        callTarget: (ffqn, paramsJson) => text(call("obelisk-agent:tools/webapi.call-target", [ffqn, paramsJson])),
     };
     function call(ffqn, params) {
         const raw = host.callJson(ffqn, JSON.stringify(params));
@@ -271,18 +271,18 @@ test("executions result forwards id", () => {
 });
 
 test("call uses explicit params over stdin", () => {
-    const host = fakeHost().with("obelisk-control:tools/native.call", "42");
+    const host = fakeHost().with("obelisk-agent:tools/webapi.call-target", "42");
     const out = executeObelisk(interp(), words("call some:ffqn [1]"), "[2]", host);
     assert.equal(out.stdout, "42\n");
     assert.equal(host.calls[0][1], JSON.stringify(["some:ffqn", "[1]"]));
 });
 
 test("call prints only the target result", () => {
-    let host = fakeHost().with("obelisk-control:tools/native.call", JSON.stringify(JSON.stringify({ answer: 42 })));
+    let host = fakeHost().with("obelisk-agent:tools/webapi.call-target", JSON.stringify(JSON.stringify({ answer: 42 })));
     let out = executeObelisk(interp(), words("call some:ffqn []"), "", host);
     assert.equal(out.stdout, '{\n  "answer": 42\n}\n');
 
-    host = fakeHost().with("obelisk-control:tools/native.call", JSON.stringify(JSON.stringify("plain result")));
+    host = fakeHost().with("obelisk-agent:tools/webapi.call-target", JSON.stringify(JSON.stringify("plain result")));
     out = executeObelisk(interp(), words("call some:ffqn []"), "", host);
     assert.equal(out.stdout, "plain result\n");
 });
@@ -295,17 +295,17 @@ test("call failure is a command error, not a result", () => {
 });
 
 test("call falls back to stdin then to an empty array", () => {
-    let host = fakeHost().with("obelisk-control:tools/native.call", "1");
+    let host = fakeHost().with("obelisk-agent:tools/webapi.call-target", "1");
     executeObelisk(interp(), words("call some:ffqn"), "[9]", host);
     assert.equal(host.calls[0][1], JSON.stringify(["some:ffqn", "[9]"]));
 
-    host = fakeHost().with("obelisk-control:tools/native.call", "1");
+    host = fakeHost().with("obelisk-agent:tools/webapi.call-target", "1");
     executeObelisk(interp(), words("call some:ffqn"), "", host);
     assert.equal(host.calls[0][1], JSON.stringify(["some:ffqn", "[]"]));
 });
 
 test("call accepts positional params after --", () => {
-    const host = fakeHost().with("obelisk-control:tools/native.call", "1");
+    const host = fakeHost().with("obelisk-agent:tools/webapi.call-target", "1");
     executeObelisk(
         interp(),
         ["call", "some:ffqn", "--", "1", "true", "null", '{"field":2}', "plain text", '"42"'],
@@ -327,7 +327,7 @@ test("call rejects multiple arguments without --", () => {
 });
 
 test("call rejects an explicitly empty params argument", () => {
-    const host = fakeHost().with("obelisk-control:tools/native.call", "1");
+    const host = fakeHost().with("obelisk-agent:tools/webapi.call-target", "1");
     const out = executeObelisk(interp(), ["call", "some:ffqn", ""], "", host);
     assert.equal(out.exitCode, 2);
     assert.match(out.stderr, /params-json argument is empty/);
