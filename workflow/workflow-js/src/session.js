@@ -36,7 +36,6 @@ import {
     sessionRenamedSubmit,
 } from "obelisk-agent:stub-obelisk-ext/stub";
 import { recordOutputStub, sessionRenamedStub } from "obelisk-agent:stub-obelisk-stub/stub";
-import { runCancellableSubmit } from "obelisk-agent:workflow-obelisk-ext/workflow";
 import { Bash } from "../../../vendor/just-bash/src/bash.js";
 import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
 import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
@@ -70,8 +69,6 @@ import {
     toolResultMessageValue,
     userText,
 } from "./session-logic.js";
-
-chat.configureRuntime(obelisk);
 
 // obelisk-agent:mounts/apps.request backs every /workspace/apps/<name> mount
 // and `obelisk generate new`; a failure surfaces as a plain message.
@@ -298,11 +295,11 @@ function loadSessionConfig(executionId, backend, effort, name) {
 // is CHAT_PROGRAM_FFQN is wrapped so caller-aware subcommands
 // (current/rename/create/watch) are answered by this session itself (PORT:
 // session.rs's per-program loop).
-function registerProgramsAndMcp(bash, config, ownSession, notifications, submitFn) {
+function registerProgramsAndMcp(bash, config, ownSession, notifications) {
     for (const program of config.programs) {
         const plainHandler = obeliskProgram.commandHandler(program.name, program.ffqn, createHost(dynamic, obelisk));
         const handler = program.ffqn === CHAT_PROGRAM_FFQN
-            ? chat.commandHandler(plainHandler, ownSession, notifications, submitFn)
+            ? chat.commandHandler(plainHandler, ownSession, notifications)
             : plainHandler;
         bash.registerCommand(program.name, handler);
     }
@@ -587,13 +584,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
         webhookUrl: config.webhookUrl,
     }));
     const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
-    // PORT: chat.rs's create_child's workflow_ext::run_cancellable_submit
-    // call, with the descriptor-ffqn positional argument fixed to null
-    // (matching Rust's `None`) since a child session always uses the default
-    // descriptor.
-    const submitFn = (joinSet, childPrompt, childModel, childEffort, childName) =>
-        runCancellableSubmit(joinSet, childPrompt, childModel, null, childEffort, childName);
-    registerProgramsAndMcp(bash, config, ownSession, notifications, submitFn);
+    registerProgramsAndMcp(bash, config, ownSession, notifications);
 
     const startupMount = renderMountOutput(config.apps, config.mcpServers, config.webhookUrl);
     const system = renderSystemPrompt(systemPrompt, config.programs, config.apps, startupMount, config.promptTail);

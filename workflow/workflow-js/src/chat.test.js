@@ -1,16 +1,40 @@
-// Tests for the WIT-touching half of chat.js. `delegate`/`notifications`/
-// `submitFn` are all injected parameters (see chat.js's header comment), so
-// only the workflow runtime's join-set and sleep functions need a fake.
+// Tests for the WIT-touching half of chat.js. Its two WIT imports resolve to
+// fake modules that forward to `runtime`, which each test swaps in.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ChatSelf, attachFinal, commandHandler, configureRuntime, createChild, rename, watchCommand, watchLoop } from "./chat.js";
+import { registerHooks } from "node:module";
 
-function withFakeObelisk(fake, fn) {
-    configureRuntime(fake);
+const runtime = { obelisk: undefined, submit: undefined };
+globalThis.__chatTestRuntime = runtime;
+const fakeModule = (source) => `data:text/javascript,${encodeURIComponent(source)}`;
+const FAKE_MODULES = {
+    "obelisk:workflow@1.0.0": fakeModule(`
+        export const createJoinSet = (...args) => globalThis.__chatTestRuntime.obelisk.createJoinSet(...args);
+        export const sleep = (...args) => globalThis.__chatTestRuntime.obelisk.sleep(...args);`),
+    "obelisk-agent:workflow-obelisk-ext/workflow": fakeModule(`
+        export const runCancellableSubmit = (...args) => globalThis.__chatTestRuntime.submit(...args);`),
+};
+registerHooks({
+    resolve(specifier, context, nextResolve) {
+        const url = FAKE_MODULES[specifier];
+        return url ? { url, shortCircuit: true } : nextResolve(specifier, context);
+    },
+});
+const { ChatSelf, attachFinal, commandHandler, createChild, rename, watchCommand, watchLoop } = await import("./chat.js");
+
+function mustNotSubmit() {
+    throw "runCancellableSubmit must not be called";
+}
+
+// `submit(joinSet, prompt, model, descriptorFfqn, effort, name)` mirrors runCancellableSubmit.
+function withFakeObelisk(fake, fn, submit = mustNotSubmit) {
+    runtime.obelisk = fake;
+    runtime.submit = submit;
     try {
         return fn(fake);
     } finally {
-        configureRuntime(undefined);
+        runtime.obelisk = undefined;
+        runtime.submit = undefined;
     }
 }
 
@@ -85,28 +109,27 @@ test("commandHandler dispatches 'rename' and updates own.name", () => {
     assert.deepEqual(notifications.renamed, ["deploy-triage"]);
 });
 
-test("commandHandler dispatches 'create' to createChild (own submitFn, not delegate)", () => {
+test("commandHandler dispatches 'create' to createChild (own submit, not delegate)", () => {
     const delegate = fakeDelegate({});
     const submitted = [];
-    const submitFn = (joinSet, prompt, model, effort, name) => {
-        submitted.push({ joinSet, prompt, model, effort, name });
+    const submit = (joinSet, prompt, model, descriptorFfqn, effort, name) => {
+        submitted.push({ joinSet, prompt, model, descriptorFfqn, effort, name });
         return "E_child_1";
     };
     withFakeObelisk(noSleepObelisk(), () => {
-        const handler = commandHandler(delegate.handler, own("E_1"), fakeNotifications(), submitFn);
+        const handler = commandHandler(delegate.handler, own("E_1"), fakeNotifications());
         const out = handler(null, ["chat", "create", "look", "into", "it"], "");
         assert.equal(out.exitCode, 0);
         assert.equal(out.stdout, "E_child_1\n");
         assert.equal(submitted.length, 1);
         assert.equal(submitted[0].prompt, "look into it");
-    });
+        assert.equal(submitted[0].descriptorFfqn, null);
+    }, submit);
 });
 
 test("commandHandler passes 'create --top-level' straight through to delegate", () => {
     const delegate = fakeDelegate({ "create --top-level go": { stdout: "top\n", stderr: "", exitCode: 0 } });
-    const handler = commandHandler(delegate.handler, own("E_1"), fakeNotifications(), () => {
-        throw "submitFn must not be called";
-    });
+    const handler = commandHandler(delegate.handler, own("E_1"), fakeNotifications());
     const out = handler(null, ["chat", "create", "--top-level", "go"], "");
     assert.equal(out.stdout, "top\n");
     assert.equal(delegate.calls.length, 1);
@@ -119,9 +142,7 @@ test("commandHandler passes a help-flagged subcommand straight through to delega
         "current --help": { stdout: "help text\n", stderr: "", exitCode: 0 },
         "watch --help": { stdout: "help text\n", stderr: "", exitCode: 0 },
     });
-    const handler = commandHandler(delegate.handler, own("E_1"), fakeNotifications(), () => {
-        throw "submitFn must not be called";
-    });
+    const handler = commandHandler(delegate.handler, own("E_1"), fakeNotifications());
     for (const sub of ["create", "rename", "current", "watch"]) {
         const out = handler(null, ["chat", sub, "--help"], "");
         assert.equal(out.stdout, "help text\n", `${sub} --help should pass through`);
@@ -135,9 +156,7 @@ test("commandHandler dispatches 'watch' through watchLoop via delegate", () => {
         "read E_x --final": { stdout: "all done\n", stderr: "", exitCode: 0 },
     });
     withFakeObelisk(noSleepObelisk(), () => {
-        const handler = commandHandler(delegate.handler, own("E_1"), fakeNotifications(), () => {
-            throw "submitFn must not be called";
-        });
+        const handler = commandHandler(delegate.handler, own("E_1"), fakeNotifications());
         const out = handler(null, ["chat", "watch", "E_x"], "");
         assert.equal(out.exitCode, 0);
         const payload = JSON.parse(out.stdout);
@@ -148,9 +167,7 @@ test("commandHandler dispatches 'watch' through watchLoop via delegate", () => {
 
 test("commandHandler passes every other subcommand straight through to delegate unchanged", () => {
     const delegate = fakeDelegate({ "list": { stdout: "[]\n", stderr: "", exitCode: 0 } });
-    const handler = commandHandler(delegate.handler, own("E_1"), fakeNotifications(), () => {
-        throw "submitFn must not be called";
-    });
+    const handler = commandHandler(delegate.handler, own("E_1"), fakeNotifications());
     const out = handler(null, ["chat", "list"], "");
     assert.equal(out.stdout, "[]\n");
     assert.deepEqual(delegate.calls[0], ["chat", "list"]);
@@ -201,26 +218,24 @@ test("createChild reuses the default 'peers' join set across unnamed children", 
     withFakeObelisk(noSleepObelisk(), (fake) => {
         const session = own("E_1");
         const delegate = fakeDelegate({});
-        const submitFn = (joinSet) => `E_child_${joinSet.name}`;
-        createChild(session, ["hello"], delegate.handler, null, submitFn);
-        createChild(session, ["again"], delegate.handler, null, submitFn);
+        createChild(session, ["hello"], delegate.handler, null);
+        createChild(session, ["again"], delegate.handler, null);
         assert.equal(fake.joinSetCount, 1);
         assert.deepEqual([...session.peers.keys()], ["peers"]);
-    });
+    }, (joinSet) => `E_child_${joinSet.name}`);
 });
 
 test("createChild gives a --name'd child its own join set keyed by slug", () => {
     withFakeObelisk(noSleepObelisk(), (fake) => {
         const session = own("E_1");
         const delegate = fakeDelegate({});
-        const submitFn = (joinSet) => `E_${joinSet.name}`;
-        const out1 = createChild(session, ["--name=research", "look"], delegate.handler, null, submitFn);
-        const out2 = createChild(session, ["other"], delegate.handler, null, submitFn);
+        const out1 = createChild(session, ["--name=research", "look"], delegate.handler, null);
+        const out2 = createChild(session, ["other"], delegate.handler, null);
         assert.equal(out1.stdout, "E_research\n");
         assert.equal(out2.stdout, "E_peers\n");
         assert.equal(fake.joinSetCount, 2);
         assert.deepEqual([...session.peers.keys()].sort(), ["peers", "research"]);
-    });
+    }, (joinSet) => `E_${joinSet.name}`);
 });
 
 test("createChild with --watch triggers watchLoop instead of returning the id immediately", () => {
@@ -230,19 +245,27 @@ test("createChild with --watch triggers watchLoop instead of returning the id im
             "state E_child": { stdout: JSON.stringify({ id: "E_child", state: "finished-ok" }), stderr: "", exitCode: 0 },
             "read E_child --final": { stdout: "done\n", stderr: "", exitCode: 0 },
         });
-        const out = createChild(session, ["--watch", "go"], delegate.handler, null, () => "E_child");
+        const out = createChild(session, ["--watch", "go"], delegate.handler, null);
         assert.equal(out.exitCode, 0);
         const payload = JSON.parse(out.stdout);
         assert.equal(payload.state, "finished-ok");
         assert.equal(payload.final, "done");
-    });
+    }, () => "E_child");
 });
 
 test("createChild surfaces parseCreateArgs rejections as usage errors", () => {
     const session = own("E_1");
-    const out = createChild(session, ["--effort", "maximum"], fakeDelegate({}).handler, null, () => "E_child");
+    const out = createChild(session, ["--effort", "maximum"], fakeDelegate({}).handler, null);
     assert.equal(out.exitCode, 2);
     assert.match(out.stderr, /--effort must be one of/);
+});
+
+test("createChild surfaces a submit failure", () => {
+    withFakeObelisk(noSleepObelisk(), () => {
+        const out = createChild(own("E_1"), ["go"], fakeDelegate({}).handler, null);
+        assert.equal(out.exitCode, 1);
+        assert.equal(out.stderr, "chat: child submit: no such function\n");
+    }, () => { throw "no such function"; });
 });
 
 // ----- watchLoop / attachFinal ------------------------------------------

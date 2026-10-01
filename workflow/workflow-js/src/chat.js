@@ -18,24 +18,9 @@
 // makes back into `delegate` (from `watchLoop`/`attachFinal`, and the default
 // pass-through) must in turn supply its own leading placeholder element
 // (`"chat"`) since `delegate` applies the same `.slice(1)` convention.
-//
-// Deferred: `create_child`'s self-referential child submit. chat.rs's
-// `create_child` schedules a new session of the *same kind* via
-// `workflow_ext::run_cancellable_submit` (`crate::generated::obelisk_agent::
-// workflow_obelisk_ext::workflow`, generated from `obelisk-agent:
-// workflow-obelisk-ext/workflow`'s `run-cancellable-submit`). The JS side of
-// that WIT package has not been generated/verified in this worktree (no live
-// `obelisk` server to run `just verify` against), so `createChild` here takes
-// the submit call as an injected `submitFn(joinSet, prompt, model, effort,
-// name) -> executionId` parameter instead of a static import. Wiring the real
-// `obelisk-agent:workflow-obelisk-ext/workflow`'s generated `runCancellable
-// Submit` binding (or whatever it turns out to be named) into this parameter
-// happens centrally in session.js, where a live `just verify` can confirm the
-// exact import path. `submitFn` is expected to return the plain execution-id
-// string (matching every other `*Submit` binding already in use in
-// session.js/script-watch.js, e.g. `injectionSubmit`/`interruptSubmit`, whose
-// return value is compared directly against a join set's `.lastId`).
 
+import * as obelisk from "obelisk:workflow@1.0.0";
+import { runCancellableSubmit } from "obelisk-agent:workflow-obelisk-ext/workflow";
 import {
     DEFAULT_PEERS_JOIN_SET,
     WATCH_DEFAULT_INTERVAL_MS,
@@ -54,11 +39,6 @@ import { validateSlug } from "./session-logic.js";
 
 export { parentOf };
 
-let workflowRuntime;
-
-export function configureRuntime(runtime) {
-    workflowRuntime = runtime;
-}
 
 // Live identity of the invoking session, captured where commands are
 // registered (the activity cannot learn its caller). PORT: chat.rs's
@@ -96,7 +76,7 @@ export class ChatSelf {
 }
 
 // PORT: chat.rs's `command_handler`.
-export function commandHandler(delegate, own, notifications, submitFn) {
+export function commandHandler(delegate, own, notifications) {
     return (interp, args, stdin) => {
         const stripped = args.slice(1);
         const sub = stripped[0];
@@ -108,7 +88,7 @@ export function commandHandler(delegate, own, notifications, submitFn) {
             return rename(stripped, own, notifications);
         }
         if (sub === "create" && !hasHelpFlag(rest) && !rest.includes("--top-level")) {
-            return createChild(own, rest, delegate, interp, submitFn);
+            return createChild(own, rest, delegate, interp);
         }
         if (sub === "watch" && !hasHelpFlag(stripped)) {
             return watchCommand(delegate, interp, rest);
@@ -136,7 +116,7 @@ export function rename(args, own, notifications) {
 
 // PORT: chat.rs's `create_child`. `args` is `rest` (the `create` argv without
 // the `create` word itself, matching chat.rs's already-stripped call site).
-export function createChild(own, args, delegate, interp, submitFn) {
+export function createChild(own, args, delegate, interp) {
     let parsed;
     try {
         parsed = parseCreateArgs(args);
@@ -150,13 +130,19 @@ export function createChild(own, args, delegate, interp, submitFn) {
     let joinSet = own.peers.get(setName);
     if (!joinSet) {
         try {
-            joinSet = workflowRuntime.createJoinSet({ name: setName });
+            joinSet = obelisk.createJoinSet({ name: setName });
         } catch (error) {
             return failure(`child join set: ${describeError(error)}`);
         }
         own.peers.set(setName, joinSet);
     }
-    const executionId = submitFn(joinSet, parsed.prompt, parsed.model, parsed.effort, parsed.name);
+    // A child session always uses the default descriptor.
+    let executionId;
+    try {
+        executionId = runCancellableSubmit(joinSet, parsed.prompt, parsed.model, null, parsed.effort, parsed.name);
+    } catch (error) {
+        return failure(`child submit: ${describeError(error)}`);
+    }
     if (!parsed.watch) {
         return { stdout: `${executionId}\n`, stderr: "", exitCode: 0 };
     }
@@ -216,7 +202,7 @@ export function watchLoop(delegate, interp, parsed) {
         const now = nowMs();
         if (now >= deadline) break;
         try {
-            workflowRuntime.sleep({ milliseconds: Math.min(parsed.intervalMs, deadline - now) });
+            obelisk.sleep({ milliseconds: Math.min(parsed.intervalMs, deadline - now) });
         } catch {
             // Cancelled durable sleep: the `sleep` builtin just returns,
             // matching session.js's hostSleepMs (which drops the

@@ -412,8 +412,9 @@ core subset session.rs exercises day to day.
       effort, name || null)` before registering programs; a new
       `CHAT_PROGRAM_FFQN` constant makes `registerProgramsAndMcp` wrap only
       the program whose ffqn matches with `chat.commandHandler(plainHandler,
-      ownSession, notifications, submitFn)`; `submitFn` closes over the
-      self-referential static import `runCancellableSubmit` from
+      ownSession, notifications)`; `chat.js` itself statically imports the
+      self-referential `runCancellableSubmit` (originally injected from
+      `session.js` as a `submitFn`) from
       `"obelisk-agent:workflow-js-obelisk-ext/workflow"` (the JS analogue of
       Rust's `workflow_obelisk_ext::workflow::run_cancellable_submit`,
       confirmed correct — see verification note below, not just guessed by
@@ -475,8 +476,9 @@ core subset session.rs exercises day to day.
       `${WORKFLOW_FFQN:-obelisk-agent:workflow/workflow.run-cancellable}`
       interpolation pattern as `TARGET_OBELISK_WEBHOOK_URL` etc. A session's
       own `chat create` (the workflow-side interception from Phase 5) is
-      unaffected — it always schedules its own kind via the injected
-      `submitFn`, no env var involved, matching Rust's `chat.rs`.
+      unaffected: it always schedules its own kind via the static
+      `runCancellableSubmit` import, no env var involved, matching Rust's
+      `chat.rs`.
       **Verification**: like Phase 5's self-referential submit, `just verify`
       does not exercise `webhook_endpoint_js`/`activity_js` code paths at
       runtime (no static/WIT check on `obelisk.schedule` call sites), so a
