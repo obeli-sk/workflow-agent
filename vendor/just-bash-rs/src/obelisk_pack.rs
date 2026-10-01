@@ -50,9 +50,8 @@ pub trait ObeliskHost {
     fn call_json(&mut self, ffqn: &str, params_json: &str) -> Result<Option<String>, String>;
 }
 
-/// The control-plane functions the pack calls: `obelisk-agent:tools/webapi`
-/// plus `obelisk-control:tools/native.call`, bound statically by the embedding
-/// workflow. Arguments the pack always leaves at their defaults (cursors,
+/// The control-plane functions the pack calls: `obelisk-agent:tools/webapi`,
+/// bound statically by the embedding workflow. Arguments the pack always leaves at their defaults (cursors,
 /// directions, log filters) are filled in by the binding.
 pub trait ControlPlane {
     fn list_functions(
@@ -94,7 +93,7 @@ pub trait ControlPlane {
     ) -> Result<String, String>;
     fn apply_deployment(&mut self, deployment_id: &str) -> Result<String, String>;
     /// Call the target's `ffqn` with a JSON params array; the ok value is its result's JSON text.
-    fn native_call(&mut self, ffqn: &str, params_json: &str) -> Result<String, String>;
+    fn call_target(&mut self, ffqn: &str, params_json: &str) -> Result<String, String>;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1474,7 +1473,7 @@ fn target_call(
     ffqn: &str,
     params_json: &str,
 ) -> Result<CommandOutput, String> {
-    let value = decode_json(&host.native_call(ffqn, params_json)?)?;
+    let value = decode_json(&host.call_target(ffqn, params_json)?)?;
     Ok(ok(ensure_trailing_newline(render_output(value))))
 }
 
@@ -2035,11 +2034,11 @@ mod tests {
         fn apply_deployment(&mut self, deployment_id: &str) -> Result<String, String> {
             self.text("apply-deployment", json!([deployment_id]))
         }
-        fn native_call(&mut self, ffqn: &str, params_json: &str) -> Result<String, String> {
+        fn call_target(&mut self, ffqn: &str, params_json: &str) -> Result<String, String> {
             Ok(
                 match call_value(
                     self,
-                    "obelisk-control:tools/native.call",
+                    "obelisk-agent:tools/webapi.call-target",
                     &json!([ffqn, params_json]).to_string(),
                 )? {
                     Value::String(text) => text,
@@ -2380,7 +2379,7 @@ mod tests {
 
     #[test]
     fn call_uses_explicit_params_over_stdin() {
-        let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "42");
+        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "42");
         let mut i = interp("/workspace");
         let out = execute_obelisk(
             &mut i,
@@ -2395,8 +2394,10 @@ mod tests {
 
     #[test]
     fn call_prints_only_the_target_result() {
-        let mut host =
-            FakeHost::new().with("obelisk-control:tools/native.call", r#""{\"answer\":42}""#);
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.call-target",
+            r#""{\"answer\":42}""#,
+        );
         let mut i = interp("/workspace");
         let out = execute_obelisk(
             &mut i,
@@ -2407,8 +2408,10 @@ mod tests {
         );
         assert_eq!(out.stdout, "{\n  \"answer\": 42\n}\n");
 
-        let mut host =
-            FakeHost::new().with("obelisk-control:tools/native.call", r#""\"plain result\"""#);
+        let mut host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.call-target",
+            r#""\"plain result\"""#,
+        );
         let out = execute_obelisk(
             &mut i,
             &words(&["call", "some:ffqn", "[]"]),
@@ -2437,7 +2440,7 @@ mod tests {
 
     #[test]
     fn call_falls_back_to_stdin_then_to_empty_array() {
-        let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
+        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
         let mut i = interp("/workspace");
         execute_obelisk(
             &mut i,
@@ -2448,7 +2451,7 @@ mod tests {
         );
         assert_eq!(host.calls[0].1, "[\"some:ffqn\",\"[9]\"]");
 
-        let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
+        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
         execute_obelisk(
             &mut i,
             &words(&["call", "some:ffqn"]),
@@ -2461,7 +2464,7 @@ mod tests {
 
     #[test]
     fn call_accepts_positional_params_after_separator() {
-        let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
+        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
         let mut i = interp("/workspace");
         execute_obelisk(
             &mut i,
@@ -2507,7 +2510,7 @@ mod tests {
         // `obelisk call ffqn "$(cat missing.json)"` where the substitution is
         // empty: reject instead of silently sending `[]` (which the server then
         // rejects with a confusing cardinality mismatch).
-        let mut host = FakeHost::new().with("obelisk-control:tools/native.call", "1");
+        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
         let mut i = interp("/workspace");
         let out = execute_obelisk(
             &mut i,

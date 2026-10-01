@@ -1,7 +1,0 @@
-package obelisk-control:tools;
-
-interface native {
-  // Call the target Obelisk's `ffqn` with a JSON params array; the ok value is
-  // the JSON text of its result (packs/obelisk-control/native-call.js).
-  call: func(ffqn: string, params-json: string) -> result<string, string>;
-}

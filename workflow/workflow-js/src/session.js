@@ -24,7 +24,6 @@
 import { discover, inputAcceptedAt } from "obelisk-agent:config/config";
 import { request as appsRequest } from "obelisk-agent:mounts/apps";
 import * as webapi from "obelisk-agent:tools/webapi";
-import { call as nativeCall } from "obelisk-control:tools/native";
 import * as obelisk from "obelisk:workflow@1.0.0";
 import * as dynamic from "obelisk:workflow-dynamic@1.0.0";
 import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
@@ -226,9 +225,9 @@ class Notifications {
 
 // PORT: host.rs's RealHost::ask_user. Answers `obelisk call
 // obelisk-agent:stub/stub.ask-user [...]` with a real join-set-based
-// question/answer exchange instead of native.call's HTTP bridge to the target
-// instance, which has no such function. Returns the answer's JSON text, like
-// native.call.
+// question/answer exchange instead of webapi.call-target's HTTP bridge to the
+// target instance, which has no such function. Returns the answer's JSON text,
+// like a target call.
 function askUser(paramsJson, notifications) {
     let params;
     try {
@@ -581,7 +580,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const config = loadSessionConfig(executionId, model, effort, initialName);
     const maxSteps = config.maxSteps;
     // Always registered, independent of operator config (mirrors session.rs).
-    const controlPlane = createControlPlane(webapi, nativeCall, obelisk, (paramsJson) => askUser(paramsJson, notifications));
+    const controlPlane = createControlPlane(webapi, obelisk, (paramsJson) => askUser(paramsJson, notifications));
     bash.registerCommand("obelisk", obeliskPack.commandHandler(controlPlane, {
         obeliskVersion: config.obeliskVersion,
         githubContents,

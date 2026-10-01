@@ -150,13 +150,6 @@ request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
-# Native call: run any deployed Obelisk function chosen at runtime by the model
-# (obelisk-control pack). A workflow, so obelisk.call runs durably in-loop.
-[[workflow_js]]
-ffqn = "obelisk-control:tools/native.call"
-wit = "wit"
-location = "packs/obelisk-control/native-call.js"
-
 # --- Reference mounts: GitHub repo trees ---------------------------------------
 # One activity backs every lazily-listed VFS repo tree the session mounts to
 # browse example apps while authoring deployments (APPS_JSON above picks which
@@ -232,8 +225,8 @@ request_url_regex = "^GET ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1
 secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
-# Dynamic call against the target: native.call delegates here so `obelisk call`
-# reaches the target over HTTP (a workflow can't fetch). It submits once, then
+# Dynamic call against the target: `obelisk call` reaches the target over HTTP
+# through this activity (a workflow can't fetch). It submits once, then
 # follows the accepted execution by ID, so it needs a long lock; max_retries = 0
 # because retrying the auto-ID POST could double-submit.
 [[activity_js]]

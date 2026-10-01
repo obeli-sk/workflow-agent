@@ -68,11 +68,11 @@ both by the public docs and by the concrete WIT/wiring in this repo:
   (`workflow-rs/wit/deps/obelisk_workflow@6.0.0/obelisk_workflow@6.0.0.wit:162-163`)
   — a real child execution, not an in-process HTTP client.
 - **The `obelisk` command and target-Obelisk RPCs** (`obelisk functions`,
-  `executions`, `call`, `deployment`, and the `obelisk-control:tools/*`
-  programs that read `TARGET_OBELISK_API_URL`/`_TOKEN`, see `README.md:58-90`)
+  `executions`, `call`, `deployment`, and the `obelisk-control` pack's
+  tool programs that read `TARGET_OBELISK_API_URL`/`_TOKEN`, see `README.md:58-90`)
   go through the pack's `ControlPlane` seam, which `RealHost` implements
-  with the statically imported `obelisk-agent:tools/webapi` and
-  `obelisk-control:tools/native.call` bindings: again child executions.
+  with the statically imported `obelisk-agent:tools/webapi` bindings
+  (`obelisk call` goes through `webapi.call-target`): again child executions.
   `ask-user` additionally calls `workflow_support::join_set_create`, the
   generated `ask_user_submit`, and `join_next` directly (`host.rs`).
 - **The component wiring reflects this.** `workflow-rs`'s only WIT world

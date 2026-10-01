@@ -4,8 +4,8 @@
 // (`functions`, `executions`, `call`, `deployment`, `generate`) call the
 // control-plane tools through `controlPlane`: an object with the same methods
 // as obelisk_pack.rs's `ControlPlane` trait, backed by the statically imported
-// `obelisk-agent:tools/webapi` and `obelisk-control:tools/native.call` (see
-// workflow/workflow-js/src/host.js's `createControlPlane`; tests pass a fake).
+// `obelisk-agent:tools/webapi` (see workflow/workflow-js/src/host.js's
+// `createControlPlane`; tests pass a fake).
 // Methods return the decoded ok value and throw a plain message on error,
 // except `deploymentSubmit`, which throws `{ missingFiles }` for the
 // recoverable missing-files arm.
@@ -639,7 +639,7 @@ function textOutput(text) {
 }
 
 function targetCall(controlPlane, ffqn, paramsJson) {
-    return ok(ensureTrailingNewline(renderOutput(decodeJson(controlPlane.nativeCall(ffqn, paramsJson)))));
+    return ok(ensureTrailingNewline(renderOutput(decodeJson(controlPlane.callTarget(ffqn, paramsJson)))));
 }
 
 function listFunctions(functions) {
