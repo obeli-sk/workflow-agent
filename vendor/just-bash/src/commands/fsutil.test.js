@@ -58,6 +58,23 @@ test("head and tail do not invent a newline for empty input", () => {
     }
 });
 
+test("head -c keeps the script running and slices UTF-8 bytes", () => {
+    const bash = fresh();
+    const result = bash.exec("printf 'hello' | head -c 2; echo after");
+    assert.equal(result.stdout, "heafter\n");
+    assert.equal(result.stderr, "");
+    assert.equal(result.exitCode, 0);
+    assert.equal(bash.exec("printf 'é!' | head -c1").stdout, "\ufffd");
+    assert.equal(bash.exec("printf 'é!' | head --bytes=2").stdout, "é");
+    assert.equal(bash.exec("printf 'é!' | tail -c2").stdout, "\ufffd!");
+});
+
+test("head and tail preserve an unterminated final line", () => {
+    const bash = fresh();
+    assert.equal(bash.exec("printf 'first\\nlast' | head -n 2").stdout, "first\nlast");
+    assert.equal(bash.exec("printf 'first\\nlast' | tail -n 1").stdout, "last");
+});
+
 test("chmod validates mode syntax and target existence", () => {
     const bash = fresh();
     bash.vfs.writeFile("/f.txt", "x");
