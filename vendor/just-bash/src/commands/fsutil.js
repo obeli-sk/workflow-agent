@@ -4,7 +4,7 @@
 
 import { ok, fail, unknownOption } from "./core.js";
 import { FsError } from "../fs.js";
-import { utf8Encode } from "../utf8.js";
+import { utf8Decode, utf8Encode } from "../utf8.js";
 
 function flagsOf(args) {
     const flags = new Set();
@@ -161,24 +161,33 @@ export const fsutil = {
     },
 
     head(interp, args, stdin) {
-        const { n, rest } = countArg(args, 10);
+        const { n, bytes, rest } = countArg(args, 10);
+        if (bytes !== null && (!Number.isInteger(bytes) || bytes < 0)) return fail("head: invalid number of bytes\n", 1);
         const text = rest.length ? interp.vfs.readFile(interp.resolvePath(rest[0])) : stdin;
         if (text === "") return ok();
-        const lines = text.split("\n");
-        const hadTrailingNl = text.endsWith("\n");
-        const body = lines.slice(0, hadTrailingNl ? lines.length - 1 : lines.length);
-        return ok(body.slice(0, n).join("\n") + (body.length ? "\n" : ""));
+        if (bytes !== null) return ok(utf8Head(text, bytes));
+        if (n <= 0) return ok();
+        let end = 0;
+        for (let line = 0; line < n && end < text.length; line++) {
+            const newline = text.indexOf("\n", end);
+            if (newline < 0) return ok(text);
+            end = newline + 1;
+        }
+        return ok(text.slice(0, end));
     },
 
     tail(interp, args, stdin) {
-        const { n, rest } = countArg(args, 10);
+        const { n, bytes, rest } = countArg(args, 10);
+        if (bytes !== null && (!Number.isInteger(bytes) || bytes < 0)) return fail("tail: invalid number of bytes\n", 1);
         const text = rest.length ? interp.vfs.readFile(interp.resolvePath(rest[0])) : stdin;
         if (text === "") return ok();
+        if (bytes !== null) return ok(utf8Tail(text, bytes));
+        if (n <= 0) return ok();
         const lines = text.split("\n");
         const hadTrailingNl = text.endsWith("\n");
         const body = lines.slice(0, hadTrailingNl ? lines.length - 1 : lines.length);
         const start = Math.max(0, body.length - n);
-        return ok(body.slice(start).join("\n") + (body.length ? "\n" : ""));
+        return ok(body.slice(start).join("\n") + (hadTrailingNl ? "\n" : ""));
     },
 
     tee(interp, args, stdin) {
@@ -569,13 +578,34 @@ function copyDir(vfs, src, dest) {
 function countArg(args, def) {
     const rest = [];
     let n = def;
+    let bytes = null;
     const items = args.slice(1);
     for (let i = 0; i < items.length; i++) {
         if (items[i] === "-n" && items[i + 1] !== undefined) { n = parseInt(items[i + 1], 10); i++; }
+        else if (items[i] === "-c" && items[i + 1] !== undefined) { bytes = Number(items[i + 1]); i++; }
+        else if (items[i].startsWith("-c") && items[i].length > 2) bytes = Number(items[i].slice(2));
+        else if (items[i].startsWith("--bytes=")) bytes = Number(items[i].slice(8));
         else if (/^-\d+$/.test(items[i])) n = -Number(items[i]);
         else rest.push(items[i]);
     }
-    return { n, rest };
+    return { n, bytes, rest };
+}
+
+function utf8Head(text, count) {
+    const data = utf8Encode(text);
+    const end = Math.min(count, data.length);
+    let boundary = end;
+    while (boundary > 0 && boundary < data.length && (data[boundary] & 0xc0) === 0x80) boundary--;
+    return utf8Decode(data.slice(0, boundary)) + (boundary < end ? "\ufffd" : "");
+}
+
+function utf8Tail(text, count) {
+    if (count === 0) return "";
+    const data = utf8Encode(text);
+    const start = Math.max(0, data.length - count);
+    let boundary = start;
+    while (boundary < data.length && (data[boundary] & 0xc0) === 0x80) boundary++;
+    return "\ufffd".repeat(boundary - start) + utf8Decode(data.slice(boundary));
 }
 
 function selectedWcCounts(flags, { l, w, c }) {
