@@ -1,5 +1,3 @@
-serve: serve-rs
-
 serve-rs: build-rs
   obelisk server run -d deployment.rs.toml --server-config server.toml --app-config app.toml
 
