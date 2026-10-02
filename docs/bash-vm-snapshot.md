@@ -77,7 +77,7 @@ both by the public docs and by the concrete WIT/wiring in this repo:
   generated `ask_user_submit`, and `join_next` directly (`host.rs`).
 - **The component wiring reflects this.** `workflow-rs`'s only WIT world
   (`workflow/workflow-rs/wit/impl.wit:1-13`) imports
-  `obelisk:workflow/workflow-support@6.0.0`; that's what `RealHost` and
+  `obelisk:workflow/workflow-support@7.0.0`; that's what `RealHost` and
   `host_sleep_ms` close over. `bash-rs`'s standalone world
   (`workflow/bash-rs/wit/world.wit:1-13`), scaffolded as a plain
   `func(script, stdin) -> result<...>` export with *no imports at all*, has
@@ -99,7 +99,7 @@ importing `workflow-support`, not an activity export importing nothing).
 Shape: `{script, vm-state-in} -> {result, vm-state-out}`, where `vm-state` is
 a full snapshot (VFS diff + cwd + env; see format below), same as before —
 only the callee's WIT shape changes from an activity export to a workflow
-export that itself imports `obelisk:workflow/workflow-support@6.0.0`, so
+export that itself imports `obelisk:workflow/workflow-support@7.0.0`, so
 `sleep`/`curl`/`obelisk`/ask-user builtins keep working unmodified inside it.
 Moving execution across this child-execution boundary means Obelisk memoizes
 each call's result — replay never re-runs the interpreter, only re-fetches

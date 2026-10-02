@@ -1,5 +1,5 @@
 // Captured verbatim from the devshell's `obelisk generate deployment` output
-// (Obelisk 0.42.0-rc.9): the same fully-commented starter deployment.toml the Rust
+// (Obelisk 0.42.0-rc.10): the same fully-commented starter deployment.toml the Rust
 // port embeds at build time via vendor/just-bash-rs/build.rs's
 // include_str!(...) of that command's stdout. This JS port has no build-time
 // hook to run the real `obelisk` binary at deploy time (a deployed component
