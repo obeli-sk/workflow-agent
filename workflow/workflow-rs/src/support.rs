@@ -1,7 +1,7 @@
 //! Small helpers shared by `session.rs`, `agent.rs`, and `host.rs`: FFQN
 //! splitting into a WIT `function` record, and decoding a child execution's
 //! JSON error payload into a plain message. This is the Rust equivalent of
-//! JS's `callErrorMessage` / `obelisk.ChildExecutionError` unwrapping: here a
+//! JS's `callErrorMessage` / `obelisk.ChildError` unwrapping: here a
 //! child's business error surfaces as `join-next`'s `Err(Some(json))` (or
 //! `call-json`'s equivalent), not an exception, so there is nothing to catch
 //! -- just a value to decode.
