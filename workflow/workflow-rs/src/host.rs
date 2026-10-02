@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::generated::obelisk::workflow::{workflow_dynamic_support, workflow_support};
 use crate::generated::obelisk_agent::stub_obelisk_ext::stub as stub_ext;
 use crate::generated::obelisk_agent::tools::webapi;
-use crate::session::Notifications;
+use crate::session::{Notifications, SESSION_IDLE_ERROR, idle_timeout};
 use crate::support::{child_error_message, last_response_execution_id, split_ffqn};
 
 const ASK_USER_FFQN: &str = "obelisk-agent:stub/stub.ask-user";
@@ -36,15 +36,23 @@ impl RealHost {
             .and_then(|value| value.as_array().and_then(|params| params.first()).cloned())
             .and_then(|value| value.as_str().map(str::to_string))
             .ok_or_else(|| "ask-user requires a question".to_string())?;
+        if self.notifications.is_idle() {
+            return Err(SESSION_IDLE_ERROR.to_string());
+        }
         let join_set = workflow_support::join_set_create();
         let execution_id = stub_ext::ask_user_submit(&join_set, &question)
             .map_err(|e| format!("ask-user submit failed: {e:?}"))?;
+        workflow_support::submit_delay(&join_set, idle_timeout());
         self.notifications
             .human_input_requested(execution_id.id.clone(), question)?;
         self.notifications.flush()?;
         let result = workflow_support::join_next(&join_set)
             .map_err(|e| format!("ask-user await failed: {e:?}"))?;
         let completed_id = last_response_execution_id(&join_set);
+        if completed_id.is_none() {
+            self.notifications.mark_idle();
+            return Err(SESSION_IDLE_ERROR.to_string());
+        }
         if completed_id.as_deref() != Some(execution_id.id.as_str()) {
             return Err(format!("unexpected ask-user response: {completed_id:?}"));
         }

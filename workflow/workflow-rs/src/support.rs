@@ -26,8 +26,7 @@ pub fn split_ffqn(ffqn: &str) -> Result<Function, String> {
 }
 
 /// The execution id of a join set's last processed response, or `None` if it
-/// was a delay (this session never submits delays to a join set) or nothing
-/// has been processed yet. Rust equivalent of JS's `session.joinSet.lastId`.
+/// was a delay or nothing has been processed yet. Rust equivalent of JS's `session.joinSet.lastId`.
 pub fn last_response_execution_id(join_set: &JoinSet) -> Option<String> {
     match join_set.last_id() {
         Some(ResponseId::ExecutionId(id)) => Some(id.id),

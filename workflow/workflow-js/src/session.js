@@ -82,6 +82,9 @@ function githubContents(method, paramsJson) {
 
 const DEFAULT_DESCRIPTOR_FFQN = "obelisk-control:agent/pack.describe";
 const SESSION_EVENTS_JOIN_SET = "session-events";
+// PORT: session.rs's idle_timeout/SESSION_IDLE_ERROR. Raced against every wait for the user.
+const IDLE_TIMEOUT = { days: 7 };
+const SESSION_IDLE_ERROR = "session idle timeout: no interaction for 7 days";
 // Renames publish here instead, so a reader fetches the current name with one
 // bounded request instead of racing the mixed session-events stream.
 const SESSION_NAME_JOIN_SET = "session-name";
@@ -143,6 +146,8 @@ class Notifications {
         // trip per event, so the composer isn't left waiting on several
         // sequential commits before it can re-enable.
         this.pending = [];
+        // Set by askUser inside bash on idle timeout; the session loop ends the session on it.
+        this.idle = false;
     }
 
     setTurnIndex(turnIndex) {
@@ -238,19 +243,30 @@ function askUser(paramsJson, notifications) {
     // Anonymous, matching Rust's `workflow_support::join_set_create()` in
     // host.rs's RealHost::ask_user - see script-watch.js's arm() for why a
     // named join set here would fail cross-backend replay.
+    if (notifications.idle) throw SESSION_IDLE_ERROR;
     const joinSet = obelisk.createJoinSet();
-    const executionId = askUserSubmit(joinSet, question);
-    notifications.humanInputRequested(executionId, question);
-    let answer;
-    notifications.flush();
+    // Closed on every return, like the Rust JoinSet drop, so the losing request is cancelled at the same point.
     try {
-        answer = joinSet.joinNext();
-    } catch (e) {
-        throw `ask-user await failed: ${errorMessage(e)}`;
+        const executionId = askUserSubmit(joinSet, question);
+        const idleDelayId = joinSet.submitDelay(IDLE_TIMEOUT);
+        notifications.humanInputRequested(executionId, question);
+        let answer;
+        notifications.flush();
+        try {
+            answer = joinSet.joinNext();
+        } catch (e) {
+            throw `ask-user await failed: ${errorMessage(e)}`;
+        }
+        if (joinSet.lastId === idleDelayId) {
+            notifications.idle = true;
+            throw SESSION_IDLE_ERROR;
+        }
+        if (joinSet.lastId !== executionId) throw `unexpected ask-user response: ${joinSet.lastId}`;
+        notifications.humanInputResolved(executionId);
+        return JSON.stringify(answer);
+    } finally {
+        joinSet.close();
     }
-    if (joinSet.lastId !== executionId) throw `unexpected ask-user response: ${joinSet.lastId}`;
-    notifications.humanInputResolved(executionId);
-    return JSON.stringify(answer);
 }
 
 function hostNowMs() {
@@ -426,7 +442,7 @@ function openSession(turnIndex, notifications) {
     const joinSet = obelisk.createJoinSet({ name: `user-${turnIndex}` });
     const injectionId = injectionSubmit(joinSet);
     notifications.notify({ input_offered: { execution_id: injectionId, turn_index: turnIndex } });
-    return { joinSet, injectionId, turnIndex };
+    return { joinSet, injectionId, turnIndex, idleDelayId: null };
 }
 
 function advanceTurn(session, notifications) {
@@ -434,6 +450,7 @@ function advanceTurn(session, notifications) {
     if (session.joinSet) session.joinSet.close();
     const turnIndex = session.turnIndex + 1;
     session.joinSet = obelisk.createJoinSet({ name: `user-${turnIndex}` });
+    session.idleDelayId = null;
     session.injectionId = injectionSubmit(session.joinSet);
     session.turnIndex = turnIndex;
     notifications.notify({ input_offered: { execution_id: session.injectionId, turn_index: turnIndex } });
@@ -449,7 +466,10 @@ function publishAgentStatus(notifications, working, turnIndex) {
     notifications.notify({ agent_status: { working, turn_index: turnIndex } });
 }
 
+// The idle delay is left pending once input arrives: callLlmWithUser ignores
+// it and advanceTurn cancels it by closing the turn's set.
 function takeUserEvent(session, notifications) {
+    session.idleDelayId = session.joinSet.submitDelay(IDLE_TIMEOUT);
     let event;
     notifications.flush();
     try {
@@ -457,6 +477,7 @@ function takeUserEvent(session, notifications) {
     } catch (e) {
         throw `session injection failed: ${errorMessage(e)}`;
     }
+    if (session.joinSet.lastId === session.idleDelayId) throw SESSION_IDLE_ERROR;
     if (session.joinSet.lastId !== session.injectionId) {
         throw `unexpected session response while idle: ${session.joinSet.lastId}`;
     }
@@ -513,7 +534,7 @@ function callLlmWithUser(session, system, pendingMessages, historyIds, model, ef
                 const acceptedAt = event.shell ? Number(inputAcceptedAt(session.injectionId)) : null;
                 rearmUserInput(session, notifications);
                 promptQueued = promptQueued || applySessionInput(event, acceptedAt, session.turnIndex, false, notifications, bash, pendingMessages);
-            } else {
+            } else if (completedId !== session.idleDelayId) {
                 throw `unexpected session response: ${completedId}`;
             }
         }
@@ -619,6 +640,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     try {
         while (true) {
             console.debug(`turn=${turnIndex} step=${agentSteps} shouldCallLlm=${shouldCallLlm}`);
+            if (notifications.idle) throw SESSION_IDLE_ERROR;
             session.turnIndex = turnIndex;
             notifications.setTurnIndex(turnIndex);
             if (shouldCallLlm && agentSteps >= maxSteps) {

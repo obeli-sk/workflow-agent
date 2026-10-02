@@ -59,6 +59,8 @@ keeps the built-in default). Create an empty session to use the shell directly,
 or submit a prompt and inspect the same filesystem afterward. The user input
 stays live while a completion is pending, so `$ ` commands can edit the session
 VFS mid-turn; a prompt sent during the wait is queued for the next model turn.
+A session that gets no input or `ask-user` answer for 7 days ends itself with an
+idle-timeout error, so abandoned sessions become terminal and can be retained away.
 
 ## Target instance
 

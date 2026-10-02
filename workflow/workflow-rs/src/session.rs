@@ -22,7 +22,7 @@
 //!   included those commands in the first place, so there is nothing to
 //!   filter out of `Bash`'s fixed builtin table.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -35,7 +35,9 @@ use crate::chat;
 
 use crate::generated::obelisk::log::log::debug as log_line;
 use crate::generated::obelisk::types::time::Duration;
-use crate::generated::obelisk::workflow::workflow_support::{self, JoinSet, ScheduleAt};
+use crate::generated::obelisk::workflow::workflow_support::{
+    self, JoinSet, ResponseId, ScheduleAt,
+};
 use crate::generated::obelisk_agent::config::config::{discover, input_accepted_at};
 use crate::generated::obelisk_agent::llm::chat::CompletionResult;
 use crate::generated::obelisk_agent::llm_obelisk_ext::chat as llm_ext;
@@ -73,6 +75,7 @@ fn host_sleep_ms(ms: u64) {
 
 const MAX_TOOL_RESULT_BYTES: usize = 96 * 1024;
 const SESSION_EVENTS_JOIN_SET: &str = "session-events";
+pub(crate) const SESSION_IDLE_ERROR: &str = "session idle timeout: no interaction for 7 days";
 /// Renames ride here alone, never on `session-events`.
 const SESSION_NAME_JOIN_SET: &str = "session-name";
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace. Control flow: if/elif/else, for, while, until, case, break, continue. Not supported: [[ ]], function definitions, arrays, background jobs.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"},"timeout":{"type":"string","description":"Optional wall-clock cap for this script (forms like 30s, 500ms, 5m, 1h30m). When it elapses the script stops at its next command boundary or sleep with exit code 124 and interrupted=\"timeout\"."}},"required":["script"]}}]"#;
@@ -392,6 +395,11 @@ struct Session {
     turn_index: u64,
 }
 
+/// Raced against every wait for the user (input offer, ask-user); when it wins the session ends.
+pub(crate) fn idle_timeout() -> ScheduleAt {
+    ScheduleAt::In(Duration::Days(7))
+}
+
 struct LlmReply {
     content: Vec<Value>,
     content_json: String,
@@ -447,6 +455,8 @@ pub(crate) struct Notifications {
     // so the composer isn't left waiting on several sequential commits
     // before it can re-enable. Every call site uses SESSION_EVENTS_JOIN_SET.
     pending: Rc<RefCell<Vec<SessionEvent>>>,
+    // Set by ask-user inside bash on idle timeout; the session loop ends the session on it.
+    idle: Rc<Cell<bool>>,
 }
 
 impl Notifications {
@@ -490,6 +500,14 @@ impl Notifications {
             return Err(format!("unexpected session event response: {last_id:?}"));
         }
         Ok(())
+    }
+
+    pub(crate) fn mark_idle(&self) {
+        self.idle.set(true);
+    }
+
+    pub(crate) fn is_idle(&self) -> bool {
+        self.idle.get()
     }
 
     pub(crate) fn set_turn_index(&self, turn_index: u64) {
@@ -762,6 +780,9 @@ pub fn agent_loop(
         log_line(&format!(
             "turn={turn_index} step={agent_steps} should_call_llm={should_call_llm}"
         ));
+        if notifications.is_idle() {
+            return Err(SESSION_IDLE_ERROR.to_string());
+        }
         session.turn_index = turn_index;
         notifications.set_turn_index(turn_index);
         if should_call_llm && agent_steps >= max_steps {
@@ -1311,61 +1332,62 @@ fn call_llm_with_user(
             let join_set = session.join_set.as_ref().expect("turn join set is open");
             notifications.flush()?;
             let _ = workflow_support::join_next(join_set).map_err(|e| format!("{e:?}"))?;
-            let completed_id = last_response_execution_id(join_set)
-                .expect("user join set has only child executions, never delays");
-            if completed_id == completion_execution_id.id {
-                match llm_ext::completion_get(&completion_execution_id)
-                    .map_err(|e| format!("{e:?}"))?
-                {
-                    Ok(completion) => {
+            // `None` is the idle delay `take_user_event` left in this turn's set firing mid-turn: ignore it.
+            if let Some(completed_id) = last_response_execution_id(join_set) {
+                if completed_id == completion_execution_id.id {
+                    match llm_ext::completion_get(&completion_execution_id)
+                        .map_err(|e| format!("{e:?}"))?
+                    {
+                        Ok(completion) => {
+                            log_line(&format!(
+                                "turn={} llm.completion received",
+                                session.turn_index
+                            ));
+                            break Some(completion);
+                        }
+                        Err(e) => {
+                            log_line(&format!(
+                                "turn={} llm.completion failed: {e}",
+                                session.turn_index
+                            ));
+                            return Ok(LlmOutcome::Failed(format!("llm.completion failed: {e}")));
+                        }
+                    }
+                } else if completed_id == session.injection_execution_id.id {
+                    let event = session_ext::injection_get(&session.injection_execution_id)
+                        .map_err(|e| format!("{e:?}"))?
+                        .map_err(|e| format!("session injection failed: {e}"))?;
+                    if matches!(event, SessionInput::Interrupt(_)) {
                         log_line(&format!(
-                            "turn={} llm.completion received",
+                            "turn={} llm.completion interrupted",
                             session.turn_index
                         ));
-                        break Some(completion);
+                        // Closing this turn's join set cancels the outstanding
+                        // completion immediately. The outer loop opens the next
+                        // turn's uniquely named set after recording the stop.
+                        drop(session.join_set.take().expect("turn join set is open"));
+                        break None;
                     }
-                    Err(e) => {
-                        log_line(&format!(
-                            "turn={} llm.completion failed: {e}",
-                            session.turn_index
-                        ));
-                        return Ok(LlmOutcome::Failed(format!("llm.completion failed: {e}")));
-                    }
-                }
-            } else if completed_id == session.injection_execution_id.id {
-                let event = session_ext::injection_get(&session.injection_execution_id)
-                    .map_err(|e| format!("{e:?}"))?
-                    .map_err(|e| format!("session injection failed: {e}"))?;
-                if matches!(event, SessionInput::Interrupt(_)) {
-                    log_line(&format!(
-                        "turn={} llm.completion interrupted",
-                        session.turn_index
-                    ));
-                    // Closing this turn's join set cancels the outstanding
-                    // completion immediately. The outer loop opens the next
-                    // turn's uniquely named set after recording the stop.
-                    drop(session.join_set.take().expect("turn join set is open"));
-                    break None;
-                }
-                let accepted_at = if matches!(&event, SessionInput::Shell(_)) {
-                    Some(input_accepted_at_milliseconds(
-                        &session.injection_execution_id.id,
-                    )?)
+                    let accepted_at = if matches!(&event, SessionInput::Shell(_)) {
+                        Some(input_accepted_at_milliseconds(
+                            &session.injection_execution_id.id,
+                        )?)
+                    } else {
+                        None
+                    };
+                    rearm_user_input(session, notifications)?;
+                    prompt_queued |= apply_session_input(
+                        event,
+                        accepted_at,
+                        session.turn_index,
+                        false,
+                        notifications,
+                        bash,
+                        pending_messages,
+                    )?;
                 } else {
-                    None
-                };
-                rearm_user_input(session, notifications)?;
-                prompt_queued |= apply_session_input(
-                    event,
-                    accepted_at,
-                    session.turn_index,
-                    false,
-                    notifications,
-                    bash,
-                    pending_messages,
-                )?;
-            } else {
-                return Err(format!("unexpected session response: {completed_id}"));
+                    return Err(format!("unexpected session response: {completed_id}"));
+                }
             }
         };
 
@@ -1519,11 +1541,16 @@ fn take_user_event(
     // Same heterogeneous-join-set discipline as `call_llm_with_user`: await
     // generically, confirm the completed id is the outstanding injection offer,
     // then fetch its typed value with `injection-get`.
+    // The idle delay is left pending once input arrives: `call_llm_with_user`
+    // ignores it and `advance_turn` cancels it by closing the turn's set.
     let join_set = session.join_set.as_ref().expect("turn join set is open");
+    workflow_support::submit_delay(join_set, idle_timeout());
     notifications.flush()?;
     let _ = workflow_support::join_next(join_set).map_err(|e| format!("{e:?}"))?;
-    let completed_id = last_response_execution_id(join_set)
-        .expect("user join set has only child executions, never delays");
+    let completed_id = match join_set.last_id() {
+        Some(ResponseId::ExecutionId(id)) => id.id,
+        _ => return Err(SESSION_IDLE_ERROR.to_string()),
+    };
     if completed_id != session.injection_execution_id.id {
         return Err(format!(
             "unexpected session response while idle: {completed_id}"
