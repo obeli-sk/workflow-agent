@@ -25,13 +25,11 @@ registry read: `MAX_STEPS`, defaulting to `40`.
 
 ## Run
 
-Pick an LLM catalog and start the server; `just serve` depends on `build-rs`,
+Configure the LLM endpoint and an optional fallback catalog; `just serve` depends on `build-rs`,
 so the component is always rebuilt from current source first:
 
 ```sh
-ln -sf models.local.json models.json      # pick a catalog
-export AGENT_MODELS="$(cat models.json)"   # or use direnv (.envrc-example)
-export LLM_BASE_URL=http://127.0.0.1:9190  # match the catalog's endpoint
+export LLM_BASE_URL=http://127.0.0.1:9190  # discover models from the local backend
 just serve                                 # obelisk server run -d deployment.rs.toml
 ```
 
@@ -103,14 +101,27 @@ instance.
 ## LLM endpoint
 
 One endpoint serves the whole catalog, configured by three env vars: the
-catalog JSON `AGENT_MODELS` (required), the origin `LLM_BASE_URL` (default
+fallback catalog JSON `AGENT_MODELS` (optional), the origin `LLM_BASE_URL` (default
 `http://127.0.0.1:9190`), and the bearer `LLM_API_KEY` (unset for keyless).
 Each catalog entry points a model at an OpenAI- or Anthropic-shaped route under
-that origin. Three catalogs ship:
+that origin. The model picker, LLM activity, and `chat models` first try
+`GET <LLM_BASE_URL>/v1/models`, using `LLM_API_KEY` when configured. A nonempty
+discovered catalog supplies the available models; matching configured entries
+retain their aliases, wire adapters, provider paths, and token limits. New models
+use the OpenAI chat-completions adapter. Advertised default models appear first.
+Existing sessions can still resolve configured aliases omitted from discovery.
+An unavailable, empty, or malformed discovery response falls back to
+`AGENT_MODELS`. Without either catalog, model selection fails with a clear error.
+Both workflow implementations use this shared catalog loader.
 
-- `models.local.json` (keyless) : the sibling
-  [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server),
-  a Claude/Codex subscription in docker on `:9190`.
+The local endpoint is the sibling
+[`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server),
+which serves Claude/Codex subscriptions in Docker on `:9190`. Its discovery
+endpoint supplies the model catalog; no local fallback file is needed.
+
+Two optional fallback catalogs ship. Set `AGENT_MODELS="$(cat <catalog-file>)"`
+to use one:
+
 - `models.exe-integration.json` (keyless) : the exe.dev LLM integration —
   `LLM_BASE_URL=https://llm.int.exe.xyz`. Inside an attached exe.dev VM, exe.dev
   authenticates at the network edge and plain OpenAI-compatible requests just
@@ -145,7 +156,8 @@ Regenerate the exe.dev catalog from the published model list with
 `node scripts/update-exe-models.mjs`. Leave `LLM_API_KEY` unset.
 
 Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama) works:
-point `LLM_BASE_URL` at it and add catalog entries.
+point `LLM_BASE_URL` at it and configure `AGENT_MODELS` when its discovery
+endpoint is unavailable or its models need a different adapter.
 
 ## Documentation
 

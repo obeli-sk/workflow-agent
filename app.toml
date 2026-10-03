@@ -23,7 +23,7 @@ MCP_SERVERS_JSON = { optional = true }
 APPS_JSON = { optional = true }
 TARGET_OBELISK_WEBHOOK_URL = { optional = true }
 OBELISK_API_URL = { optional = true }
-AGENT_MODELS = {}
+AGENT_MODELS = { optional = true }
 OBELISK_API_URL_REGEX = { optional = true }
 GITHUB_MOUNT_OWNER = { optional = true }
 LLM_BASE_URL = { optional = true }
@@ -122,8 +122,8 @@ replace_in = ["headers"]
 # LLM server
 [[outbound_http.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
-methods = ["POST"]
-request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
+methods = ["GET", "POST"]
+request_url_regex = "^GET http[s]?://[^/]+(/[^/]+)*/v1/models$|^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
 secrets = ["LLM_API_KEY"]
 replace_in = ["headers"]
 

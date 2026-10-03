@@ -141,13 +141,21 @@ max_retries = 0
 exec.lock_expiry.seconds = 30
 env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
-  "AGENT_MODELS",
+  { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
+  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
 ]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT", "POST"]
 request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions|PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub$|POST ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions$"
 secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+
+[[activity_js.allowed_host]]
+pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+methods = ["GET"]
+request_url_regex = "^GET http[s]?://[^/]+(/[^/]+)*/v1/models$"
+secrets = [{ name = "LLM_API_KEY", optional = true }]
 replace_in = ["headers"]
 
 # --- Reference mounts: GitHub repo trees ---------------------------------------
@@ -159,6 +167,7 @@ replace_in = ["headers"]
 # GitHub API rate limit from the shared 60 req/h anonymous IP pool to 5000 req/h,
 # which matters once multiple sessions share an egress IP. The workflow calls
 # (method, params-json) on first `ls`/`cat` under each mount.
+
 [[activity_js]]
 name = "mount_apps"
 ffqn = "obelisk-agent:mounts/apps.request"
@@ -179,7 +188,7 @@ replace_in = ["headers"]
 #
 # AGENT_MODELS is a JSON array of models: each entry has
 #   { id, label, api_type, path?, wire_model, max_tokens? }
-# It is REQUIRED (no built-in default): set it in the environment before serving
+# Discovery uses GET /v1/models; AGENT_MODELS is the optional fallback
 # (see .envrc-example / models.*.json). The endpoint origin is shared across the
 # catalog via LLM_BASE_URL, and a single LLM_API_KEY secret authenticates it; the
 # per-model `path` is only the provider prefix appended to that origin.
@@ -192,7 +201,7 @@ location = "activity/llm-chat.js"
 exec.lock_expiry.minutes = 10
 max_retries = 3
 env_vars = [
-  "AGENT_MODELS",
+  { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
   { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
 ]
@@ -205,8 +214,8 @@ secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 [[activity_js.allowed_host]]
 pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
-methods = ["POST"]
-request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
+methods = ["GET", "POST"]
+request_url_regex = "^GET http[s]?://[^/]+(/[^/]+)*/v1/models$|^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
 secrets = [{ name = "LLM_API_KEY", optional = true }]
 replace_in = ["headers"]
 
@@ -623,7 +632,8 @@ routes = [
 env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
-  "AGENT_MODELS",
+  { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
+  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
 ]
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
@@ -635,6 +645,12 @@ request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
+[[webhook_endpoint_js.allowed_host]]
+pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+methods = ["GET"]
+request_url_regex = "^GET http[s]?://[^/]+(/[^/]+)*/v1/models$"
+secrets = [{ name = "LLM_API_KEY", optional = true }]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "tool_apply_deployment"

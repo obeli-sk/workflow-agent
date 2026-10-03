@@ -1,6 +1,6 @@
 // Multi-provider LLM client. Speaks a provider-neutral message model (see below)
-// and routes each request to the correct wire API based on the model catalog in
-// the AGENT_MODELS env var. There are no exec activities; the model always lives
+// and routes requests through the discovered model catalog or AGENT_MODELS
+// fallback. There are no exec activities; the model always lives
 // behind an HTTP endpoint.
 //
 // obelisk-agent:llm/chat.completion:
@@ -25,11 +25,14 @@
 
 const DEFAULT_MAX_TOKENS = 8192;
 import { loadMessages, obeliskApi } from "./llm-history.js";
+import { resolveModel } from "../shared/model-catalog.js";
 
 export default async function completion(system, deltaJson, toolsJson, model, effort, historyIds) {
     const messages = await loadMessages(historyIds, deltaJson, historyIds.length ? obeliskApi() : null);
     const tools = parseJson(toolsJson, 'tools-json', []);
-    const cfg = resolveModel(model);
+    let cfg;
+    try { cfg = await resolveModel(model); }
+    catch (error) { throw String(error.message || error); }
     const level = resolveEffort(effort);
     const toolNames = buildToolNames(tools);
 
@@ -51,20 +54,6 @@ export default async function completion(system, deltaJson, toolsJson, model, ef
 // from LLM_BASE_URL; each model's optional `path` is a provider prefix appended
 // to it (e.g. "/gateway/llm/anthropic"), and each adapter appends its own route
 // (/v1/messages, /v1/chat/completions, /v1/responses).
-function resolveModel(model) {
-    const raw = process.env['AGENT_MODELS'];
-    if (!raw) throw 'AGENT_MODELS is not configured';
-    let catalog;
-    try { catalog = JSON.parse(raw); }
-    catch (e) { throw `AGENT_MODELS is not valid JSON: ${String(e)}`; }
-    if (!Array.isArray(catalog) || catalog.length === 0) throw 'AGENT_MODELS must be a non-empty JSON array';
-    const id = typeof model === 'string' ? model.trim() : '';
-    const cfg = id ? catalog.find((m) => m && m.id === id) : catalog[0];
-    if (!cfg) throw `model '${id}' is not in AGENT_MODELS`;
-    if (!cfg.api_type) throw `model '${cfg.id || id}' is missing api_type`;
-    return cfg;
-}
-
 // The endpoint origin, shared by every model in the catalog. A single catalog
 // targets a single endpoint (gateway, OpenRouter, or the local backend); switch
 // endpoints by switching both AGENT_MODELS and LLM_BASE_URL together.

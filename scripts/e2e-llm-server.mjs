@@ -17,6 +17,19 @@ const loopDelayMs = Number(process.argv[3] ?? 1200);
 let timeoutCalls = 0;
 
 createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/v1/models") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+            object: "list",
+            data: ["fake", "fake-loop"].map((id) => ({ id, object: "model" })),
+        }));
+        return;
+    }
+    if (req.method !== "POST" || req.url !== "/v1/chat/completions") {
+        res.writeHead(404);
+        res.end();
+        return;
+    }
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", () => {

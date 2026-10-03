@@ -13,6 +13,7 @@
 // documents them in the help output and implements the --top-level create
 // fallback.
 
+import { loadModelCatalog } from "../shared/model-catalog.js";
 import {
     SESSION_STATE_LABELS,
     emptyMarkers,
@@ -82,10 +83,10 @@ async function dispatch(stdin, args) {
 
 // ----- subcommands ------------------------------------------------------------
 
-function cmdModels(args) {
+async function cmdModels(args) {
     const parsed = parseFlags(args);
     if (parsed.positional.length > 0) throw new UsageError("'models' takes no arguments");
-    const catalog = loadCatalog();
+    const catalog = (await loadModelCatalog()).map(({ id, label, api_type }) => ({ id, label, api_type }));
     if (parsed.json) return ok(JSON.stringify(catalog, null, 2) + "\n");
     const lines = catalog.map((m) => `${m.id}\t${m.label}\t${m.api_type}`);
     return ok(lines.join("\n") + (lines.length ? "\n" : ""));
@@ -572,26 +573,6 @@ async function createdParams(executionId) {
     }
 }
 
-function loadCatalog() {
-    const raw = process.env["AGENT_MODELS"];
-    if (!raw || !raw.trim()) throw new Error("AGENT_MODELS is not configured");
-    let parsed;
-    try { parsed = JSON.parse(raw); } catch (error) {
-        throw new Error(`AGENT_MODELS is not valid JSON: ${message(error)}`);
-    }
-    if (!Array.isArray(parsed)) throw new Error("AGENT_MODELS must be a JSON array");
-    return parsed.map((entry, index) => {
-        if (!entry || typeof entry !== "object" || typeof entry.id !== "string" || !entry.id) {
-            throw new Error(`AGENT_MODELS[${index}] has no string id`);
-        }
-        return {
-            id: entry.id,
-            label: typeof entry.label === "string" && entry.label ? entry.label : entry.id,
-            api_type: typeof entry.api_type === "string" ? entry.api_type : "",
-        };
-    });
-}
-
 // ----- response-stream plumbing ----------------------------------------------
 
 function createdAtOf(response) {
@@ -901,7 +882,7 @@ function commandHelp(sub) {
             return [
                 "Usage: chat models [--json]",
                 "",
-                "List the LLM catalog from AGENT_MODELS: one line per model with",
+                "List the discovered LLM catalog (AGENT_MODELS fallback): one line per model with",
                 "id, label, and api type.",
                 "",
             ].join("\n");

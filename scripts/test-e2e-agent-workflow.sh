@@ -20,6 +20,7 @@ export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
+export LLM_BASE_URL="http://127.0.0.1:${EXTERNAL_PORT}"
 
 e2e_select_backend "$BACKEND"
 export APPS_JSON='[{"name":"components","repo":"components","description":"E2E GitHub mount"}]'
@@ -346,7 +347,7 @@ echo ">>> submitting $RUN_FFQN as $EXEC_ID"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$EXEC_ID" "$RUN_FFQN" \
     '["hello from the e2e test", null, null, null, null]'
 
-EXPECT="AGENT_MODELS must be a non-empty JSON array"
+EXPECT="No models available from discovery or AGENT_MODELS"
 echo ">>> waiting for the recoverable LLM configuration error"
 SECONDS=0
 while true; do

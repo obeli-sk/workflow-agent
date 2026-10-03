@@ -22,7 +22,7 @@ async function run(args, routes = [], stdin = "", env = {}) {
     const table = routes.map(([method, match, respond]) => ({ method, match, respond }));
     const originalFetch = globalThis.fetch;
     const originalEnv = {};
-    for (const key of ["OBELISK_API_URL", "OBELISK_API_TOKEN", "AGENT_MODELS"]) {
+    for (const key of ["OBELISK_API_URL", "OBELISK_API_TOKEN", "AGENT_MODELS", "LLM_BASE_URL", "LLM_API_KEY"]) {
         originalEnv[key] = process.env[key];
     }
     process.env.OBELISK_API_URL = "http://127.0.0.1:5005";
@@ -98,6 +98,14 @@ test("models lists id, label, api type", async () => {
     const { result } = await run(["models"]);
     assert.equal(result.exit_code, 0);
     assert.equal(result.stdout, "fake\tFake\topenai-chat-completions\n");
+});
+
+test("models uses the discovered catalog when the endpoint is available", async () => {
+    const { result } = await run(["models"], [
+        ["GET", "/v1/models", () => jsonResponse(200, { data: [{ id: "codex/new-model", display_name: "New model" }] })],
+    ], "", { LLM_BASE_URL: "http://llm.test", AGENT_MODELS: "[]" });
+    assert.equal(result.exit_code, 0);
+    assert.equal(result.stdout, "codex/new-model\tNew model\topenai-chat-completions\n");
 });
 
 test("models reports an unusable catalog on stderr", async () => {
