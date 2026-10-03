@@ -63,7 +63,7 @@ echo ">>> target starts empty: ${TARGET_ORIG_ID}"
 AUTHORED_ID="$("$OBELISK" generate deployment-id)"
 AUTHOR_DIR="/workspace/deployment/$AUTHORED_ID"
 AUTHOR_SCRIPT="$(printf '%s\n' \
-    "grep -o obelisk-app-config-v1 /workspace/deployment/current/app-policy.json" \
+    "grep -o obelisk-app-config-v1 /workspace/deployment/current/app.toml" \
     "mkdir -p $AUTHOR_DIR/src $AUTHOR_DIR/wit" \
     "printf '%s\\n' '[[activity_js]]' 'name = \"generated\"' 'ffqn = \"test:generated/api.run\"' 'wit = \"wit\"' 'location = \"src/index.js\"' > $AUTHOR_DIR/deployment.toml" \
     "printf '%s\\n' 'import { value } from \"./lib.js\"; export default function run() { return value; }' > $AUTHOR_DIR/src/index.js" \

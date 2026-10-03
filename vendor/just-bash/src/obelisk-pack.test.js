@@ -828,7 +828,7 @@ test("refresh replaces the manifest and repoints current at the new dir", () => 
             "obelisk-agent:tools/webapi.deployment-checkout",
             JSON.stringify({ deployment_toml: v1, files: [{ path: "a.wasm", digest: "sha256:1", size: 2 }] }),
         )
-        .with(APP_CONFIG_FFQN, JSON.stringify('{"outbound_http":[]}\n'));
+        .with(APP_CONFIG_FFQN, JSON.stringify('[policy]\noutbound_http = []\n'));
     mount(fs, host1);
 
     const host2 = fakeHost()
@@ -842,9 +842,9 @@ test("refresh replaces the manifest and repoints current at the new dir", () => 
     assert.equal(result.deploymentId, "dep-2");
     assert.equal(fs.readFile("/workspace/deployment/dep-1/a.wasm"), "v1");
     assert.equal(fs.readFile("/workspace/deployment/current/a.wasm"), "v2");
-    assert.equal(fs.readFile("/workspace/deployment/dep-1/app-policy.json"), '{"outbound_http":[]}\n');
+    assert.equal(fs.readFile("/workspace/deployment/dep-1/app.toml"), '[policy]\noutbound_http = []\n');
     // The target of dep-2 runs without an app config.
-    assert.equal(fs.exists("/workspace/deployment/current/app-policy.json"), false);
+    assert.equal(fs.exists("/workspace/deployment/current/app.toml"), false);
 });
 
 test("blobLoader decodes a plain string body via the read-blob ffqn", () => {

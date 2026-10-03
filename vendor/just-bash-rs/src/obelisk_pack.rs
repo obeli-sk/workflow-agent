@@ -25,7 +25,7 @@ use crate::obelisk_web::GithubContents;
 
 const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
 /// The target's app policy, written next to each mounted deployment.toml.
-const APP_POLICY_FILE: &str = "app-policy.json";
+const APP_POLICY_FILE: &str = "app.toml";
 
 const TEMPLATE_OWNER: &str = "obeli-sk";
 const TEMPLATE_REPO: &str = "obelisk";
@@ -1796,7 +1796,7 @@ HTTP activity, and a README). With NAME, the app is created in a new NAME\n\
 directory; otherwise in the current directory, named after its slug. The files\n\
 are fetched from the obelisk repository at the operator's OBELISK_VERSION. There\n\
 is no app.toml: the target's app policy is in\n\
-/workspace/deployment/current/app-policy.json.\n"
+/workspace/deployment/current/app.toml.\n"
         .to_string()
 }
 
@@ -3238,7 +3238,7 @@ content_digest = \"sha256:1\"\n\
             )
             .with(
                 APP_CONFIG_FFQN,
-                &json!("{\"outbound_http\":[]}\n").to_string(),
+                &json!("[policy]\noutbound_http = []\n").to_string(),
             );
         let mut fs = Vfs::new();
         // A single digest-addressed loader stands in for the CAS across both
@@ -3278,12 +3278,12 @@ content_digest = \"sha256:1\"\n\
             Some(&b"v2"[..])
         );
         assert_eq!(
-            fs.read_file("/workspace/deployment/dep-1/app-policy.json")
+            fs.read_file("/workspace/deployment/dep-1/app.toml")
                 .as_deref(),
-            Some(&b"{\"outbound_http\":[]}\n"[..])
+            Some(&b"[policy]\noutbound_http = []\n"[..])
         );
         // The target of dep-2 runs without an app config.
-        assert!(!fs.exists("/workspace/deployment/current/app-policy.json"));
+        assert!(!fs.exists("/workspace/deployment/current/app.toml"));
     }
 
     #[test]

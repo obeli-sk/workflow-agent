@@ -145,7 +145,7 @@ interface webapi {
     length: u32,
   ) -> result<component-source, tool-error>;
   current-deployment-id: func() -> result<string, string>;
-  // The target's app policy as pretty JSON, none when it runs without an app config.
+  // The target's app policy as TOML, none when it runs without an app config.
   get-app-config: func() -> result<option<string>, string>;
   deployment-checkout: func(deployment-id: string) -> result<checkout-result, tool-error>;
   deployment-read-blob: func(digest: string) -> result<string, string>;
