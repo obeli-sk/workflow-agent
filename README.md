@@ -29,9 +29,7 @@ Configure the LLM endpoint and an optional fallback catalog; `just serve` depend
 so the component is always rebuilt from current source first:
 
 ```sh
-ln -sf models.local.json models.json      # pick a catalog
-export AGENT_MODELS="$(cat models.json)"   # optional fallback, or use direnv
-export LLM_BASE_URL=http://127.0.0.1:9190  # match the catalog's endpoint
+export LLM_BASE_URL=http://127.0.0.1:9190  # discover models from the local backend
 just serve                                 # obelisk server run -d deployment.rs.toml
 ```
 
@@ -116,11 +114,14 @@ An unavailable, empty, or malformed discovery response falls back to
 `AGENT_MODELS`. Without either catalog, model selection fails with a clear error.
 Both workflow implementations use this shared catalog loader.
 
-Three fallback catalogs ship:
+The local endpoint is the sibling
+[`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server),
+which serves Claude/Codex subscriptions in Docker on `:9190`. Its discovery
+endpoint supplies the model catalog; no local fallback file is needed.
 
-- `models.local.json` (keyless) : the sibling
-  [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server),
-  a Claude/Codex subscription in docker on `:9190`.
+Two optional fallback catalogs ship. Set `AGENT_MODELS="$(cat <catalog-file>)"`
+to use one:
+
 - `models.exe-integration.json` (keyless) : the exe.dev LLM integration —
   `LLM_BASE_URL=https://llm.int.exe.xyz`. Inside an attached exe.dev VM, exe.dev
   authenticates at the network edge and plain OpenAI-compatible requests just
@@ -155,7 +156,8 @@ Regenerate the exe.dev catalog from the published model list with
 `node scripts/update-exe-models.mjs`. Leave `LLM_API_KEY` unset.
 
 Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama) works:
-point `LLM_BASE_URL` at it and add catalog entries.
+point `LLM_BASE_URL` at it and configure `AGENT_MODELS` when its discovery
+endpoint is unavailable or its models need a different adapter.
 
 ## Documentation
 
