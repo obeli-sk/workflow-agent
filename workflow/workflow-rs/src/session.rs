@@ -85,7 +85,7 @@ const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash scrip
 const MOUNT_HEADER: &str = concat!(
     "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n",
     "  /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n",
-    "  /workspace/deployment/current/app-policy.json  target app policy: the hosts, secrets, env vars, and exec activities any deployment may use; only the user can widen it\n",
+    "  /workspace/deployment/current/app.toml  target app policy: the hosts, secrets, env vars, and exec activities any deployment may use; only the user can widen it\n",
 );
 const MOUNT_FOOTER: &str = "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 

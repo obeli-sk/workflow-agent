@@ -23,7 +23,7 @@ import { isCasNamespacedDigest } from "./fs.js";
 
 const DEPLOYMENT_ROOT = "/workspace/deployment";
 // The target's app policy, written next to each mounted deployment.toml.
-const APP_POLICY_FILE = "app-policy.json";
+const APP_POLICY_FILE = "app.toml";
 
 const TEMPLATE_OWNER = "obeli-sk";
 const TEMPLATE_REPO = "obelisk";
@@ -824,7 +824,7 @@ const generateHelp =
     "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file, or create a new app.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\nnew [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n";
 
 const generateNewHelp =
-    "Usage: obelisk generate new [NAME]\n\nCreate a runnable JS starter app (deployment.toml, a webhook, a workflow, an\nHTTP activity, and a README). With NAME, the app is created in a new NAME\ndirectory; otherwise in the current directory, named after its slug. The files\nare fetched from the obelisk repository at the operator's OBELISK_VERSION. There\nis no app.toml: the target's app policy is in\n/workspace/deployment/current/app-policy.json.\n";
+    "Usage: obelisk generate new [NAME]\n\nCreate a runnable JS starter app (deployment.toml, a webhook, a workflow, an\nHTTP activity, and a README). With NAME, the app is created in a new NAME\ndirectory; otherwise in the current directory, named after its slug. The files\nare fetched from the obelisk repository at the operator's OBELISK_VERSION. There\nis no app.toml: the target's app policy is in\n/workspace/deployment/current/app.toml.\n";
 
 const generateDeploymentHelp =
     "Usage: obelisk generate deployment\n\nPrint a default deployment.toml with every option documented as comments.\nRedirect it to a file to scaffold a new deployment, e.g.\n`obelisk generate deployment > deployment.toml`.\n";
