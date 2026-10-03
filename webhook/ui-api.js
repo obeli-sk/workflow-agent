@@ -41,7 +41,7 @@ export default async function handle(request) {
     try {
         const query = parseQuery(request.url);
         if (method === "GET" && path === "/") return htmlShell();
-        if (method === "GET" && path === "/api/models") return jsonResponse(loadModels());
+        if (method === "GET" && path === "/api/models") return jsonResponse(await loadModels());
         if (method === "GET" && path === "/api/runs") return jsonResponse(await listRuns());
         if (method === "GET" && path.startsWith("/api/runs/")) {
             const id = decodeURIComponent(path.substring("/api/runs/".length));

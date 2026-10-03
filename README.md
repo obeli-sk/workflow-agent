@@ -25,12 +25,12 @@ registry read: `MAX_STEPS`, defaulting to `40`.
 
 ## Run
 
-Pick an LLM catalog and start the server; `just serve` depends on `build-rs`,
+Configure the LLM endpoint and an optional fallback catalog; `just serve` depends on `build-rs`,
 so the component is always rebuilt from current source first:
 
 ```sh
 ln -sf models.local.json models.json      # pick a catalog
-export AGENT_MODELS="$(cat models.json)"   # or use direnv (.envrc-example)
+export AGENT_MODELS="$(cat models.json)"   # optional fallback, or use direnv
 export LLM_BASE_URL=http://127.0.0.1:9190  # match the catalog's endpoint
 just serve                                 # obelisk server run -d deployment.rs.toml
 ```
@@ -103,10 +103,20 @@ instance.
 ## LLM endpoint
 
 One endpoint serves the whole catalog, configured by three env vars: the
-catalog JSON `AGENT_MODELS` (required), the origin `LLM_BASE_URL` (default
+fallback catalog JSON `AGENT_MODELS` (optional), the origin `LLM_BASE_URL` (default
 `http://127.0.0.1:9190`), and the bearer `LLM_API_KEY` (unset for keyless).
 Each catalog entry points a model at an OpenAI- or Anthropic-shaped route under
-that origin. Three catalogs ship:
+that origin. The model picker, LLM activity, and `chat models` first try
+`GET <LLM_BASE_URL>/v1/models`, using `LLM_API_KEY` when configured. A nonempty
+discovered catalog supplies the available models; matching configured entries
+retain their aliases, wire adapters, provider paths, and token limits. New models
+use the OpenAI chat-completions adapter. Advertised default models appear first.
+Existing sessions can still resolve configured aliases omitted from discovery.
+An unavailable, empty, or malformed discovery response falls back to
+`AGENT_MODELS`. Without either catalog, model selection fails with a clear error.
+Both workflow implementations use this shared catalog loader.
+
+Three fallback catalogs ship:
 
 - `models.local.json` (keyless) : the sibling
   [`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server),
