@@ -81,11 +81,14 @@ core subset session.rs exercises day to day.
   construction (`{shell_output: {...turn_index...}}` etc.) follows this and
   is now e2e-verified end to end (see Phase 1 checklist entry below).
 - **JS workflow join sets are ergonomic, not the raw WIT resource API.**
-  `obelisk.createJoinSet({name})` returns a plain object with `.submit()`,
+  `obelisk.createJoinSet({name})` returns a plain object with
   `.joinNext()` (blocks, returns the *decoded* ok value directly and sets
   `.lastId`, throws `obelisk.ChildError` on any failure), `.joinNextTry()`,
-  `.close()`. Generated `-obelisk-ext` imports (`xSubmit(joinSet, ...args)`,
-  `xAwaitNext(joinSet)`) exist for statically-known FFQNs; for a
+  `.close()`; it has no `.submit()`. Generated `-obelisk-ext` imports
+  (`xSubmit(joinSet, ...args)`, `xAwaitNext(joinSet)`) exist for
+  statically-known FFQNs, and a runtime-selected FFQN goes through
+  `dynamic.submit(joinSet, ffqn, params)` from a static
+  `obelisk:workflow-dynamic@1.0.0` import; for a
   **heterogeneous** join set (session.js's "user" set holds both an
   `injection` child and each turn's `completion` child) use the typed
   `xSubmit` to submit but the low-level `joinSet.joinNext()` to await and

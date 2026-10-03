@@ -1,1 +1,1 @@
-obelisk 0.42.0-rc.10
+obelisk 0.42.0-rc.11
