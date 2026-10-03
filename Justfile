@@ -1,3 +1,5 @@
+set positional-arguments
+
 serve-rs: build-rs
   obelisk server run -d deployment.rs.toml --server-config server.toml --app-config app.toml
 
@@ -7,10 +9,10 @@ serve-js:
 clean-target:
   rm -rf sqlite-target/
 
-serve-target:
+serve-target *args:
   #!/usr/bin/env bash
   export OBELISK_API_TOKEN=${TARGET_OBELISK_TOKEN}
-  obelisk server run --server-config server-target.toml --app-config app-target.toml
+  obelisk server run --server-config server-target.toml --app-config app-target.toml "$@"
 
 sample-mcp-server:
   node examples/stateless-mcp-server.mjs
