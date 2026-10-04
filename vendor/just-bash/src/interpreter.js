@@ -8,6 +8,7 @@
 import { globToRegExp } from "./glob.js";
 import { expandWordSingle, expandWordToFields, ShellExpansionError, braceExpandWord } from "./expansion.js";
 import { Arith, ArithError } from "./arithmetic.js";
+import { parseScript, ParseError } from "./parser.js";
 
 export class ShellError extends Error {}
 
@@ -391,6 +392,34 @@ export class Interpreter {
             this.cwd = savedCwd;
             this.positionalParams = savedPositional;
         }
+    }
+
+    runScriptIsolated(source, name, args) {
+        const savedVars = new Map(this.vars);
+        const savedExported = new Set(this.exported);
+        const savedCwd = this.cwd;
+        const savedPositional = this.positionalParams;
+        const savedName = this.scriptName;
+        this.positionalParams = args;
+        this.scriptName = name;
+        const io = { 0: stringSource(""), 1: bufferSink(), 2: bufferSink() };
+        try {
+            this.runStatements(parseScript(source).statements, io);
+        } catch (error) {
+            if (error instanceof ExitSignal) this.lastExitCode = error.code;
+            else if (error instanceof ParseError) {
+                io[2].ref.data += `bash: ${error.message}\n`;
+                this.lastExitCode = 2;
+            }
+            else throw error;
+        } finally {
+            this.vars = savedVars;
+            this.exported = savedExported;
+            this.cwd = savedCwd;
+            this.positionalParams = savedPositional;
+            this.scriptName = savedName;
+        }
+        return { stdout: io[1].ref.data, stderr: io[2].ref.data, exitCode: this.lastExitCode };
     }
 
     runIf(node, io) {

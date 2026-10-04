@@ -225,8 +225,19 @@ export const core = {
     whoami: () => ok("agent\n"),
     hostname: () => ok("workflow-agent\n"),
 
-    help(interp) {
-        return ok(`Available commands:\n${[...new Set([...interp.commandNames, ...interp.custom.keys()])].sort().join(" ")}\n`);
+    help(interp, args) {
+        const rest = args.slice(1);
+        if (rest.some((arg) => arg === "--help" || arg === "-h")) {
+            return ok("help - display available commands\n\nUsage: help [command]\n");
+        }
+        const names = [...new Set([...interp.commandNames.filter((name) => name !== "exit"), ...interp.custom.keys()])].sort();
+        const pattern = rest.find((arg) => !arg.startsWith("-"));
+        if (pattern !== undefined) {
+            return names.includes(pattern)
+                ? ok(`${pattern}: an available shell command\n`)
+                : fail(`bash: help: no help topics match \`${pattern}'.\n`);
+        }
+        return ok(`just-bash shell builtins\n${names.join(" ")}\n`);
     },
 
     clear: () => ok("\x1bc"),
@@ -291,7 +302,30 @@ export const core = {
 
     source: sourceCommand,
     ".": sourceCommand,
+    sh: shellCommand,
+    bash: shellCommand,
 };
+
+function shellCommand(interp, args) {
+    const name = args[0];
+    let index = 1;
+    while (index < args.length && args[index].startsWith("-") && args[index] !== "-") {
+        if (args[index] === "-c") {
+            if (args[index + 1] === undefined) return fail(`${name}: -c: option requires an argument\n`, 2);
+            return interp.runScriptIsolated(args[index + 1], args[index + 2] ?? name, args.slice(index + 3));
+        }
+        if (args[index] === "--") {
+            index += 1;
+            break;
+        }
+        index += 1;
+    }
+    const file = args[index];
+    if (file === undefined) return ok();
+    const path = interp.resolvePath(file);
+    if (!interp.vfs.isFile(path)) return fail(`${name}: ${file}: No such file or directory\n`, 127);
+    return interp.runScriptIsolated(interp.vfs.readFile(path), file, args.slice(index + 1));
+}
 
 function sourceCommand(interp, args, stdin, io) {
     const path = interp.resolvePath(args[1] ?? "");
@@ -416,4 +450,3 @@ function formatOne(spec, value) {
     if (conv === "f") return String(parseFloat(value) || 0);
     return value;
 }
-

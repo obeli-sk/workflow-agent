@@ -35,7 +35,7 @@ export const BUILTIN_NAMES = [
     "export", "unset", "read", "test", "[", "exit",
     "set", "shift", "break", "continue",
     "date", "sleep", "seq", "which", "env", "printenv", "whoami", "hostname",
-    "help", "clear", "alias", "unalias", "basename", "dirname", "source", ".",
+    "help", "clear", "alias", "unalias", "basename", "dirname", "source", ".", "sh", "bash",
     "ls", "cat", "mkdir", "touch", "rm", "rmdir", "cp", "mv",
     "wc", "head", "tail", "sort", "uniq", "tee", "stat",
     "chmod", "readlink", "ln", "file", "du", "tree",
