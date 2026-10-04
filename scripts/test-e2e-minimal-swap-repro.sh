@@ -80,7 +80,7 @@ SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
 
-run_shell_turn "shell-e2e-1" "which curl && curl --version"
+run_shell_turn "shell-e2e-1" "${E2E_SHELL_SCRIPT:-which curl && curl --version}"
 echo ">>> first shell turn PASS"
 
 echo ">>> live-swapping the blocked session to the other workflow backend"

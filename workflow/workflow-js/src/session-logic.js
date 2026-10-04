@@ -4,6 +4,7 @@
 // only be exercised by deploying it.
 
 import { parseScript } from "../../../vendor/just-bash/src/parser.js";
+import { utf8Encode } from "../../../vendor/just-bash/src/utf8.js";
 
 export const MAX_TOOL_RESULT_BYTES = 96 * 1024;
 export const STEP_WARNING_FRACTION = 3;
@@ -206,7 +207,7 @@ export function userText(text) {
 
 export function toolOk(id, result) {
     const jsonString = JSON.stringify(result);
-    const encodedLen = JSON.stringify(jsonString).length;
+    const encodedLen = utf8Encode(JSON.stringify(jsonString)).length;
     if (encodedLen > MAX_TOOL_RESULT_BYTES) {
         return toolError(id, `result too large (~${encodedLen} encoded bytes); narrow the request with pagination or a more specific selector`);
     }

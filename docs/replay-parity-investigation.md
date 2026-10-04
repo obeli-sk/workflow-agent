@@ -10,6 +10,27 @@ usually wrong, and chasing it burns a lot of time.
 
 ## Symptom
 
+### October 2026: JavaScript help and Unicode result sizing
+
+Replaying `E_01M41TCC7FQR9BC2T59TW7W5AA` under Rust exposed two more
+differences in JavaScript. Its plain `help` heading and catalog differed,
+and oversized tool results counted UTF-16 code units instead of UTF-8 bytes.
+The latter changed the persisted error text for non-ASCII output.
+
+JavaScript now matches Rust's help catalog, topic diagnostics, and UTF-8
+result-size calculation. The missing `sh` and `bash` commands also run
+isolated scripts, so their help entries describe working commands.
+
+These corrections change durable notification values. The old JavaScript
+session needs its original workflow revision (`2a3bad7`) for replay. Create
+a fresh session to compare corrected JavaScript and unchanged Rust on the
+same history; do not rewrite the old session's recorded notifications.
+
+Run `E2E_SHELL_SCRIPT='help; help echo; help --help; bash -c "echo nested"'`
+with the minimal swap script below to verify both deployment directions
+without model calls. Unit tests cover non-ASCII result acceptance and the
+exact oversized-result error.
+
 `obelisk execution replay --json` (or a live deployment swap, which uses the same
 mechanism) fails with:
 

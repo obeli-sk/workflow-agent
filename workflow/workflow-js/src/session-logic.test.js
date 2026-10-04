@@ -59,6 +59,15 @@ test("toolOk truncates oversized results", () => {
     assert.match(result.message, /result too large/);
 });
 
+test("toolOk counts UTF-8 bytes like the Rust workflow", () => {
+    const result = (count) => ({ output: [{ stdout: "😀".repeat(count) }], exit_code: 0, interrupted: null });
+    assert.equal(toolOk("id1", result(20_000)).ok, true);
+    assert.deepEqual(toolOk("id1", result(30_000)), {
+        tool_use_id: "id1", ok: false,
+        message: "result too large (~120071 encoded bytes); narrow the request with pagination or a more specific selector",
+    });
+});
+
 test("toolResultMessageValue encodes ok and error shapes", () => {
     const ok = toolResultMessageValue(toolOk("t1", { exit_code: 0 }));
     assert.equal(ok.is_error, false);

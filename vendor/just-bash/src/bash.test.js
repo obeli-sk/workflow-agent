@@ -8,6 +8,30 @@ function run(script, opts) {
     return bash.exec(script, opts);
 }
 
+test("help matches the Rust command catalog and topic diagnostics", () => {
+    const result = run("help");
+    assert.ok(result.stdout.startsWith("just-bash shell builtins\n"));
+    const names = result.stdout.split("\n")[1].split(" ");
+    assert.ok(names.includes("sh") && names.includes("bash"));
+    assert.ok(!names.includes("exit"));
+    assert.equal(run("help echo").stdout, "echo: an available shell command\n");
+    assert.equal(run("help --help").stdout, "help - display available commands\n\nUsage: help [command]\n");
+    assert.equal(run("help missing").stderr, "bash: help: no help topics match `missing'.\n");
+    assert.equal(run("help missing").exitCode, 1);
+});
+
+test("sh and bash isolate shell state while sharing files and positional arguments", () => {
+    for (const name of ["sh", "bash"]) {
+        const script = `mkdir -p /tmp; X=outer; ${name} -c 'X=inner; cd /tmp; echo "$0:$1:$X"; pwd; echo saved > /tmp/nested.txt; exit 7' nested one; echo "$?:$X"; pwd; cat /tmp/nested.txt`;
+        const result = run(script);
+        assert.equal(result.stdout, "nested:one:inner\n/tmp\n7:outer\n/workspace\nsaved\n");
+        assert.equal(result.stderr, "");
+        assert.equal(run(`echo 'echo "$0:$1"' > script.sh; ${name} script.sh two`).stdout, "script.sh:two\n");
+        assert.equal(run(`${name} -c`).exitCode, 2);
+        assert.equal(run(`${name} missing.sh`).exitCode, 127);
+    }
+});
+
 test("echo prints a line", () => {
     const r = run("echo hello world");
     assert.equal(r.stdout, "hello world\n");
