@@ -23,6 +23,32 @@ registry read: `MAX_STEPS`, defaulting to `40`.
 
 ![workflow-agent web UI](docs/workflow-agent.png)
 
+## Architecture
+
+Each chat session is a durable Obelisk execution. The workflow drives a Bash interpreter with a
+virtual filesystem, dispatches tools as child activities, and waits for model responses or user
+input without keeping a dedicated VM alive. Waiting sessions are database rows; the execution log
+reconstructs the workflow and shell state when the session resumes.
+
+![Session workflow, LLM and tool activities, browser UI, and database history](docs/workflow-agent-architecture.svg)
+
+The workflow has two separate implementations: a Rust WASM component in `workflow/workflow-rs`
+and a JavaScript implementation in `workflow/workflow-js`. They export the same function and have
+separate Bash interpreters. Keeping shell output and event ordering identical lets an existing
+session replay across implementations. The JavaScript workflow runs on Boa WASM or native V8,
+selected by the server; the Rust workflow runs in Wasmtime.
+
+Earlier versions kept the full conversation array in the workflow and passed it to every LLM
+activity. Each call persisted that growing prefix again in its `Created` event, duplicating older
+messages and inflating both the workflow's working state and the execution data.
+
+The workflow now handles the latest reply, pending new messages, and the IDs of accepted LLM
+executions, alongside its shell state. The LLM activity rebuilds the conversation through one
+`POST /v1/executions/events/batch` request: each prior child's `Created` event supplies that call's
+new messages, and its `Finished` event supplies the assistant reply. It appends the current delta
+and sends the complete conversation to the model. The workflow does not repeatedly submit the
+full transcript. The batch API preserves request order and reads only these two events per child.
+
 ## Run
 
 Configure the LLM endpoint and an optional fallback catalog; `just serve` depends on `build-rs`,

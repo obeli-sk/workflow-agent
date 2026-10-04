@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="agent-arch-title agent-arch-desc" viewBox="0 0 760 530" style="display:block;width:760px;max-width:none;height:auto;color:var(--text);font:14px system-ui,sans-serif">
+  <title id="agent-arch-title">workflow-agent architecture</title>
+  <style>
+    svg { --text: #1f2330; --bg-elev: #f5f7fb; --primary: #0e7490; }
+    @media (prefers-color-scheme: dark) {
+      svg { --text: #e4e4e7; --bg-elev: #252736; --primary: #9df2fe; }
+    }
+  </style>
+  <desc id="agent-arch-desc">The browser exchanges input and session events through an Obelisk webhook with a durable session workflow. The workflow runs a virtual Bash shell, tracks pending messages and prior LLM execution IDs, and invokes LLM and tool activities. The LLM activity reads prior Created and Finished events from the database in one batch before calling the model endpoint. Execution logs and conversation history are database rows, with no external VM per session.</desc>
+  <defs>
+    <marker id="agent-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" style="fill:var(--primary, currentColor)"/>
+    </marker>
+  </defs>
+  <g style="fill:var(--bg-elev);stroke:var(--primary, currentColor);stroke-width:1.5">
+    <rect x="25" y="25" width="170" height="70" rx="8"/>
+    <rect x="280" y="25" width="190" height="70" rx="8"/>
+    <rect x="25" y="175" width="220" height="115" rx="8"/>
+    <rect x="310" y="175" width="190" height="115" rx="8"/>
+    <rect x="560" y="175" width="175" height="115" rx="8"/>
+    <rect x="25" y="390" width="220" height="95" rx="8"/>
+    <rect x="310" y="390" width="250" height="115" rx="8"/>
+  </g>
+  <g fill="currentColor" text-anchor="middle">
+    <text x="110" y="54" font-weight="700">Browser UI</text>
+    <text x="110" y="77">Chats, shell, approvals</text>
+    <text x="375" y="54" font-weight="700">UI webhook</text>
+    <text x="375" y="77">Input + session events</text>
+    <text x="135" y="202" font-weight="700">Durable session workflow</text>
+    <text x="135" y="227">Bash + virtual filesystem</text>
+    <text x="135" y="250">Latest reply + new messages</text>
+    <text x="135" y="273">Prior LLM execution IDs</text>
+    <text x="405" y="207" font-weight="700">LLM activity</text>
+    <text x="405" y="232">Rebuild conversation</text>
+    <text x="405" y="257">Send request, return reply</text>
+    <text x="647" y="221" font-weight="700">Model endpoint</text>
+    <text x="647" y="247">OpenAI / Anthropic / …</text>
+    <text x="135" y="421" font-weight="700">Tool activities</text>
+    <text x="135" y="446">HTTP, MCP, target Obelisk</text>
+    <text x="135" y="469">Calls and results persisted</text>
+    <text x="435" y="420" font-weight="700">Database</text>
+    <text x="435" y="445">Session execution logs</text>
+    <text x="435" y="470">LLM Created + Finished events</text>
+    <text x="435" y="493">Waiting sessions are rows</text>
+  </g>
+  <g fill="none" style="stroke:var(--primary, currentColor);stroke-width:1.5" marker-end="url(#agent-arrow)">
+    <path d="M195 60H280" marker-start="url(#agent-arrow)"/>
+    <path d="M375 95V140H135V175" marker-start="url(#agent-arrow)"/>
+    <path d="M245 220H310" marker-start="url(#agent-arrow)"/>
+    <path d="M500 220H560" marker-start="url(#agent-arrow)"/>
+    <path d="M135 290V390" marker-start="url(#agent-arrow)"/>
+    <path d="M245 260H275V430H310"/>
+    <path d="M430 290V390" marker-start="url(#agent-arrow)"/>
+  </g>
+  <g fill="currentColor" font-size="12">
+    <text x="212" y="48">HTTP</text>
+    <text x="173" y="129">Input / notifications</text>
+    <text x="251" y="206" font-size="10">Delta + IDs</text>
+    <text x="513" y="206">HTTP</text>
+    <text x="41" y="340">Run tools</text>
+    <text x="286" y="322">Append</text><text x="286" y="340">execution log</text>
+    <text x="444" y="322">Batch history read</text><text x="444" y="340">Created + Finished</text>
+  </g>
+</svg>
