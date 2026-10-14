@@ -160,11 +160,11 @@ jobs:
       - name: deployment.rs.toml/deployment.js.toml parity
         run: nix develop --command ./scripts/check-deployment-toml-parity.sh
 
-      - name: obelisk deployment verify (rs)
-        run: nix develop --command obelisk deployment verify -d deployment.rs.toml -s server.toml -a app.toml
+      - name: obelisk server verify (rs)
+        run: nix develop --command obelisk server verify --skip-db -d deployment.rs.toml -s server.toml -a app.toml
 
-      - name: obelisk deployment verify (js)
-        run: nix develop --command obelisk deployment verify -d deployment.js.toml -s server.toml -a app.toml
+      - name: obelisk server verify (js)
+        run: nix develop --command obelisk server verify --skip-db -d deployment.js.toml -s server.toml -a app.toml
 
   e2e-common:
     name: End-to-end tests (backend-agnostic)
