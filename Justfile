@@ -18,11 +18,11 @@ sample-mcp-server:
   node examples/stateless-mcp-server.mjs
 
 build-rs:
-  cd workflow/workflow-rs && cargo build --release
+  cd workflow/workflow-rs && env -u CARGO_TARGET_DIR cargo build --release
 
 verify: build-rs
-  obelisk deployment verify --deployment deployment.rs.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
-  obelisk deployment verify --deployment deployment.js.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
+  obelisk server verify --skip-db --deployment deployment.rs.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
+  obelisk server verify --skip-db --deployment deployment.js.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
   ./scripts/check-deployment-toml-parity.sh
 
 test: test-rs test-js test-e2e

@@ -136,7 +136,7 @@ echo ">>> agent session E2E PASS: cold GitHub-mounted submit of the real deploym
 # Verify independently against the target's own API - not the agent's
 # report - that the deployment was really stored there: `deployment list`
 # re-reads it back from the target's own database.
-TARGET_LIST="$("$OBELISK" deployment list -a "$E2E_TARGET_API_URL")"
+TARGET_LIST="$("$OBELISK" deployment list --json -a "$E2E_TARGET_API_URL")"
 [[ "$TARGET_LIST" == *"$AUTHORED_ID"* ]] || {
     echo "target does not list ${AUTHORED_ID} among its deployments: $TARGET_LIST" >&2
     exit 1
