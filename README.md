@@ -231,7 +231,9 @@ activity's `allowed_host` boundary to one GitHub org/user; every mounted
 repo's `owner` must fall within it. `GITHUB_MOUNT_TOKEN` is optional: unset, the
 mount shares GitHub's 60 req/h anonymous IP rate limit; set it (e.g. `gh auth
 token`) to raise that to 5000 req/h, which matters once multiple sessions
-share an egress IP.
+share an egress IP. `GITHUB_API_URL` (default `https://api.github.com`, with a matching
+`GITHUB_API_URL_REGEX`) points the mount at another contents API origin; the
+e2e suites use it for a local mock.
 
 ## The shell
 

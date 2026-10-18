@@ -26,6 +26,8 @@ OBELISK_API_URL = { optional = true }
 AGENT_MODELS = { optional = true }
 OBELISK_API_URL_REGEX = { optional = true }
 GITHUB_MOUNT_OWNER = { optional = true }
+GITHUB_API_URL = { optional = true }
+GITHUB_API_URL_REGEX = { optional = true }
 LLM_BASE_URL = { optional = true }
 TARGET_OBELISK_API_URL = { optional = true }
 TARGET_OBELISK_API_URL_REGEX = { optional = true }
@@ -114,7 +116,7 @@ methods = ["GET"]
 
 # GitHub contents API for mount points. Read only PAT for public repos is enough.
 [[outbound_http.allowed_host]]
-pattern = "https://api.github.com"
+pattern = "${GITHUB_API_URL:-https://api.github.com}"
 methods = ["GET"]
 secrets = ["GITHUB_MOUNT_TOKEN"]
 replace_in = ["headers"]

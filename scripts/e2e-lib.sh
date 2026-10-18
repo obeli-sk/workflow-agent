@@ -49,6 +49,7 @@ e2e_init() {
     E2E_API_URL="http://127.0.0.1:${api_port}"
     E2E_SERVER_PID=""
     E2E_TARGET_SERVER_PID=""
+    E2E_GITHUB_PID=""
     E2E_DEPLOYMENTS=()
 
     export OBELISK_API_TOKEN="$token"
@@ -65,12 +66,30 @@ e2e_init() {
     export APPS_JSON="[]"
     # Closed port, so no suite reaches a real LLM on the 9190 default; interrupt sets its own fake.
     export LLM_BASE_URL="http://127.0.0.1:9"
+    # Closed port, so no suite reaches the real GitHub API; mount suites start their own mock.
+    export GITHUB_API_URL="http://127.0.0.1:9"
+    export GITHUB_API_URL_REGEX="http://127\\.0\\.0\\.1:9"
+    unset GITHUB_MOUNT_TOKEN
     # No live docs fetch at session start; the system prompt keeps its placeholder.
     export DOCS_URLS_JSON="[]"
 
     trap e2e_cleanup EXIT
     # A runner timeout or Ctrl-C must still stop the isolated servers.
     trap 'exit 130' INT TERM
+}
+
+e2e_github_listening() {
+    E2E_GITHUB_PORT="$(sed -n 's/^fake github listening on //p' "$E2E_TMP/github.log")"
+    [[ -n "$E2E_GITHUB_PORT" ]]
+}
+
+# Serves each owner/repo=DIR through scripts/e2e-github-server.mjs and points the mount activity at it.
+e2e_start_github_mock() {
+    node "$ROOT/scripts/e2e-github-server.mjs" "$@" > "$E2E_TMP/github.log" 2>&1 &
+    E2E_GITHUB_PID=$!
+    e2e_wait_until e2e_github_listening || { echo "fake github did not start: $(cat "$E2E_TMP/github.log")" >&2; return 1; }
+    export GITHUB_API_URL="http://127.0.0.1:${E2E_GITHUB_PORT}"
+    export GITHUB_API_URL_REGEX="http://127\\.0\\.0\\.1:${E2E_GITHUB_PORT}"
 }
 
 # Port offset for a suite's own rs/js pair: 0 for rs, 1000 for js. Suites add
@@ -89,6 +108,7 @@ e2e_backend_port_offset() {
 }
 
 e2e_cleanup() {
+    [[ -z "$E2E_GITHUB_PID" ]] || kill "$E2E_GITHUB_PID" 2>/dev/null || true
     if [[ -n "$E2E_SERVER_PID" ]]; then
         echo ">>> stopping isolated obelisk server (pid $E2E_SERVER_PID)"
         kill -SIGINT "$E2E_SERVER_PID" 2>/dev/null || true

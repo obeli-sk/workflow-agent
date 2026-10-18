@@ -209,8 +209,5 @@ jobs:
       - name: Populate the nix store
         run: nix develop --command echo
 
-      # Suites that don't need a real token unset it internally.
       - name: e2e suites (${{ matrix.backend }})
         run: nix develop --command node --test --test-name-pattern "^${{ matrix.backend }}$" scripts/e2e/*.test.mjs
-        env:
-          GITHUB_MOUNT_TOKEN: ${{ secrets.GITHUB_TOKEN }}

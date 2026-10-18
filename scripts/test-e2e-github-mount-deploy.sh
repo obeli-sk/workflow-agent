@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Proves the actual real-world regression end to end: `obelisk deployment
 # submit` on this app's own deployment.js.toml, fetched cold through the
-# real GitHub-backed apps/<name> mount (obelisk-agent:mounts/apps.request),
+# GitHub-backed apps/<name> mount (obelisk-agent:mounts/apps.request),
 # with zero prior ls/readdir anywhere in the tree - exactly reproducing
 # E_01M1MFSEK7GXAJWFN4N3GGAZRN / E_01M1MG45ERCAGDE47WQX2GTAEY, where a
 # multi-level-deep file (packs/obelisk-control/descriptor.js, then
@@ -13,12 +13,10 @@
 # and never touch the GitHub web-mount overlay at all; the ensure_expanded
 # regression itself is unit-tested with a fake DirProvider in
 # fs.test.js/fs.rs (hermetic, no network - see 26faa0b). This suite is the
-# one place that proves the fix against the real
-# obelisk-agent:mounts/apps.request activity and a real GitHub API round
-# trip, submitting this app's OWN real (unmodified) deployment.js.toml to
-# the target, fetched entirely over the network - the most faithful
-# reproduction of the actual failure, at the cost of a slower,
-# network-dependent run.
+# one place that proves the fix through the real
+# obelisk-agent:mounts/apps.request activity and its HTTP round trips,
+# submitting this app's OWN unmodified deployment.js.toml to the target,
+# fetched entirely through the mount.
 #
 # Unlike the other two suites, this one deliberately stops at *submit*, not
 # apply/activate. The real app's deployment.js.toml has real runtime
@@ -35,29 +33,14 @@
 # deployment" is checked by independently listing it back from the
 # target's own API afterward.
 #
-# Needs real network access and a GitHub token; SKIPs (not fails) when
-# GITHUB_MOUNT_TOKEN is unset, so `just test-e2e`'s default run stays hermetic.
-#
-# GitHub always serves GITHUB_MOUNT_REF's current remote state, not this checkout's
-# working tree - push local fixes before relying on them showing up in the
-# mounted content. (The fix under test here is the AGENT's own session
-# code, built fresh from this local checkout via e2e_select_backend, so it
-# does not need to be pushed - only the *content being fetched* through the
-# mount, which this app's own deployment.js.toml already is, comes from
-# GITHUB_MOUNT_REF.)
+# The GitHub contents API is served by scripts/e2e-github-server.mjs from this
+# checkout's working tree, so the run is hermetic and needs no token or push.
 #
 # Usage: test-e2e-github-mount-deploy.sh [rs|js]  (default rs)
-# Env: GITHUB_MOUNT_TOKEN (required, else SKIP), GITHUB_MOUNT_OWNER/GITHUB_MOUNT_REPO/GITHUB_MOUNT_REF override
-# the mounted repo (default: obeli-sk/workflow-agent @ main).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-
-if [[ -z "${GITHUB_MOUNT_TOKEN:-}" ]]; then
-    echo ">>> GitHub-mount deploy E2E SKIP: GITHUB_MOUNT_TOKEN not set (real GitHub API access required)" >&2
-    exit 0
-fi
 
 source "$ROOT/scripts/e2e-lib.sh"
 
@@ -70,13 +53,9 @@ export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
-# Mounts this app's own repo at /workspace/apps/workflow-agent, matching the
-# real-world failure exactly; override via GITHUB_MOUNT_OWNER/GITHUB_MOUNT_REPO/GITHUB_MOUNT_REF to test a
-# fork/branch instead.
-GITHUB_MOUNT_OWNER="${GITHUB_MOUNT_OWNER:-obeli-sk}"
-GITHUB_MOUNT_REPO="${GITHUB_MOUNT_REPO:-workflow-agent}"
-GITHUB_MOUNT_REF="${GITHUB_MOUNT_REF:-main}"
-export APPS_JSON="[{\"name\":\"workflow-agent\",\"owner\":\"${GITHUB_MOUNT_OWNER}\",\"repo\":\"${GITHUB_MOUNT_REPO}\",\"ref\":\"${GITHUB_MOUNT_REF}\"}]"
+# Mounts this checkout at /workspace/apps/workflow-agent, matching the real-world failure.
+e2e_start_github_mock "obeli-sk/workflow-agent=$ROOT"
+export APPS_JSON='[{"name":"workflow-agent","repo":"workflow-agent"}]'
 
 TARGET_API_PORT=$((28041 + PORT_OFFSET))
 TARGET_EXTERNAL_PORT=$((28101 + PORT_OFFSET))
@@ -136,4 +115,4 @@ echo ">>> target E2E PASS: the target genuinely stored the GitHub-mounted deploy
 e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
-echo ">>> E2E PASS: the agent (${BACKEND}) submitted this app's own real deployment.js.toml, fetched cold through the real GitHub apps mount, and the target has a working stored deployment"
+echo ">>> E2E PASS: the agent (${BACKEND}) submitted this app's own real deployment.js.toml, fetched cold through the GitHub apps mount, and the target has a working stored deployment"

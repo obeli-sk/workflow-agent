@@ -24,6 +24,7 @@ export LLM_BASE_URL="http://127.0.0.1:${EXTERNAL_PORT}"
 
 e2e_select_backend "$BACKEND"
 export APPS_JSON='[{"name":"components","repo":"components","description":"E2E GitHub mount"}]'
+e2e_start_github_mock "obeli-sk/components=$ROOT/scripts/e2e-fixtures/components"
 DEPLOY="$ROOT/.e2e-agent-deployment-$BACKEND.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
