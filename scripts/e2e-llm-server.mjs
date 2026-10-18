@@ -5,16 +5,16 @@
 //   "fake"      - the first request emits one bash tool call whose timeout
 //                 beats its sleep; every later request ends the turn so the
 //                 model visibly reacts to the interrupted tool result.
-//   "fake-loop" - every request emits the same short bash tool call and never
-//                 ends the turn on its own, each response held back by a
-//                 fixed delay so a test has a window to interrupt the turn
-//                 while a completion is in flight.
+//   "fake-loop" - the first request emits a short bash tool call; every later
+//                 one is held open until POST /release, so an interrupt sent
+//                 after the first tool result always lands mid-completion.
 
 import { createServer } from "node:http";
 
 const port = Number(process.argv[2] ?? 28095);
-const loopDelayMs = Number(process.argv[3] ?? 1200);
 let timeoutCalls = 0;
+let loopCalls = 0;
+const held = [];
 
 createServer((req, res) => {
     if (req.method === "GET" && req.url === "/v1/models") {
@@ -23,6 +23,12 @@ createServer((req, res) => {
             object: "list",
             data: ["fake", "fake-loop"].map((id) => ({ id, object: "model" })),
         }));
+        return;
+    }
+    if (req.method === "POST" && req.url === "/release") {
+        for (const pending of held.splice(0)) respond(pending, { role: "assistant", content: "released" });
+        res.writeHead(204);
+        res.end();
         return;
     }
     if (req.method !== "POST" || req.url !== "/v1/chat/completions") {
@@ -36,7 +42,9 @@ createServer((req, res) => {
         let model = "";
         try { model = JSON.parse(body || "{}").model || ""; } catch (_) { /* fall through below */ }
         if (model === "fake-loop") {
-            setTimeout(() => respond(res, loopMessage()), loopDelayMs);
+            loopCalls += 1;
+            if (loopCalls === 1) respond(res, loopMessage());
+            else held.push(res);
             return;
         }
         timeoutCalls += 1;

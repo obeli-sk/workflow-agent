@@ -27,8 +27,8 @@
 // request_url_regex); GITHUB_MOUNT_TOKEN is an optional secret the runtime swaps
 // into the Authorization header for a private repo or a higher rate limit.
 // Any HTTP or transport failure becomes the err arm (a throw).
+// GITHUB_API_URL overrides the API origin (the e2e suites point it at a local mock).
 
-const API_BASE = "https://api.github.com";
 const JSON_ACCEPT = "application/vnd.github+json";
 const RAW_ACCEPT = "application/vnd.github.raw";
 // Cycle guard for chains such as a -> b -> a.
@@ -50,7 +50,7 @@ export default async function githubContents(method, paramsJson) {
 }
 
 async function resolveRef(repo) {
-    const url = `${API_BASE}/repos/${repo.owner}/${repo.repo}/commits/${encodeURIComponent(repo.ref)}`;
+    const url = `${apiBase()}/repos/${repo.owner}/${repo.repo}/commits/${encodeURIComponent(repo.ref)}`;
     const res = await requestUrl(url, JSON_ACCEPT);
     if (!res.ok) throw httpError(res.status, `commit ${repo.ref}`, res.text);
     let body;
@@ -170,8 +170,12 @@ async function fetchBody(repo, path, accept) {
 async function request(repo, path, accept) {
     const encoded = encodePath(path);
     const suffix = encoded ? `/${encoded}` : "";
-    const url = `${API_BASE}/repos/${repo.owner}/${repo.repo}/contents${suffix}?ref=${encodeURIComponent(repo.ref)}`;
+    const url = `${apiBase()}/repos/${repo.owner}/${repo.repo}/contents${suffix}?ref=${encodeURIComponent(repo.ref)}`;
     return await requestUrl(url, accept);
+}
+
+function apiBase() {
+    return (process.env["GITHUB_API_URL"] || "https://api.github.com").replace(/\/+$/, "");
 }
 
 async function requestUrl(url, accept) {

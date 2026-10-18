@@ -7,7 +7,6 @@ source "$ROOT/scripts/e2e-lib.sh"
 
 e2e_init "bash-workflow-e2e" 28015 28090 "e2e-bash-workflow-token"
 unset MCP_SERVER_TOKEN
-unset GITHUB_MOUNT_TOKEN
 # app.toml's required [public_env] entry; unused by this suite's workflow.
 export AGENT_MODELS="[]"
 e2e_build_component "workflow/bash-rs" "bash_workflow.wasm"
@@ -20,7 +19,7 @@ name = "bash_workflow"
 location = "${E2E_REL_WASM}"
 EOF
 
-e2e_start_server "$DEPLOY" 60
+e2e_start_server "$DEPLOY"
 
 FFQN="just-bash:agent/bash.run-bash"
 SCRIPT_JSON='"name=$(echo rust); if [ -n \"$name\" ]; then for i in 1 2; do echo \"$name-$i\"; done; fi"'

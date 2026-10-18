@@ -174,10 +174,11 @@ ffqn = "obelisk-agent:mounts/apps.request"
 wit = "wit"
 location = "activity/github-contents.js"
 exec.lock_expiry.seconds = 30
+env_vars = [{ key = "GITHUB_API_URL", value = "${GITHUB_API_URL:-https://api.github.com}" }]
 [[activity_js.allowed_host]]
-pattern = "https://api.github.com"
+pattern = "${GITHUB_API_URL:-https://api.github.com}"
 methods = ["GET"]
-request_url_regex = "^GET https://api\\.github\\.com/repos/${GITHUB_MOUNT_OWNER:-obeli-sk}/[^/]+/(contents|commits/)"
+request_url_regex = "^GET ${GITHUB_API_URL_REGEX:-https://api\\.github\\.com}/repos/${GITHUB_MOUNT_OWNER:-obeli-sk}/[^/]+/(contents|commits/)"
 secrets = [{ name = "GITHUB_MOUNT_TOKEN", optional = true }]
 replace_in = ["headers"]
 

@@ -28,7 +28,6 @@ e2e_init "interrupt-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-interrupt-to
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 unset MCP_SERVER_TOKEN
-unset GITHUB_MOUNT_TOKEN
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"},{"id":"fake-loop","label":"Fake Loop","api_type":"openai-chat-completions"}]'
 export LLM_BASE_URL="http://127.0.0.1:${LLM_PORT}"
 
@@ -39,6 +38,8 @@ cleanup() {
     e2e_cleanup
 }
 trap cleanup EXIT
+llm_listening() { grep -q "fake llm listening" "$E2E_TMP/llm.log"; }
+e2e_wait_until llm_listening || { echo "fake llm did not start: $(cat "$E2E_TMP/llm.log")" >&2; exit 1; }
 
 e2e_select_backend "$BACKEND"
 DEPLOY="$ROOT/.e2e-interrupt-deployment-$BACKEND.toml"
@@ -51,50 +52,29 @@ run_detail() {
     curl --fail --silent --show-error "$UI_BASE/api/runs/$1" 2>&1
 }
 
-wait_for_offer() {
+# Fetches a run's projection into PROJECTION and pipes it to an e2e-json.js check.
+projection_check() {
     local session_id="$1"
-    SECONDS=0
-    while true; do
-        if ! PROJECTION="$(run_detail "$session_id")"; then
-            [[ $SECONDS -ge 30 ]] && { echo "run detail unavailable: $PROJECTION" >&2; exit 1; }
-            sleep 1
-            continue
-        fi
-        OFFER_ID="$(node scripts/e2e-json.js input-offer-id <<<"$PROJECTION")"
-        [[ -n "$OFFER_ID" ]] && { echo "$OFFER_ID"; return 0; }
-        [[ $SECONDS -ge 30 ]] && { echo "no input offer published: $PROJECTION" >&2; exit 1; }
-        sleep 1
-    done
+    shift
+    PROJECTION="$(run_detail "$session_id")" \
+        && node scripts/e2e-json.js "$@" <<<"$PROJECTION" >/dev/null 2>&1
 }
 
+# Polls SUBJECT_ID's projection until the checker passes; PROJECTION keeps that snapshot.
 wait_for() {
-    # wait_for <description> <checker...>: poll the projection until the
-    # checker (a node scripts/e2e-json.js command reading stdin) passes.
     local description="$1"
     shift
-    SECONDS=0
-    while true; do
-        if ! PROJECTION="$(run_detail "$SUBJECT_ID")"; then
-            [[ $SECONDS -ge 60 ]] && { echo "run detail unavailable: $PROJECTION" >&2; exit 1; }
-            sleep 1
-            continue
-        fi
-        if node scripts/e2e-json.js "$@" <<<"$PROJECTION" 2>/dev/null; then
-            return 0
-        fi
-        [[ $SECONDS -ge 60 ]] && {
-            echo "$description was not projected in time: $PROJECTION" >&2
-            exit 1
-        }
-        sleep 1
-    done
+    e2e_wait_until projection_check "$SUBJECT_ID" "$@" || {
+        echo "$description was not projected in time: $PROJECTION" >&2
+        exit 1
+    }
 }
 
 echo ">>> scenario 1: operator interrupt on a direct-shell script"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
-INJECTION_ID="$(wait_for_offer "$SESSION_ID")"
+INJECTION_ID="$(e2e_take_offer "$SESSION_ID")"
 
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
@@ -103,15 +83,8 @@ curl --fail --silent --show-error \
     "$UI_BASE/api/input/$SESSION_ID" >/dev/null
 
 SUBJECT_ID="$SESSION_ID"
-SECONDS=0
-INTERRUPT_OFFER=""
-while true; do
-    PROJECTION="$(run_detail "$SESSION_ID")"
-    INTERRUPT_OFFER="$(node scripts/e2e-json.js interrupt-offer shell-int-1 <<<"$PROJECTION")"
-    [[ -n "$INTERRUPT_OFFER" ]] && break
-    [[ $SECONDS -ge 30 ]] && { echo "interrupt offer never appeared: $PROJECTION" >&2; exit 1; }
-    sleep 1
-done
+wait_for "interrupt offer" check-interrupt-offer shell-int-1
+INTERRUPT_OFFER="$(node scripts/e2e-json.js interrupt-offer shell-int-1 <<<"$PROJECTION")"
 
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
@@ -123,13 +96,13 @@ wait_for "operator interrupt outcome" \
 echo ">>> operator interrupt E2E PASS: script stopped at exit 130 with output preserved"
 
 # The session itself survived: it takes and completes another command.
-INJECTION_ID="$(wait_for_offer "$SESSION_ID")"
+INJECTION_ID="$(e2e_take_offer "$SESSION_ID")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d "$(node scripts/e2e-json.js shell-input "$INJECTION_ID" shell-int-2 'echo still-alive')" \
     "$UI_BASE/api/input/$SESSION_ID" >/dev/null
 wait_for "follow-up command completion" check-shell-event-done shell-int-2
-ALIVE_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-int-2 <<<"$(run_detail "$SESSION_ID")")"
+ALIVE_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-int-2 <<<"$PROJECTION")"
 [[ "$ALIVE_OUT" == "still-alive" ]] || {
     echo "follow-up output wrong: $ALIVE_OUT" >&2
     exit 1
@@ -153,13 +126,11 @@ echo ">>> scenario 3: composer stop of the agent loop mid-turn"
 LOOP_SESSION="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$LOOP_SESSION" "$RUN_FFQN" \
     '["please loop", "fake-loop", null, null, null]'
-LOOP_OFFER="$(wait_for_offer "$LOOP_SESSION")"
+LOOP_OFFER="$(e2e_take_offer "$LOOP_SESSION")"
 SUBJECT_ID="$LOOP_SESSION"
 wait_for "first loop tool result" check-tool-result-ok call-loop
 
-# The fake-loop model never ends the turn on its own and holds each response
-# back briefly, so this lands while a completion is genuinely in flight: the
-# same live offer send/shell use, fulfilled with an interrupt instead.
+# Fake-loop holds every later completion, so this interrupt lands while one is in flight.
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d "{\"offer_id\":\"$LOOP_OFFER\",\"input\":{\"interrupt\":{\"id\":\"interrupt-e2e-1\"}}}" \
@@ -167,16 +138,17 @@ curl --fail --silent --show-error \
 
 wait_for "operator turn stop outcome" \
     check-agent-error "Turn stopped by user request"
+curl --fail --silent --show-error -X POST "$LLM_BASE_URL/release"
 echo ">>> composer stop E2E PASS: the agent-loop turn stopped mid-iteration"
 
 # The session survived: it takes and completes another command afterward.
-FOLLOWUP_OFFER="$(wait_for_offer "$LOOP_SESSION")"
+FOLLOWUP_OFFER="$(e2e_take_offer "$LOOP_SESSION")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d "$(node scripts/e2e-json.js shell-input "$FOLLOWUP_OFFER" shell-loop-followup 'echo still-alive-loop')" \
     "$UI_BASE/api/input/$LOOP_SESSION" >/dev/null
 wait_for "follow-up command completion after stop" check-shell-event-done shell-loop-followup
-FOLLOWUP_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-loop-followup <<<"$(run_detail "$LOOP_SESSION")")"
+FOLLOWUP_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-loop-followup <<<"$PROJECTION")"
 [[ "$FOLLOWUP_OUT" == "still-alive-loop" ]] || {
     echo "follow-up output wrong after composer stop: $FOLLOWUP_OUT" >&2
     exit 1

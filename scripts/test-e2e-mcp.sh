@@ -28,7 +28,6 @@ e2e_init "mcp-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-mcp-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 export AGENT_MODELS="[]"
-unset GITHUB_MOUNT_TOKEN
 # The workflow discovers MCP servers from MCP_SERVERS_JSON (the config_discover
 # activity), overriding the manifest default so this run wires only the injected
 # obelisk-e2e server. Unset MCP_SERVER_TOKEN keeps the manifest's sample
@@ -56,16 +55,11 @@ http_ok() {
     node -e 'const http=require("http");const r=http.get(process.argv[1],s=>{s.resume();process.exit(s.statusCode===200?0:1)});r.on("error",()=>process.exit(1))' "$1"
 }
 echo ">>> waiting for the MCP server to become ready"
-waited=0
-until http_ok "http://127.0.0.1:${MCP_PORT}/" 2>/dev/null; do
-    if [[ $waited -ge 30 ]]; then
-        echo "MCP server did not become ready; log:" >&2
-        sed -n '1,120p' "$E2E_TMP/mcp-server.log" >&2 || true
-        exit 1
-    fi
-    sleep 1
-    ((waited += 1)) || true
-done
+if ! e2e_wait_until http_ok "http://127.0.0.1:${MCP_PORT}/" 2>/dev/null; then
+    echo "MCP server did not become ready; log:" >&2
+    sed -n '1,120p' "$E2E_TMP/mcp-server.log" >&2 || true
+    exit 1
+fi
 
 # --- deployment: real manifest + one MCP block, keyless -----------------------
 e2e_select_backend "$BACKEND"
@@ -112,16 +106,15 @@ echo ">>> creating an empty session as $SESSION_ID"
     '["", null, null, null, null]'
 
 echo ">>> waiting for the session input offer"
-SECONDS=0
-while true; do
+injection_offered() {
     SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$E2E_API_URL" \
-        -e "$SESSION_ID" --show-derived --limit 100)"
+        -e "$SESSION_ID" --show-derived --limit 100)" || return 1
     INJECTION_ID="$(node scripts/e2e-json.js execution-id \
         "obelisk-agent:stub/stub.injection" <<<"$SESSION_EXECUTIONS")"
-    [[ -n "$INJECTION_ID" ]] && break
-    [[ $SECONDS -ge 30 ]] && { echo "session did not expose its input offer: $SESSION_EXECUTIONS" >&2; exit 1; }
-    sleep 1
-done
+    [[ -n "$INJECTION_ID" ]]
+}
+e2e_wait_until injection_offered \
+    || { echo "session did not expose its input offer: $SESSION_EXECUTIONS" >&2; exit 1; }
 
 TURN_SCRIPT="$E2E_TMP/mcp-turn.sh"
 cat > "$TURN_SCRIPT" <<EOF
@@ -156,26 +149,24 @@ STUB="$(node scripts/e2e-json.js shell-event "mcp-e2e-1" "$TURN_SCRIPT")"
 "$OBELISK" execution stub -a "$E2E_API_URL" "$INJECTION_ID" "$STUB"
 
 echo ">>> waiting for the shell output to be recorded"
-SECONDS=0
-STDOUT=""
-while true; do
+# Records batch several events, so check each for the shell turn's stdout.
+shell_recorded() {
+    local record_id record_result
     SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$E2E_API_URL" \
-        -e "$SESSION_ID" --show-derived --limit 100)"
-    if node scripts/e2e-json.js has-execution \
-        "obelisk-agent:stub/stub.record-output" <<<"$SESSION_EXECUTIONS"; then
-        while IFS= read -r RECORD_ID; do
-            [[ -n "$RECORD_ID" ]] || continue
-            RECORD_RESULT="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$RECORD_ID" 2>/dev/null || true)"
-            if [[ -n "$RECORD_RESULT" ]]; then
-                STDOUT="$(node scripts/e2e-json.js shell-stdout <<<"$RECORD_RESULT" 2>/dev/null || true)"
-                [[ -n "$STDOUT" ]] && break 2
-            fi
-        done < <(node scripts/e2e-json.js execution-ids \
-            "obelisk-agent:stub/stub.record-output" <<<"$SESSION_EXECUTIONS")
-    fi
-    [[ $SECONDS -ge 30 ]] && { echo "shell turn did not record output: $SESSION_EXECUTIONS" >&2; exit 1; }
-    sleep 1
-done
+        -e "$SESSION_ID" --show-derived --limit 100)" || return 1
+    while IFS= read -r record_id; do
+        if [[ -n "$record_id" ]] \
+            && record_result="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$record_id" 2>/dev/null)" \
+            && STDOUT="$(node scripts/e2e-json.js shell-stdout <<<"$record_result" 2>/dev/null)" \
+            && [[ -n "$STDOUT" ]]; then
+            return 0
+        fi
+    done < <(node scripts/e2e-json.js execution-ids \
+        "obelisk-agent:stub/stub.record-output" <<<"$SESSION_EXECUTIONS")
+    return 1
+}
+e2e_wait_until shell_recorded \
+    || { echo "shell turn did not record output: $SESSION_EXECUTIONS" >&2; exit 1; }
 
 e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
 

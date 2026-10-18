@@ -24,6 +24,7 @@ export LLM_BASE_URL="http://127.0.0.1:${EXTERNAL_PORT}"
 
 e2e_select_backend "$BACKEND"
 export APPS_JSON='[{"name":"components","repo":"components","description":"E2E GitHub mount"}]'
+e2e_start_github_mock "obeli-sk/components=$ROOT/scripts/e2e-fixtures/components"
 DEPLOY="$ROOT/.e2e-agent-deployment-$BACKEND.toml"
 e2e_patch_workflow_manifest "$DEPLOY"
 e2e_start_server "$DEPLOY"
@@ -32,10 +33,6 @@ RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 run_detail() {
     curl --fail --silent --show-error "http://127.0.0.1:${EXTERNAL_PORT}/api/runs/$1" 2>&1
 }
-
-# Waits for SESSION_ID's next input offer, submits SCRIPT as a direct shell
-# turn under it, waits for its record-output notification, and leaves the
-# notification's stdout in SHELL_STDOUT.
 
 # Waits for SESSION_ID to publish a fresh input offer. run_shell_turn's own
 # completion only proves the shell's record-output stub is written (visible
@@ -46,55 +43,51 @@ run_detail() {
 # clean, replayable state under any backend. Callers that need to know the
 # session is truly idle (e.g. before a live backend swap) must wait here too.
 wait_for_input_offer() {
-    SECONDS=0
-    local session_projection injection_id
-    while true; do
-        if session_projection="$(run_detail "$SESSION_ID")"; then
-            injection_id="$(node scripts/e2e-json.js input-offer-id <<<"$session_projection")"
-            [[ -n "$injection_id" ]] && break
-        fi
-        [[ $SECONDS -ge 30 ]] && { echo "session did not settle on a fresh input offer: $session_projection" >&2; exit 1; }
-        sleep 1
-    done
+    e2e_wait_offer "$SESSION_ID"
 }
 
-run_shell_turn() {
-    local shell_id="$1" script="$2"
-    SECONDS=0
-    local session_projection injection_id
-    while true; do
-        if session_projection="$(run_detail "$SESSION_ID")"; then
-            injection_id="$(node scripts/e2e-json.js input-offer-id <<<"$session_projection")"
-            [[ -n "$injection_id" ]] && break
+# Finds the record-output stub with the shell id's shell_output (records batch events).
+shell_notification() {
+    local shell_id="$1" record_id candidate
+    SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$E2E_API_URL" -e "$SESSION_ID" --show-derived --limit 100)" || return 1
+    while IFS= read -r record_id; do
+        if [[ -n "$record_id" ]] \
+            && candidate="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$record_id" 2>/dev/null)" \
+            && node -e "const list=JSON.parse(require('fs').readFileSync(0,'utf8'))?.ok??[]; const r=list.find((e)=>e?.shell_output)?.shell_output; process.exit(r?.id===process.argv[1]?0:1)" "$shell_id" <<<"$candidate" 2>/dev/null; then
+            NOTIFICATION="$candidate"
+            return 0
         fi
-        [[ $SECONDS -ge 30 ]] && { echo "session did not publish an input offer: $session_projection" >&2; exit 1; }
-        sleep 1
-    done
+    done < <(node scripts/e2e-json.js execution-ids "obelisk-agent:stub/stub.record-output" <<<"$SESSION_EXECUTIONS")
+    return 1
+}
+
+# Runs SCRIPT as a direct shell turn on the next offer; its stdout lands in SHELL_STDOUT.
+run_shell_turn() {
+    local shell_id="$1" script="$2" injection_id
+    injection_id="$(e2e_take_offer "$SESSION_ID")"
     curl --fail --silent --show-error \
         -H 'content-type: application/json' \
         -d "{\"offer_id\":\"$injection_id\",\"input\":{\"shell\":{\"id\":\"$shell_id\",\"script\":$(printf '%s' "$script" | node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8")))'),\"stdin\":\"\"}}}" \
         "http://127.0.0.1:${EXTERNAL_PORT}/api/input/$SESSION_ID" >/dev/null
 
-    SECONDS=0
-    local notification=""
-    while true; do
-        local session_executions
-        session_executions="$("$OBELISK" execution list -j -a "$E2E_API_URL" -e "$SESSION_ID" --show-derived --limit 100)"
-        while IFS= read -r record_id; do
-            [[ -n "$record_id" ]] || continue
-            local candidate
-            candidate="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$record_id" 2>/dev/null)" || continue
-            if node -e "const list=JSON.parse(require('fs').readFileSync(0,'utf8'))?.ok??[]; const r=list.find((e)=>e?.shell_output)?.shell_output; process.exit(r?.id===process.argv[1]?0:1)" "$shell_id" <<<"$candidate" 2>/dev/null; then
-                notification="$candidate"
-                break
-            fi
-        done < <(node scripts/e2e-json.js execution-ids "obelisk-agent:stub/stub.record-output" <<<"$session_executions")
-        [[ -n "$notification" ]] && break
-        [[ $SECONDS -ge 30 ]] && { echo "shell turn $shell_id did not complete: $session_executions" >&2; exit 1; }
-        sleep 1
-    done
-    SHELL_STDOUT="$(node scripts/e2e-json.js shell-stdout <<<"$notification")"
-    SHELL_STDERR="$(node scripts/e2e-json.js shell-stderr <<<"$notification")"
+    e2e_wait_until shell_notification "$shell_id" \
+        || { echo "shell turn $shell_id did not complete: $SESSION_EXECUTIONS" >&2; exit 1; }
+    SHELL_STDOUT="$(node scripts/e2e-json.js shell-stdout <<<"$NOTIFICATION")"
+    SHELL_STDERR="$(node scripts/e2e-json.js shell-stderr <<<"$NOTIFICATION")"
+}
+
+# Fetches a run's projection into PROJECTION and pipes it to an e2e-json.js check.
+projection_check() {
+    local session_id="$1"
+    shift
+    PROJECTION="$(run_detail "$session_id")" \
+        && node scripts/e2e-json.js "$@" <<<"$PROJECTION" >/dev/null 2>&1
+}
+
+# Waits until a run's projection reports the given name.
+projection_named() {
+    PROJECTION="$(run_detail "$1")" \
+        && node -e "process.exit(JSON.parse(require('fs').readFileSync(0,'utf8')||'{}')?.name===process.argv[1]?0:1)" "$2" <<<"$PROJECTION" 2>/dev/null
 }
 
 echo ">>> checking ask-user lifecycle through the session projection"
@@ -102,18 +95,7 @@ ASK_SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$ASK_SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
 
-SECONDS=0
-while true; do
-    if ! ASK_PROJECTION="$(run_detail "$ASK_SESSION_ID")"; then
-        [[ $SECONDS -ge 30 ]] && { echo "ask-user session detail unavailable: $ASK_PROJECTION" >&2; exit 1; }
-        sleep 1
-        continue
-    fi
-    ASK_OFFER_ID="$(node scripts/e2e-json.js input-offer-id <<<"$ASK_PROJECTION")"
-    [[ -n "$ASK_OFFER_ID" ]] && break
-    [[ $SECONDS -ge 30 ]] && { echo "ask-user session did not publish its input offer: $ASK_PROJECTION" >&2; exit 1; }
-    sleep 1
-done
+ASK_OFFER_ID="$(e2e_take_offer "$ASK_SESSION_ID")"
 ASK_SCRIPT="obelisk call obelisk-agent:stub/stub.ask-user '[\"Continue?\"]'"
 ASK_BODY="$(node scripts/e2e-json.js shell-input "$ASK_OFFER_ID" shell-e2e-ask "$ASK_SCRIPT")"
 curl --fail --silent --show-error \
@@ -121,38 +103,16 @@ curl --fail --silent --show-error \
     -d "$ASK_BODY" \
     "http://127.0.0.1:${EXTERNAL_PORT}/api/input/$ASK_SESSION_ID" >/dev/null
 
-SECONDS=0
-while true; do
-    if ! ASK_PROJECTION="$(run_detail "$ASK_SESSION_ID")"; then
-        [[ $SECONDS -ge 30 ]] && { echo "ask-user request detail unavailable: $ASK_PROJECTION" >&2; exit 1; }
-        sleep 1
-        continue
-    fi
-    if node scripts/e2e-json.js check-human-input-request <<<"$ASK_PROJECTION" 2>/dev/null; then
-        break
-    fi
-    [[ $SECONDS -ge 30 ]] && { echo "ask-user request was not projected: $ASK_PROJECTION" >&2; exit 1; }
-    sleep 1
-done
-ASK_ID="$(node scripts/e2e-json.js pending-ask-id <<<"$ASK_PROJECTION")"
+e2e_wait_until projection_check "$ASK_SESSION_ID" check-human-input-request \
+    || { echo "ask-user request was not projected: $PROJECTION" >&2; exit 1; }
+ASK_ID="$(node scripts/e2e-json.js pending-ask-id <<<"$PROJECTION")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d '{"answer":"yes"}' \
     "http://127.0.0.1:${EXTERNAL_PORT}/api/answer/$ASK_ID" >/dev/null
 
-SECONDS=0
-while true; do
-    if ! ASK_PROJECTION="$(run_detail "$ASK_SESSION_ID")"; then
-        [[ $SECONDS -ge 30 ]] && { echo "ask-user resolution detail unavailable: $ASK_PROJECTION" >&2; exit 1; }
-        sleep 1
-        continue
-    fi
-    if node scripts/e2e-json.js check-human-input-resolved <<<"$ASK_PROJECTION" 2>/dev/null; then
-        break
-    fi
-    [[ $SECONDS -ge 30 ]] && { echo "ask-user resolution was not projected: $ASK_PROJECTION" >&2; exit 1; }
-    sleep 1
-done
+e2e_wait_until projection_check "$ASK_SESSION_ID" check-human-input-resolved \
+    || { echo "ask-user resolution was not projected: $PROJECTION" >&2; exit 1; }
 echo ">>> ask-user projection E2E PASS"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$ASK_SESSION_ID" >/dev/null || true
 
@@ -161,19 +121,9 @@ SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
 
-SECONDS=0
-while true; do
-    if ! SESSION_PROJECTION="$(run_detail "$SESSION_ID")"; then
-        [[ $SECONDS -ge 30 ]] && { echo "empty session detail unavailable: $SESSION_PROJECTION" >&2; exit 1; }
-        sleep 1
-        continue
-    fi
-    INJECTION_ID="$(node scripts/e2e-json.js input-offer-id <<<"$SESSION_PROJECTION")"
-    [[ -n "$INJECTION_ID" ]] && break
-    [[ $SECONDS -ge 30 ]] && { echo "empty session did not publish its input offer: $SESSION_PROJECTION" >&2; exit 1; }
-    sleep 1
-done
-RESPONSE_CURSOR="$(node scripts/e2e-json.js response-cursor <<<"$SESSION_PROJECTION")"
+e2e_take_offer "$SESSION_ID" >/dev/null
+INJECTION_ID="$E2E_OFFER"
+RESPONSE_CURSOR="$(node scripts/e2e-json.js response-cursor <<<"$PROJECTION")"
 
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
@@ -186,37 +136,22 @@ curl --fail --silent --show-error \
 # record often lands first (or bundled alongside a later batch). Poll until
 # the specific `shell_output` record for shell-e2e-1 is present, matching
 # each record-output result in turn.
-SECONDS=0
-SHELL_NOTIFICATION=""
-while true; do
-    SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$E2E_API_URL" \
-        -e "$SESSION_ID" --show-derived --limit 100)"
-    if node scripts/e2e-json.js check-shell-session <<<"$SESSION_EXECUTIONS"; then
-        while IFS= read -r RECORD_ID; do
-            [[ -n "$RECORD_ID" ]] || continue
-            CANDIDATE="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$RECORD_ID" 2>/dev/null)" || continue
-            if node scripts/e2e-json.js check-shell-notification <<<"$CANDIDATE" 2>/dev/null; then
-                SHELL_NOTIFICATION="$CANDIDATE"
-                break
-            fi
-        done < <(node scripts/e2e-json.js execution-ids \
-            "obelisk-agent:stub/stub.record-output" <<<"$SESSION_EXECUTIONS")
-        [[ -n "$SHELL_NOTIFICATION" ]] && break
-    fi
-    [[ $SECONDS -ge 30 ]] && { echo "shell turn did not complete correctly: $SESSION_EXECUTIONS" >&2; exit 1; }
-    sleep 1
-done
-node scripts/e2e-json.js check-shell-notification <<<"$SHELL_NOTIFICATION"
+shell_session_done() {
+    shell_notification shell-e2e-1 \
+        && node scripts/e2e-json.js check-shell-session <<<"$SESSION_EXECUTIONS"
+}
+e2e_wait_until shell_session_done \
+    || { echo "shell turn did not complete correctly: $SESSION_EXECUTIONS" >&2; exit 1; }
+node scripts/e2e-json.js check-shell-notification <<<"$NOTIFICATION"
 
 # The next input_offer is published after the record-output stub, so poll until it settles.
-SECONDS=0
-while true; do
+shell_projection() {
     SHELL_PROJECTION="$(curl --fail --silent \
-        "http://127.0.0.1:${EXTERNAL_PORT}/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")"
-    node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION" 2>/dev/null && break
-    [[ $SECONDS -ge 30 ]] && { node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"; exit 1; }
-    sleep 1
-done
+        "http://127.0.0.1:${EXTERNAL_PORT}/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")" \
+        && node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION" 2>/dev/null
+}
+e2e_wait_until shell_projection \
+    || { node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"; exit 1; }
 echo ">>> shell-only E2E PASS: curl was registered and invoked without starting the agent"
 
 echo ">>> running the obelisk/mount custom commands"
@@ -306,15 +241,8 @@ echo ">>> creating a session with an initial name"
 NAMED_SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$NAMED_SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, "e2e-rename-check"]'
-SECONDS=0
-while true; do
-    NAME_PROJECTION="$(run_detail "$NAMED_SESSION_ID" || true)"
-    if node -e "process.exit(JSON.parse(require('fs').readFileSync(0,'utf8')||'{}')?.name==='e2e-rename-check'?0:1)" <<<"$NAME_PROJECTION" 2>/dev/null; then
-        break
-    fi
-    [[ $SECONDS -ge 30 ]] && { echo "session did not report its initial name: $NAME_PROJECTION" >&2; exit 1; }
-    sleep 1
-done
+e2e_wait_until projection_named "$NAMED_SESSION_ID" e2e-rename-check \
+    || { echo "session did not report its initial name: $PROJECTION" >&2; exit 1; }
 echo ">>> rename E2E PASS: the session-name join set published the at-creation name"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$NAMED_SESSION_ID" >/dev/null || true
 
@@ -330,14 +258,8 @@ if [[ -z "$CHILD_ID" ]]; then
     exit 1
 fi
 echo ">>> chat create returned child execution id: $CHILD_ID"
-SECONDS=0
-while true; do
-    if CHILD_PROJECTION="$(run_detail "$CHILD_ID")" && node -e "process.exit(JSON.parse(require('fs').readFileSync(0,'utf8')||'{}')?.name==='e2e-chat-child'?0:1)" <<<"$CHILD_PROJECTION" 2>/dev/null; then
-        break
-    fi
-    [[ $SECONDS -ge 30 ]] && { echo "child session did not start or report its --name: $CHILD_PROJECTION" >&2; exit 1; }
-    sleep 1
-done
+e2e_wait_until projection_named "$CHILD_ID" e2e-chat-child \
+    || { echo "child session did not start or report its --name: $PROJECTION" >&2; exit 1; }
 echo ">>> chat create E2E PASS: the self-referential child submit works and reports its --name"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$CHILD_ID" >/dev/null || true
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$CHAT_SESSION_ID" >/dev/null || true
@@ -349,19 +271,8 @@ echo ">>> submitting $RUN_FFQN as $EXEC_ID"
 
 EXPECT="No models available from discovery or AGENT_MODELS"
 echo ">>> waiting for the recoverable LLM configuration error"
-SECONDS=0
-while true; do
-    if ! ERROR_PROJECTION="$(run_detail "$EXEC_ID")"; then
-        [[ $SECONDS -ge 30 ]] && { echo "agent error detail unavailable: $ERROR_PROJECTION" >&2; exit 1; }
-        sleep 1
-        continue
-    fi
-    if node scripts/e2e-json.js check-agent-error "$EXPECT" <<<"$ERROR_PROJECTION" 2>/dev/null; then
-        break
-    fi
-    [[ $SECONDS -ge 30 ]] && { echo "agent error was not projected or the session did not recover: $ERROR_PROJECTION" >&2; exit 1; }
-    sleep 1
-done
+e2e_wait_until projection_check "$EXEC_ID" check-agent-error "$EXPECT" \
+    || { echo "agent error was not projected or the session did not recover: $PROJECTION" >&2; exit 1; }
 echo ">>> E2E PASS: the session surfaced the LLM configuration error and returned to idle"
 
 e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$EXEC_ID"

@@ -172,6 +172,12 @@ switch (command) {
         process.stdout.write(start?.offer_id ?? "");
         break;
     }
+    case "check-interrupt-offer": {
+        const id = process.argv[3];
+        const start = json()?.transcript?.shell_starts?.find((candidate) => candidate.id === id);
+        process.exit(start?.offer_id ? 0 : 1);
+        break;
+    }
     case "check-shell-interrupted": {
         const [id, exitCode, kind] = [process.argv[3], Number(process.argv[4]), process.argv[5]];
         const event = json()?.transcript?.shell_events?.find((candidate) => candidate.id === id);

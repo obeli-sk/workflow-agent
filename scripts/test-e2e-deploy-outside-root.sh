@@ -41,7 +41,6 @@ e2e_init "deploy-outside-root-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-de
 export OBELISK_API_URL="$E2E_API_URL"
 export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 unset MCP_SERVER_TOKEN
-unset GITHUB_MOUNT_TOKEN
 export AGENT_MODELS="[]"
 
 TARGET_API_PORT=$((28031 + PORT_OFFSET))
@@ -88,16 +87,8 @@ SESSION_ID="$("$OBELISK" generate execution-id)"
 PARAMS="$(node -e 'process.stdout.write(JSON.stringify(["$" + process.argv[1], null, null, null, null]))' "$AUTHOR_SCRIPT")"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" "$PARAMS"
 
-SECONDS=0
-PROJECTION=""
-while true; do
-    PROJECTION="$(curl --fail --silent "$UI_BASE/api/runs/$SESSION_ID" || true)"
-    if node scripts/e2e-json.js check-shell-event-done shell-opened-0 <<<"$PROJECTION" 2>/dev/null; then
-        break
-    fi
-    [[ $SECONDS -ge 60 ]] && { echo "author+submit+apply did not finish: $PROJECTION" >&2; exit 1; }
-    sleep 1
-done
+e2e_wait_until e2e_opened_shell_done "$UI_BASE" "$SESSION_ID" \
+    || { echo "author+submit+apply did not finish: $PROJECTION" >&2; exit 1; }
 OUTPUT="$(node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION")"
 AUTHORED_ID="$(printf '%s' "$OUTPUT" | sed -n 's/^APPLIED://p' | tr -d '[:space:]')"
 [[ -n "$AUTHORED_ID" ]] || { echo "did not capture a server-assigned deployment id: $PROJECTION" >&2; exit 1; }
