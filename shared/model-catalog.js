@@ -13,6 +13,11 @@ export function configuredModels() {
     });
 }
 
+// ChatGPT-subscription models (owned_by "chatgpt") are served only by the Responses API.
+function discoveredApiType(model) {
+    return model.owned_by === "chatgpt" ? "openai-responses" : "openai-chat-completions";
+}
+
 export async function loadModelCatalog() {
     let configured = [];
     let configurationError;
@@ -36,7 +41,7 @@ export async function loadModelCatalog() {
                             ...prior,
                             id: prior?.id || model.id,
                             label: model.display_name || prior?.label || model.id,
-                            api_type: prior?.api_type || "openai-chat-completions",
+                            api_type: prior?.api_type || discoveredApiType(model),
                             wire_model: model.id,
                             is_default: !!model.is_default,
                         };

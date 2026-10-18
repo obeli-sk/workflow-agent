@@ -62,6 +62,15 @@ test("discovery preserves configured wire adapters and aliases, and prefers adve
     });
 });
 
+test("discovered ChatGPT-subscription models use the Responses API", async () => {
+    await withEndpoint("[]", async () => response({ data: [
+        { id: "gpt-6-luna", owned_by: "chatgpt" }, { id: "fireworks/glm", owned_by: "fireworks" },
+    ] }), async () => {
+        assert.equal((await resolveModel("gpt-6-luna")).api_type, "openai-responses");
+        assert.equal((await resolveModel("fireworks/glm")).api_type, "openai-chat-completions");
+    });
+});
+
 test("unavailable, empty, or malformed discovery falls back to the configured catalog", async () => {
     const configured = [{ id: "configured", api_type: "anthropic-messages", wire_model: "claude-model" }];
     const failures = [
