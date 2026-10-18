@@ -2,11 +2,11 @@ app_name = "workflow-agent"
 
 [secrets]
 LLM_API_KEY = { optional = true }
-# The target Obelisk the agent deploys to/controls; defaults to the agent's own
-# token for the self-host case (see .envrc-example, README recursion warning).
+# The target Obelisk the agent deploys to/controls. Stays env-backed because it
+# usually authenticates against a different server (see README, Target instance).
 TARGET_OBELISK_TOKEN = {}
-# Obelisk server is accessed e.g. by the UI to get execution state.
-OBELISK_API_TOKEN = {}
+# The agent's own Obelisk server, accessed e.g. by the UI to get execution state.
+OBELISK_API_TOKEN = { type = "internal" }
 # Leave unset for a keyless MCP server (e.g. the testing one).
 MCP_SERVER_TOKEN = { optional = true }
 # Optional: raises the GitHub API rate limit for the /workspace/components

@@ -7,7 +7,7 @@ methods = ["GET"]
 
 [secrets]
 LLM_API_KEY = { optional = true }
-OBELISK_API_TOKEN = {}
+OBELISK_API_TOKEN = { type = "internal" }
 # Optional: raises the GitHub API rate limit for the /workspace/components
 # mount from the shared 60 req/h anonymous IP pool to 5000 req/h. Leave it unset
 # for occasional use.

@@ -91,18 +91,24 @@ idle-timeout error, so abandoned sessions become terminal and can be retained aw
 There are two Obelisk instances in play:
 
 - The **agent instance** the workflow-agent runs on. Its own session runs, logs,
-  and the UI's pause/cancel/answer buttons live here, authenticated with
-  `OBELISK_API_TOKEN` (and `OBELISK_UI_URL` for links).
+  and the UI's pause/cancel/answer buttons live here, authenticated with the
+  internal `OBELISK_API_TOKEN` secret (the server's startup token, nothing to
+  set; `OBELISK_UI_URL` sets the base for links).
 - The **target instance** the agent inspects and deploys to. Every control/deploy
   tool (`obelisk functions|executions|call|deployment ...`) and the
-  `/workspace/deployment` mount talk to it, configured by three vars that default
-  to the agent instance:
+  `/workspace/deployment` mount talk to it, configured by three vars. The URL
+  and regex default to the agent instance; the token is always required:
 
   ```sh
   export TARGET_OBELISK_API_URL=http://127.0.0.1:5205
   export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:5205"
-  export TARGET_OBELISK_TOKEN="$OBELISK_API_TOKEN"
+  export TARGET_OBELISK_TOKEN=$(obelisk generate token)
+  just serve-target   # starts server-target.toml accepting TARGET_OBELISK_TOKEN
   ```
+
+  To target the agent's own instance instead, start it with
+  `OBELISK_API_TOKEN` set to the same value as `TARGET_OBELISK_TOKEN`, so the
+  server accepts it.
 
   A fourth var, `TARGET_OBELISK_WEBHOOK_URL` (default
   `http://127.0.0.1:9290`, matching `server-target.toml`), is the target's
