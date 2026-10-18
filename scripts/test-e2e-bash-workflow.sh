@@ -20,7 +20,7 @@ name = "bash_workflow"
 location = "${E2E_REL_WASM}"
 EOF
 
-e2e_start_server "$DEPLOY" 60
+e2e_start_server "$DEPLOY"
 
 FFQN="just-bash:agent/bash.run-bash"
 SCRIPT_JSON='"name=$(echo rust); if [ -n \"$name\" ]; then for i in 1 2; do echo \"$name-$i\"; done; fi"'

@@ -1,5 +1,43 @@
 #!/usr/bin/env bash
 
+# Upper bound for any single wait; only reached when something is actually broken.
+E2E_WAIT_SECONDS="${E2E_WAIT_SECONDS:-180}"
+E2E_POLL_SECONDS="${E2E_POLL_SECONDS:-0.5}"
+
+# Retries a command until it succeeds or E2E_WAIT_SECONDS pass (status 1).
+e2e_wait_until() {
+    local deadline=$((SECONDS + E2E_WAIT_SECONDS))
+    until "$@"; do
+        (( SECONDS < deadline )) || return 1
+        sleep "$E2E_POLL_SECONDS"
+    done
+}
+
+# Wait check: SESSION shows an input offer not yet taken; sets PROJECTION and E2E_OFFER.
+e2e_fresh_offer() {
+    PROJECTION="$(run_detail "$1")" || return 1
+    E2E_OFFER="$(node "$ROOT/scripts/e2e-json.js" input-offer-id <<<"$PROJECTION" 2>/dev/null)" || return 1
+    [[ -n "$E2E_OFFER" ]] && ! grep -qxF -- "$E2E_OFFER" "$E2E_TMP/used-offers" 2>/dev/null
+}
+
+e2e_wait_offer() {
+    e2e_wait_until e2e_fresh_offer "$1" \
+        || { echo "no fresh input offer for $1: $PROJECTION" >&2; return 1; }
+}
+
+# Prints SESSION's next fresh offer and records it as used on disk.
+e2e_take_offer() {
+    e2e_wait_offer "$1" || return 1
+    printf '%s\n' "$E2E_OFFER" >> "$E2E_TMP/used-offers"
+    printf '%s\n' "$E2E_OFFER"
+}
+
+# Wait check: SESSION's opening shell script (shell-opened-0) finished; sets PROJECTION.
+e2e_opened_shell_done() {
+    PROJECTION="$(curl --fail --silent "$1/api/runs/$2")" \
+        && node "$ROOT/scripts/e2e-json.js" check-shell-event-done shell-opened-0 <<<"$PROJECTION" 2>/dev/null
+}
+
 e2e_init() {
     local suite="$1"
     local api_port="$2"
@@ -27,8 +65,12 @@ e2e_init() {
     export APPS_JSON="[]"
     # Closed port, so no suite reaches a real LLM on the 9190 default; interrupt sets its own fake.
     export LLM_BASE_URL="http://127.0.0.1:9"
+    # No live docs fetch at session start; the system prompt keeps its placeholder.
+    export DOCS_URLS_JSON="[]"
 
     trap e2e_cleanup EXIT
+    # A runner timeout or Ctrl-C must still stop the isolated servers.
+    trap 'exit 130' INT TERM
 }
 
 # Port offset for a suite's own rs/js pair: 0 for rs, 1000 for js. Suites add
@@ -225,9 +267,13 @@ e2e_patch_workflow_manifest() {
     fi
 }
 
+# Done waiting once the API answers or the server process has exited.
+e2e_server_settled() {
+    "$OBELISK" component list -a "$1" >/dev/null 2>&1 || ! kill -0 "$2" 2>/dev/null
+}
+
 e2e_start_server() {
     local deployment="$1"
-    local timeout_seconds="${2:-90}"
 
     echo ">>> starting ISOLATED obelisk server on ${E2E_API_URL} (sqlite: ${E2E_TMP}/obelisk-sqlite)"
     "$OBELISK" server run \
@@ -238,21 +284,11 @@ e2e_start_server() {
     E2E_SERVER_PID=$!
 
     echo ">>> waiting for the server to become ready"
-    local waited=0
-    until "$OBELISK" component list -a "$E2E_API_URL" >/dev/null 2>&1; do
-        if ! kill -0 "$E2E_SERVER_PID" 2>/dev/null; then
-            echo "server exited early; log:" >&2
-            sed -n '1,300p' "$E2E_TMP/server.log" >&2
-            return 1
-        fi
-        if [[ $waited -ge $timeout_seconds ]]; then
-            echo "timeout waiting for server; log:" >&2
-            sed -n '1,300p' "$E2E_TMP/server.log" >&2
-            return 1
-        fi
-        sleep 1
-        ((waited += 1)) || true
-    done
+    if ! e2e_wait_until e2e_server_settled "$E2E_API_URL" "$E2E_SERVER_PID" || ! kill -0 "$E2E_SERVER_PID" 2>/dev/null; then
+        echo "server did not become ready; log:" >&2
+        sed -n '1,300p' "$E2E_TMP/server.log" >&2
+        return 1
+    fi
 }
 
 # Starts a second, genuinely separate obelisk instance for suites that need
@@ -266,7 +302,6 @@ e2e_start_server() {
 e2e_start_target_server() {
     local api_port="$1"
     local external_port="$2"
-    local timeout_seconds="${3:-90}"
 
     E2E_TARGET_API_URL="http://127.0.0.1:${api_port}"
     echo ">>> starting ISOLATED EMPTY target obelisk server on ${E2E_TARGET_API_URL} (sqlite: ${E2E_TMP}/target-obelisk-sqlite)"
@@ -282,19 +317,9 @@ e2e_start_target_server() {
     E2E_TARGET_SERVER_PID=$!
 
     echo ">>> waiting for the target server to become ready"
-    local waited=0
-    until "$OBELISK" component list -a "$E2E_TARGET_API_URL" >/dev/null 2>&1; do
-        if ! kill -0 "$E2E_TARGET_SERVER_PID" 2>/dev/null; then
-            echo "target server exited early; log:" >&2
-            sed -n '1,300p' "$E2E_TMP/target-server.log" >&2
-            return 1
-        fi
-        if [[ $waited -ge $timeout_seconds ]]; then
-            echo "timeout waiting for target server; log:" >&2
-            sed -n '1,300p' "$E2E_TMP/target-server.log" >&2
-            return 1
-        fi
-        sleep 1
-        ((waited += 1)) || true
-    done
+    if ! e2e_wait_until e2e_server_settled "$E2E_TARGET_API_URL" "$E2E_TARGET_SERVER_PID" || ! kill -0 "$E2E_TARGET_SERVER_PID" 2>/dev/null; then
+        echo "target server did not become ready; log:" >&2
+        sed -n '1,300p' "$E2E_TMP/target-server.log" >&2
+        return 1
+    fi
 }

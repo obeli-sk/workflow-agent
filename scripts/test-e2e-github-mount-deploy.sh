@@ -116,18 +116,8 @@ SESSION_ID="$("$OBELISK" generate execution-id)"
 PARAMS="$(node -e 'process.stdout.write(JSON.stringify(["$" + process.argv[1], null, null, null, null]))' "$AUTHOR_SCRIPT")"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" "$PARAMS"
 
-SECONDS=0
-PROJECTION=""
-while true; do
-    PROJECTION="$(curl --fail --silent "$UI_BASE/api/runs/$SESSION_ID" || true)"
-    if node scripts/e2e-json.js check-shell-event-done shell-opened-0 <<<"$PROJECTION" 2>/dev/null; then
-        break
-    fi
-    # Real GitHub API round trips for a multi-file app plus a real
-    # multi-component submit: much slower than the hermetic suites.
-    [[ $SECONDS -ge 180 ]] && { echo "cold GitHub-mounted submit did not finish: $PROJECTION" >&2; exit 1; }
-    sleep 2
-done
+e2e_wait_until e2e_opened_shell_done "$UI_BASE" "$SESSION_ID" \
+    || { echo "cold GitHub-mounted submit did not finish: $PROJECTION" >&2; exit 1; }
 OUTPUT="$(node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION")"
 AUTHORED_ID="$(printf '%s' "$OUTPUT" | sed -n 's/^SUBMITTED://p' | tr -d '[:space:]')"
 [[ -n "$AUTHORED_ID" ]] || { echo "did not capture a server-assigned deployment id: $PROJECTION" >&2; echo "shell output: $OUTPUT" >&2; exit 1; }

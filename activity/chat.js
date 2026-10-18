@@ -386,7 +386,8 @@ async function describeRun(exec) {
     } catch (_) {
         // A run whose children were reaped still lists, minus extras.
     }
-    const name = await latestSessionName(id);
+    // Listing stays best-effort per row, like the extras above.
+    const name = await latestSessionName(id).catch(() => null);
     // The user join set races input against completion, so being parked there
     // does not distinguish waiting from thinking; agent_status does.
     const effectiveWorking = status === "blocked_by_join_set" && join === "user" && working;
@@ -446,19 +447,18 @@ async function walkResponses(executionId) {
 // The current slug straight off the dedicated rename join set; renames are
 // rare, so the newest-entry read covers it with one response (the length-1
 // window is the newest entry; pages arrive oldest-first).
+// A failed read throws: reporting such a session as unnamed would be a wrong answer.
 async function latestSessionName(executionId) {
-    try {
-        const payload = await apiJson(
-            "GET",
-            `/v1/executions/${encodeURIComponent(executionId)}/responses`
-            + `?join_set=${encodeURIComponent(SESSION_NAME_JOIN_SET)}&direction=older&length=1`,
-        );
-        const value = sessionEventValue(payload.responses?.[0]);
-        if (typeof value?.name === "string") return value.name;
-        if (typeof value?.session_renamed?.name === "string") {
-            return value.session_renamed.name;
-        }
-    } catch (_) { /* fall through */ }
+    const payload = await apiJson(
+        "GET",
+        `/v1/executions/${encodeURIComponent(executionId)}/responses`
+        + `?join_set=${encodeURIComponent(SESSION_NAME_JOIN_SET)}&direction=older&length=1`,
+    );
+    const value = sessionEventValue(payload.responses?.[0]);
+    if (typeof value?.name === "string") return value.name;
+    if (typeof value?.session_renamed?.name === "string") {
+        return value.session_renamed.name;
+    }
     return null;
 }
 
