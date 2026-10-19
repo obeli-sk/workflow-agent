@@ -16,13 +16,15 @@
 // The caller passes the deployment-id to check out; the workflow resolves the
 // active id (webapi.current-deployment-id) when it lazily mounts the deployment
 // tree on first access, so this activity does not re-resolve it.
+import { targetBase, targetToken } from "./target.js";
+
 export default async function deployment_checkout(deploymentId) {
     try { return await deployment_checkout_impl(deploymentId); }
     catch (error) { throw classifyActivityError(error); }
 }
 
 async function deployment_checkout_impl(deploymentId) {
-    const base = process.env["TARGET_OBELISK_API_URL"];
+    const base = targetBase();
     if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const wanted = (typeof deploymentId === "string" && deploymentId.trim()) ? deploymentId.trim() : "";
     if (!wanted) throw "deployment-checkout requires a deployment-id";
@@ -46,7 +48,7 @@ function classifyActivityError(error) {
 }
 
 async function getJson(url) {
-    const resp = await fetch(url, { headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } });
+    const resp = await fetch(url, { headers: { accept: "application/json", authorization: `Bearer ${targetToken()}` } });
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.json();
 }

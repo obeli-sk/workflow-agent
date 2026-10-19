@@ -1,6 +1,8 @@
 // obelisk-agent:tools/webapi.get-events:
 //   func(execution-id: string, cursor-kind: string, cursor: u32,
 //        including-cursor: bool, length: u32) -> result<string, string>
+import { targetBase, targetToken } from "./target.js";
+
 export default async function get_events(
     executionId,
     cursorKind,
@@ -17,11 +19,11 @@ export default async function get_events(
         `including_cursor=${includingCursor ? "true" : "false"}`,
         `length=${encodeURIComponent(String(pageLength))}`,
     ];
-    const base = process.env["TARGET_OBELISK_API_URL"];
+    const base = targetBase();
     if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/events?${params.join("&")}`,
-        { headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } },
+        { headers: { accept: "application/json", authorization: `Bearer ${targetToken()}` } },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.text();

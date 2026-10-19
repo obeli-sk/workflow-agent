@@ -3,6 +3,8 @@
 //        show-streams: bool, levels: list<string>, stream-types: list<string>,
 //        cursor: string, direction: string, including-cursor: bool, length: u32)
 //     -> result<string, string>
+import { targetBase, targetToken } from "./target.js";
+
 export default async function get_logs(
     executionId,
     showDerived,
@@ -16,7 +18,7 @@ export default async function get_logs(
     length,
 ) {
     if (!executionId) throw "execution-id is required";
-    const base = process.env["TARGET_OBELISK_API_URL"];
+    const base = targetBase();
     if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const params = [
         `show_derived=${showDerived ? "true" : "false"}`,
@@ -33,7 +35,7 @@ export default async function get_logs(
     if (length > 0) params.push(`length=${encodeURIComponent(String(length))}`);
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/logs?${params.join("&")}`,
-        { headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } },
+        { headers: { accept: "application/json", authorization: `Bearer ${targetToken()}` } },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     return await resp.text();

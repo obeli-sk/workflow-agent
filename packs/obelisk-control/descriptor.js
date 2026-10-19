@@ -8,6 +8,8 @@
 // The model's only tool is `bash`. `tools-json` is an unused compatibility
 // field from the former model-facing catalog and is always empty.
 
+import { cloudRequest } from "./cloud/client.js";
+
 const nl = String.fromCharCode(10);
 
 // Encoding rules for `obelisk call <ffqn> <params-json>`, the one shell command
@@ -113,8 +115,36 @@ async function loadDocsIndexes() {
     return { body: sections.length ? sections.join(nl + nl) : null, warnings };
 }
 
+const CLOUD_SECTION = [
+    '# ObeliskNet (`obelisk cloud`)',
+    '',
+    'An ObeliskNet account is configured, so `obelisk cloud` works like the real CLI against hosted apps (run `obelisk cloud --help`):',
+    '',
+    '- `obelisk cloud apps list`; `obelisk cloud app --app NAME status|get|endpoint|apply|start|stop|delete`.',
+    '- Create and deploy from the working directory: write `app.toml` (with `app_name`) and `deployment.toml`, then `obelisk cloud app deploy -a app.toml -d deployment.toml`. It creates or restages the app, applies and starts it, uploads the deployment and prints the webhook URL.',
+    '- Config: `obelisk cloud app --app NAME env list|set NAME VALUE|unset NAME` and `secrets list|set NAME --stdin|set NAME --from-env VAR|unset NAME`; then `obelisk cloud app --app NAME apply`.',
+    '- The app\'s own API: `obelisk cloud app --app NAME executions list`, `executions logs ID`, `executions get ID`, `functions list`, `call FFQN PARAMS`, `deployment list|active`, same flags as the local commands.',
+    '- Destructive commands (`delete`, `stop`) need the user\'s confirmation first.',
+].join(nl);
+
+// The cloud section when OBELISK_CLOUD_API_TOKEN is set and the provisioner accepts it.
+async function cloudSection() {
+    if (!process.env["OBELISK_CLOUD_API_TOKEN"]) return { section: null, warnings: [] };
+    try {
+        const listed = await cloudRequest("GET", ["v1", "apps"]);
+        const apps = (Array.isArray(listed?.apps) ? listed.apps : [])
+            .map((app) => `- ${app?.app_name}: ${app?.status ?? "unknown"}`);
+        const existing = apps.length ? `Existing apps:${nl}${nl}${apps.join(nl)}` : 'No apps exist yet.';
+        return { section: `${CLOUD_SECTION}${nl}${nl}${existing}`, warnings: [] };
+    } catch (error) {
+        return { section: null, warnings: [`ObeliskNet is configured but unreachable (${String(error)}); \`obelisk cloud\` is left out of the prompt`] };
+    }
+}
+
 export default async function describe() {
     const { body, warnings } = await loadDocsIndexes();
+    const cloud = await cloudSection();
     const docsBlock = body ? `${DOCS_SECTION}${nl}${nl}${body}` : DOCS_SECTION;
-    return { prompt: `${SYSTEM_PROMPT}${nl}${nl}${docsBlock}`, tools_json: '[]', warnings };
+    const sections = [SYSTEM_PROMPT, cloud.section, docsBlock].filter((section) => section !== null);
+    return { prompt: sections.join(`${nl}${nl}`), tools_json: '[]', warnings: [...warnings, ...cloud.warnings] };
 }

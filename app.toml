@@ -13,6 +13,8 @@ MCP_SERVER_TOKEN = { optional = true }
 # mount from the shared 60 req/h anonymous IP pool to 5000 req/h. Leave it unset
 # for occasional use.
 GITHUB_MOUNT_TOKEN = { optional = true }
+# Optional: ObeliskNet token enabling `obelisk cloud` in the shell.
+OBELISK_CLOUD_API_TOKEN = { optional = true }
 
 [public_env]
 DOCS_URLS_JSON = { optional = true }
@@ -33,6 +35,8 @@ TARGET_OBELISK_API_URL = { optional = true }
 TARGET_OBELISK_API_URL_REGEX = { optional = true }
 MCP_OBELISK_LOCAL_URL = { optional = true }
 OBELISK_UI_URL = { optional = true }
+OBELISK_CLOUD_API_URL = { optional = true }
+OBELISK_CLOUD_APP_API_PATTERN = { optional = true }
 
 # Allow reading documentation
 [[outbound_http.allowed_host]]
@@ -107,6 +111,19 @@ replace_in = ["headers"]
 pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "POST", "PUT"]
 secrets = ["TARGET_OBELISK_TOKEN"]
+replace_in = ["headers"]
+
+# ObeliskNet provisioner and app APIs (cloud_run, cloud_prepare_deploy, cloud_tenant).
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
+methods = ["GET", "POST", "PUT", "DELETE"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_CLOUD_APP_API_PATTERN:-https://*.obelisk.works:5005}"
+methods = ["GET", "POST", "PUT"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 # Target instance webhooks

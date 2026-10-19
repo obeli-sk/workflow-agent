@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike};
 
@@ -96,25 +96,23 @@ pub trait ControlPlane {
     fn call_target(&mut self, ffqn: &str, params_json: &str) -> Result<String, String>;
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionInfo {
     pub ffqn: String,
     pub parameter_types: Vec<ParameterType>,
     pub return_type: String,
+    #[serde(default, deserialize_with = "lenient_extension")]
     pub extension: Option<ExtensionKind>,
     pub wit: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParameterType {
     pub name: String,
     pub wit_type: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionKind {
     Submit,
@@ -124,15 +122,13 @@ pub enum ExtensionKind {
     Get,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct CheckoutResult {
     pub deployment_toml: String,
     pub files: Vec<CheckoutFile>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct CheckoutFile {
     pub path: String,
     pub digest: String,
@@ -146,8 +142,7 @@ pub struct AttachedFile {
     pub content: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct MissingFile {
     pub path: String,
     pub digest: String,
@@ -160,6 +155,40 @@ pub enum SubmitError {
     Failed(String),
 }
 
+/// An unknown extension kind (a newer server) reads as none; WIT's kebab case is accepted.
+fn lenient_extension<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ExtensionKind>, D::Error> {
+    let value = Option::<Value>::deserialize(deserializer)?;
+    let kind = value
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(|kind| kind.replace('-', "_"));
+    Ok(kind.and_then(|kind| serde_json::from_value(Value::String(kind)).ok()))
+}
+
+/// ObeliskNet (`obelisk cloud`): `obelisk-agent:tools/cloud`, bound by the embedding workflow.
+pub trait Cloud {
+    /// Provisioner commands; `app_toml` is the app policy's text when one was found.
+    fn run(
+        &mut self,
+        args: &[String],
+        stdin: &str,
+        app_toml: Option<&str>,
+    ) -> Result<CommandOutput, String>;
+    fn prepare_deploy(&mut self, app: &str, app_toml: &str) -> Result<DeployTarget, String>;
+    /// A control plane against `app`'s own API.
+    fn control_plane(&mut self, app: &str) -> Box<dyn ControlPlane>;
+}
+
+/// Where `cloud app deploy` applies the deployment, plus the provisioner steps' log.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeployTarget {
+    pub api_url: String,
+    pub webhook_url: Option<String>,
+    pub log: String,
+}
+
 /// Result of mounting (or refreshing) the active deployment into the VFS.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountResult {
@@ -168,13 +197,27 @@ pub struct MountResult {
 }
 
 /// Build the `obelisk` custom-command handler. Register it with
-/// `bash.register_command("obelisk", obelisk_pack::command_handler(host, generate))`.
+/// `bash.register_command("obelisk", obelisk_pack::command_handler(host, generate, cloud))`.
 /// The handler owns `host` for the life of the session (an `FnMut` closure,
 /// not `Rc<RefCell<_>>`, since only the command itself ever touches it).
-pub fn command_handler(host: Box<dyn ControlPlane>, generate: Generate) -> CustomCommandHandler {
+pub fn command_handler(
+    host: Box<dyn ControlPlane>,
+    generate: Generate,
+    cloud: Option<Box<dyn Cloud>>,
+) -> CustomCommandHandler {
     let mut host = host;
     let mut generate = generate;
+    let mut cloud = cloud;
     Box::new(move |interp, args, stdin| {
+        if args.first().map(String::as_str) == Some("cloud") {
+            return execute_cloud(
+                interp,
+                &args[1..],
+                &stdin,
+                &mut generate,
+                cloud.as_mut().map(|c| c.as_mut() as &mut dyn Cloud),
+            );
+        }
         execute_obelisk(interp, args, &stdin, &mut generate, host.as_mut())
     })
 }
@@ -522,6 +565,247 @@ fn generate_new(
         stdout.push_str(&format!("Generated {path:?}\n"));
     }
     Ok(ok(stdout))
+}
+
+// ---------------------------------------------------------------------------
+// ObeliskNet (`obelisk cloud`)
+// ---------------------------------------------------------------------------
+
+/// `obelisk cloud app` subcommands served by the app's own API, reusing the local commands.
+const CLOUD_APP_API: [&str; 4] = ["functions", "executions", "call", "deployment"];
+
+const CLOUD_HELP: &str = "Usage: obelisk cloud <command> [args]\n\nManage ObeliskNet apps with OBELISK_CLOUD_API_URL and OBELISK_CLOUD_API_TOKEN.\n\nCommands:\napps list                  List apps.\ntoken list|get ID          List API tokens, or show one.\napp [--app NAME] ...       Manage one app; run `obelisk cloud app --help`.\n\nGlobal options: --json, --verbose, --command-id ID.\n";
+
+const CLOUD_APP_HELP: &str = "Usage: obelisk cloud app [--app NAME] [-a APP.TOML] <subcommand>\n\nThe app is --app, else app_name in the -a file or ./app.toml.\n\nSubcommands:\nnew [NAME]                       Create the app from the app policy.\ndeploy [-a APP.TOML] [-d DEPLOYMENT.TOML]\nCreate or restage, apply, start, and deploy; prints the webhook URL.\nget | status                     Show the app or its runtime status.\nstage                            Stage the app policy from -a or ./app.toml.\napply [--force] | start | stop   Apply staged changes, or start/stop the VM.\ndelete                           Delete the app.\nenv list|set NAME VALUE|unset NAME\nsecrets list|set NAME (--stdin|--from-env VAR)|unset NAME\nendpoint [api|webhook|webui]     Print the app's URLs.\nfunctions|executions|call|deployment ...\nThe local commands, run against the app's API.\n";
+
+fn execute_cloud(
+    interp: &mut Interpreter,
+    args: &[String],
+    stdin: &str,
+    generate: &mut Generate,
+    cloud: Option<&mut dyn Cloud>,
+) -> CommandOutput {
+    match try_execute_cloud(interp, args, stdin, generate, cloud) {
+        Ok(result) => result,
+        Err(message) => fail(format!("obelisk: {message}\n")),
+    }
+}
+
+fn try_execute_cloud(
+    interp: &mut Interpreter,
+    args: &[String],
+    stdin: &str,
+    generate: &mut Generate,
+    cloud: Option<&mut dyn Cloud>,
+) -> Result<CommandOutput, String> {
+    if args.first().is_none_or(|arg| is_help_flag(arg)) {
+        return Ok(ok(CLOUD_HELP.to_string()));
+    }
+    let cloud = cloud.ok_or("`obelisk cloud` is not available in this session")?;
+    if args[0] == "app" {
+        let (mut flags, rest) = leading_cloud_flags(&args[1..])?;
+        let sub = rest.first().map(String::as_str).unwrap_or("");
+        if sub.is_empty() || is_help_flag(sub) {
+            return Ok(ok(CLOUD_APP_HELP.to_string()));
+        }
+        if CLOUD_APP_API.contains(&sub) {
+            if sub == "deployment" && rest.get(1).map(String::as_str) == Some("refresh") {
+                return Err("`deployment refresh` mounts the local target; use `obelisk cloud app --app NAME deployment show ID` instead".to_string());
+            }
+            let app = cloud_app_name(interp, &flags)?;
+            let mut host = cloud.control_plane(&app);
+            return try_execute_obelisk(interp, rest, stdin, generate, host.as_mut());
+        }
+        if help_requested(rest) {
+            return Ok(ok(CLOUD_APP_HELP.to_string()));
+        }
+        if sub == "deploy" {
+            return cloud_deploy(interp, &mut flags, &rest[1..], generate, cloud);
+        }
+    }
+    if help_requested(args) {
+        return Ok(ok(CLOUD_HELP.to_string()));
+    }
+    cloud_run(interp, args, stdin, cloud)
+}
+
+#[derive(Default)]
+struct CloudFlags {
+    app: Option<String>,
+    app_config: Option<String>,
+}
+
+/// `--app NAME` and `-a PATH` given before the subcommand; the rest from the subcommand on.
+fn leading_cloud_flags(args: &[String]) -> Result<(CloudFlags, &[String]), String> {
+    let mut flags = CloudFlags::default();
+    let mut i = 0;
+    while i < args.len() && args[i].starts_with('-') && !is_help_flag(&args[i]) {
+        let (name, inline) = match args[i].split_once('=') {
+            Some((name, value)) => (name, Some(value.to_string())),
+            None => (args[i].as_str(), None),
+        };
+        let slot = match name {
+            "--app" => &mut flags.app,
+            "-a" | "--app-config" => &mut flags.app_config,
+            _ => break,
+        };
+        let consumed = if inline.is_some() { 1 } else { 2 };
+        let value = inline
+            .or_else(|| args.get(i + 1).cloned())
+            .ok_or_else(|| format!("{name} requires a value"))?;
+        *slot = Some(value);
+        i += consumed;
+    }
+    Ok((flags, &args[i..]))
+}
+
+/// The app: `--app`, else `app_name` in the `-a` file or ./app.toml.
+fn cloud_app_name(interp: &Interpreter, flags: &CloudFlags) -> Result<String, String> {
+    if let Some(app) = &flags.app {
+        return Ok(app.clone());
+    }
+    let path = flags.app_config.as_deref().unwrap_or(APP_POLICY_FILE);
+    read_app_policy(interp, path, flags.app_config.is_some())?
+        .as_deref()
+        .and_then(app_name_of)
+        .ok_or_else(|| "Select an app with --app or app_name in ./app.toml".to_string())
+}
+
+/// PORT: `appNameOf`, a top-level `app_name = "..."` line.
+fn app_name_of(policy: &str) -> Option<String> {
+    let quotes: &[char] = &['"', '\''];
+    policy.lines().find_map(|line| {
+        let value = line
+            .trim_start_matches([' ', '\t'])
+            .strip_prefix("app_name")?;
+        let value = value.trim_start_matches([' ', '\t']).strip_prefix('=')?;
+        let value = value.trim_start_matches([' ', '\t']).strip_prefix(quotes)?;
+        let end = value.find(quotes)?;
+        Some(value[..end].to_string())
+    })
+}
+
+fn read_app_policy(
+    interp: &Interpreter,
+    path: &str,
+    required: bool,
+) -> Result<Option<String>, String> {
+    let resolved = normalize_path(&interp.cwd, path);
+    if let Some(bytes) = interp.fs.read_file(&resolved) {
+        return Ok(Some(String::from_utf8_lossy(&bytes).into_owned()));
+    }
+    if required {
+        return Err(format!(
+            "Cannot read policy {path}: No such file or directory"
+        ));
+    }
+    Ok(None)
+}
+
+/// PORT: obelisk's cloud/deploy.rs: the provisioner steps run in an activity,
+/// then the deployment is applied against the app's API like `deployment apply`.
+fn cloud_deploy(
+    interp: &mut Interpreter,
+    flags: &mut CloudFlags,
+    args: &[String],
+    generate: &mut Generate,
+    cloud: &mut dyn Cloud,
+) -> Result<CommandOutput, String> {
+    let mut app_config = flags
+        .app_config
+        .clone()
+        .unwrap_or_else(|| APP_POLICY_FILE.to_string());
+    let mut deployment = "deployment.toml".to_string();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        let mut value = || {
+            i += 1;
+            required(args.get(i).map(String::as_str), arg).map(str::to_string)
+        };
+        match arg {
+            "--app" => flags.app = Some(value()?),
+            "-a" | "--app-config" => app_config = value()?,
+            "-d" | "--deployment" => deployment = value()?,
+            "--fill" => return Err("`--fill` is interactive; set values with `obelisk cloud app --app NAME env set` and `secrets set`, then retry".to_string()),
+            _ => return Err(format!("cloud app deploy: unexpected argument '{arg}'")),
+        }
+        i += 1;
+    }
+    let policy = read_app_policy(interp, &app_config, true)?.unwrap_or_default();
+    let app = flags
+        .app
+        .clone()
+        .or_else(|| app_name_of(&policy))
+        .ok_or("Select an app with --app or app_name in the app policy")?;
+    let target = match cloud.prepare_deploy(&app, &policy) {
+        Ok(target) => target,
+        Err(error) => return Ok(fail(format!("obelisk: {error}\n"))),
+    };
+    let step = format!(
+        "→ obelisk cloud app --app {app} deployment apply {deployment}  Uploading and activating deployment\n"
+    );
+    let mut host = cloud.control_plane(&app);
+    let apply = [
+        "deployment".to_string(),
+        "apply".to_string(),
+        deployment.clone(),
+    ];
+    let applied = execute_obelisk(interp, &apply, "", generate, host.as_mut());
+    let mut stderr = format!("{}{step}{}", target.log, applied.stderr);
+    if applied.exit_code != 0 {
+        stderr.push_str(&format!("obelisk: Deployment did not complete; inspect `obelisk cloud app --app {app} deployment active` to see what is serving, then retry `obelisk cloud app --app {app} deploy -a {app_config} -d {deployment}`\n"));
+        return Ok(CommandOutput {
+            stdout: applied.stdout,
+            stderr,
+            exit_code: applied.exit_code,
+        });
+    }
+    stderr.push_str(&format!("Deployed {app}\n"));
+    let webhook = target
+        .webhook_url
+        .map(|url| format!("{url}\n"))
+        .unwrap_or_default();
+    Ok(CommandOutput {
+        stdout: format!("{}{webhook}", applied.stdout),
+        stderr,
+        exit_code: 0,
+    })
+}
+
+/// Provisioner commands, run by the `cloud.run` activity with the app policy's text.
+fn cloud_run(
+    interp: &mut Interpreter,
+    args: &[String],
+    stdin: &str,
+    cloud: &mut dyn Cloud,
+) -> Result<CommandOutput, String> {
+    let mut forwarded = Vec::new();
+    let mut input = stdin.to_string();
+    let mut app_config = None;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--from-env" {
+            i += 1;
+            let name = required(args.get(i).map(String::as_str), "--from-env")?;
+            input = interp
+                .env
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("environment variable {name} is not set"))?;
+            forwarded.push("--stdin".to_string());
+        } else {
+            if arg == "-a" || arg == "--app-config" {
+                app_config = args.get(i + 1).cloned();
+            }
+            forwarded.push(arg.clone());
+        }
+        i += 1;
+    }
+    let path = app_config.as_deref().unwrap_or(APP_POLICY_FILE);
+    let policy = read_app_policy(interp, path, app_config.is_some())?;
+    cloud.run(&forwarded, &input, policy.as_deref())
 }
 
 /// Written in place of the template's README.md, whose `obelisk server run` steps do not apply here.
@@ -1669,6 +1953,7 @@ Commands:\n\
   call         Call a deployed function and print its result.\n\
   deployment   Inspect, edit, submit, and activate deployments.\n\
   generate     Print a starter configuration file, or create a new app.\n\
+  cloud        Manage and deploy ObeliskNet apps.\n\
 \n\
 Run `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n"
         .to_string()
@@ -4140,7 +4425,10 @@ content_digest = \"sha256:1\"\n\
             cwd: "/workspace".into(),
             ..Default::default()
         });
-        bash.register_command("obelisk", command_handler(Box::new(host), no_generate()));
+        bash.register_command(
+            "obelisk",
+            command_handler(Box::new(host), no_generate(), None),
+        );
         let out = bash.exec("obelisk functions list | cat", Default::default());
         assert_eq!(out.exit_code, 0);
         assert_eq!(out.stdout, "");
@@ -4195,5 +4483,127 @@ content_digest = \"sha256:1\"\n\
         let out = bash.exec("obelisk functions list", Default::default());
         assert_eq!(out.exit_code, 127);
         assert!(out.stderr.contains("command not found"));
+    }
+
+    // -- obelisk cloud --
+
+    /// A fake `obelisk-agent:tools/cloud`: records provisioner runs and hands out `apps[name]`.
+    #[derive(Default)]
+    struct FakeCloud {
+        apps: BTreeMap<String, FakeHost>,
+        runs: Vec<(Vec<String>, String, Option<String>)>,
+        deploys: Vec<(String, String)>,
+    }
+
+    impl Cloud for FakeCloud {
+        fn run(
+            &mut self,
+            args: &[String],
+            stdin: &str,
+            app_toml: Option<&str>,
+        ) -> Result<CommandOutput, String> {
+            self.runs.push((
+                args.to_vec(),
+                stdin.to_string(),
+                app_toml.map(str::to_string),
+            ));
+            Ok(ok("ok\n".to_string()))
+        }
+
+        fn prepare_deploy(&mut self, app: &str, app_toml: &str) -> Result<DeployTarget, String> {
+            self.deploys.push((app.to_string(), app_toml.to_string()));
+            Ok(DeployTarget {
+                api_url: "https://demo.test".to_string(),
+                webhook_url: Some("https://demo.test/hook".to_string()),
+                log: "→ step\n".to_string(),
+            })
+        }
+
+        fn control_plane(&mut self, app: &str) -> Box<dyn ControlPlane> {
+            Box::new(self.apps.remove(app).unwrap_or_else(FakeHost::new))
+        }
+    }
+
+    fn cloud_command(
+        i: &mut Interpreter,
+        args: &[&str],
+        cloud: Option<&mut dyn Cloud>,
+    ) -> CommandOutput {
+        execute_cloud(i, &words(args), "", &mut no_generate(), cloud)
+    }
+
+    #[test]
+    fn cloud_app_deploy_prepares_the_app_named_in_app_toml_then_applies_there() {
+        let mut i = interp("/workspace/app");
+        i.fs.write_file("/workspace/app/app.toml", b"app_name = \"demo\"\n")
+            .unwrap();
+        i.fs.write_file(
+            "/workspace/app/deployment.toml",
+            b"[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n",
+        )
+        .unwrap();
+        let app = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"").with(
+            "obelisk-agent:tools/webapi.apply-deployment",
+            "{\"ok\":\"switched\"}",
+        );
+        let mut cloud = FakeCloud::default();
+        cloud.apps.insert("demo".to_string(), app);
+        let out = cloud_command(&mut i, &["app", "deploy"], Some(&mut cloud));
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(
+            cloud.deploys,
+            [("demo".to_string(), "app_name = \"demo\"\n".to_string())]
+        );
+        assert_eq!(
+            out.stdout,
+            "Submitted as Dep_new\nApplied successfully.\nhttps://demo.test/hook\n"
+        );
+        assert!(out.stderr.starts_with("→ step\n"), "{}", out.stderr);
+        assert!(out.stderr.ends_with("\nDeployed demo\n"), "{}", out.stderr);
+    }
+
+    #[test]
+    fn cloud_app_api_subcommands_run_against_the_selected_apps_control_plane() {
+        let app = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.get-execution",
+            "{\"execution_id\":\"E_1\"}",
+        );
+        let mut cloud = FakeCloud::default();
+        cloud.apps.insert("demo".to_string(), app);
+        let mut i = interp("/workspace");
+        let args = ["app", "--app", "demo", "executions", "get", "E_1"];
+        let out = cloud_command(&mut i, &args, Some(&mut cloud));
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert!(out.stdout.contains("E_1"), "{}", out.stdout);
+    }
+
+    #[test]
+    fn cloud_secrets_set_from_env_sends_the_variable_as_stdin() {
+        let mut i = interp("/workspace");
+        i.env.insert("API_KEY".to_string(), "s3cret".to_string());
+        let mut cloud = FakeCloud::default();
+        let args = [
+            "app",
+            "--app",
+            "demo",
+            "secrets",
+            "set",
+            "API_KEY",
+            "--from-env",
+            "API_KEY",
+        ];
+        let out = cloud_command(&mut i, &args, Some(&mut cloud));
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        let forwarded = words(&[
+            "app", "--app", "demo", "secrets", "set", "API_KEY", "--stdin",
+        ]);
+        assert_eq!(cloud.runs, [(forwarded, "s3cret".to_string(), None)]);
+    }
+
+    #[test]
+    fn cloud_without_the_cloud_tools_is_an_error() {
+        let out = cloud_command(&mut interp("/workspace"), &["apps", "list"], None);
+        assert_ne!(out.exit_code, 0);
+        assert!(out.stderr.contains("not available"), "{}", out.stderr);
     }
 }

@@ -10,6 +10,11 @@
 // except `deploymentSubmit`, which throws `{ missingFiles }` for the
 // recoverable missing-files arm.
 //
+// `cloud` backs `obelisk cloud ...` (ObeliskNet): `run(args, stdin, appToml)`
+// for provisioner commands, `prepareDeploy(app, appToml)` for the first half
+// of `app deploy`, and `controlPlane(app)` for a control plane against that
+// app's own API (see host.js's `createCloud`).
+//
 // Custom-command handlers receive the full argv including argv[0] (see
 // interpreter.js's `invoke`), unlike workflow-rs's `CustomCommandHandler`
 // (argv[0] already stripped) - `commandHandler`'s `args.slice(1)` accounts
@@ -45,8 +50,8 @@ const AUTO_DIGEST = "auto";
 // shared mutable reference). `generate` is `{ obeliskVersion, githubContents, webhookUrl }`:
 // the obelisk repo ref and the statically imported `obelisk-agent:mounts/apps.request`
 // that `generate new` fetches the starter app with, and the target's webhook URL for its README.
-export function commandHandler(controlPlane, generate) {
-    return (interp, args, stdin) => executeObelisk(interp, args.slice(1), stdin, controlPlane, generate);
+export function commandHandler(controlPlane, generate, cloud = null) {
+    return (interp, args, stdin) => executeObelisk(interp, args.slice(1), stdin, controlPlane, generate, cloud);
 }
 
 // ---------------------------------------------------------------------------
@@ -144,8 +149,9 @@ export function blobLoader(controlPlane) {
 // Directly callable by tests, mirroring the Rust test module's
 // `execute_obelisk(&mut interp, &words(...), stdin, &mut generate, &mut host)` -
 // `args` here does NOT include the command name itself (see `commandHandler`).
-export function executeObelisk(interp, args, stdin, controlPlane, generate) {
+export function executeObelisk(interp, args, stdin, controlPlane, generate, cloud = null) {
     try {
+        if (args[0] === "cloud") return executeCloud(interp, args.slice(1), stdin, generate, cloud);
         return tryExecuteObelisk(interp, args, stdin, controlPlane, generate);
     } catch (message) {
         return fail(`obelisk: ${typeof message === "string" ? message : String(message?.message ?? message)}\n`);
@@ -225,6 +231,127 @@ function tryExecuteObelisk(interp, args, stdin, controlPlane, generate) {
     if (group === "generate") return executeGenerate(interp, action, rest, generate);
     if (group === "deployment") return executeDeployment(interp, action, rest, controlPlane);
     return fail(`obelisk: unknown command '${args.join(" ")}'\n${helpText}`);
+}
+
+// ---------------------------------------------------------------------------
+// ObeliskNet (`obelisk cloud`)
+// ---------------------------------------------------------------------------
+
+// `obelisk cloud app` subcommands served by the app's own API, reusing the local commands.
+const CLOUD_APP_API = ["functions", "executions", "call", "deployment"];
+
+function executeCloud(interp, args, stdin, generate, cloud) {
+    if (args.length === 0 || isHelpFlag(args[0])) return ok(cloudHelp);
+    if (cloud === null) throw "`obelisk cloud` is not available in this session";
+    if (args[0] === "app") {
+        const { flags, rest } = leadingCloudFlags(args.slice(1));
+        const sub = rest[0] ?? "";
+        if (sub === "" || isHelpFlag(sub)) return ok(cloudAppHelp);
+        if (CLOUD_APP_API.includes(sub)) {
+            if (sub === "deployment" && rest[1] === "refresh") {
+                throw "`deployment refresh` mounts the local target; use `obelisk cloud app --app NAME deployment show ID` instead";
+            }
+            const app = cloudAppName(interp, flags);
+            return tryExecuteObelisk(interp, rest, stdin, cloud.controlPlane(app), generate);
+        }
+        if (helpRequested(rest)) return ok(cloudAppHelp);
+        if (sub === "deploy") return cloudDeploy(interp, flags, rest.slice(1), cloud);
+    }
+    if (helpRequested(args)) return ok(cloudHelp);
+    return cloudRun(interp, args, stdin, cloud);
+}
+
+// `--app NAME` and `-a PATH` given before the subcommand; the rest from the subcommand on.
+function leadingCloudFlags(args) {
+    const flags = {};
+    let i = 0;
+    while (i < args.length && args[i].startsWith("-") && !isHelpFlag(args[i])) {
+        const [name, inline] = args[i].includes("=") ? args[i].split(/=(.*)/s, 2) : [args[i], undefined];
+        const key = { "--app": "app", "-a": "appConfig", "--app-config": "appConfig" }[name];
+        if (!key) break;
+        const value = inline ?? args[i + 1];
+        if (value === undefined) throw `${name} requires a value`;
+        flags[key] = value;
+        i += inline === undefined ? 2 : 1;
+    }
+    return { flags, rest: args.slice(i) };
+}
+
+// The app: `--app`, else `app_name` in the `-a` file or ./app.toml.
+function cloudAppName(interp, flags) {
+    if (flags.app) return flags.app;
+    const policy = readAppPolicy(interp, flags.appConfig ?? APP_POLICY_FILE, flags.appConfig !== undefined);
+    const name = policy === null ? null : appNameOf(policy);
+    if (name === null) throw "Select an app with --app or app_name in ./app.toml";
+    return name;
+}
+
+function appNameOf(policy) {
+    return /^[ \t]*app_name[ \t]*=[ \t]*["']([^"'\n]*)["']/m.exec(policy)?.[1] ?? null;
+}
+
+function readAppPolicy(interp, path, required) {
+    const resolved = interp.resolvePath(path);
+    if (interp.vfs.exists(resolved) && !interp.vfs.isDir(resolved)) return interp.vfs.readFile(resolved);
+    if (required) throw `Cannot read policy ${path}: No such file or directory`;
+    return null;
+}
+
+// PORT: obelisk's cloud/deploy.rs: the provisioner steps run in an activity,
+// then the deployment is applied against the app's API like `deployment apply`.
+function cloudDeploy(interp, flags, args, cloud) {
+    let appConfig = flags.appConfig ?? APP_POLICY_FILE;
+    let deployment = "deployment.toml";
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === "--app") flags.app = required(args[++i], arg);
+        else if (arg === "-a" || arg === "--app-config") appConfig = required(args[++i], arg);
+        else if (arg === "-d" || arg === "--deployment") deployment = required(args[++i], arg);
+        else if (arg === "--fill") throw "`--fill` is interactive; set values with `obelisk cloud app --app NAME env set` and `secrets set`, then retry";
+        else throw `cloud app deploy: unexpected argument '${arg}'`;
+    }
+    const policy = readAppPolicy(interp, appConfig, true);
+    const app = flags.app ?? appNameOf(policy);
+    if (app === null) throw "Select an app with --app or app_name in the app policy";
+    let target;
+    try {
+        target = cloud.prepareDeploy(app, policy);
+    } catch (error) {
+        return fail(`obelisk: ${error}\n`);
+    }
+    const step = `→ obelisk cloud app --app ${app} deployment apply ${deployment}  Uploading and activating deployment\n`;
+    const applied = executeObelisk(interp, ["deployment", "apply", deployment], "", cloud.controlPlane(app), null);
+    let stderr = `${target.log}${step}${applied.stderr}`;
+    if (applied.exitCode !== 0) {
+        stderr += `obelisk: Deployment did not complete; inspect \`obelisk cloud app --app ${app} deployment active\` to see what is serving, then retry \`obelisk cloud app --app ${app} deploy -a ${appConfig} -d ${deployment}\`\n`;
+        return { stdout: applied.stdout, stderr, exitCode: applied.exitCode };
+    }
+    stderr += `Deployed ${app}\n`;
+    const webhook = target.webhookUrl === null ? "" : `${target.webhookUrl}\n`;
+    return { stdout: `${applied.stdout}${webhook}`, stderr, exitCode: 0 };
+}
+
+// Provisioner commands, run by the `cloud.run` activity with the app policy's text.
+function cloudRun(interp, args, stdin, cloud) {
+    const forwarded = [];
+    let input = stdin ?? "";
+    let appConfig = null;
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === "--from-env") {
+            const name = required(args[++i], "--from-env");
+            const value = interp.getVar(name);
+            if (value === undefined) throw `environment variable ${name} is not set`;
+            input = value;
+            forwarded.push("--stdin");
+        } else {
+            if (arg === "-a" || arg === "--app-config") appConfig = args[i + 1];
+            forwarded.push(arg);
+        }
+    }
+    const policy = readAppPolicy(interp, appConfig ?? APP_POLICY_FILE, appConfig !== null);
+    const output = cloud.run(forwarded, input, policy);
+    return { stdout: output.stdout, stderr: output.stderr, exitCode: output.exitCode };
 }
 
 // Written in place of the template's README.md, whose `obelisk server run` steps do not apply here.
@@ -794,7 +921,13 @@ function actionHelp(group, action) {
 // subcommand names in the .rs source actually compile to unindented lines.
 // These JS literals must match that stripped (unindented) output exactly.
 const helpText =
-    "Usage: obelisk <command> [args]\n\nQuery and control the running Obelisk server, and edit the deployment checked\nout under /workspace/deployment/current.\n\nCommands:\nfunctions    List deployed functions, or print a function's WIT.\nexecutions   List executions, or show one execution's record, logs, or result.\ncall         Call a deployed function and print its result.\ndeployment   Inspect, edit, submit, and activate deployments.\ngenerate     Print a starter configuration file, or create a new app.\n\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
+    "Usage: obelisk <command> [args]\n\nQuery and control the running Obelisk server, and edit the deployment checked\nout under /workspace/deployment/current.\n\nCommands:\nfunctions    List deployed functions, or print a function's WIT.\nexecutions   List executions, or show one execution's record, logs, or result.\ncall         Call a deployed function and print its result.\ndeployment   Inspect, edit, submit, and activate deployments.\ngenerate     Print a starter configuration file, or create a new app.\ncloud        Manage and deploy ObeliskNet apps.\n\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
+
+const cloudHelp =
+    "Usage: obelisk cloud <command> [args]\n\nManage ObeliskNet apps with OBELISK_CLOUD_API_URL and OBELISK_CLOUD_API_TOKEN.\n\nCommands:\napps list                  List apps.\ntoken list|get ID          List API tokens, or show one.\napp [--app NAME] ...       Manage one app; run `obelisk cloud app --help`.\n\nGlobal options: --json, --verbose, --command-id ID.\n";
+
+const cloudAppHelp =
+    "Usage: obelisk cloud app [--app NAME] [-a APP.TOML] <subcommand>\n\nThe app is --app, else app_name in the -a file or ./app.toml.\n\nSubcommands:\nnew [NAME]                       Create the app from the app policy.\ndeploy [-a APP.TOML] [-d DEPLOYMENT.TOML]\nCreate or restage, apply, start, and deploy; prints the webhook URL.\nget | status                     Show the app or its runtime status.\nstage                            Stage the app policy from -a or ./app.toml.\napply [--force] | start | stop   Apply staged changes, or start/stop the VM.\ndelete                           Delete the app.\nenv list|set NAME VALUE|unset NAME\nsecrets list|set NAME (--stdin|--from-env VAR)|unset NAME\nendpoint [api|webhook|webui]     Print the app's URLs.\nfunctions|executions|call|deployment ...\nThe local commands, run against the app's API.\n";
 
 const functionsHelp =
     "Usage: obelisk functions <subcommand>\n\nList deployed functions, or print a single function's WIT interface.\n\nSubcommands:\nlist [--prefix PREFIX] [--length N] [--json]   List functions and their signatures.\nwit FFQN                                        Print the WIT interface for one function.\n";

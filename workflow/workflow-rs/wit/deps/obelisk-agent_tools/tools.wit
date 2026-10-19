@@ -163,3 +163,25 @@ interface webapi {
   stub-execution: func(execution-id: string, result-json: string) -> result<action-result, tool-error>;
   apply-deployment: func(deployment-id: string) -> result<string, string>;
 }
+
+// ObeliskNet (`obelisk cloud`), authenticated by OBELISK_CLOUD_API_TOKEN.
+interface cloud {
+  record command-output {
+    stdout: string,
+    stderr: string,
+    exit-code: u32,
+  }
+
+  record deploy-target {
+    api-url: string,
+    webhook-url: option<string>,
+    log: string,
+  }
+
+  // Provisioner commands (`obelisk cloud apps|token|app ...` minus deploy and app API calls).
+  run: func(args: list<string>, stdin: string, app-toml: option<string>) -> result<command-output, string>;
+  // Create or restage the app from `app-toml`, apply and start it, return where to deploy.
+  prepare-deploy: func(app: string, app-toml: string) -> result<deploy-target, string>;
+  // One webapi `operation` with JSON positional params against the app's API; returns JSON.
+  tenant: func(app: string, operation: string, params-json: string) -> result<string, string>;
+}

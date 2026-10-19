@@ -10,15 +10,17 @@
 // The manifest is returned whole when it fits in the byte budget. For a large
 // manifest, pass `offset`/`length` to page a byte window of `deployment_toml`
 // (the `component-type` selector is accepted for compatibility but ignored).
+import { targetBase, targetToken } from "./target.js";
+
 const MAX_RESULT_BYTES = 96 * 1024;
 
 export default async function get_deployment(deploymentId, componentType, offset, length, maxBytes) {
     if (!deploymentId) throw "deployment-id is required";
-    const base = process.env["TARGET_OBELISK_API_URL"];
+    const base = targetBase();
     if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}`,
-        { headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } },
+        { headers: { accept: "application/json", authorization: `Bearer ${targetToken()}` } },
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     const record = JSON.parse(await resp.text());

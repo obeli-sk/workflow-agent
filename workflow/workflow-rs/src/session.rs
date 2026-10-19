@@ -50,7 +50,7 @@ use crate::generated::obelisk_agent::stub::stub::{
 };
 use crate::generated::obelisk_agent::stub_obelisk_ext::stub as session_ext;
 use crate::generated::obelisk_agent::stub_obelisk_stub::stub as session_stub;
-use crate::host::RealHost;
+use crate::host::{CloudHost, RealHost};
 use crate::script_watch::ScriptWatchGuard;
 use crate::support::last_response_execution_id;
 
@@ -645,6 +645,7 @@ pub fn agent_loop(
                 github: github_contents(),
                 webhook_url: config.webhook_url.clone(),
             },
+            Some(Box::new(CloudHost::new(notifications.clone()))),
         ),
     );
     let max_steps = config.max_steps;
