@@ -95,9 +95,9 @@ name = "input_accepted_at"
 ffqn = "obelisk-agent:config/config.input-accepted-at"
 wit = "wit"
 location = "activity/input-accepted-at.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${OBELISK_API_URL}"
 methods = ["GET"]
 request_url_regex = "^GET https?://[^/]+/v1/executions/E_[^/]+/status$"
 secrets = ["OBELISK_API_TOKEN"]
@@ -155,13 +155,13 @@ location = "activity/chat.js"
 max_retries = 0
 exec.lock_expiry.seconds = 30
 env_vars = [
-  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" },
   { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
   { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
   { key = "LLM_API_PREFIX", value = "${LLM_API_PREFIX:-}" },
 ]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${OBELISK_API_URL}"
 methods = ["GET", "PUT", "POST"]
 request_url_regex = "^GET https?://[^/]+/v1/executions|PUT https?://[^/]+/v1/executions/E_[^/]+/stub$|POST https?://[^/]+/v1/executions$"
 secrets = ["OBELISK_API_TOKEN"]
@@ -222,11 +222,11 @@ env_vars = [
   { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
   { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
   { key = "LLM_API_PREFIX", value = "${LLM_API_PREFIX:-}" },
-  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" },
 ]
 # Reconstructs history from prior LLM executions (activity/llm-history.js).
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${OBELISK_API_URL}"
 methods = ["POST"]
 request_url_regex = "^POST https?://[^/]+/v1/executions/events/batch$"
 secrets = ["OBELISK_API_TOKEN"]
@@ -513,9 +513,9 @@ name = "tool_pause_execution"
 ffqn = "obelisk-agent:tools/webapi.pause-execution"
 wit = "wit"
 location = "packs/obelisk-control/tools/pause-execution.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${OBELISK_API_URL}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT https?://[^/]+/v1/executions/E_[^/]+/pause|GET https?://[^/]+/v1/executions/E_[^/]+/status)$"
 secrets = ["OBELISK_API_TOKEN"]
@@ -526,9 +526,9 @@ name = "tool_unpause_execution"
 ffqn = "obelisk-agent:tools/webapi.unpause-execution"
 wit = "wit"
 location = "packs/obelisk-control/tools/unpause-execution.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${OBELISK_API_URL}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT https?://[^/]+/v1/executions/E_[^/]+/unpause|GET https?://[^/]+/v1/executions/E_[^/]+/status)$"
 secrets = ["OBELISK_API_TOKEN"]
@@ -539,9 +539,9 @@ name = "tool_cancel_execution"
 ffqn = "obelisk-agent:tools/webapi.cancel-execution"
 wit = "wit"
 location = "packs/obelisk-control/tools/cancel-execution.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${OBELISK_API_URL}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT https?://[^/]+/v1/executions/E_[^/]+/cancel|GET https?://[^/]+/v1/executions/E_[^/]+/status)$"
 secrets = ["OBELISK_API_TOKEN"]
@@ -552,9 +552,9 @@ name = "tool_stub_execution"
 ffqn = "obelisk-agent:tools/webapi.stub-execution"
 wit = "wit"
 location = "packs/obelisk-control/tools/stub-execution.js"
-env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" }]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${OBELISK_API_URL}"
 methods = ["GET", "PUT"]
 request_url_regex = "^(PUT https?://[^/]+/v1/executions/E_[^/]+/stub|GET https?://[^/]+/v1/executions/E_[^/]+/status)$"
 secrets = ["OBELISK_API_TOKEN"]
@@ -677,8 +677,8 @@ routes = [
   { methods = ["POST"], route = "/api/input/:execution-id" },
 ]
 env_vars = [
-  { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
-  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL}" },
+  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" },
   { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
   { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
   { key = "LLM_API_PREFIX", value = "${LLM_API_PREFIX:-}" },
@@ -687,7 +687,7 @@ env_vars = [
 # deployments, files). These run as direct fetches from the webhook instead of
 # one child activity per call.
 [[webhook_endpoint_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "${OBELISK_API_URL}"
 methods = ["GET"]
 request_url_regex = "^GET https?://[^/]+(/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/)"
 secrets = ["OBELISK_API_TOKEN"]

@@ -35,7 +35,13 @@ Sessions carry over when you switch between them.
 
 ## Configuration
 
-All settings are environment variables read at server start.
+Runtime settings use environment variables read at server start. Self API and
+Web UI addresses are internal public-env sources declared in `app.toml`:
+
+| Variable | Source | Purpose |
+| --- | --- | --- |
+| `OBELISK_API_URL` | API listener URL | The agent's own instance for UI polling and session control. |
+| `OBELISK_UI_URL` | Web UI listener URL | Browser links; ObeliskNet sets the public URL. |
 
 ### LLM
 
