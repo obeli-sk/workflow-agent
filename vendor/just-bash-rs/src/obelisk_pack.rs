@@ -27,9 +27,7 @@ use crate::fs::{BlobLoader, FsError, LazyFileRef, LazyOrigin, Sha256Digest, Vfs}
 use crate::interpreter::{CommandOutput, Interpreter};
 use crate::obelisk_web::GithubContents;
 
-/// Each cloud app's deployments mount at CLOUD_ROOT/<app>/deployment.
-const CLOUD_ROOT: &str = "/workspace/cloud";
-/// The app's policy, written next to each mounted deployment.toml.
+/// The app's policy, written next to the pulled deployment.toml.
 const APP_POLICY_FILE: &str = "app.toml";
 /// Answered by the session itself rather than by a cloud app.
 const ASK_USER_FFQN: &str = "obelisk-agent:stub/stub.ask-user";
@@ -200,10 +198,10 @@ pub struct DeployTarget {
     pub log: String,
 }
 
-/// Result of mounting (or refreshing) the active deployment into the VFS.
+/// Result of pulling the active deployment into a working directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MountResult {
-    pub deployment_id: Option<String>,
+pub struct PullResult {
+    pub deployment_id: String,
     pub files: u32,
 }
 
@@ -211,7 +209,7 @@ pub struct MountResult {
 /// `bash.register_command("obelisk", obelisk_pack::command_handler(host, generate, cloud))`.
 /// The handler owns `host` for the life of the session (an `FnMut` closure,
 /// not `Rc<RefCell<_>>`, since only the command itself ever touches it); it
-/// shares `cloud` with the app mounts it registers.
+/// shares `cloud` with the pulled files' lazy loaders.
 pub fn command_handler(
     host: Box<dyn ControlPlane>,
     generate: Generate,
@@ -242,74 +240,40 @@ pub struct Generate {
     pub github: GithubContents,
 }
 
-pub fn app_deployment_root(app: &str) -> String {
-    format!("{CLOUD_ROOT}/{app}/deployment")
-}
-
-/// Check out the app's active deployment's `deployment.toml` plus the metadata
-/// index of its owned source files into `<root>/<id>/`, then symlink
-/// `<root>/current` to it. Only the manifest is fetched here; each owned source
-/// (component scripts/wasm and `backtrace.sources`) is registered as a lazy VFS
-/// entry. Bounded files are pulled from the CAS by `loader` on first read
-/// (`None` leaves them to the Vfs's global loader), while oversized entries stay
-/// digest-only (see `Vfs::register_lazy`), so mounting costs two host calls
-/// regardless of how many files the deployment owns.
-///
-/// Called by the app's deferred mount (`replace = false`) and again by
-/// `obelisk cloud app deployment refresh` (`replace = true`, re-registering
-/// every file so a locally-read/edited copy is dropped for the current digest;
-/// the initial mount instead leaves an already-present file alone).
-pub fn refresh_deployment_mount(
+/// Pull metadata now and pin source files to their CAS digests until first read.
+pub fn pull_deployment(
     fs: &mut Vfs,
     host: &mut dyn ControlPlane,
     loader: Option<Rc<dyn BlobLoader>>,
-    root: &str,
-    replace: bool,
-) -> Result<MountResult, String> {
+    dir: &str,
+) -> Result<PullResult, String> {
+    if fs.exists(dir) && fs.readdir(dir).is_none_or(|entries| !entries.is_empty()) {
+        return Err(format!(
+            "pull destination must be an empty directory: {dir}"
+        ));
+    }
     let deployment_id = decode_string(&host.current_deployment_id()?);
     if deployment_id.is_empty() {
-        return Ok(MountResult {
-            deployment_id: None,
-            files: 0,
-        });
+        return Err("app has no active deployment".to_string());
     }
-
     let CheckoutResult {
         deployment_toml: manifest,
         files: indexed_files,
     } = host.deployment_checkout(&deployment_id)?;
-
-    let dir = format!("{root}/{deployment_id}");
-    fs.mkdir(&dir, true).map_err(fs_error_message)?;
-    // The agent edits and re-submits this manifest by hand, so hide every pinned
-    // digest it never needs to maintain (standalone `content_digest`,
-    // `component_files` values, `backtrace.sources` tables): `deployment submit`
-    // recomputes each from the file's current bytes.
-    let manifest_path = format!("{dir}/deployment.toml");
-    if replace || !fs.exists(&manifest_path) {
-        fs.write_file(&manifest_path, simplify_manifest(&manifest).as_bytes())
+    let policy = host.get_app_config()?;
+    fs.mkdir(dir, true).map_err(fs_error_message)?;
+    fs.write_file(
+        &format!("{dir}/deployment.toml"),
+        simplify_manifest(&manifest).as_bytes(),
+    )
+    .map_err(fs_error_message)?;
+    if let Some(policy) = policy {
+        fs.write_file(&format!("{dir}/{APP_POLICY_FILE}"), policy.as_bytes())
             .map_err(fs_error_message)?;
     }
-
-    let policy_path = format!("{dir}/{APP_POLICY_FILE}");
-    if replace || !fs.exists(&policy_path) {
-        match host.get_app_config()? {
-            Some(policy) => fs
-                .write_file(&policy_path, policy.as_bytes())
-                .map_err(fs_error_message)?,
-            None if fs.exists(&policy_path) => {
-                fs.remove(&policy_path, false).map_err(fs_error_message)?
-            }
-            None => {}
-        }
-    }
-
-    let mut files = 1u32;
+    let files = indexed_files.len() as u32 + 1;
     for reference in indexed_files {
         let path = format!("{dir}/{}", reference.path);
-        if !replace && fs.exists(&path) {
-            continue;
-        }
         match &loader {
             Some(loader) => fs.register_lazy_with_loader(
                 &path,
@@ -319,61 +283,11 @@ pub fn refresh_deployment_mount(
             ),
             None => fs.register_lazy(&path, &reference.digest, reference.size),
         }
-        files += 1;
     }
-
-    let current = format!("{root}/current");
-    if fs.exists(&current) {
-        fs.remove(&current, true).map_err(fs_error_message)?;
-    }
-    fs.symlink(&dir, &current).map_err(fs_error_message)?;
-    Ok(MountResult {
-        deployment_id: Some(deployment_id),
+    Ok(PullResult {
+        deployment_id,
         files,
     })
-}
-
-/// Register CLOUD_ROOT as a deferred mount: the first reference under it lists
-/// the cloud's apps and registers each app's deployment as a nested deferred
-/// mount, so a bash-only session never touches the cloud. A failed mount
-/// records the reason in `/workspace/.mount-error` (there is no `console.log`
-/// to report it to; see `session.rs`).
-pub fn register_deferred_mount(fs: &mut Vfs, cloud: Box<dyn Cloud>) {
-    let cloud: SharedCloud = Rc::new(RefCell::new(cloud));
-    let populate = Rc::new(move |fs: &mut Vfs| {
-        record_mount_error(fs, |fs| {
-            for app in list_cloud_apps(&cloud)? {
-                register_app_mount(fs, &cloud, &app);
-            }
-            Ok(())
-        });
-    });
-    fs.register_deferred_mount(CLOUD_ROOT, populate);
-}
-
-/// Register `app`'s deployment as a deferred mount unless it is already there.
-fn register_app_mount(fs: &mut Vfs, cloud: &SharedCloud, app: &str) {
-    let root = app_deployment_root(app);
-    if !is_dns_label(app) || fs.exists(&root) {
-        return;
-    }
-    let cloud = cloud.clone();
-    let app = app.to_string();
-    let mount_root = root.clone();
-    let populate = Rc::new(move |fs: &mut Vfs| {
-        record_mount_error(fs, |fs| {
-            let mut host = cloud.borrow_mut().control_plane(&app);
-            let loader = blob_loader(cloud.borrow_mut().control_plane(&app));
-            refresh_deployment_mount(fs, host.as_mut(), Some(loader), &mount_root, false).map(drop)
-        });
-    });
-    fs.register_deferred_mount(&root, populate);
-}
-
-fn record_mount_error(fs: &mut Vfs, populate: impl FnOnce(&mut Vfs) -> Result<(), String>) {
-    if let Err(err) = populate(fs) {
-        let _ = fs.write_file("/workspace/.mount-error", err.as_bytes());
-    }
 }
 
 /// The `Vfs` blob loader for an app's deployment files: fetch a file's bytes by
@@ -710,9 +624,6 @@ fn try_execute_cloud(
                 host.as_mut(),
                 Some((&app, cloud)),
             )?;
-            if result.exit_code == 0 {
-                register_app_mount(&mut interp.fs, cloud, &app);
-            }
             return Ok(result);
         }
         if help_requested(rest) {
@@ -810,10 +721,6 @@ fn list_cloud_apps(cloud: &SharedCloud) -> Result<Vec<String>, String> {
         .filter_map(|row| row.get("app_name").and_then(Value::as_str))
         .map(str::to_string)
         .collect())
-}
-
-fn is_dns_label(name: &str) -> bool {
-    validate_app_name(name).is_ok()
 }
 
 /// PORT: `appNameOf`, a top-level `app_name = "..."` line.
@@ -917,7 +824,6 @@ fn cloud_deploy(
         });
     }
     stderr.push_str(&format!("Deployed {app}\n"));
-    register_app_mount(&mut interp.fs, cloud, &app);
     let webhook = target
         .webhook_url
         .map(|url| format!("{url}\n"))
@@ -983,9 +889,9 @@ This creates the app from `app.toml` when needed, replaces its whole active depl
 `deployment.toml`, and prints the webhook URL. Then inspect it with
 `obelisk cloud app --app {app_name} functions list` and `executions list`.
 
-To deploy to an existing app instead, pass `--app NAME`. An app that cannot be reconfigured keeps
-its own policy in `{CLOUD_ROOT}/NAME/deployment/current/{APP_POLICY_FILE}`: check that it allows what
-`deployment.toml` requests, and if something is missing, ask the user to allow it.
+To edit an existing app, run `obelisk cloud app --app NAME deployment pull DIRECTORY` and edit
+the pulled files. Check the pulled `app.toml` allows what `deployment.toml` requests; if the app
+cannot be reconfigured, ask the user to allow any missing permissions.
 "#
     )
 }
@@ -1152,16 +1058,24 @@ fn execute_deployment(
         }
         "list" => deployment_list(host),
         "show" => deployment_show(host, args),
-        "refresh" => {
-            // An explicit refresh populates the tree now, so drop the deferred
-            // mount to keep a later deployment access from re-fetching it.
-            let (app, cloud) = app.ok_or("`deployment refresh` needs a cloud app")?;
-            let root = app_deployment_root(app);
-            interp.fs.clear_deferred_mount(&root);
+        "pull" => {
+            if args.len() != 1 || args[0].starts_with('-') {
+                return Err("usage: deployment pull DIRECTORY".to_string());
+            }
+            let dir = normalize_path(
+                &interp.cwd,
+                required(args.first().map(String::as_str), "DIRECTORY")?,
+            );
+            let (app, cloud) = app.ok_or("deployment pull needs a cloud app")?;
             let loader = blob_loader(cloud.borrow_mut().control_plane(app));
-            let refreshed =
-                refresh_deployment_mount(&mut interp.fs, host, Some(loader), &root, true)?;
-            Ok(ok(format!("{}\n", mount_result_json(&refreshed))))
+            let result = pull_deployment(&mut interp.fs, host, Some(loader), &dir)?;
+            Ok(ok(format!(
+                "{}\n",
+                serde_json::to_string_pretty(&json!({
+                    "deployment_id": result.deployment_id, "directory": dir, "files": result.files,
+                }))
+                .expect("json")
+            )))
         }
         "check" => {
             // Unlike `submit`, `check` has no real-obelisk counterpart to
@@ -1390,7 +1304,7 @@ fn submit_manifest(
     // table, each digest recomputed from the file's current bytes (an
     // unchanged file keeps its CAS digest, a changed one is re-hashed).
     let manifest = manifest_with_digests(&interp.fs, &dir, &manifest, interp.log_debug);
-    let deployment_id = deployment_id_from_dir(&dir);
+    let deployment_id = String::new();
     let description = option(args, "--description", "Submitted from workflow-agent VFS");
     submit_deployment(
         &interp.fs,
@@ -1887,28 +1801,6 @@ fn parent_dir(path: &str) -> String {
     }
 }
 
-/// A deployment checked out for editing lives at CLOUD_ROOT/<app>/deployment/<id>, named
-/// after its own real ID ("current" for the freshly-checked-out active one,
-/// which resolves to a fresh server-assigned ID on submit) -- only that
-/// specific layout's basename is a meaningful deployment_id. Submitting
-/// straight from anywhere else (e.g. a source-repo checkout) has no such
-/// convention: treating an unrelated directory's basename as an ID sends the
-/// server something like "workflow-agent" and fails with "invalid
-/// deployment_id: wrong prefix", so leave it empty there for the server to
-/// assign a fresh one, exactly like a brand-new "current" submission.
-fn deployment_id_from_dir(dir: &str) -> String {
-    let parts = dir
-        .strip_prefix(&format!("{CLOUD_ROOT}/"))
-        .map(|rest| rest.split('/').collect::<Vec<_>>())
-        .unwrap_or_default();
-    match parts.as_slice() {
-        [app, "deployment", name] if !app.is_empty() && !name.is_empty() && *name != "current" => {
-            name.to_string()
-        }
-        _ => String::new(),
-    }
-}
-
 /// The first positional argument, skipping flags. A flag named in `value_flags`
 /// also consumes the following token as its value; `--` ends flag parsing so the
 /// next token is positional. Keeps `submit --description X` from reading a flag
@@ -2015,13 +1907,6 @@ fn ensure_trailing_newline(text: String) -> String {
     } else {
         format!("{text}\n")
     }
-}
-
-fn mount_result_json(result: &MountResult) -> String {
-    pretty_json(&json!({
-        "deployment_id": result.deployment_id,
-        "files": result.files,
-    }))
 }
 
 /// PORT: `decodeString`. A string that itself parses as a JSON string yields
@@ -2157,7 +2042,7 @@ generate     Print a starter configuration file, or create a new app.\n\
 call obelisk-agent:stub/stub.ask-user '[\"QUESTION\"]'\n\
 Ask the user a question and print the answer.\n\
 \n\
-Each app's active deployment is mounted at /workspace/cloud/<app>/deployment/current.\n\
+Pull an app deployment into a working directory with `deployment pull DIRECTORY`.\n\
 Run `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n"
         .to_string()
 }
@@ -2201,14 +2086,14 @@ defaulting to `[]`.\n"
 fn deployment_help() -> String {
     "Usage: obelisk cloud app [--app NAME] deployment <subcommand>\n\
 \n\
-Inspect, edit, submit, and activate the app's deployments. Edits under\n\
-/workspace/cloud/NAME/deployment/current are local until `submit` or `apply`.\n\
+Inspect, edit, submit, and activate the app's deployments.\n\
+Pull into an empty directory; source bytes are fetched on first read.\n\
 \n\
 Subcommands:\n\
 active [--json]           Print the active deployment ID.\n\
 list                      List recent deployments.\n\
 show ID                   Print a stored deployment's TOML manifest.\n\
-refresh                   Re-fetch the active deployment, discarding local edits.\n\
+pull DIRECTORY            Pull the active deployment into an empty directory, loading sources lazily.\n\
 check [PATH]              Report a deployment's manifest and locally-edited sources.\n\
 submit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\n\
 enqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\n\
@@ -2641,11 +2526,6 @@ mod tests {
         host: &mut FakeHost,
     ) -> CommandOutput {
         execute_obelisk(i, args, stdin, generate, host, None)
-    }
-
-    /// Mount `host`'s active deployment as the app `demo`'s, reading blobs through the Vfs's loader.
-    fn mount(fs: &mut Vfs, host: &mut FakeHost) -> Result<MountResult, String> {
-        refresh_deployment_mount(fs, host, None, &app_deployment_root(APP), false)
     }
 
     // -- subcommand routing / argument parsing (direct calls, bypassing the
@@ -3809,313 +3689,170 @@ location = "second.js"
         assert_eq!(simplified.matches("\"auto\"").count(), 2, "{simplified}");
     }
 
-    // -- the deployment-mount VFS layout --
-
     #[test]
-    fn mount_checks_out_deployment_and_symlinks_current() {
-        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
-        let mut host = FakeHost::new()
-            .with(
-                "obelisk-agent:tools/webapi.current-deployment-id",
-                "\"dep-1\"",
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({
-                    "deployment_toml": manifest,
-                    "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 12}]
-                })
-                .to_string(),
-            );
-        let mut fs = Vfs::new();
-        let result = mount(&mut fs, &mut host).unwrap();
-        assert_eq!(
-            result,
-            MountResult {
-                deployment_id: Some("dep-1".to_string()),
-                files: 2
-            }
-        );
-        // Mount fetches only the manifest; the blob endpoint is never called.
-        assert!(
-            !host
-                .calls()
-                .iter()
-                .any(|(ffqn, _)| ffqn == "obelisk-agent:tools/webapi.deployment-read-blob")
-        );
-        assert!(fs.is_dir("/workspace/cloud/demo/deployment/current"));
-        // The mounted manifest is the digest-free view the agent edits.
-        assert_eq!(
-            fs.read_file("/workspace/cloud/demo/deployment/current/deployment.toml")
-                .as_deref(),
-            Some(simplify_manifest(manifest).as_bytes())
-        );
-        // The owned source lists immediately but holds no bytes until a loader
-        // is installed and the file is read.
-        assert!(fs.is_file("/workspace/cloud/demo/deployment/current/a.wasm"));
-        fs.set_blob_loader(FixtureLoader::rc(&[("sha256:1", b"binary-bytes")]));
-        assert_eq!(
-            fs.read_file("/workspace/cloud/demo/deployment/current/a.wasm")
-                .as_deref(),
-            Some(&b"binary-bytes"[..])
-        );
-        assert_eq!(
-            fs.read_file("/workspace/cloud/demo/deployment/dep-1/a.wasm")
-                .as_deref(),
-            Some(&b"binary-bytes"[..])
-        );
-    }
-
-    #[test]
-    fn mount_registers_backtrace_sources_from_the_nested_table() {
-        // Obelisk stores backtrace sources in a nested table with inline
-        // `{ path, content_digest }` values; the component scanner never sees
-        // them, so this exercises the dedicated backtrace scan.
-        let manifest = "[[workflow_wasm]]\n\
-name = \"wf\"\n\
-location = \"components/w.wasm\"\n\
-content_digest = \"sha256:1\"\n\
-\n\
-[workflow_wasm.backtrace.sources]\n\
-\".../src/lib.rs\" = { path = \"workflow/workflow-rs/src/lib.rs\", content_digest = \"sha256:2\" }\n";
-        let mut host = FakeHost::new()
-            .with(
-                "obelisk-agent:tools/webapi.current-deployment-id",
-                "\"dep-1\"",
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({
-                    "deployment_toml": manifest,
-                    "files": [
-                        {"path": "components/w.wasm", "digest": "sha256:1", "size": 12},
-                        {"path": "workflow/workflow-rs/src/lib.rs", "digest": "sha256:2", "size": 16}
-                    ]
-                })
-                .to_string(),
-            );
-        let mut fs = Vfs::new();
-        let result = mount(&mut fs, &mut host).unwrap();
-        // manifest + the wasm component + the backtrace source.
-        assert_eq!(result.files, 3);
-        assert!(
-            fs.is_file("/workspace/cloud/demo/deployment/current/workflow/workflow-rs/src/lib.rs")
-        );
-        fs.set_blob_loader(FixtureLoader::rc(&[("sha256:2", b"fn workflow() {}")]));
-        assert_eq!(
-            fs.read_file(
-                "/workspace/cloud/demo/deployment/current/workflow/workflow-rs/src/lib.rs"
-            )
-            .as_deref(),
-            Some(&b"fn workflow() {}"[..])
-        );
-    }
-
-    #[test]
-    fn mount_peels_double_quoted_deployment_id_before_checkout() {
-        // Regression for port-findings.md A: `current-deployment-id` is
-        // `resp.text()` of an application/json body, so its WIT string value is
-        // itself a quoted JSON string. `call_json` re-encodes that, arriving
-        // double-quoted (`"\"Dep_X\""`); the id must be peeled to `Dep_X`
-        // before it is forwarded to `deployment-checkout`.
-        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
-        let mut host = FakeHost::new()
-            .with(
-                "obelisk-agent:tools/webapi.current-deployment-id",
-                "\"\\\"Dep_X\\\"\"",
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!(
-                    json!({
-                        "deployment_toml": manifest,
-                        "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 5}]
-                    })
-                    .to_string()
-                )
-                .to_string(),
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-read-blob",
-                &json!("bytes").to_string(),
-            );
-        let mut fs = Vfs::new();
-        let result = mount(&mut fs, &mut host).unwrap();
-        assert_eq!(result.deployment_id.as_deref(), Some("Dep_X"));
-        // The checkout call gets the unwrapped id, not the still-quoted string.
-        assert_eq!(
-            host.calls()[1],
-            (
-                "obelisk-agent:tools/webapi.deployment-checkout".to_string(),
-                "[\"Dep_X\"]".to_string()
-            )
-        );
-        assert!(fs.is_dir("/workspace/cloud/demo/deployment/Dep_X"));
-    }
-
-    #[test]
-    fn mount_with_no_active_deployment_is_a_no_op() {
-        let mut host =
-            FakeHost::new().with("obelisk-agent:tools/webapi.current-deployment-id", "\"\"");
-        let mut fs = Vfs::new();
-        let result = mount(&mut fs, &mut host).unwrap();
-        assert_eq!(
-            result,
-            MountResult {
-                deployment_id: None,
-                files: 0
-            }
-        );
-        assert!(!fs.exists("/workspace/cloud/demo/deployment"));
-    }
-
-    #[test]
-    fn refresh_replaces_manifest_and_repoints_current_at_the_new_dir() {
-        let manifest_v1 =
-            "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
-        let manifest_v2 =
-            "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:2\"\n";
-        let mut host_v1 = FakeHost::new()
-            .with(
-                "obelisk-agent:tools/webapi.current-deployment-id",
-                "\"dep-1\"",
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({
-                    "deployment_toml": manifest_v1,
-                    "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 2}]
-                })
-                .to_string(),
-            )
-            .with(
-                APP_CONFIG_FFQN,
-                &json!("[policy]\noutbound_http = []\n").to_string(),
-            );
-        let mut fs = Vfs::new();
-        // A single digest-addressed loader stands in for the CAS across both
-        // deployments (the real HostBlobLoader is likewise one per session).
-        fs.set_blob_loader(FixtureLoader::rc(&[
-            ("sha256:1", b"v1"),
-            ("sha256:2", b"v2"),
-        ]));
-        mount(&mut fs, &mut host_v1).unwrap();
-
-        let mut host_v2 = FakeHost::new()
-            .with(
-                "obelisk-agent:tools/webapi.current-deployment-id",
-                "\"dep-2\"",
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({
-                    "deployment_toml": manifest_v2,
-                    "files": [{"path": "a.wasm", "digest": "sha256:2", "size": 2}]
-                })
-                .to_string(),
-            )
-            .with(APP_CONFIG_FFQN, "null");
-        let result =
-            refresh_deployment_mount(&mut fs, &mut host_v2, None, &app_deployment_root(APP), true)
-                .unwrap();
-        assert_eq!(result.deployment_id.as_deref(), Some("dep-2"));
-        // The old deployment dir is untouched; `current` now resolves to the new
-        // one and reads the new digest (sha256:2).
-        assert_eq!(
-            fs.read_file("/workspace/cloud/demo/deployment/dep-1/a.wasm")
-                .as_deref(),
-            Some(&b"v1"[..])
-        );
-        assert_eq!(
-            fs.read_file("/workspace/cloud/demo/deployment/current/a.wasm")
-                .as_deref(),
-            Some(&b"v2"[..])
-        );
-        assert_eq!(
-            fs.read_file("/workspace/cloud/demo/deployment/dep-1/app.toml")
-                .as_deref(),
-            Some(&b"[policy]\noutbound_http = []\n"[..])
-        );
-        // The target of dep-2 runs without an app config.
-        assert!(!fs.exists("/workspace/cloud/demo/deployment/current/app.toml"));
-    }
-
-    #[test]
-    fn deployment_refresh_action_calls_mount_and_reports_json() {
-        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
+    fn deployment_pull_pins_lazy_sources_and_submits_edits() {
         let host = FakeHost::new()
-            .with(
-                "obelisk-agent:tools/webapi.current-deployment-id",
-                "\"dep-1\"",
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({
-                    "deployment_toml": manifest,
-                    "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 5}]
-                })
-                .to_string(),
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-read-blob",
-                &json!("bytes").to_string(),
-            );
+            .with("obelisk-agent:tools/webapi.current-deployment-id", "\"Dep_1\"")
+            .with("obelisk-agent:tools/webapi.deployment-checkout", &json!({
+                "deployment_toml": "[[activity_js]]\nlocation = \"src/run.js\"\ncontent_digest = \"sha256:old\"\n",
+                "files": [{"path": "src/run.js", "digest": "sha256:old", "size": 3}],
+            }).to_string())
+            .with(APP_CONFIG_FFQN, &json!("app_name = \"demo\"\n").to_string())
+            .with("obelisk-agent:tools/webapi.deployment-read-blob", "\"old\"");
         let mut i = interp("/workspace");
         let out = execute_app(
             &mut i,
-            &words(&["deployment", "refresh"]),
+            &words(&["deployment", "pull", "./checkout"]),
             "",
             &mut no_generate(),
             &host,
         );
-        assert_eq!(out.exit_code, 0);
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
         assert_eq!(
-            out.stdout,
-            "{\n  \"deployment_id\": \"dep-1\",\n  \"files\": 2\n}\n"
+            serde_json::from_str::<Value>(&out.stdout).unwrap(),
+            json!({
+                "deployment_id": "Dep_1", "directory": "/workspace/checkout", "files": 2,
+            })
         );
+        assert_eq!(
+            i.fs.read_file("/workspace/checkout/app.toml").unwrap(),
+            b"app_name = \"demo\"\n"
+        );
+        assert!(
+            !host
+                .calls()
+                .iter()
+                .any(|(name, _)| name.ends_with("deployment-read-blob"))
+        );
+        assert!(!i.fs.exists("/workspace/cloud"));
+        assert_eq!(
+            i.fs.read_file("/workspace/checkout/src/run.js").unwrap(),
+            b"old"
+        );
+        assert_eq!(host.calls().last().unwrap().1, "[\"sha256:old\"]");
+        i.fs.write_file("/workspace/checkout/src/run.js", b"new")
+            .unwrap();
+        let host = host.with(SUBMIT_FFQN, "\"Dep_new\"");
+        let out = execute_app(
+            &mut i,
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/checkout/deployment.toml",
+            ]),
+            "",
+            &mut no_generate(),
+            &host,
+        );
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        let params: Value = serde_json::from_str(&host.calls().last().unwrap().1).unwrap();
+        assert_eq!(params[4], "");
+        assert!(params[0].as_str().unwrap().contains(&sha256_hex(b"new")));
+    }
+
+    #[test]
+    fn deployment_pull_protects_edits_and_reports_errors_directly() {
+        let mut i = interp("/workspace");
+        i.fs.write_file("/workspace/checkout/keep.txt", b"edited")
+            .unwrap();
+        let host = FakeHost::new();
+        let out = execute_app(
+            &mut i,
+            &words(&["deployment", "pull", "checkout"]),
+            "",
+            &mut no_generate(),
+            &host,
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stderr.contains("empty directory"));
+        assert_eq!(
+            i.fs.read_file("/workspace/checkout/keep.txt").unwrap(),
+            b"edited"
+        );
+        assert!(host.calls().is_empty());
+        let out = execute_app(
+            &mut i,
+            &words(&["deployment", "pull", "fresh"]),
+            "",
+            &mut no_generate(),
+            &host,
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stderr.contains("no fixture"));
+        assert!(!i.fs.exists("/workspace/.mount-error"));
+        assert!(!i.fs.exists("/workspace/fresh"));
+        let host = host.with("obelisk-agent:tools/webapi.current-deployment-id", "\"\"");
+        let out = execute_app(
+            &mut i,
+            &words(&["deployment", "pull", "empty"]),
+            "",
+            &mut no_generate(),
+            &host,
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(out.stderr.contains("no active deployment"));
+        for args in [
+            words(&["deployment", "pull"]),
+            words(&["deployment", "pull", "a", "b"]),
+            words(&["deployment", "pull", "--force"]),
+        ] {
+            assert_eq!(
+                execute_app(&mut i, &args, "", &mut no_generate(), &host).exit_code,
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn app_api_reads_do_not_create_mounts() {
+        let mut i = interp("/workspace");
+        let host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.current-deployment-id",
+            "\"Dep_1\"",
+        );
+        assert_eq!(
+            execute_app(
+                &mut i,
+                &words(&["deployment", "active"]),
+                "",
+                &mut no_generate(),
+                &host
+            )
+            .exit_code,
+            0
+        );
+        assert!(!i.fs.exists("/workspace/cloud"));
+        assert_eq!(host.calls().len(), 1);
     }
 
     #[test]
     fn deployment_check_reports_manifest_and_owned_sources() {
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
-        i.fs.write_file("/workspace/cloud/demo/deployment/dep-1/a.wasm", b"bytes")
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
+        i.fs.write_file("/workspace/checkout/a.wasm", b"bytes")
             .unwrap();
         let host = FakeHost::new();
         let out = execute_app(
             &mut i,
-            &words(&[
-                "deployment",
-                "check",
-                "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
-            ]),
+            &words(&["deployment", "check", "/workspace/checkout/deployment.toml"]),
             "",
             &mut no_generate(),
             &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         let parsed: Value = serde_json::from_str(&out.stdout).unwrap();
-        assert_eq!(
-            parsed["directory"],
-            "/workspace/cloud/demo/deployment/dep-1"
-        );
+        assert_eq!(parsed["directory"], "/workspace/checkout");
         assert_eq!(parsed["owned_sources"], json!(["a.wasm"]));
     }
 
     #[test]
     fn deployment_check_defaults_directory_to_cwd() {
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
-        let mut i = interp("/workspace/cloud/demo/deployment/current");
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
+        let mut i = interp("/workspace/checkout");
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
         let host = FakeHost::new();
         let out = execute_app(
             &mut i,
@@ -4126,23 +3863,17 @@ content_digest = \"sha256:1\"\n\
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         let parsed: Value = serde_json::from_str(&out.stdout).unwrap();
-        assert_eq!(
-            parsed["directory"],
-            "/workspace/cloud/demo/deployment/current"
-        );
+        assert_eq!(parsed["directory"], "/workspace/checkout");
     }
 
     #[test]
     fn deployment_submit_preflights_then_attaches_the_missing_blob() {
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
         // A locally-written (non-lazy) file whose new digest is not yet in the CAS.
-        i.fs.write_file("/workspace/cloud/demo/deployment/dep-1/a.wasm", b"bytes")
+        i.fs.write_file("/workspace/checkout/a.wasm", b"bytes")
             .unwrap();
         let digest = format!("sha256:{}", sha256_hex(b"bytes"));
         let host = FakeHost::new()
@@ -4158,7 +3889,7 @@ content_digest = \"sha256:1\"\n\
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
+                "/workspace/checkout/deployment.toml",
             ]),
             "",
             &mut no_generate(),
@@ -4166,8 +3897,7 @@ content_digest = \"sha256:1\"\n\
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         assert!(out.stdout.contains("Dep_new"), "stdout: {}", out.stdout);
-        // Preflight: manifest re-pins a.wasm from the bytes, carries no
-        // attachments, and takes the deployment id from the directory name.
+        // Preflight pins current bytes and requests a new deployment ID.
         let preflight: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         let expected =
             format!("[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"{digest}\"\n");
@@ -4175,7 +3905,7 @@ content_digest = \"sha256:1\"\n\
         assert_eq!(preflight[1], json!([]));
         assert_eq!(preflight[2], "Submitted from workflow-agent VFS");
         assert_eq!(preflight[3], false);
-        assert_eq!(preflight[4], "dep-1");
+        assert_eq!(preflight[4], "");
         // Retry: exactly the missing file, read from the VFS, tagged with the
         // digest the server asked for.
         let retry: Value = serde_json::from_str(&host.calls()[1].1).unwrap();
@@ -4186,21 +3916,18 @@ content_digest = \"sha256:1\"\n\
     }
 
     #[test]
-    fn deployment_submit_from_current_sends_empty_deployment_id() {
+    fn deployment_submit_requests_fresh_deployment_id() {
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
         let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
         execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/cloud/demo/deployment/current/deployment.toml",
+                "/workspace/checkout/deployment.toml",
             ]),
             "",
             &mut no_generate(),
@@ -4216,11 +3943,8 @@ content_digest = \"sha256:1\"\n\
         // `--description`'s value as PATH instead of skipping over it.
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
         let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
         let out = execute_app(
             &mut i,
@@ -4229,7 +3953,7 @@ content_digest = \"sha256:1\"\n\
                 "submit",
                 "--description",
                 "wh",
-                "/workspace/cloud/demo/deployment/current/deployment.toml",
+                "/workspace/checkout/deployment.toml",
             ]),
             "",
             &mut no_generate(),
@@ -4246,9 +3970,9 @@ content_digest = \"sha256:1\"\n\
         // Real obelisk's `submit` requires an explicit file path; unlike
         // `check` (an agent-only convenience with no real-CLI counterpart),
         // it does not default to ./deployment.toml.
-        let mut i = interp("/workspace/cloud/demo/deployment/current");
+        let mut i = interp("/workspace/checkout");
         i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/deployment.toml",
+            "/workspace/checkout/deployment.toml",
             b"[[activity_wasm]]\n",
         )
         .unwrap();
@@ -4272,18 +3996,14 @@ content_digest = \"sha256:1\"\n\
     fn deployment_submit_rejects_a_directory_matching_real_obelisk() {
         let mut i = interp("/workspace");
         i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/deployment.toml",
+            "/workspace/checkout/deployment.toml",
             b"[[activity_wasm]]\n",
         )
         .unwrap();
         let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
         let out = execute_app(
             &mut i,
-            &words(&[
-                "deployment",
-                "submit",
-                "/workspace/cloud/demo/deployment/current",
-            ]),
+            &words(&["deployment", "submit", "/workspace/checkout"]),
             "",
             &mut no_generate(),
             &host,
@@ -4291,37 +4011,31 @@ content_digest = \"sha256:1\"\n\
         assert_eq!(out.exit_code, 2);
         // Path-first, byte-identical to just-bash's obelisk-pack.js (a
         // description-first "Is a directory: <path>" broke cross-backend replay).
-        assert_eq!(
-            out.stderr,
-            "obelisk: /workspace/cloud/demo/deployment/current: Is a directory\n"
-        );
+        assert_eq!(out.stderr, "obelisk: /workspace/checkout: Is a directory\n");
     }
 
     #[test]
     fn deployment_submit_accepts_a_path_to_the_toml_file() {
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
         let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
         let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
+                "/workspace/checkout/deployment.toml",
             ]),
             "",
             &mut no_generate(),
             &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
-        // The file's parent directory supplies the deployment id.
+        // Submission always requests a new deployment ID.
         let params: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
-        assert_eq!(params[4], "dep-1");
+        assert_eq!(params[4], "");
     }
 
     #[test]
@@ -4403,21 +4117,10 @@ content_digest = \"sha256:1\"\n\
             ("sha256:1", b"wasm-bytes"),
             ("sha256:2", b"rust source"),
         ]));
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
-        i.fs.register_lazy(
-            "/workspace/cloud/demo/deployment/current/w.wasm",
-            "sha256:1",
-            10,
-        );
-        i.fs.register_lazy(
-            "/workspace/cloud/demo/deployment/current/src/lib.rs",
-            "sha256:2",
-            11,
-        );
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
+        i.fs.register_lazy("/workspace/checkout/w.wasm", "sha256:1", 10);
+        i.fs.register_lazy("/workspace/checkout/src/lib.rs", "sha256:2", 11);
 
         let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
         let out = execute_app(
@@ -4425,7 +4128,7 @@ content_digest = \"sha256:1\"\n\
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/cloud/demo/deployment/current/deployment.toml",
+                "/workspace/checkout/deployment.toml",
             ]),
             "",
             &mut no_generate(),
@@ -4455,23 +4158,12 @@ content_digest = \"sha256:1\"\n\
             ("sha256:a", b"old-a"),
             ("sha256:b", b"old-b"),
         ]));
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
-        i.fs.register_lazy(
-            "/workspace/cloud/demo/deployment/current/a.js",
-            "sha256:a",
-            5,
-        );
-        i.fs.register_lazy(
-            "/workspace/cloud/demo/deployment/current/b.js",
-            "sha256:b",
-            5,
-        );
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
+        i.fs.register_lazy("/workspace/checkout/a.js", "sha256:a", 5);
+        i.fs.register_lazy("/workspace/checkout/b.js", "sha256:b", 5);
         // Edit a.js only; b.js stays lazy/unmodified and must not be sent.
-        i.fs.write_file("/workspace/cloud/demo/deployment/current/a.js", b"new-a")
+        i.fs.write_file("/workspace/checkout/a.js", b"new-a")
             .unwrap();
 
         let a_digest = format!("sha256:{}", sha256_hex(b"new-a"));
@@ -4488,7 +4180,7 @@ content_digest = \"sha256:1\"\n\
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/cloud/demo/deployment/current/deployment.toml",
+                "/workspace/checkout/deployment.toml",
             ]),
             "",
             &mut no_generate(),
@@ -4521,13 +4213,10 @@ content_digest = \"sha256:1\"\n\
         );
         let git_sha = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3";
         let mut i = interp("/workspace");
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
         i.fs.register_lazy_foreign_for_test(
-            "/workspace/cloud/demo/deployment/current/a.js",
+            "/workspace/checkout/a.js",
             git_sha,
             4,
             FixtureLoader::rc(&[(git_sha, b"test")]),
@@ -4547,7 +4236,7 @@ content_digest = \"sha256:1\"\n\
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/cloud/demo/deployment/current/deployment.toml",
+                "/workspace/checkout/deployment.toml",
             ]),
             "",
             &mut no_generate(),
@@ -4578,16 +4267,10 @@ content_digest = \"sha256:1\"\n\
             "location = \"activity/http.js\"\n",
         );
         let mut i = interp("/workspace");
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/activity/http.js",
-            b"export default 1",
-        )
-        .unwrap();
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
+        i.fs.write_file("/workspace/checkout/activity/http.js", b"export default 1")
+            .unwrap();
 
         let digest = format!("sha256:{}", sha256_hex(b"export default 1"));
         let host = FakeHost::new()
@@ -4601,7 +4284,7 @@ content_digest = \"sha256:1\"\n\
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/cloud/demo/deployment/current/deployment.toml",
+                "/workspace/checkout/deployment.toml",
             ]),
             "",
             &mut no_generate(),
@@ -4631,7 +4314,7 @@ content_digest = \"sha256:1\"\n\
             "location = \"src/index.js\"\n",
         );
         let mut i = interp("/workspace");
-        let dir = "/workspace/cloud/demo/deployment/current";
+        let dir = "/workspace/checkout";
         i.fs.write_file(&format!("{dir}/deployment.toml"), manifest.as_bytes())
             .unwrap();
         i.fs.write_file(
@@ -4692,7 +4375,7 @@ content_digest = \"sha256:1\"\n\
             "location = \"src/index.js\"\n",
         );
         let mut i = interp("/workspace");
-        let dir = "/workspace/cloud/demo/deployment/current";
+        let dir = "/workspace/checkout";
         i.fs.write_file(&format!("{dir}/deployment.toml"), manifest.as_bytes())
             .unwrap();
         i.fs.write_file(
@@ -4763,7 +4446,7 @@ content_digest = \"sha256:1\"\n\
             "\"/abs/src/lib.rs\" = \"src/lib.rs\"\n",
         );
         let mut i = interp("/workspace");
-        let dir = "/workspace/cloud/demo/deployment/current";
+        let dir = "/workspace/checkout";
         i.fs.write_file(&format!("{dir}/webhook/ui-api.js"), b"api")
             .unwrap();
         i.fs.write_file(&format!("{dir}/webhook/ui/shell.js"), b"shell")
@@ -4801,7 +4484,7 @@ content_digest = \"sha256:1\"\n\
             "component_files = { \"webhook/ui-api.js\" = \"auto\", \"webhook/ui/shell.js\" = \"auto\" }\n",
         );
         let mut i = interp("/workspace");
-        let dir = "/workspace/cloud/demo/deployment/current";
+        let dir = "/workspace/checkout";
         i.fs.write_file(&format!("{dir}/deployment.toml"), collapsed.as_bytes())
             .unwrap();
         i.fs.write_file(&format!("{dir}/webhook/ui-api.js"), b"api")
@@ -4822,7 +4505,7 @@ content_digest = \"sha256:1\"\n\
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/cloud/demo/deployment/current/deployment.toml",
+                "/workspace/checkout/deployment.toml",
             ]),
             "",
             &mut no_generate(),
@@ -4842,11 +4525,8 @@ content_digest = \"sha256:1\"\n\
         // recoverable: it surfaces to the agent and stops the loop.
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
         let host = FakeHost::new().with_err(
             SUBMIT_FFQN,
             "deployment cannot be submitted: unexpected files: x",
@@ -4856,7 +4536,7 @@ content_digest = \"sha256:1\"\n\
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/cloud/demo/deployment/current/deployment.toml",
+                "/workspace/checkout/deployment.toml",
             ]),
             "",
             &mut no_generate(),
@@ -4878,12 +4558,9 @@ content_digest = \"sha256:1\"\n\
         // spinning forever.
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
-        i.fs.write_file(
-            "/workspace/cloud/demo/deployment/current/deployment.toml",
-            manifest.as_bytes(),
-        )
-        .unwrap();
-        i.fs.write_file("/workspace/cloud/demo/deployment/current/a.wasm", b"bytes")
+        i.fs.write_file("/workspace/checkout/deployment.toml", manifest.as_bytes())
+            .unwrap();
+        i.fs.write_file("/workspace/checkout/a.wasm", b"bytes")
             .unwrap();
         let missing = r#"{"permanent_missing_files":[{"path":"a.wasm","digest":"sha256:zz"}]}"#;
         let host = FakeHost::new()
@@ -4894,7 +4571,7 @@ content_digest = \"sha256:1\"\n\
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/cloud/demo/deployment/current/deployment.toml",
+                "/workspace/checkout/deployment.toml",
             ]),
             "",
             &mut no_generate(),
@@ -4933,126 +4610,6 @@ content_digest = \"sha256:1\"\n\
         assert_eq!(out.stdout, "");
     }
 
-    #[test]
-    fn deployment_mount_is_deferred_until_the_tree_is_accessed() {
-        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
-        let host = FakeHost::new()
-            .with(
-                "obelisk-agent:tools/webapi.current-deployment-id",
-                "\"dep-1\"",
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({
-                    "deployment_toml": manifest,
-                    "files": [{"path": "a.wasm", "digest": "sha256:1", "size": 12}]
-                })
-                .to_string(),
-            );
-        let cloud = one_app_cloud(&host);
-        let mut bash = Bash::new(BashOptions {
-            cwd: "/workspace".into(),
-            ..Default::default()
-        });
-        register_deferred_mount(bash.fs_mut(), Box::new(cloud.clone()));
-        let listed = || cloud.0.borrow().runs.len();
-
-        // A session that never references the cloud never lists it.
-        let out = bash.exec("echo hi; ls /workspace", Default::default());
-        assert_eq!(out.exit_code, 0);
-        assert_eq!(listed(), 0);
-
-        // Listing the cloud lists the apps without checking any out.
-        let out = bash.exec("ls /workspace/cloud", Default::default());
-        assert_eq!(out.exit_code, 0, "{}", out.stderr);
-        assert_eq!(out.stdout, "demo\n");
-        assert_eq!(listed(), 1);
-        assert!(host.calls().is_empty());
-
-        // The first command under an app's deployment fires its checkout.
-        let out = bash.exec(
-            "cat /workspace/cloud/demo/deployment/current/deployment.toml",
-            Default::default(),
-        );
-        assert_eq!(out.exit_code, 0, "{}", out.stderr);
-        assert_eq!(out.stdout, simplify_manifest(manifest));
-        assert_eq!(host.calls().len(), 2);
-
-        // A further access is a no-op (the mount already fired).
-        bash.exec("ls /workspace/cloud/demo/deployment", Default::default());
-        assert_eq!(host.calls().len(), 2);
-        assert_eq!(listed(), 1);
-    }
-
-    #[test]
-    fn deferred_mount_records_a_mount_failure_instead_of_failing() {
-        let mut fs = Vfs::new();
-        register_deferred_mount(&mut fs, Box::new(one_app_cloud(&FakeHost::new())));
-        fs.ensure_mounted_for("/workspace/cloud/demo/deployment/current");
-        let error = fs.read_file("/workspace/.mount-error").unwrap();
-        assert!(String::from_utf8_lossy(&error).contains("no fixture for"));
-    }
-
-    #[test]
-    fn deferred_mount_records_a_failed_app_listing() {
-        let cloud = FakeCloud::default();
-        cloud.0.borrow_mut().listing = Some((String::new(), "denied".to_string(), 1));
-        let mut fs = Vfs::new();
-        register_deferred_mount(&mut fs, Box::new(cloud));
-        fs.ensure_mounted_for("/workspace/cloud/x");
-        assert_eq!(
-            fs.read_file("/workspace/.mount-error").unwrap(),
-            b"cannot list cloud apps: denied"
-        );
-    }
-
-    #[test]
-    fn a_successful_app_command_mounts_that_apps_deployment() {
-        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\n";
-        let host = FakeHost::new()
-            .with(
-                "obelisk-agent:tools/webapi.current-deployment-id",
-                "\"dep-1\"",
-            )
-            .with(
-                "obelisk-agent:tools/webapi.deployment-checkout",
-                &json!({ "deployment_toml": manifest, "files": [] }).to_string(),
-            );
-        let mut i = interp("/workspace");
-        let args = words(&["deployment", "active"]);
-        let out = execute_app(&mut i, &args, "", &mut no_generate(), &host);
-        assert_eq!(out.exit_code, 0, "{}", out.stderr);
-        assert!(i.fs.is_dir("/workspace/cloud/demo/deployment"));
-        i.fs.ensure_mounted_for("/workspace/cloud/demo/deployment/current");
-        assert_eq!(
-            i.fs.read_file("/workspace/cloud/demo/deployment/current/deployment.toml")
-                .unwrap(),
-            manifest.as_bytes()
-        );
-
-        let out = execute_app(
-            &mut interp("/workspace"),
-            &words(&["deployment", "bogus"]),
-            "",
-            &mut no_generate(),
-            &FakeHost::new(),
-        );
-        assert_eq!(out.exit_code, 2);
-    }
-
-    #[test]
-    fn unregistered_command_still_falls_through_to_command_not_found() {
-        let mut bash = Bash::new(BashOptions::default());
-        let out = bash.exec("obelisk functions list", Default::default());
-        assert_eq!(out.exit_code, 127);
-        assert!(out.stderr.contains("command not found"));
-    }
-
-    // -- obelisk cloud --
-
-    /// A fake `obelisk-agent:tools/cloud`: records provisioner runs and hands out
-    /// `apps[name]`, listing those apps unless `listing` overrides the
-    /// `apps list --json` output. Clones share one state.
     #[derive(Clone, Default)]
     struct FakeCloud(Rc<RefCell<FakeCloudState>>);
 

@@ -164,7 +164,7 @@ test("renderSystemPrompt composes the base prompt, shell help, apps, and the pro
     );
 });
 
-test("renderMount lists apps and the webhook URL only when configured, and probes each MCP server", () => {
+test("renderMount lists reference apps and MCP resources without cloud endpoints", () => {
     const apps = [{ name: "components", owner: "obeli-sk", repo: "components", ref: "main" }];
     const servers = [
         { name: "up", ffqn: "obelisk-agent:mcp/server.up" },
@@ -175,7 +175,8 @@ test("renderMount lists apps and the webhook URL only when configured, and probe
     const withWebhook = renderMount(apps, servers, "http://target:8080", probe);
     assert.ok(withWebhook.includes("/workspace/apps/components  "));
     assert.ok(withWebhook.includes("(obeli-sk/components@main)"));
-    assert.ok(withWebhook.includes("http://target:8080  cloud app webhooks"));
+    assert.ok(!withWebhook.includes("http://target:8080"));
+    assert.ok(!withWebhook.includes("/workspace/cloud"));
     assert.ok(withWebhook.includes("/workspace/mcp/up  MCP server, read-only (responding)"));
     assert.ok(withWebhook.includes("/workspace/mcp/down  MCP server, read-only (not responding: connection refused)"));
 

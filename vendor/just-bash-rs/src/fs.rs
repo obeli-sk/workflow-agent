@@ -340,9 +340,7 @@ impl Vfs {
         }
     }
 
-    /// Drop the deferred mount rooted at `root` without running it. Used when an
-    /// explicit `deployment refresh` has already populated the tree, so a later
-    /// access does not re-fetch it.
+    /// Drop the deferred mount rooted at `root` without running it.
     pub fn clear_deferred_mount(&mut self, root: &str) {
         let root = Self::normalize(root);
         self.deferred.retain(|(existing, _)| existing != &root);
@@ -454,8 +452,7 @@ impl Vfs {
     /// Register a deployment-owned file by digest and size. The path lists
     /// immediately but holds no bytes yet. Reads fetch the body lazily only
     /// when it is within `MAX_LAZY_FETCH_BYTES`. Overwrites content at `path`,
-    /// including a previously fetched/cached body (so `deployment refresh` can
-    /// re-point a file at a new digest and discard the stale bytes).
+    /// including a previously fetched/cached body.
     ///
     /// `digest` must be `sha256:...` (this server's own CAS): this is the only
     /// scheme a `register_lazy` caller ever has, so a non-conforming string

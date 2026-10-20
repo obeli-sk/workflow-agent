@@ -27,9 +27,7 @@ import { DEPLOYMENT_TEMPLATE } from "./obelisk-deployment-template.js";
 import { isCasNamespacedDigest } from "./fs.js";
 
 
-// Each cloud app's deployments mount at CLOUD_ROOT/<app>/deployment.
-const CLOUD_ROOT = "/workspace/cloud";
-// The app's policy, written next to each mounted deployment.toml.
+// The app's policy, written next to the pulled deployment.toml.
 const APP_POLICY_FILE = "app.toml";
 // Answered by the session itself rather than by a cloud app.
 const ASK_USER_FFQN = "obelisk-agent:stub/stub.ask-user";
@@ -63,95 +61,26 @@ export function commandHandler(controlPlane, generate, cloud = null) {
 }
 
 // ---------------------------------------------------------------------------
-// Deployment mounting
+// Deployment pull
 // ---------------------------------------------------------------------------
 
-export function appDeploymentRoot(app) {
-    return `${CLOUD_ROOT}/${app}/deployment`;
-}
-
-// Check out the app's active deployment's `deployment.toml` plus the
-// metadata index of its owned source files into `<root>/<id>/`, then symlink
-// `<root>/current` to it. Only the manifest is fetched here; each owned
-// source (component scripts/wasm and `backtrace.sources`) is registered as a
-// lazy VFS entry fetched by `loader` on first read, so mounting costs two
-// tool calls regardless of how many files the deployment owns.
-//
-// Called by the app's deferred mount (`replace = false`) and again by
-// `obelisk cloud app deployment refresh` (`replace = true`, re-registering
-// every file so a locally-read/edited copy is dropped for the current digest;
-// the initial mount instead leaves an already-present file alone).
-export function refreshDeploymentMount(fs, controlPlane, root, replace) {
+// Pull metadata now and pin source files to their CAS digests until first read.
+export function pullDeployment(fs, controlPlane, dir) {
+    if (fs.exists(dir) && (!fs.isDir(dir) || fs.readdir(dir).length > 0)) {
+        throw `pull destination must be an empty directory: ${dir}`;
+    }
     const deploymentId = decodeString(controlPlane.currentDeploymentId());
-    if (deploymentId === "") return { deploymentId: null, files: 0 };
-
+    if (deploymentId === "") throw "app has no active deployment";
     const { deployment_toml: manifest, files: indexedFiles } = controlPlane.deploymentCheckout(deploymentId);
-
-    const dir = `${root}/${deploymentId}`;
+    const policy = controlPlane.getAppConfig();
     fs.mkdirp(dir);
-    // The agent edits and re-submits this manifest by hand, so hide every
-    // pinned digest it never needs to maintain (standalone `content_digest`,
-    // `component_files` values, `backtrace.sources` tables): `deployment
-    // submit` recomputes each from the file's current bytes.
-    const manifestPath = `${dir}/deployment.toml`;
-    if (replace || !fs.exists(manifestPath)) {
-        fs.writeFile(manifestPath, simplifyManifest(manifest));
-    }
-
-    const policyPath = `${dir}/${APP_POLICY_FILE}`;
-    if (replace || !fs.exists(policyPath)) {
-        const policy = controlPlane.getAppConfig();
-        if (policy !== null) fs.writeFile(policyPath, policy);
-        else if (fs.exists(policyPath)) fs.remove(policyPath);
-    }
-
+    fs.writeFile(`${dir}/deployment.toml`, simplifyManifest(manifest));
+    if (policy !== null) fs.writeFile(`${dir}/${APP_POLICY_FILE}`, policy);
     const loader = blobLoader(controlPlane);
-    let files = 1;
     for (const reference of indexedFiles) {
-        const path = `${dir}/${reference.path}`;
-        if (!replace && fs.exists(path)) continue;
-        fs.registerLazyWithLoader(path, reference.digest, reference.size, loader);
-        files += 1;
+        fs.registerLazyWithLoader(`${dir}/${reference.path}`, reference.digest, reference.size, loader);
     }
-
-    const currentPath = `${root}/current`;
-    if (fs.exists(currentPath)) fs.remove(currentPath, { recursive: true });
-    fs.symlink(dir, currentPath);
-    return { deploymentId, files };
-}
-
-// Register CLOUD_ROOT as a deferred mount: the first reference under it
-// lists the cloud's apps and registers each app's deployment as a nested
-// deferred mount, so a bash-only session never touches the cloud. A failed
-// mount records the reason in `/workspace/.mount-error`.
-export function registerDeferredMount(fs, cloud) {
-    fs.registerDeferredMount(CLOUD_ROOT, (vfs) => {
-        recordMountError(vfs, () => {
-            for (const app of listCloudApps(cloud)) registerAppMount(vfs, cloud, app);
-        });
-    });
-}
-
-// Register `app`'s deployment as a deferred mount unless it is already there.
-function registerAppMount(fs, cloud, app) {
-    const root = appDeploymentRoot(app);
-    if (!isDnsLabel(app) || fs.exists(root)) return;
-    fs.registerDeferredMount(root, (vfs) => {
-        recordMountError(vfs, () => refreshDeploymentMount(vfs, cloud.controlPlane(app), root, false));
-    });
-}
-
-function recordMountError(vfs, populate) {
-    try {
-        populate();
-    } catch (error) {
-        const message = typeof error === "string" ? error : String(error?.message ?? error);
-        try {
-            vfs.writeFile("/workspace/.mount-error", message);
-        } catch {
-            /* best-effort; nothing else to report to */
-        }
-    }
+    return { deploymentId, directory: dir, files: indexedFiles.length + 1 };
 }
 
 // The `Vfs` blob loader for an app's deployment files: fetch a file's bytes
@@ -289,7 +218,6 @@ function executeCloud(interp, args, stdin, generate, cloud) {
             if (help !== null) return ok(help);
             const app = cloudAppName(interp, flags, cloud);
             const result = tryExecuteObelisk(interp, rest, stdin, cloud.controlPlane(app), generate, app);
-            if (result.exitCode === 0) registerAppMount(interp.vfs, cloud, app);
             return result;
         }
         if (helpRequested(rest)) return ok(cloudAppHelp);
@@ -340,10 +268,6 @@ function listCloudApps(cloud) {
     return rows.map((row) => row?.app_name).filter((name) => typeof name === "string");
 }
 
-function isDnsLabel(name) {
-    return /^[a-z0-9-]{1,63}$/.test(name) && !name.startsWith("-") && !name.endsWith("-");
-}
-
 function appNameOf(policy) {
     return /^[ \t]*app_name[ \t]*=[ \t]*["']([^"'\n]*)["']/m.exec(policy)?.[1] ?? null;
 }
@@ -391,7 +315,6 @@ function cloudDeploy(interp, flags, args, cloud) {
         return { stdout: applied.stdout, stderr, exitCode: applied.exitCode };
     }
     stderr += `Deployed ${app}\n`;
-    registerAppMount(interp.vfs, cloud, app);
     const webhook = target.webhookUrl === null ? "" : `${target.webhookUrl}\n`;
     return { stdout: `${applied.stdout}${webhook}`, stderr, exitCode: 0 };
 }
@@ -435,9 +358,9 @@ This creates the app from \`app.toml\` when needed, replaces its whole active de
 \`deployment.toml\`, and prints the webhook URL. Then inspect it with
 \`obelisk cloud app --app ${appName} functions list\` and \`executions list\`.
 
-To deploy to an existing app instead, pass \`--app NAME\`. An app that cannot be reconfigured keeps
-its own policy in \`${CLOUD_ROOT}/NAME/deployment/current/${APP_POLICY_FILE}\`: check that it allows what
-\`deployment.toml\` requests, and if something is missing, ask the user to allow it.
+To edit an existing app, run \`obelisk cloud app --app NAME deployment pull DIRECTORY\` and edit
+the pulled files. Check the pulled \`app.toml\` allows what \`deployment.toml\` requests; if the app
+cannot be reconfigured, ask the user to allow any missing permissions.
 `;
 }
 
@@ -570,13 +493,10 @@ function executeDeployment(interp, action, args, controlPlane, app) {
     if (action === "show") {
         return deploymentShow(controlPlane, args);
     }
-    if (action === "refresh") {
-        // An explicit refresh populates the tree now, so drop the deferred
-        // mount to keep a later deployment access from re-fetching it.
-        const root = appDeploymentRoot(app);
-        interp.vfs.clearDeferredMount(root);
-        const refreshed = refreshDeploymentMount(interp.vfs, controlPlane, root, true);
-        return ok(`${mountResultJson(refreshed)}\n`);
+    if (action === "pull") {
+        if (args.length !== 1 || args[0].startsWith("-")) throw "usage: deployment pull DIRECTORY";
+        const dir = interp.resolvePath(required(args[0], "DIRECTORY"));
+        return ok(`${pullResultJson(pullDeployment(interp.vfs, controlPlane, dir))}\n`);
     }
     if (action === "check") {
         // Unlike `submit`, `check` has no real-obelisk counterpart to match,
@@ -707,7 +627,7 @@ function submitManifest(interp, controlPlane, path, args, allowMissing) {
     // unchanged file keeps its CAS digest, a changed one is re-hashed).
     const expanded = manifestWithDigests(interp.vfs, dir, prepared);
     const description = option(args, "--description", "Submitted from workflow-agent VFS");
-    return submitDeployment(interp.vfs, controlPlane, dir, expanded, description, allowMissing, deploymentIdFromDir(dir));
+    return submitDeployment(interp.vfs, controlPlane, dir, expanded, description, allowMissing, "");
 }
 
 // The workflow half of the submit contract: drive the dumb
@@ -796,20 +716,6 @@ function parentDir(path) {
     return idx <= 0 ? "/" : path.slice(0, idx);
 }
 
-// A deployment checked out for editing lives at CLOUD_ROOT/<app>/deployment/<id>, named
-// after its own real ID ("current" for the freshly-checked-out active one,
-// which resolves to a fresh server-assigned ID on submit) - only that
-// specific layout's basename is a meaningful deployment_id. Submitting
-// straight from anywhere else (e.g. a source-repo checkout) has no such
-// convention: treating an unrelated directory's basename as an ID sends the
-// server something like "workflow-agent" and fails with "invalid
-// deployment_id: wrong prefix", so leave it empty there for the server to
-// assign a fresh one, exactly like a brand-new "current" submission.
-function deploymentIdFromDir(dir) {
-    const name = /^\/workspace\/cloud\/[^/]+\/deployment\/([^/]+)$/.exec(dir)?.[1] ?? "";
-    return name === "current" ? "" : name;
-}
-
 // The first positional argument, skipping flags. A flag named in
 // `valueFlags` also consumes the following token as its value; `--` ends
 // flag parsing so the next token is positional. Keeps `submit --description
@@ -890,8 +796,8 @@ function ensureTrailingNewline(text) {
     return text.endsWith("\n") ? text : `${text}\n`;
 }
 
-function mountResultJson(result) {
-    return prettyJson({ deployment_id: result.deploymentId, files: result.files });
+function pullResultJson(result) {
+    return prettyJson({ deployment_id: result.deploymentId, directory: result.directory, files: result.files });
 }
 
 // PORT: `decodeString`. A string that itself parses as a JSON string yields
@@ -1005,7 +911,7 @@ function actionHelp(group, action) {
 // subcommand names in the .rs source actually compile to unindented lines.
 // These JS literals must match that stripped (unindented) output exactly.
 const helpText =
-    "Usage: obelisk <command> [args]\n\nManage apps in the cloud, and write starter files.\n\nCommands:\ncloud        Manage cloud apps; each app's functions, executions, calls, and deployments\nare under `obelisk cloud app [--app NAME]`.\ngenerate     Print a starter configuration file, or create a new app.\ncall obelisk-agent:stub/stub.ask-user '[\"QUESTION\"]'\nAsk the user a question and print the answer.\n\nEach app's active deployment is mounted at /workspace/cloud/<app>/deployment/current.\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
+    "Usage: obelisk <command> [args]\n\nManage apps in the cloud, and write starter files.\n\nCommands:\ncloud        Manage cloud apps; each app's functions, executions, calls, and deployments\nare under `obelisk cloud app [--app NAME]`.\ngenerate     Print a starter configuration file, or create a new app.\ncall obelisk-agent:stub/stub.ask-user '[\"QUESTION\"]'\nAsk the user a question and print the answer.\n\nPull an app deployment into a working directory with `deployment pull DIRECTORY`.\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
 
 const cloudHelp =
     "Usage: obelisk cloud <command> [args]\n\nManage the apps in the cloud.\n\nCommands:\napps list                  List apps.\ntoken list|get ID          List API tokens, or show one.\napp [--app NAME] ...       Manage one app; run `obelisk cloud app --help`.\n\nGlobal options: --json, --verbose, --command-id ID.\n";
@@ -1023,7 +929,7 @@ const callHelp =
     "Usage: obelisk cloud app [--app NAME] call FFQN [PARAMS_JSON]\nobelisk cloud app [--app NAME] call FFQN -- PARAM...\n\nCall one of the app's functions and print its result. Pass parameters as one JSON array\nin WIT parameter order, or after `--` as positional values (each parsed as JSON\nwhen valid, otherwise as a string). With neither, parameters are read from stdin,\ndefaulting to `[]`.\n";
 
 const deploymentHelp =
-    "Usage: obelisk cloud app [--app NAME] deployment <subcommand>\n\nInspect, edit, submit, and activate the app's deployments. Edits under\n/workspace/cloud/NAME/deployment/current are local until `submit` or `apply`.\n\nSubcommands:\nactive [--json]           Print the active deployment ID.\nlist                      List recent deployments.\nshow ID                   Print a stored deployment's TOML manifest.\nrefresh                   Re-fetch the active deployment, discarding local edits.\ncheck [PATH]              Report a deployment's manifest and locally-edited sources.\nsubmit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\nenqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\napply PATH|ID             Submit-and-apply: hot-redeploy a manifest or stored deployment now.\n\nRun `obelisk cloud app [--app NAME] deployment <subcommand> --help` for a subcommand's options.\n";
+    "Usage: obelisk cloud app [--app NAME] deployment <subcommand>\n\nInspect, edit, submit, and activate the app's deployments.\nPull into an empty directory; source bytes are fetched on first read.\n\nSubcommands:\nactive [--json]           Print the active deployment ID.\nlist                      List recent deployments.\nshow ID                   Print a stored deployment's TOML manifest.\npull DIRECTORY            Pull the active deployment into an empty directory, loading sources lazily.\ncheck [PATH]              Report a deployment's manifest and locally-edited sources.\nsubmit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\nenqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\napply PATH|ID             Submit-and-apply: hot-redeploy a manifest or stored deployment now.\n\nRun `obelisk cloud app [--app NAME] deployment <subcommand> --help` for a subcommand's options.\n";
 
 const deploymentSubmitHelp =
     "Usage: obelisk cloud app [--app NAME] deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML\n\nStore the edited deployment as a new inactive deployment and print its ID. PATH\nis the path to the deployment TOML file to submit (any filename -- not just the\nliteral \"deployment.toml\"); it must be a file, not a directory, matching real\nobelisk. Digests are recomputed from the files, so leave them out.\n\nOptions:\n--description TEXT               Human-readable description for the new deployment.\n--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n(alias: --allow-unavailable-runtime-config)\n";

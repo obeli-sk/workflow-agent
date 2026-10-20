@@ -352,15 +352,14 @@ function renderMountOutput(apps, mcpServers, webhookUrl) {
     return renderMount(apps, mcpServers, webhookUrl, probe);
 }
 
-// Registers the cloud apps' deployment trees, each APPS_JSON-configured read-only repo
+// Registers each APPS_JSON-configured read-only repo
 // reference tree, and each MCP server's resources as lazy VFS mounts (PORT:
 // session.rs's pack_mounted block). None of this makes a host call by itself -
 // a bash-only session that never references a mounted path never touches the
 // network - so it is safe to run unconditionally, once, right after the
 // input offer opens.
-function mountPacks(bash, config, cloud) {
+function mountPacks(bash, config) {
     const fs = bash.fs();
-    obeliskPack.registerDeferredMount(fs, cloud);
     for (const app of config.apps) {
         // Pass the live app object (not a copy) so `obelisk-web.js` writing
         // `resolvedRef` onto it, once the mount is first used, is visible to
@@ -635,7 +634,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     // Deployment/components/MCP-resource trees mount lazily: registering them
     // makes no host call itself, so this runs once the input offer is already
     // open (a live session is visible immediately) without delaying startup.
-    mountPacks(bash, config, cloud);
+    mountPacks(bash, config);
     publishAgentStatus(notifications, shouldCallLlm, turnIndex);
 
     try {

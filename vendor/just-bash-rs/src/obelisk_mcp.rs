@@ -193,7 +193,7 @@ pub fn mount_resources(
 /// under `mount_dir`, so a session that never opens this MCP tree never lists it.
 /// `list_host` drives the eventual listing; `loader_host` is owned by the
 /// installed loader. A failed listing records the reason in
-/// `<mount_dir>/.mcp-error`. Mirrors `obelisk_pack::register_deferred_mount`.
+/// `<mount_dir>/.mcp-error`.
 pub fn register_deferred_mount(
     fs: &mut Vfs,
     list_host: Box<dyn ObeliskHost>,

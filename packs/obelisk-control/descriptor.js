@@ -35,7 +35,7 @@ const WIT_JSON_MAPPING = [
 ].join(nl);
 
 const SYSTEM_PROMPT = [
-    'You are the planner inside an Obelisk durable workflow that manages apps in the cloud. Each app is its own Obelisk server, never the instance you run on. `obelisk cloud` controls them (see "Cloud apps" below), and each app\'s active deployment is mounted at /workspace/cloud/<app>/deployment/current.',
+    'You are the planner inside an Obelisk durable workflow that manages apps in the cloud. Use `obelisk cloud` to discover and manage apps, and `deployment pull DIRECTORY` to edit an existing deployment.',
     '',
     '- Investigate, plan, and decide which durable actions are needed. Act through bash: shell commands and `obelisk` for durable, replayable actions that appear in the Obelisk execution log; built-in reasoning for the rest.',
     '- Narrate as you work: a short Markdown note alongside each tool call saying what you are about to run and why. Text and a tool call in one response are both kept, and the turn continues.',
@@ -126,14 +126,15 @@ async function loadDocsIndexes() {
 
 const APP_COMMANDS = [
     '- `obelisk cloud apps list`; `obelisk cloud app --app NAME status|get|endpoint`. `--app` may be left out inside a directory whose app.toml names the app, or when there is only one app.',
-    '- The app\'s own API: `obelisk cloud app --app NAME functions list|wit FFQN`, `executions list|get ID|logs ID|result ID`, `call FFQN PARAMS`, `deployment active|list|show|refresh|check|submit|enqueue|apply`.',
+    '- The app\'s own API: `obelisk cloud app --app NAME functions list|wit FFQN`, `executions list|get ID|logs ID|result ID`, `call FFQN PARAMS`, `deployment active|list|show|pull|check|submit|enqueue|apply`.',
     '- `obelisk cloud app --app NAME executions list` hides webhook-spawned child executions unless `--show-derived` is passed.',
+    '- Pull an existing deployment with `obelisk cloud app --app NAME deployment pull DIRECTORY`. Edit the pulled files and inspect app.toml for the app policy; a deployment cannot grant itself additional permissions.',
 ];
 
-const OBELISKNET_SECTION = [
-    '# Cloud apps (ObeliskNet)',
+const CLOUD_SECTION = [
+    '# Cloud apps',
     '',
-    'An ObeliskNet account is configured, so `obelisk cloud` works like the real CLI against hosted apps (run `obelisk cloud --help`):',
+    'Use `obelisk cloud` to manage available apps (run `obelisk cloud --help`). Some apps restrict provisioning, configuration or lifecycle commands; follow the reported permissions.',
     '',
     ...APP_COMMANDS,
     '- Create and deploy from the working directory: write `app.toml` (with `app_name`) and `deployment.toml`, then `obelisk cloud app deploy -a app.toml -d deployment.toml`. It creates or restages the app, applies and starts it, uploads the deployment and prints the webhook URL.',
@@ -141,31 +142,21 @@ const OBELISKNET_SECTION = [
     '- Destructive commands (`delete`, `stop`) need the user\'s confirmation first.',
 ].join(nl);
 
-const SINGLE_APP_SECTION = [
-    '# Cloud apps',
-    '',
-    'This cloud holds a single app, managed by the user: it cannot be created, deleted, started, stopped or reconfigured from here, and its app policy (hosts, secrets, env vars) is fixed. Run `obelisk cloud --help` for usage:',
-    '',
-    ...APP_COMMANDS,
-    '- Deploy with `obelisk cloud app --app NAME deploy -d deployment.toml` (or `deployment apply`). It replaces the app\'s whole active deployment; to keep what already runs there, merge into /workspace/cloud/NAME/deployment/current/deployment.toml and apply that.',
-    '- A deployment cannot widen the app policy in /workspace/cloud/NAME/deployment/current/app.toml; ask the user when it lacks something.',
-].join(nl);
-
 // The cloud section: ObeliskNet with OBELISK_CLOUD_API_TOKEN, else the single-app cloud.
 async function cloudSection() {
     try {
+        let listed;
         if (singleApp()) {
-            const row = await singleAppRow();
-            return { section: `${SINGLE_APP_SECTION}${nl}${nl}The app:${nl}${nl}- ${row.app_name}: ${row.status}`, warnings: [] };
+            listed = { apps: [await singleAppRow()] };
+        } else if (process.env["OBELISK_CLOUD_API_TOKEN"]) {
+            listed = await cloudRequest("GET", ["v1", "apps"]);
+        } else {
+            return { section: null, warnings: ["No cloud is configured; `obelisk cloud` is left out of the prompt"] };
         }
-        if (!process.env["OBELISK_CLOUD_API_TOKEN"]) {
-            return { section: null, warnings: ["No cloud is configured (neither OBELISK_CLOUD_API_TOKEN nor TARGET_OBELISK_API_URL); `obelisk cloud` is left out of the prompt"] };
-        }
-        const listed = await cloudRequest("GET", ["v1", "apps"]);
         const apps = (Array.isArray(listed?.apps) ? listed.apps : [])
             .map((app) => `- ${app?.app_name}: ${app?.status ?? "unknown"}`);
         const existing = apps.length ? `Existing apps:${nl}${nl}${apps.join(nl)}` : 'No apps exist yet.';
-        return { section: `${OBELISKNET_SECTION}${nl}${nl}${existing}`, warnings: [] };
+        return { section: `${CLOUD_SECTION}${nl}${nl}${existing}`, warnings: [] };
     } catch (error) {
         return { section: null, warnings: [`The cloud is configured but unreachable (${String(error)}); \`obelisk cloud\` is left out of the prompt`] };
     }

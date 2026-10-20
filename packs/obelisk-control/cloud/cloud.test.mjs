@@ -157,12 +157,12 @@ test("the single-app cloud lists the target as its only app and refuses lifecycl
 
     const other = await run(["app", "--app", "other", "get"], "", null);
     assert.equal(other.exit_code, 1);
-    assert.match(other.stderr, /single app, solo; there is no app other\. Use --app solo/);
+    assert.match(other.stderr, /App other is unavailable/);
 
     for (const args of [["app", "--app", "solo", "delete"], ["app", "new"], ["app", "env", "set", "A", "b"]]) {
         const refused = await run(args, "", null);
         assert.equal(refused.exit_code, 1);
-        assert.match(refused.stderr, /is not available: this cloud has a single fixed app \(solo\)/);
+        assert.match(refused.stderr, /is not permitted for app solo/);
     }
 });
 
@@ -171,12 +171,39 @@ test("the single-app cloud deploys and proxies to the target without a policy", 
     const target = await prepareDeploy("target", "");
     assert.equal(target.api_url, "http://target.test:5005");
     assert.match(target.log, /App target has a fixed policy; skipping provisioning\./);
-    await assert.rejects(prepareDeploy("other", ""), /single app, target/);
+    await assert.rejects(prepareDeploy("other", ""), /App other is unavailable/);
 
     const current = JSON.parse(await tenant("target", "current-deployment-id", "[]"));
     assert.deepEqual(current, { ok: '"Dep_1"' });
     assert.equal(requests.at(-1).headers.authorization, "Bearer target-token");
-    await assert.rejects(tenant("other", "current-deployment-id", "[]"), /single app, target/);
+    await assert.rejects(tenant("other", "current-deployment-id", "[]"), /App other is unavailable/);
+});
+
+test("cloud backends expose identical instructions and endpoint discovery", async () => {
+    const { default: describe } = await import("../descriptor.js");
+    const savedDocs = process.env.DOCS_URLS_JSON;
+    process.env.DOCS_URLS_JSON = "[]";
+    try {
+        singleTarget("solo");
+        process.env.TARGET_OBELISK_WEBHOOK_URL = "https://solo.test";
+        const fixedPrompt = (await describe()).prompt;
+        const fixedEndpoint = await run(["app", "--app", "solo", "endpoint", "webhook"], "", null);
+        assert.equal(fixedEndpoint.exit_code, 0, fixedEndpoint.stderr);
+        assert.equal(fixedEndpoint.stdout, "https://solo.test\n");
+        provisioner({
+            "GET /v1/apps": { apps: [{ app_name: "solo", status: "running" }] },
+            "GET /v1/apps/solo": { app_name: "solo", api_url: "https://api--solo.test", webhook_url: "https://solo.test", webui_url: "https://webui--solo.test" },
+        });
+        const hostedPrompt = (await describe()).prompt;
+        assert.equal(hostedPrompt, fixedPrompt);
+        assert.ok(!hostedPrompt.includes("/workspace/cloud"));
+        const hostedEndpoint = await run(["app", "--app", "solo", "endpoint", "webhook"], "", null);
+        assert.equal(hostedEndpoint.exit_code, 0, hostedEndpoint.stderr);
+        assert.equal(hostedEndpoint.stdout, fixedEndpoint.stdout);
+    } finally {
+        if (savedDocs === undefined) delete process.env.DOCS_URLS_JSON;
+        else process.env.DOCS_URLS_JSON = savedDocs;
+    }
 });
 
 test("tenant-read runs reads and refuses operations that change the app", async () => {
