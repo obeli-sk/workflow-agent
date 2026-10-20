@@ -80,11 +80,8 @@ pub(crate) const SESSION_IDLE_ERROR: &str = "session idle timeout: no interactio
 const SESSION_NAME_JOIN_SET: &str = "session-name";
 const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash script in the session persistent virtual workspace. Control flow: if/elif/else, for, while, until, case, break, continue. Not supported: [[ ]], function definitions, arrays, background jobs.","input_schema":{"type":"object","properties":{"script":{"type":"string"},"stdin":{"type":"string"},"timeout":{"type":"string","description":"Optional wall-clock cap for this script (forms like 30s, 500ms, 5m, 1h30m). When it elapses the script stops at its next command boundary or sleep with exit code 124 and interrupted=\"timeout\"."}},"required":["script"]}}]"#;
 
-// `concat!` (not `\`-continuation) so each entry keeps its leading two-space
-// indent; a `\` line-continuation would strip the continued line's whitespace.
-const MOUNT_HEADER: &str = concat!(
-    "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n",
-);
+const MOUNT_HEADER: &str =
+    "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n";
 const MOUNT_FOOTER: &str = "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
 /// An `APPS_JSON`-configured GitHub repo tree mounted at
