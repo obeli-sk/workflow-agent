@@ -128,8 +128,8 @@ export function renderSystemPrompt(systemPrompt, programs, apps, mountOutput, pr
 // PORT: workflow-rs/src/session.rs's `MOUNT_HEADER`/`MOUNT_FOOTER`.
 const MOUNT_HEADER =
     "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n" +
-    "  /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n" +
-    "  /workspace/deployment/current/app.toml  target app policy: the hosts, secrets, env vars, and exec activities any deployment may use; only the user can widen it\n";
+    "  /workspace/cloud/<app>/deployment/current  each cloud app's active deployment, editable (one request for its whole file index)\n" +
+    "  /workspace/cloud/<app>/deployment/current/app.toml  the app's policy: the hosts, secrets, env vars, and exec activities any deployment may use; only the user can widen it\n";
 const MOUNT_FOOTER =
     "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
@@ -148,7 +148,7 @@ export function renderMount(apps, mcpServers, webhookUrl, probe) {
         text += `  /workspace/apps/${name}          example app, read-only (${owner}/${repo}@${gitRef})\n`;
     }
     if (webhookUrl) {
-        text += `  ${webhookUrl}  target Obelisk webhooks (GET allowed via curl)\n`;
+        text += `  ${webhookUrl}  cloud app webhooks (GET allowed via curl)\n`;
     }
     for (const { name, ffqn } of mcpServers) {
         const error = probe(ffqn);

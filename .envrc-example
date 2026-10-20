@@ -20,6 +20,7 @@ export LLM_BASE_URL=http://127.0.0.1:9190
 ## OpenRouter
 # export AGENT_MODELS="$(cat models.openrouter.json)"
 # export LLM_BASE_URL="https://openrouter.ai"
+# export LLM_API_PREFIX=/api
 # export LLM_API_KEY="..."
 
 # Obelisk version, used for constructing llms.txt URL and for fetching assets for `obelisk generate new`.

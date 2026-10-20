@@ -4,6 +4,7 @@ import test from "node:test";
 const { default: run } = await import("./cli.js");
 const { default: prepareDeploy } = await import("./deploy.js");
 const { default: tenant } = await import("./tenant.js");
+const { default: tenantRead } = await import("./tenant-read.js");
 const { appConfig } = await import("./policy.js");
 
 const POLICY = `app_name = "demo"
@@ -109,4 +110,64 @@ test("run reports provisioner errors with the command id and rejects credential 
     const flagged = await run(["apps", "list", "--api-token", "x"], "", null);
     assert.equal(flagged.exit_code, 1);
     assert.match(flagged.stderr, /OBELISK_CLOUD_API_TOKEN/);
+});
+
+// The single-app cloud: no cloud token, so the TARGET_OBELISK_* server is the one fixed app.
+function singleTarget(appName = "solo") {
+    delete process.env.OBELISK_CLOUD_API_TOKEN;
+    process.env.TARGET_OBELISK_API_URL = "http://target.test:5005";
+    process.env.TARGET_OBELISK_TOKEN = "target-token";
+    delete process.env.TARGET_OBELISK_WEBHOOK_URL;
+    const requests = [];
+    globalThis.fetch = async (url, init = {}) => {
+        const { pathname } = new URL(url);
+        requests.push({ url, method: init.method ?? "GET", headers: init.headers ?? {} });
+        if (pathname === "/v1/info") return Response.json(appName === null ? {} : { app_name: appName });
+        if (pathname === "/v1/deployment-id") return new Response('"Dep_1"');
+        return new Response(`no route ${pathname}`, { status: 404 });
+    };
+    return requests;
+}
+
+test("the single-app cloud lists the target as its only app and refuses lifecycle commands", async () => {
+    singleTarget();
+    const listed = await run(["apps", "list", "--json"], "", null);
+    assert.equal(listed.exit_code, 0, listed.stderr);
+    assert.deepEqual(JSON.parse(listed.stdout), {
+        apps: [{ app_name: "solo", status: "running", api_url: "http://target.test:5005", webhook_url: null }],
+    });
+
+    const status = await run(["app", "status", "--json"], "", 'app_name = "solo"\nunknown_field = 1\n');
+    assert.equal(status.exit_code, 0, status.stderr);
+    assert.equal(JSON.parse(status.stdout).api_ready, true);
+
+    const other = await run(["app", "--app", "other", "get"], "", null);
+    assert.equal(other.exit_code, 1);
+    assert.match(other.stderr, /single app, solo; there is no app other\. Use --app solo/);
+
+    for (const args of [["app", "--app", "solo", "delete"], ["app", "new"], ["app", "env", "set", "A", "b"]]) {
+        const refused = await run(args, "", null);
+        assert.equal(refused.exit_code, 1);
+        assert.match(refused.stderr, /is not available: this cloud has a single fixed app \(solo\)/);
+    }
+});
+
+test("the single-app cloud deploys and proxies to the target without a policy", async () => {
+    const requests = singleTarget(null);
+    const target = await prepareDeploy("target", "");
+    assert.equal(target.api_url, "http://target.test:5005");
+    assert.match(target.log, /App target has a fixed policy; skipping provisioning\./);
+    await assert.rejects(prepareDeploy("other", ""), /single app, target/);
+
+    const current = JSON.parse(await tenant("target", "current-deployment-id", "[]"));
+    assert.deepEqual(current, { ok: '"Dep_1"' });
+    assert.equal(requests.at(-1).headers.authorization, "Bearer target-token");
+    await assert.rejects(tenant("other", "current-deployment-id", "[]"), /single app, target/);
+});
+
+test("tenant-read runs reads and refuses operations that change the app", async () => {
+    singleTarget();
+    const current = JSON.parse(await tenantRead("solo", "current-deployment-id", "[]"));
+    assert.deepEqual(current, { ok: '"Dep_1"' });
+    await assert.rejects(tenantRead("solo", "apply-deployment", '["Dep_1"]'), /apply-deployment is not a read-only operation/);
 });

@@ -1,11 +1,15 @@
 //! PORT: packs/obelisk-control/workflow-pack.js
 //!
-//! The obelisk-control pack: one custom command, `obelisk`, whose subcommands
-//! (`functions`, `executions`, `call`, `deployment`, `generate`) call the
-//! control-plane tools through the `ControlPlane` seam below, which the
-//! embedding workflow implements with the tools' WIT bindings. The tools
-//! themselves (`packs/obelisk-control/tools/*.js`) are separately-deployed
-//! activities; this module only ports the shell-command dispatcher.
+//! The obelisk-control pack: one custom command, `obelisk`, whose `cloud`
+//! subcommand manages apps in the cloud and whose `generate` subcommand writes
+//! starter files. `obelisk cloud app [--app NAME] functions|executions|call|
+//! deployment ...` run against one app's API through the `ControlPlane` seam
+//! below, which the embedding workflow implements with the tools' WIT
+//! bindings; `Cloud::control_plane` hands out one per app. The session's own
+//! control plane only answers the top-level
+//! `obelisk call obelisk-agent:stub/stub.ask-user`. The tools themselves
+//! (`packs/obelisk-control/tools/*.js`) are separately-deployed activities;
+//! this module only ports the shell-command dispatcher.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -23,13 +27,20 @@ use crate::fs::{BlobLoader, FsError, LazyFileRef, LazyOrigin, Sha256Digest, Vfs}
 use crate::interpreter::{CommandOutput, Interpreter};
 use crate::obelisk_web::GithubContents;
 
-const DEPLOYMENT_ROOT: &str = "/workspace/deployment";
-/// The target's app policy, written next to each mounted deployment.toml.
+/// Each cloud app's deployments mount at CLOUD_ROOT/<app>/deployment.
+const CLOUD_ROOT: &str = "/workspace/cloud";
+/// The app's policy, written next to each mounted deployment.toml.
 const APP_POLICY_FILE: &str = "app.toml";
+/// Answered by the session itself rather than by a cloud app.
+const ASK_USER_FFQN: &str = "obelisk-agent:stub/stub.ask-user";
+/// `obelisk cloud app` subcommands served by the app's own API.
+const CLOUD_APP_API: [&str; 4] = ["functions", "executions", "call", "deployment"];
 
 const TEMPLATE_OWNER: &str = "obeli-sk";
 const TEMPLATE_REPO: &str = "obelisk";
-const TEMPLATE_PATH: &str = "examples/templates/js-http";
+const TEMPLATES_ROOT: &str = "examples/templates";
+/// Used when OBELISK_VERSION is not a ref (`latest`) or its templates are missing.
+const TEMPLATE_FALLBACK_REF: &str = "main";
 
 /// The placeholder value the agent sees in `component_files` maps in place of a
 /// pinned digest; `deployment submit` replaces each with the file's real digest.
@@ -199,7 +210,8 @@ pub struct MountResult {
 /// Build the `obelisk` custom-command handler. Register it with
 /// `bash.register_command("obelisk", obelisk_pack::command_handler(host, generate, cloud))`.
 /// The handler owns `host` for the life of the session (an `FnMut` closure,
-/// not `Rc<RefCell<_>>`, since only the command itself ever touches it).
+/// not `Rc<RefCell<_>>`, since only the command itself ever touches it); it
+/// shares `cloud` with the app mounts it registers.
 pub fn command_handler(
     host: Box<dyn ControlPlane>,
     generate: Generate,
@@ -207,46 +219,51 @@ pub fn command_handler(
 ) -> CustomCommandHandler {
     let mut host = host;
     let mut generate = generate;
-    let mut cloud = cloud;
+    let cloud = cloud.map(|cloud| Rc::new(RefCell::new(cloud)));
     Box::new(move |interp, args, stdin| {
-        if args.first().map(String::as_str) == Some("cloud") {
-            return execute_cloud(
-                interp,
-                &args[1..],
-                &stdin,
-                &mut generate,
-                cloud.as_mut().map(|c| c.as_mut() as &mut dyn Cloud),
-            );
-        }
-        execute_obelisk(interp, args, &stdin, &mut generate, host.as_mut())
+        execute_obelisk(
+            interp,
+            args,
+            &stdin,
+            &mut generate,
+            host.as_mut(),
+            cloud.as_ref(),
+        )
     })
 }
+
+/// A cloud shared by the `obelisk` command and the deferred app mounts.
+type SharedCloud = Rc<RefCell<Box<dyn Cloud>>>;
 
 /// What `generate new` fetches the starter app with: the obelisk repo ref and
 /// the GitHub contents transport.
 pub struct Generate {
     pub obelisk_version: String,
     pub github: GithubContents,
-    /// The target's webhook listener, written into the starter README.
-    pub webhook_url: String,
 }
 
-/// Check out the active deployment's `deployment.toml` plus the metadata index
-/// of its owned source files into `/workspace/deployment/<id>/`, then symlink
-/// `/workspace/deployment/current` to it. Only the manifest is fetched here;
-/// each owned source (component scripts/wasm and `backtrace.sources`) is
-/// registered as a lazy VFS entry. Bounded files are pulled from the CAS on
-/// first read, while oversized entries stay digest-only (see
-/// `Vfs::register_lazy` and `blob_loader`), so mounting costs two host calls
+pub fn app_deployment_root(app: &str) -> String {
+    format!("{CLOUD_ROOT}/{app}/deployment")
+}
+
+/// Check out the app's active deployment's `deployment.toml` plus the metadata
+/// index of its owned source files into `<root>/<id>/`, then symlink
+/// `<root>/current` to it. Only the manifest is fetched here; each owned source
+/// (component scripts/wasm and `backtrace.sources`) is registered as a lazy VFS
+/// entry. Bounded files are pulled from the CAS by `loader` on first read
+/// (`None` leaves them to the Vfs's global loader), while oversized entries stay
+/// digest-only (see `Vfs::register_lazy`), so mounting costs two host calls
 /// regardless of how many files the deployment owns.
 ///
-/// Called once at session mount (`replace = false`, via `mount`) and again by
-/// `obelisk deployment refresh` (`replace = true`, re-registering every file so
-/// a locally-read/edited copy is dropped for the current digest; the initial
-/// mount instead leaves an already-present file alone).
+/// Called by the app's deferred mount (`replace = false`) and again by
+/// `obelisk cloud app deployment refresh` (`replace = true`, re-registering
+/// every file so a locally-read/edited copy is dropped for the current digest;
+/// the initial mount instead leaves an already-present file alone).
 pub fn refresh_deployment_mount(
     fs: &mut Vfs,
     host: &mut dyn ControlPlane,
+    loader: Option<Rc<dyn BlobLoader>>,
+    root: &str,
     replace: bool,
 ) -> Result<MountResult, String> {
     let deployment_id = decode_string(&host.current_deployment_id()?);
@@ -262,7 +279,7 @@ pub fn refresh_deployment_mount(
         files: indexed_files,
     } = host.deployment_checkout(&deployment_id)?;
 
-    let dir = format!("{DEPLOYMENT_ROOT}/{deployment_id}");
+    let dir = format!("{root}/{deployment_id}");
     fs.mkdir(&dir, true).map_err(fs_error_message)?;
     // The agent edits and re-submits this manifest by hand, so hide every pinned
     // digest it never needs to maintain (standalone `content_digest`,
@@ -293,11 +310,19 @@ pub fn refresh_deployment_mount(
         if !replace && fs.exists(&path) {
             continue;
         }
-        fs.register_lazy(&path, &reference.digest, reference.size);
+        match &loader {
+            Some(loader) => fs.register_lazy_with_loader(
+                &path,
+                &reference.digest,
+                reference.size,
+                loader.clone(),
+            ),
+            None => fs.register_lazy(&path, &reference.digest, reference.size),
+        }
         files += 1;
     }
 
-    let current = format!("{DEPLOYMENT_ROOT}/current");
+    let current = format!("{root}/current");
     if fs.exists(&current) {
         fs.remove(&current, true).map_err(fs_error_message)?;
     }
@@ -308,34 +333,53 @@ pub fn refresh_deployment_mount(
     })
 }
 
-/// Convenience entry point for session mount: `refresh_deployment_mount` with
-/// `replace = false`.
-pub fn mount(fs: &mut Vfs, host: &mut dyn ControlPlane) -> Result<MountResult, String> {
-    refresh_deployment_mount(fs, host, false)
-}
-
-/// Register the deployment tree as a deferred mount instead of fetching it at
-/// session start: the checkout (`current-deployment-id` + `deployment-checkout`)
-/// runs only when the session first references a path under
-/// `/workspace/deployment`, so a bash-only session never touches the target.
-/// A failed mount records the reason in `/workspace/.mount-error`, matching the
-/// old eager path (there is no `console.log` to report it to; see `session.rs`).
-pub fn register_deferred_mount(fs: &mut Vfs, host: Box<dyn ControlPlane>) {
-    let host = RefCell::new(host);
+/// Register CLOUD_ROOT as a deferred mount: the first reference under it lists
+/// the cloud's apps and registers each app's deployment as a nested deferred
+/// mount, so a bash-only session never touches the cloud. A failed mount
+/// records the reason in `/workspace/.mount-error` (there is no `console.log`
+/// to report it to; see `session.rs`).
+pub fn register_deferred_mount(fs: &mut Vfs, cloud: Box<dyn Cloud>) {
+    let cloud: SharedCloud = Rc::new(RefCell::new(cloud));
     let populate = Rc::new(move |fs: &mut Vfs| {
-        let mut host = host.borrow_mut();
-        if let Err(err) = refresh_deployment_mount(fs, &mut **host, false) {
-            let _ = fs.write_file("/workspace/.mount-error", err.as_bytes());
-        }
+        record_mount_error(fs, |fs| {
+            for app in list_cloud_apps(&cloud)? {
+                register_app_mount(fs, &cloud, &app);
+            }
+            Ok(())
+        });
     });
-    fs.register_deferred_mount(DEPLOYMENT_ROOT, populate);
+    fs.register_deferred_mount(CLOUD_ROOT, populate);
 }
 
-/// The `Vfs` blob loader for a mounted session: fetch a deployment file's bytes
-/// by content digest via `deployment-read-blob`. Install with `fs.set_blob_loader(...)`; it
-/// owns a host of its own (the shell's `obelisk` command owns a separate one)
-/// with interior mutability, since `BlobLoader::load` is a `&self` call reached
-/// from a plain file read.
+/// Register `app`'s deployment as a deferred mount unless it is already there.
+fn register_app_mount(fs: &mut Vfs, cloud: &SharedCloud, app: &str) {
+    let root = app_deployment_root(app);
+    if !is_dns_label(app) || fs.exists(&root) {
+        return;
+    }
+    let cloud = cloud.clone();
+    let app = app.to_string();
+    let mount_root = root.clone();
+    let populate = Rc::new(move |fs: &mut Vfs| {
+        record_mount_error(fs, |fs| {
+            let mut host = cloud.borrow_mut().control_plane(&app);
+            let loader = blob_loader(cloud.borrow_mut().control_plane(&app));
+            refresh_deployment_mount(fs, host.as_mut(), Some(loader), &mount_root, false).map(drop)
+        });
+    });
+    fs.register_deferred_mount(&root, populate);
+}
+
+fn record_mount_error(fs: &mut Vfs, populate: impl FnOnce(&mut Vfs) -> Result<(), String>) {
+    if let Err(err) = populate(fs) {
+        let _ = fs.write_file("/workspace/.mount-error", err.as_bytes());
+    }
+}
+
+/// The `Vfs` blob loader for an app's deployment files: fetch a file's bytes by
+/// content digest via `deployment-read-blob`. It owns a control plane of its
+/// own with interior mutability, since `BlobLoader::load` is a `&self` call
+/// reached from a plain file read.
 struct HostBlobLoader {
     host: RefCell<Box<dyn ControlPlane>>,
 }
@@ -350,7 +394,7 @@ impl BlobLoader for HostBlobLoader {
     }
 }
 
-/// Build the session's lazy blob loader from an owned host (see
+/// Build an app's lazy blob loader from an owned control plane (see
 /// `HostBlobLoader`).
 pub fn blob_loader(host: Box<dyn ControlPlane>) -> Rc<dyn BlobLoader> {
     Rc::new(HostBlobLoader {
@@ -364,19 +408,58 @@ fn execute_obelisk(
     stdin: &str,
     generate: &mut Generate,
     host: &mut dyn ControlPlane,
+    cloud: Option<&SharedCloud>,
 ) -> CommandOutput {
-    match try_execute_obelisk(interp, args, stdin, generate, host) {
-        Ok(result) => result,
-        Err(message) => fail(format!("obelisk: {message}\n")),
-    }
+    let result = if args.first().map(String::as_str) == Some("cloud") {
+        try_execute_cloud(interp, &args[1..], stdin, generate, cloud)
+    } else {
+        try_execute_top_level(interp, args, stdin, generate, host)
+    };
+    result.unwrap_or_else(|message| fail(format!("obelisk: {message}\n")))
 }
 
+/// Only `cloud`, `generate` and the ask-user call run at the top level; the app
+/// commands need an app, so point at `obelisk cloud app`.
+fn try_execute_top_level(
+    interp: &mut Interpreter,
+    args: &[String],
+    stdin: &str,
+    generate: &mut Generate,
+    host: &mut dyn ControlPlane,
+) -> Result<CommandOutput, String> {
+    let group = args.first().map(String::as_str).unwrap_or("");
+    if group.is_empty() || is_help_flag(group) {
+        return Ok(ok(help()));
+    }
+    if group == "generate"
+        || (group == "call" && args.get(1).map(String::as_str) == Some(ASK_USER_FFQN))
+    {
+        return try_execute_obelisk(interp, args, stdin, generate, host, None);
+    }
+    if CLOUD_APP_API.contains(&group) {
+        return Err(format!(
+            "`obelisk {group}` runs against a cloud app: use `obelisk cloud app [--app NAME] {}` (see `obelisk cloud apps list`)",
+            args.join(" ")
+        ));
+    }
+    Ok(fail(format!(
+        "obelisk: unknown command '{}'\n{}",
+        args.join(" "),
+        help()
+    )))
+}
+
+/// The cloud app a control plane serves: its name and the cloud it is in.
+type AppContext<'a> = Option<(&'a str, &'a SharedCloud)>;
+
+/// `app` is the cloud app `host` serves, or `None` for `generate` and ask-user.
 fn try_execute_obelisk(
     interp: &mut Interpreter,
     args: &[String],
     stdin: &str,
     generate: &mut Generate,
     host: &mut dyn ControlPlane,
+    app: AppContext,
 ) -> Result<CommandOutput, String> {
     let group = args.first().map(String::as_str).unwrap_or("");
     let action = args.get(1).map(String::as_str).unwrap_or("");
@@ -385,20 +468,8 @@ fn try_execute_obelisk(
     if group.is_empty() || is_help_flag(group) {
         return Ok(ok(help()));
     }
-    // `-h`/`--help` at any level prints the matching usage and exits 0: as the
-    // action (`obelisk deployment -h`) it is the group help, further right
-    // (`obelisk deployment submit -h`) the subcommand help. For `call`, only a
-    // help flag before `--` is help; after it, it is a positional parameter.
-    if is_help_flag(action) {
-        return Ok(ok(group_help(group)));
-    }
-    let help_scan = if group == "call" {
-        &rest[..rest.iter().position(|a| a == "--").unwrap_or(rest.len())]
-    } else {
-        rest
-    };
-    if help_requested(help_scan) {
-        return Ok(ok(action_help(group, action)));
+    if let Some(help) = requested_help(args) {
+        return Ok(ok(help));
     }
 
     if group == "functions" && action == "list" {
@@ -478,13 +549,32 @@ fn try_execute_obelisk(
         return execute_generate(interp, action, rest, generate);
     }
     if group == "deployment" {
-        return execute_deployment(interp, action, rest, host);
+        return execute_deployment(interp, action, rest, host, app);
     }
     Ok(fail(format!(
         "obelisk: unknown command '{}'\n{}",
         args.join(" "),
-        help()
+        group_help(group)
     )))
+}
+
+/// `-h`/`--help` at any level asks for the matching usage: as the action
+/// (`deployment -h`) the group help, further right (`deployment submit -h`) the
+/// subcommand help. For `call`, only a help flag before `--` is help; after it,
+/// it is a positional parameter. `None` when no help is asked for.
+fn requested_help(args: &[String]) -> Option<String> {
+    let group = args.first().map(String::as_str).unwrap_or("");
+    let action = args.get(1).map(String::as_str).unwrap_or("");
+    let rest: &[String] = if args.len() > 2 { &args[2..] } else { &[] };
+    if is_help_flag(action) {
+        return Some(group_help(group));
+    }
+    let help_scan = if group == "call" {
+        &rest[..rest.iter().position(|a| a == "--").unwrap_or(rest.len())]
+    } else {
+        rest
+    };
+    help_requested(help_scan).then(|| action_help(group, action))
 }
 
 /// `generate deployment` echoes a template baked in at build time;
@@ -497,7 +587,12 @@ fn execute_generate(
 ) -> Result<CommandOutput, String> {
     match action {
         "deployment" => Ok(ok(ensure_trailing_newline(DEPLOYMENT_TEMPLATE.to_string()))),
-        "new" => generate_new(interp, first_positional(args, &[]), generate),
+        "new" => generate_new(
+            interp,
+            first_positional(args, &["--template"]),
+            option(args, "--template", ""),
+            generate,
+        ),
         "" => Ok(fail(format!(
             "obelisk generate: a subcommand is required\n{}",
             generate_help()
@@ -508,14 +603,30 @@ fn execute_generate(
     }
 }
 
-/// PORT: real obelisk `generate new [NAME]`. The template files are read from
-/// the `obelisk` repo at the operator-pinned `OBELISK_VERSION` ref, so they
-/// never drift from the target server.
+/// PORT: real obelisk `generate new [NAME]`, except `--template` is required.
+/// The template is read from the `obelisk` repo at the operator-pinned
+/// `OBELISK_VERSION` ref, so it never drifts from the cloud's servers.
 fn generate_new(
     interp: &mut Interpreter,
     name: Option<&str>,
+    template: &str,
     generate: &mut Generate,
 ) -> Result<CommandOutput, String> {
+    if template.is_empty() {
+        let (git_ref, names) = list_templates(generate)?;
+        return Err(format!(
+            "generate new: --template is required; templates at {TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}: {}",
+            names.join(", ")
+        ));
+    }
+    if template == "."
+        || template == ".."
+        || !template
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err(format!("generate new: invalid template name '{template}'"));
+    }
     let app_name = match name {
         Some(name) => name.to_string(),
         None => slugify_app_name(&basename(&interp.cwd)),
@@ -531,23 +642,16 @@ fn generate_new(
         ));
     }
 
-    let git_ref = &generate.obelisk_version;
-    let repo = json!({ "owner": TEMPLATE_OWNER, "repo": TEMPLATE_REPO, "ref": git_ref });
-    let mut files = Vec::new();
-    collect_template_files(&mut generate.github, &repo, "", &mut files).map_err(|error| {
-        format!(
-            "cannot fetch the starter template from {TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{TEMPLATE_PATH}: {error}"
-        )
+    let template_path = format!("{TEMPLATES_ROOT}/{template}");
+    let (_, mut files) = with_template_ref(generate, &template_path, |github, repo| {
+        let mut collected = Vec::new();
+        collect_template_files(github, repo, &template_path, "", &mut collected, &app_name)?;
+        if collected.is_empty() {
+            return Err("contains no files".to_string());
+        }
+        Ok(collected)
     })?;
-    if files.is_empty() {
-        return Err(format!(
-            "{TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{TEMPLATE_PATH} contains no files"
-        ));
-    }
-    files.push((
-        "README.md".to_string(),
-        sandbox_readme(&generate.webhook_url),
-    ));
+    files.push(("README.md".to_string(), sandbox_readme(&app_name)));
     for (relative, _) in &files {
         let path = format!("{output_dir}/{relative}");
         if interp.fs.exists(&path) {
@@ -571,56 +675,51 @@ fn generate_new(
 // ObeliskNet (`obelisk cloud`)
 // ---------------------------------------------------------------------------
 
-/// `obelisk cloud app` subcommands served by the app's own API, reusing the local commands.
-const CLOUD_APP_API: [&str; 4] = ["functions", "executions", "call", "deployment"];
+const CLOUD_HELP: &str = "Usage: obelisk cloud <command> [args]\n\nManage the apps in the cloud.\n\nCommands:\napps list                  List apps.\ntoken list|get ID          List API tokens, or show one.\napp [--app NAME] ...       Manage one app; run `obelisk cloud app --help`.\n\nGlobal options: --json, --verbose, --command-id ID.\n";
 
-const CLOUD_HELP: &str = "Usage: obelisk cloud <command> [args]\n\nManage ObeliskNet apps with OBELISK_CLOUD_API_URL and OBELISK_CLOUD_API_TOKEN.\n\nCommands:\napps list                  List apps.\ntoken list|get ID          List API tokens, or show one.\napp [--app NAME] ...       Manage one app; run `obelisk cloud app --help`.\n\nGlobal options: --json, --verbose, --command-id ID.\n";
-
-const CLOUD_APP_HELP: &str = "Usage: obelisk cloud app [--app NAME] [-a APP.TOML] <subcommand>\n\nThe app is --app, else app_name in the -a file or ./app.toml.\n\nSubcommands:\nnew [NAME]                       Create the app from the app policy.\ndeploy [-a APP.TOML] [-d DEPLOYMENT.TOML]\nCreate or restage, apply, start, and deploy; prints the webhook URL.\nget | status                     Show the app or its runtime status.\nstage                            Stage the app policy from -a or ./app.toml.\napply [--force] | start | stop   Apply staged changes, or start/stop the VM.\ndelete                           Delete the app.\nenv list|set NAME VALUE|unset NAME\nsecrets list|set NAME (--stdin|--from-env VAR)|unset NAME\nendpoint [api|webhook|webui]     Print the app's URLs.\nfunctions|executions|call|deployment ...\nThe local commands, run against the app's API.\n";
-
-fn execute_cloud(
-    interp: &mut Interpreter,
-    args: &[String],
-    stdin: &str,
-    generate: &mut Generate,
-    cloud: Option<&mut dyn Cloud>,
-) -> CommandOutput {
-    match try_execute_cloud(interp, args, stdin, generate, cloud) {
-        Ok(result) => result,
-        Err(message) => fail(format!("obelisk: {message}\n")),
-    }
-}
+const CLOUD_APP_HELP: &str = "Usage: obelisk cloud app [--app NAME] [-a APP.TOML] <subcommand>\n\nThe app is --app, else app_name in the -a file or ./app.toml, else the cloud's only app.\n\nSubcommands:\nnew [NAME]                       Create the app from the app policy.\ndeploy [-a APP.TOML] [-d DEPLOYMENT.TOML]\nCreate or restage, apply, start, and deploy; prints the webhook URL.\nget | status                     Show the app or its runtime status.\nstage                            Stage the app policy from -a or ./app.toml.\napply [--force] | start | stop   Apply staged changes, or start/stop the VM.\ndelete                           Delete the app.\nenv list|set NAME VALUE|unset NAME\nsecrets list|set NAME (--stdin|--from-env VAR)|unset NAME\nendpoint [api|webhook|webui]     Print the app's URLs.\nfunctions ...                    List the app's functions, or print one's WIT.\nexecutions ...                   List the app's executions, or show one.\ncall FFQN [PARAMS_JSON]          Call one of the app's functions.\ndeployment ...                   Inspect, edit, submit, and activate the app's deployments.\n\nRun `obelisk cloud app <subcommand> --help` for its options.\n";
 
 fn try_execute_cloud(
     interp: &mut Interpreter,
     args: &[String],
     stdin: &str,
     generate: &mut Generate,
-    cloud: Option<&mut dyn Cloud>,
+    cloud: Option<&SharedCloud>,
 ) -> Result<CommandOutput, String> {
     if args.first().is_none_or(|arg| is_help_flag(arg)) {
         return Ok(ok(CLOUD_HELP.to_string()));
     }
     let cloud = cloud.ok_or("`obelisk cloud` is not available in this session")?;
     if args[0] == "app" {
-        let (mut flags, rest) = leading_cloud_flags(&args[1..])?;
+        let (flags, rest) = leading_cloud_flags(&args[1..])?;
         let sub = rest.first().map(String::as_str).unwrap_or("");
         if sub.is_empty() || is_help_flag(sub) {
             return Ok(ok(CLOUD_APP_HELP.to_string()));
         }
         if CLOUD_APP_API.contains(&sub) {
-            if sub == "deployment" && rest.get(1).map(String::as_str) == Some("refresh") {
-                return Err("`deployment refresh` mounts the local target; use `obelisk cloud app --app NAME deployment show ID` instead".to_string());
+            if let Some(help) = requested_help(rest) {
+                return Ok(ok(help));
             }
-            let app = cloud_app_name(interp, &flags)?;
-            let mut host = cloud.control_plane(&app);
-            return try_execute_obelisk(interp, rest, stdin, generate, host.as_mut());
+            let app = cloud_app_name(interp, &flags, cloud)?;
+            let mut host = cloud.borrow_mut().control_plane(&app);
+            let result = try_execute_obelisk(
+                interp,
+                rest,
+                stdin,
+                generate,
+                host.as_mut(),
+                Some((&app, cloud)),
+            )?;
+            if result.exit_code == 0 {
+                register_app_mount(&mut interp.fs, cloud, &app);
+            }
+            return Ok(result);
         }
         if help_requested(rest) {
             return Ok(ok(CLOUD_APP_HELP.to_string()));
         }
         if sub == "deploy" {
-            return cloud_deploy(interp, &mut flags, &rest[1..], generate, cloud);
+            return cloud_deploy(interp, flags, &rest[1..], generate, cloud);
         }
     }
     if help_requested(args) {
@@ -659,16 +758,62 @@ fn leading_cloud_flags(args: &[String]) -> Result<(CloudFlags, &[String]), Strin
     Ok((flags, &args[i..]))
 }
 
-/// The app: `--app`, else `app_name` in the `-a` file or ./app.toml.
-fn cloud_app_name(interp: &Interpreter, flags: &CloudFlags) -> Result<String, String> {
-    if let Some(app) = &flags.app {
-        return Ok(app.clone());
+/// The app: `--app`, else `app_name` in the `-a` file or ./app.toml, else the cloud's only app.
+fn cloud_app_name(
+    interp: &Interpreter,
+    flags: &CloudFlags,
+    cloud: &SharedCloud,
+) -> Result<String, String> {
+    if let Some(app) = flags.app.as_deref().filter(|app| !app.is_empty()) {
+        return Ok(app.to_string());
     }
     let path = flags.app_config.as_deref().unwrap_or(APP_POLICY_FILE);
-    read_app_policy(interp, path, flags.app_config.is_some())?
-        .as_deref()
-        .and_then(app_name_of)
-        .ok_or_else(|| "Select an app with --app or app_name in ./app.toml".to_string())
+    let policy = read_app_policy(interp, path, flags.app_config.is_some())?;
+    if let Some(name) = policy.as_deref().and_then(app_name_of) {
+        return Ok(name);
+    }
+    let apps = list_cloud_apps(cloud)?;
+    if let [only] = apps.as_slice() {
+        return Ok(only.clone());
+    }
+    let listed = if apps.is_empty() {
+        "none".to_string()
+    } else {
+        apps.join(", ")
+    };
+    Err(format!(
+        "Select an app with --app NAME (apps: {listed}) or app_name in ./app.toml"
+    ))
+}
+
+/// The names `obelisk cloud apps list --json` reports.
+fn list_cloud_apps(cloud: &SharedCloud) -> Result<Vec<String>, String> {
+    let args = ["apps", "list", "--json"].map(str::to_string);
+    let output = cloud
+        .borrow_mut()
+        .run(&args, "", None)
+        .map_err(|error| format!("cannot list cloud apps: {error}"))?;
+    if output.exit_code != 0 {
+        let detail = if output.stderr.is_empty() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        return Err(format!("cannot list cloud apps: {}", detail.trim()));
+    }
+    let rows = serde_json::from_str::<Value>(&output.stdout)
+        .ok()
+        .and_then(|value| value.get("apps").and_then(Value::as_array).cloned())
+        .ok_or("cannot list cloud apps: unexpected `apps list --json` output")?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| row.get("app_name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect())
+}
+
+fn is_dns_label(name: &str) -> bool {
+    validate_app_name(name).is_ok()
 }
 
 /// PORT: `appNameOf`, a top-level `app_name = "..."` line.
@@ -706,15 +851,11 @@ fn read_app_policy(
 /// then the deployment is applied against the app's API like `deployment apply`.
 fn cloud_deploy(
     interp: &mut Interpreter,
-    flags: &mut CloudFlags,
+    mut flags: CloudFlags,
     args: &[String],
     generate: &mut Generate,
-    cloud: &mut dyn Cloud,
+    cloud: &SharedCloud,
 ) -> Result<CommandOutput, String> {
-    let mut app_config = flags
-        .app_config
-        .clone()
-        .unwrap_or_else(|| APP_POLICY_FILE.to_string());
     let mut deployment = "deployment.toml".to_string();
     let mut i = 0;
     while i < args.len() {
@@ -725,36 +866,50 @@ fn cloud_deploy(
         };
         match arg {
             "--app" => flags.app = Some(value()?),
-            "-a" | "--app-config" => app_config = value()?,
+            "-a" | "--app-config" => flags.app_config = Some(value()?),
             "-d" | "--deployment" => deployment = value()?,
             "--fill" => return Err("`--fill` is interactive; set values with `obelisk cloud app --app NAME env set` and `secrets set`, then retry".to_string()),
             _ => return Err(format!("cloud app deploy: unexpected argument '{arg}'")),
         }
         i += 1;
     }
-    let policy = read_app_policy(interp, &app_config, true)?.unwrap_or_default();
-    let app = flags
-        .app
-        .clone()
-        .or_else(|| app_name_of(&policy))
-        .ok_or("Select an app with --app or app_name in the app policy")?;
-    let target = match cloud.prepare_deploy(&app, &policy) {
+    // The policy is optional so a fixed app (single-app cloud) deploys without one.
+    let path = flags.app_config.as_deref().unwrap_or(APP_POLICY_FILE);
+    let policy = read_app_policy(interp, path, flags.app_config.is_some())?;
+    let app = cloud_app_name(interp, &flags, cloud)?;
+    let prepared = cloud
+        .borrow_mut()
+        .prepare_deploy(&app, policy.as_deref().unwrap_or(""));
+    let target = match prepared {
         Ok(target) => target,
         Err(error) => return Ok(fail(format!("obelisk: {error}\n"))),
     };
     let step = format!(
         "→ obelisk cloud app --app {app} deployment apply {deployment}  Uploading and activating deployment\n"
     );
-    let mut host = cloud.control_plane(&app);
+    let mut host = cloud.borrow_mut().control_plane(&app);
     let apply = [
         "deployment".to_string(),
         "apply".to_string(),
         deployment.clone(),
     ];
-    let applied = execute_obelisk(interp, &apply, "", generate, host.as_mut());
+    let applied = try_execute_obelisk(
+        interp,
+        &apply,
+        "",
+        generate,
+        host.as_mut(),
+        Some((&app, cloud)),
+    )
+    .unwrap_or_else(|message| fail(format!("obelisk: {message}\n")));
     let mut stderr = format!("{}{step}{}", target.log, applied.stderr);
     if applied.exit_code != 0 {
-        stderr.push_str(&format!("obelisk: Deployment did not complete; inspect `obelisk cloud app --app {app} deployment active` to see what is serving, then retry `obelisk cloud app --app {app} deploy -a {app_config} -d {deployment}`\n"));
+        let policy_flag = flags
+            .app_config
+            .as_ref()
+            .map(|path| format!(" -a {path}"))
+            .unwrap_or_default();
+        stderr.push_str(&format!("obelisk: Deployment did not complete; inspect `obelisk cloud app --app {app} deployment active` to see what is serving, then retry `obelisk cloud app --app {app} deploy{policy_flag} -d {deployment}`\n"));
         return Ok(CommandOutput {
             stdout: applied.stdout,
             stderr,
@@ -762,6 +917,7 @@ fn cloud_deploy(
         });
     }
     stderr.push_str(&format!("Deployed {app}\n"));
+    register_app_mount(&mut interp.fs, cloud, &app);
     let webhook = target
         .webhook_url
         .map(|url| format!("{url}\n"))
@@ -778,7 +934,7 @@ fn cloud_run(
     interp: &mut Interpreter,
     args: &[String],
     stdin: &str,
-    cloud: &mut dyn Cloud,
+    cloud: &SharedCloud,
 ) -> Result<CommandOutput, String> {
     let mut forwarded = Vec::new();
     let mut input = stdin.to_string();
@@ -805,60 +961,99 @@ fn cloud_run(
     }
     let path = app_config.as_deref().unwrap_or(APP_POLICY_FILE);
     let policy = read_app_policy(interp, path, app_config.is_some())?;
-    cloud.run(&forwarded, &input, policy.as_deref())
+    cloud
+        .borrow_mut()
+        .run(&forwarded, &input, policy.as_deref())
 }
 
 /// Written in place of the template's README.md, whose `obelisk server run` steps do not apply here.
-fn sandbox_readme(webhook_url: &str) -> String {
-    let trigger = if webhook_url.is_empty() {
-        "Then run the workflow with `obelisk call FFQN` (see `obelisk functions list`).\n"
-            .to_string()
-    } else {
-        format!(
-            "Then trigger the webhook, or run the workflow with `obelisk call FFQN` (see\n\
-             `obelisk functions list`):\n\n```sh\ncurl {webhook_url}/run\n```\n"
-        )
-    };
+fn sandbox_readme(app_name: &str) -> String {
     format!(
-        r#"# JavaScript HTTP starter
+        r#"# {app_name}
 
-This app has one webhook, one durable workflow, and one HTTP activity. The webhook calls the
-workflow, which asks the activity to GET `https://example.com/` and returns its status code.
-
-`obelisk` in this shell talks to the target Obelisk instance. Deploy from this directory:
+`obelisk cloud` in this shell manages apps in the cloud. `app.toml` is this app's policy: it names
+the app (`app_name`) and caps the hosts, secrets, environment variables, and exec activities any
+deployment may use. Deploy from this directory:
 
 ```sh
-obelisk deployment apply deployment.toml
+obelisk cloud app deploy
 ```
 
-This submits the manifest and replaces the target's whole active deployment. To keep what already
-runs there, merge this app's components into `/workspace/deployment/current/deployment.toml` and
-apply that instead.
+This creates the app from `app.toml` when needed, replaces its whole active deployment with
+`deployment.toml`, and prints the webhook URL. Then inspect it with
+`obelisk cloud app --app {app_name} functions list` and `executions list`.
 
-{trigger}
-## App policy
-
-The target's app policy caps the hosts, secrets, environment variables, and exec activities any
-deployment may use. Read it in `{DEPLOYMENT_ROOT}/current/{APP_POLICY_FILE}` (`obelisk deployment
-refresh` re-fetches it) and check that it allows what `deployment.toml` requests, here GET
-`https://example.com`. A deployment cannot widen the policy: if something is missing, ask the user
-to allow it (e.g. another host or secret) in the target server's app config.
+To deploy to an existing app instead, pass `--app NAME`. An app that cannot be reconfigured keeps
+its own policy in `{CLOUD_ROOT}/NAME/deployment/current/{APP_POLICY_FILE}`: check that it allows what
+`deployment.toml` requests, and if something is missing, ask the user to allow it.
 "#
     )
 }
 
+fn list_templates(generate: &mut Generate) -> Result<(String, Vec<String>), String> {
+    with_template_ref(generate, TEMPLATES_ROOT, |github, repo| {
+        let listing: Value =
+            serde_json::from_str(&github_request(github, "list", repo, TEMPLATES_ROOT)?)
+                .map_err(|e| format!("list did not return JSON: {e}"))?;
+        let entries = listing
+            .as_array()
+            .ok_or_else(|| "list did not return a JSON array".to_string())?;
+        Ok(entries
+            .iter()
+            .filter(|entry| entry.get("type").and_then(Value::as_str) == Some("dir"))
+            .filter_map(|entry| {
+                entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect())
+    })
+}
+
+/// Runs `fetch` at OBELISK_VERSION, retrying at `TEMPLATE_FALLBACK_REF` when that
+/// fails; returns the ref that worked.
+fn with_template_ref<T>(
+    generate: &mut Generate,
+    path: &str,
+    mut fetch: impl FnMut(&mut GithubContents, &Value) -> Result<T, String>,
+) -> Result<(String, T), String> {
+    let pinned = generate.obelisk_version.as_str();
+    let mut refs = Vec::new();
+    if !pinned.is_empty() && pinned != "latest" && pinned != TEMPLATE_FALLBACK_REF {
+        refs.push(pinned.to_string());
+    }
+    refs.push(TEMPLATE_FALLBACK_REF.to_string());
+    let mut errors = Vec::new();
+    for git_ref in refs {
+        let repo = json!({ "owner": TEMPLATE_OWNER, "repo": TEMPLATE_REPO, "ref": git_ref });
+        match fetch(&mut generate.github, &repo) {
+            Ok(value) => return Ok((git_ref, value)),
+            Err(error) => errors.push(format!(
+                "{TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{path}: {error}"
+            )),
+        }
+    }
+    Err(format!(
+        "cannot fetch the starter template from {}",
+        errors.join("; ")
+    ))
+}
+
 /// Depth-first listing of the template tree; `relative` is the path under
-/// `TEMPLATE_PATH`, collected as `(relative file path, contents)`.
+/// `root`, collected as `(relative file path, contents)`.
 fn collect_template_files(
     github: &mut GithubContents,
     repo: &Value,
+    root: &str,
     relative: &str,
     files: &mut Vec<(String, String)>,
+    app_name: &str,
 ) -> Result<(), String> {
     let remote = if relative.is_empty() {
-        TEMPLATE_PATH.to_string()
+        root.to_string()
     } else {
-        format!("{TEMPLATE_PATH}/{relative}")
+        format!("{root}/{relative}")
     };
     let listing: Value = serde_json::from_str(&github_request(github, "list", repo, &remote)?)
         .map_err(|e| format!("list did not return JSON: {e}"))?;
@@ -876,12 +1071,15 @@ fn collect_template_files(
             format!("{relative}/{name}")
         };
         match entry.get("type").and_then(Value::as_str) {
-            Some("dir") => collect_template_files(github, repo, &child, files)?,
-            // The app policy lives on the target server, see `sandbox_readme`.
-            _ if child == "app.toml" || child == "README.md" => {}
+            Some("dir") => collect_template_files(github, repo, root, &child, files, app_name)?,
+            _ if child == "README.md" => {}
             _ => {
-                let body =
-                    github_request(github, "read", repo, &format!("{TEMPLATE_PATH}/{child}"))?;
+                let body = github_request(github, "read", repo, &format!("{root}/{child}"))?;
+                let body = if child == APP_POLICY_FILE {
+                    body.replace("__APP_NAME__", app_name)
+                } else {
+                    body
+                };
                 files.push((child, body));
             }
         }
@@ -939,6 +1137,7 @@ fn execute_deployment(
     action: &str,
     args: &[String],
     host: &mut dyn ControlPlane,
+    app: AppContext,
 ) -> Result<CommandOutput, String> {
     match action {
         "active" => {
@@ -956,8 +1155,12 @@ fn execute_deployment(
         "refresh" => {
             // An explicit refresh populates the tree now, so drop the deferred
             // mount to keep a later deployment access from re-fetching it.
-            interp.fs.clear_deferred_mount(DEPLOYMENT_ROOT);
-            let refreshed = refresh_deployment_mount(&mut interp.fs, host, true)?;
+            let (app, cloud) = app.ok_or("`deployment refresh` needs a cloud app")?;
+            let root = app_deployment_root(app);
+            interp.fs.clear_deferred_mount(&root);
+            let loader = blob_loader(cloud.borrow_mut().control_plane(app));
+            let refreshed =
+                refresh_deployment_mount(&mut interp.fs, host, Some(loader), &root, true)?;
             Ok(ok(format!("{}\n", mount_result_json(&refreshed))))
         }
         "check" => {
@@ -1684,7 +1887,7 @@ fn parent_dir(path: &str) -> String {
     }
 }
 
-/// A deployment checked out for editing lives at DEPLOYMENT_ROOT/<id>, named
+/// A deployment checked out for editing lives at CLOUD_ROOT/<app>/deployment/<id>, named
 /// after its own real ID ("current" for the freshly-checked-out active one,
 /// which resolves to a fresh server-assigned ID on submit) -- only that
 /// specific layout's basename is a meaningful deployment_id. Submitting
@@ -1694,14 +1897,15 @@ fn parent_dir(path: &str) -> String {
 /// deployment_id: wrong prefix", so leave it empty there for the server to
 /// assign a fresh one, exactly like a brand-new "current" submission.
 fn deployment_id_from_dir(dir: &str) -> String {
-    if !dir.starts_with(&format!("{DEPLOYMENT_ROOT}/")) {
-        return String::new();
-    }
-    let name = basename(dir);
-    if name == "current" {
-        String::new()
-    } else {
-        name
+    let parts = dir
+        .strip_prefix(&format!("{CLOUD_ROOT}/"))
+        .map(|rest| rest.split('/').collect::<Vec<_>>())
+        .unwrap_or_default();
+    match parts.as_slice() {
+        [app, "deployment", name] if !app.is_empty() && !name.is_empty() && *name != "current" => {
+            name.to_string()
+        }
+        _ => String::new(),
     }
 }
 
@@ -1944,51 +2148,50 @@ fn action_help(group: &str, action: &str) -> String {
 fn help() -> String {
     "Usage: obelisk <command> [args]\n\
 \n\
-Query and control the running Obelisk server, and edit the deployment checked\n\
-out under /workspace/deployment/current.\n\
+Manage apps in the cloud, and write starter files.\n\
 \n\
 Commands:\n\
-  functions    List deployed functions, or print a function's WIT.\n\
-  executions   List executions, or show one execution's record, logs, or result.\n\
-  call         Call a deployed function and print its result.\n\
-  deployment   Inspect, edit, submit, and activate deployments.\n\
-  generate     Print a starter configuration file, or create a new app.\n\
-  cloud        Manage and deploy ObeliskNet apps.\n\
+cloud        Manage cloud apps; each app's functions, executions, calls, and deployments\n\
+are under `obelisk cloud app [--app NAME]`.\n\
+generate     Print a starter configuration file, or create a new app.\n\
+call obelisk-agent:stub/stub.ask-user '[\"QUESTION\"]'\n\
+Ask the user a question and print the answer.\n\
 \n\
+Each app's active deployment is mounted at /workspace/cloud/<app>/deployment/current.\n\
 Run `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n"
         .to_string()
 }
 
 fn functions_help() -> String {
-    "Usage: obelisk functions <subcommand>\n\
+    "Usage: obelisk cloud app [--app NAME] functions <subcommand>\n\
 \n\
-List deployed functions, or print a single function's WIT interface.\n\
+List the app's functions, or print a single function's WIT interface.\n\
 \n\
 Subcommands:\n\
-  list [--prefix PREFIX] [--length N] [--json]   List functions and their signatures.\n\
-  wit FFQN                                        Print the WIT interface for one function.\n"
+list [--prefix PREFIX] [--length N] [--json]   List functions and their signatures.\n\
+wit FFQN                                        Print the WIT interface for one function.\n"
         .to_string()
 }
 
 fn executions_help() -> String {
-    "Usage: obelisk executions <subcommand>\n\
+    "Usage: obelisk cloud app [--app NAME] executions <subcommand>\n\
 \n\
-List executions, or show one execution's record, logs, or result.\n\
+List the app's executions, or show one execution's record, logs, or result.\n\
 \n\
 Subcommands:\n\
-  list [--ffqn-prefix PREFIX] [--id-prefix PREFIX] [--show-derived] [--hide-finished] [--length N]\n\
-                                                  List executions (most recent first).\n\
-  get ID                                          Show an execution's record.\n\
-  logs ID [--length N]                            Show an execution's logs.\n\
-  result ID                                       Show an execution's result value.\n"
+list [--ffqn-prefix PREFIX] [--id-prefix PREFIX] [--show-derived] [--hide-finished] [--length N]\n\
+List executions (most recent first).\n\
+get ID                                          Show an execution's record.\n\
+logs ID [--length N]                            Show an execution's logs.\n\
+result ID                                       Show an execution's result value.\n"
         .to_string()
 }
 
 fn call_help() -> String {
-    "Usage: obelisk call FFQN [PARAMS_JSON]\n\
-       obelisk call FFQN -- PARAM...\n\
+    "Usage: obelisk cloud app [--app NAME] call FFQN [PARAMS_JSON]\n\
+obelisk cloud app [--app NAME] call FFQN -- PARAM...\n\
 \n\
-Call a deployed function and print its result. Pass parameters as one JSON array\n\
+Call one of the app's functions and print its result. Pass parameters as one JSON array\n\
 in WIT parameter order, or after `--` as positional values (each parsed as JSON\n\
 when valid, otherwise as a string). With neither, parameters are read from stdin,\n\
 defaulting to `[]`.\n"
@@ -1996,27 +2199,27 @@ defaulting to `[]`.\n"
 }
 
 fn deployment_help() -> String {
-    "Usage: obelisk deployment <subcommand>\n\
+    "Usage: obelisk cloud app [--app NAME] deployment <subcommand>\n\
 \n\
-Inspect, edit, submit, and activate deployments. Edits under\n\
-/workspace/deployment/current are local until `submit` or `apply`.\n\
+Inspect, edit, submit, and activate the app's deployments. Edits under\n\
+/workspace/cloud/NAME/deployment/current are local until `submit` or `apply`.\n\
 \n\
 Subcommands:\n\
-  active [--json]           Print the active deployment ID.\n\
-  list                      List recent deployments.\n\
-  show ID                   Print a stored deployment's TOML manifest.\n\
-  refresh                   Re-fetch the active deployment, discarding local edits.\n\
-  check [PATH]              Report a deployment's manifest and locally-edited sources.\n\
-  submit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\n\
-  enqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\n\
-  apply PATH|ID             Submit-and-apply: hot-redeploy a manifest or stored deployment now.\n\
+active [--json]           Print the active deployment ID.\n\
+list                      List recent deployments.\n\
+show ID                   Print a stored deployment's TOML manifest.\n\
+refresh                   Re-fetch the active deployment, discarding local edits.\n\
+check [PATH]              Report a deployment's manifest and locally-edited sources.\n\
+submit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\n\
+enqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\n\
+apply PATH|ID             Submit-and-apply: hot-redeploy a manifest or stored deployment now.\n\
 \n\
-Run `obelisk deployment <subcommand> --help` for a subcommand's options.\n"
+Run `obelisk cloud app [--app NAME] deployment <subcommand> --help` for a subcommand's options.\n"
         .to_string()
 }
 
 fn deployment_submit_help() -> String {
-    "Usage: obelisk deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML\n\
+    "Usage: obelisk cloud app [--app NAME] deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML\n\
 \n\
 Store the edited deployment as a new inactive deployment and print its ID. PATH\n\
 is the path to the deployment TOML file to submit (any filename -- not just the\n\
@@ -2024,14 +2227,14 @@ literal \"deployment.toml\"); it must be a file, not a directory, matching real\
 obelisk. Digests are recomputed from the files, so leave them out.\n\
 \n\
 Options:\n\
-      --description TEXT               Human-readable description for the new deployment.\n\
-      --allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n\
-                                       (alias: --allow-unavailable-runtime-config)\n"
+--description TEXT               Human-readable description for the new deployment.\n\
+--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n\
+(alias: --allow-unavailable-runtime-config)\n"
         .to_string()
 }
 
 fn deployment_check_help() -> String {
-    "Usage: obelisk deployment check [PATH-TO-DEPLOYMENT.TOML]\n\
+    "Usage: obelisk cloud app [--app NAME] deployment check [PATH-TO-DEPLOYMENT.TOML]\n\
 \n\
 Report a deployment's manifest size and the owned sources edited locally (the\n\
 files a submit would upload). PATH is the path to the deployment TOML file (any\n\
@@ -2040,25 +2243,25 @@ filename); it must be a file, not a directory, and defaults to ./deployment.toml
 }
 
 fn deployment_enqueue_help() -> String {
-    "Usage: obelisk deployment enqueue [OPTIONS] ID\n\
+    "Usage: obelisk cloud app [--app NAME] deployment enqueue [OPTIONS] ID\n\
 \n\
 Enqueue a stored deployment; it is verified and applied on the next server\n\
 restart. Use `apply` to hot-redeploy without a restart.\n\
 \n\
 Options:\n\
-      --allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n\
-                                       (alias: --allow-unavailable-runtime-config)\n"
+--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n\
+(alias: --allow-unavailable-runtime-config)\n"
         .to_string()
 }
 
 fn deployment_apply_help() -> String {
-    "Usage: obelisk deployment apply [OPTIONS] PATH|ID\n\
+    "Usage: obelisk cloud app [--app NAME] deployment apply [OPTIONS] PATH|ID\n\
 \n\
 Hot-redeploy now (fails if it cannot be applied live). A deployment TOML PATH is\n\
 submitted first, like `submit`; a `Dep_` ID applies a stored deployment.\n\
 \n\
 Options:\n\
-      --description TEXT   Human-readable description for a newly submitted deployment.\n"
+--description TEXT   Human-readable description for a newly submitted deployment.\n"
         .to_string()
 }
 
@@ -2068,20 +2271,19 @@ fn generate_help() -> String {
 Print a starter Obelisk configuration file, or create a new app.\n\
 \n\
 Subcommands:\n\
-  deployment   Print a default deployment.toml with every option documented.\n\
-  new [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n"
+deployment   Print a default deployment.toml with every option documented.\n\
+new --template NAME [APP]  Create a JS app from a template, in a new APP directory or the current one.\n"
         .to_string()
 }
 
 fn generate_new_help() -> String {
-    "Usage: obelisk generate new [NAME]\n\
+    "Usage: obelisk generate new --template NAME [APP]\n\
 \n\
-Create a runnable JS starter app (deployment.toml, a webhook, a workflow, an\n\
-HTTP activity, and a README). With NAME, the app is created in a new NAME\n\
-directory; otherwise in the current directory, named after its slug. The files\n\
-are fetched from the obelisk repository at the operator's OBELISK_VERSION. There\n\
-is no app.toml: the target's app policy is in\n\
-/workspace/deployment/current/app.toml.\n"
+Create a runnable JS starter app from the obelisk repository's\n\
+examples/templates/NAME at the operator's OBELISK_VERSION (falling back to main).\n\
+Run without --template to list the templates. With APP, the app is created in a\n\
+new APP directory; otherwise in the current directory, named after its slug.\n\
+The template's app.toml gets the app name; deploy with `obelisk cloud app deploy`.\n"
         .to_string()
 }
 
@@ -2108,22 +2310,30 @@ mod tests {
     /// enqueue successive responses (so a test can model a preflight that reports
     /// missing files then a retry that succeeds); the last response repeats once
     /// the queue is down to one. Records every call so tests can assert on the
-    /// exact params sent.
-    struct FakeHost {
+    /// exact params sent. Clones share one state, so a test keeps a handle on
+    /// the host it gives a `FakeCloud`.
+    #[derive(Clone, Default)]
+    struct FakeHost(Rc<RefCell<FakeState>>);
+
+    #[derive(Default)]
+    struct FakeState {
         responses: BTreeMap<String, std::collections::VecDeque<Result<String, String>>>,
         calls: Vec<(String, String)>,
     }
 
     impl FakeHost {
         fn new() -> Self {
-            Self {
-                responses: BTreeMap::new(),
-                calls: Vec::new(),
-            }
+            Self::default()
         }
 
-        fn with(mut self, ffqn: &str, response_json: &str) -> Self {
-            self.responses
+        fn calls(&self) -> Vec<(String, String)> {
+            self.0.borrow().calls.clone()
+        }
+
+        fn with(self, ffqn: &str, response_json: &str) -> Self {
+            self.0
+                .borrow_mut()
+                .responses
                 .entry(ffqn.to_string())
                 .or_default()
                 .push_back(Ok(response_json.to_string()));
@@ -2132,8 +2342,10 @@ mod tests {
 
         /// Enqueue an activity `Err` (a stringified tool/submit error), mirroring
         /// how the real host seam surfaces a returned error result.
-        fn with_err(mut self, ffqn: &str, message: &str) -> Self {
-            self.responses
+        fn with_err(self, ffqn: &str, message: &str) -> Self {
+            self.0
+                .borrow_mut()
+                .responses
                 .entry(ffqn.to_string())
                 .or_default()
                 .push_back(Err(message.to_string()));
@@ -2143,8 +2355,11 @@ mod tests {
 
     impl ObeliskHost for FakeHost {
         fn call_json(&mut self, ffqn: &str, params_json: &str) -> Result<Option<String>, String> {
-            self.calls.push((ffqn.to_string(), params_json.to_string()));
-            let queue = self
+            let mut state = self.0.borrow_mut();
+            state
+                .calls
+                .push((ffqn.to_string(), params_json.to_string()));
+            let queue = state
                 .responses
                 .get_mut(ffqn)
                 .ok_or_else(|| format!("no fixture for {ffqn}"))?;
@@ -2267,7 +2482,7 @@ mod tests {
         }
         /// Unfixtured means no app config, so mount tests need not stub it.
         fn get_app_config(&mut self) -> Result<Option<String>, String> {
-            if !self.responses.contains_key(APP_CONFIG_FFQN) {
+            if !self.0.borrow().responses.contains_key(APP_CONFIG_FFQN) {
                 return Ok(None);
             }
             Ok(match self.call("get-app-config", json!([]))? {
@@ -2389,6 +2604,50 @@ mod tests {
         )
     }
 
+    const APP: &str = "demo";
+
+    /// A cloud with the one app `demo`, served by `host`.
+    fn one_app_cloud(host: &FakeHost) -> FakeCloud {
+        FakeCloud::default().with_app(APP, host)
+    }
+
+    /// `obelisk cloud app --app demo ARGS` with `host` as the app's control plane.
+    fn execute_app(
+        i: &mut Interpreter,
+        args: &[String],
+        stdin: &str,
+        generate: &mut Generate,
+        host: &FakeHost,
+    ) -> CommandOutput {
+        let mut argv = words(&["cloud", "app", "--app", APP]);
+        argv.extend_from_slice(args);
+        let cloud = one_app_cloud(host).shared();
+        execute_obelisk(
+            i,
+            &argv,
+            stdin,
+            generate,
+            &mut FakeHost::new(),
+            Some(&cloud),
+        )
+    }
+
+    /// A top-level `obelisk ARGS` with no cloud, `host` being the session's control plane.
+    fn execute_top(
+        i: &mut Interpreter,
+        args: &[String],
+        stdin: &str,
+        generate: &mut Generate,
+        host: &mut FakeHost,
+    ) -> CommandOutput {
+        execute_obelisk(i, args, stdin, generate, host, None)
+    }
+
+    /// Mount `host`'s active deployment as the app `demo`'s, reading blobs through the Vfs's loader.
+    fn mount(fs: &mut Vfs, host: &mut FakeHost) -> Result<MountResult, String> {
+        refresh_deployment_mount(fs, host, None, &app_deployment_root(APP), false)
+    }
+
     // -- subcommand routing / argument parsing (direct calls, bypassing the
     // shell so test args don't have to survive quoting/splitting) --
 
@@ -2396,7 +2655,7 @@ mod tests {
     fn bare_obelisk_prints_command_list() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &[], "", &mut no_generate(), &mut host);
+        let out = execute_top(&mut i, &[], "", &mut no_generate(), &mut host);
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.starts_with("Usage: obelisk <command>"));
     }
@@ -2405,64 +2664,191 @@ mod tests {
     fn help_flags_print_usage_at_every_level() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        // Top level.
         for case in [words(&["--help"]), words(&["-h"])] {
-            let out = execute_obelisk(&mut i, &case, "", &mut no_generate(), &mut host);
+            let out = execute_top(&mut i, &case, "", &mut no_generate(), &mut host);
             assert_eq!(out.exit_code, 0);
             assert!(out.stdout.starts_with("Usage: obelisk <command>"));
         }
-        // Group help (`obelisk deployment -h`).
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "-h"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0);
-        assert!(out.stdout.starts_with("Usage: obelisk deployment"));
-        // Subcommand help (`obelisk deployment submit --help`).
+        assert!(
+            out.stdout
+                .starts_with("Usage: obelisk cloud app [--app NAME] deployment")
+        );
+
+        // Help needs no app, so a cloud without one still prints it.
+        let no_apps = FakeCloud::default().shared();
         let out = execute_obelisk(
             &mut i,
-            &words(&["deployment", "submit", "--help"]),
+            &words(&["cloud", "app", "deployment", "submit", "--help"]),
             "",
             &mut no_generate(),
             &mut host,
+            Some(&no_apps),
         );
         assert_eq!(out.exit_code, 0);
-        assert!(out.stdout.contains("PATH-TO-DEPLOYMENT.TOML"));
+        assert_eq!(
+            out.stdout,
+            [
+                "Usage: obelisk cloud app [--app NAME] deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML",
+                "",
+                "Store the edited deployment as a new inactive deployment and print its ID. PATH",
+                "is the path to the deployment TOML file to submit (any filename -- not just the",
+                "literal \"deployment.toml\"); it must be a file, not a directory, matching real",
+                "obelisk. Digests are recomputed from the files, so leave them out.",
+                "",
+                "Options:",
+                "--description TEXT               Human-readable description for the new deployment.",
+                "--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.",
+                "(alias: --allow-unavailable-runtime-config)",
+                "",
+            ]
+            .join("\n")
+        );
+
         // `call -h` reaches the call help even though the ffqn sits in the
         // action slot, but a help flag after `--` is a positional parameter.
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["call", "-h"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0);
-        assert!(out.stdout.starts_with("Usage: obelisk call"));
+        assert!(
+            out.stdout
+                .starts_with("Usage: obelisk cloud app [--app NAME] call")
+        );
         // No help path ever hits the host.
-        assert!(host.calls.is_empty());
+        assert!(host.calls().is_empty());
     }
 
     #[test]
     fn command_groups_require_an_action() {
-        let mut host = FakeHost::new();
+        let host = FakeHost::new();
         let mut i = interp("/workspace");
         for group in ["functions", "executions", "deployment"] {
-            let out = execute_obelisk(&mut i, &words(&[group]), "", &mut no_generate(), &mut host);
+            let out = execute_app(&mut i, &words(&[group]), "", &mut no_generate(), &host);
             assert_eq!(out.exit_code, 2);
             assert!(!out.stderr.is_empty());
         }
-        assert!(host.calls.is_empty());
+        assert!(host.calls().is_empty());
+    }
+
+    #[test]
+    fn app_commands_at_the_top_level_point_at_obelisk_cloud_app() {
+        let mut host = FakeHost::new();
+        for args in [
+            words(&["functions", "list"]),
+            words(&["executions", "get", "E_1"]),
+            words(&["call", "some:ffqn", "[]"]),
+            words(&["deployment", "active"]),
+        ] {
+            let out = execute_top(
+                &mut interp("/workspace"),
+                &args,
+                "",
+                &mut no_generate(),
+                &mut host,
+            );
+            assert_eq!(out.exit_code, 2);
+            assert_eq!(
+                out.stderr,
+                format!(
+                    "obelisk: `obelisk {}` runs against a cloud app: use `obelisk cloud app [--app NAME] {}` (see `obelisk cloud apps list`)\n",
+                    args[0],
+                    args.join(" ")
+                )
+            );
+        }
+        assert!(host.calls().is_empty());
+    }
+
+    #[test]
+    fn ask_user_stays_a_top_level_call_answered_by_the_session() {
+        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "42");
+        let args = words(&["call", ASK_USER_FFQN, "[\"ok?\"]"]);
+        let out = execute_top(
+            &mut interp("/workspace"),
+            &args,
+            "",
+            &mut no_generate(),
+            &mut host,
+        );
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(out.stdout, "42\n");
+        assert_eq!(
+            host.calls(),
+            [(
+                "obelisk-agent:tools/webapi.call-target".to_string(),
+                json!([ASK_USER_FFQN, "[\"ok?\"]"]).to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn the_app_defaults_to_the_clouds_only_app_else_asks_for_app() {
+        let host = FakeHost::new().with(
+            "obelisk-agent:tools/webapi.current-deployment-id",
+            "\"Dep_1\"",
+        );
+        let args = words(&["cloud", "app", "deployment", "active"]);
+        let cloud = one_app_cloud(&host).shared();
+        let out = execute_obelisk(
+            &mut interp("/workspace"),
+            &args,
+            "",
+            &mut no_generate(),
+            &mut FakeHost::new(),
+            Some(&cloud),
+        );
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(out.stdout, "Dep_1\n");
+
+        let two = FakeCloud::default()
+            .with_app("a", &host)
+            .with_app("b", &host);
+        let out = execute_obelisk(
+            &mut interp("/workspace"),
+            &args,
+            "",
+            &mut no_generate(),
+            &mut FakeHost::new(),
+            Some(&two.shared()),
+        );
+        assert_eq!(out.exit_code, 2);
+        assert_eq!(
+            out.stderr,
+            "obelisk: Select an app with --app NAME (apps: a, b) or app_name in ./app.toml\n"
+        );
+
+        let mut i = interp("/workspace");
+        i.fs.write_file("/workspace/app.toml", b"app_name = \"b\"\n")
+            .unwrap();
+        let out = execute_obelisk(
+            &mut i,
+            &args,
+            "",
+            &mut no_generate(),
+            &mut FakeHost::new(),
+            Some(&two.shared()),
+        );
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(two.0.borrow().asked, ["b"]);
     }
 
     #[test]
     fn unknown_command_reports_help() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_top(
             &mut i,
             &words(&["nonsense"]),
             "",
@@ -2476,7 +2862,7 @@ mod tests {
 
     #[test]
     fn functions_list_forwards_prefix_and_length() {
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.list-functions",
             r#"[
                 {
@@ -2499,12 +2885,12 @@ mod tests {
             ]"#,
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["functions", "list", "--prefix", "foo", "--length", "5"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0);
         assert_eq!(
@@ -2512,7 +2898,7 @@ mod tests {
             "foo:bar/api.run : func(input: string, retries: u32) -> result<string, error>\n"
         );
         assert_eq!(
-            host.calls,
+            host.calls(),
             vec![(
                 "obelisk-agent:tools/webapi.list-functions".to_string(),
                 "[\"foo\",5]".to_string()
@@ -2522,17 +2908,17 @@ mod tests {
 
     #[test]
     fn functions_list_json_preserves_structured_output() {
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.list-functions",
             r#"[{"ffqn":"a","parameter_types":[{"name":"x","wit_type":"u32"}],"return_type":"result","extension":"await_next","wit":""}]"#,
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["functions", "list", "--json"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0);
         assert_eq!(
@@ -2543,16 +2929,16 @@ mod tests {
 
     #[test]
     fn functions_list_defaults_when_flags_absent() {
-        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.list-functions", "[]");
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.list-functions", "[]");
         let mut i = interp("/workspace");
-        execute_obelisk(
+        execute_app(
             &mut i,
             &words(&["functions", "list"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
-        assert_eq!(host.calls[0].1, "[\"\",100]");
+        assert_eq!(host.calls()[0].1, "[\"\",100]");
     }
 
     #[test]
@@ -2560,14 +2946,14 @@ mod tests {
         // A WIT body is plain text, not JSON: it must pass through untouched
         // rather than being mangled by the JSON pretty-printer.
         let wit = "\"interface foo { bar: func() }\"";
-        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.get-function-wit", wit);
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.get-function-wit", wit);
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["functions", "wit", "a:b/c.d"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0);
         assert_eq!(out.stdout, "interface foo { bar: func() }\n");
@@ -2575,14 +2961,14 @@ mod tests {
 
     #[test]
     fn functions_wit_requires_ffqn() {
-        let mut host = FakeHost::new();
+        let host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["functions", "wit"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: ffqn is required\n");
@@ -2590,9 +2976,9 @@ mod tests {
 
     #[test]
     fn executions_list_forwards_all_flags_in_order() {
-        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.list-executions", "[]");
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.list-executions", "[]");
         let mut i = interp("/workspace");
-        execute_obelisk(
+        execute_app(
             &mut i,
             &words(&[
                 "executions",
@@ -2605,24 +2991,24 @@ mod tests {
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(
-            host.calls[0].1,
+            host.calls()[0].1,
             "[\"pfx\",\"\",true,false,\"\",\"\",\"\",\"\",false,7]"
         );
     }
 
     #[test]
     fn executions_get_requires_id() {
-        let mut host = FakeHost::new();
+        let host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["executions", "get"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: execution id is required\n");
@@ -2630,93 +3016,92 @@ mod tests {
 
     #[test]
     fn executions_logs_forwards_id_and_length() {
-        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.get-logs", "\"log\"");
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.get-logs", "\"log\"");
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["executions", "logs", "exec-1", "--length", "50"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         // The string body prints verbatim; the `call_json` JSON layer is peeled.
         assert_eq!(out.stdout, "log\n");
         assert_eq!(
-            host.calls[0].1,
+            host.calls()[0].1,
             "[\"exec-1\",true,true,true,[],[],\"\",\"\",false,50]"
         );
     }
 
     #[test]
     fn executions_result_forwards_id() {
-        let mut host =
-            FakeHost::new().with("obelisk-agent:tools/webapi.get-result-json", "{\"ok\":1}");
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.get-result-json", "{\"ok\":1}");
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["executions", "result", "exec-1"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.stdout, "{\n  \"ok\": 1\n}\n");
     }
 
     #[test]
     fn call_uses_explicit_params_over_stdin() {
-        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "42");
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "42");
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["call", "some:ffqn", "[1]"]),
             "[2]",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.stdout, "42\n");
-        assert_eq!(host.calls[0].1, "[\"some:ffqn\",\"[1]\"]");
+        assert_eq!(host.calls()[0].1, "[\"some:ffqn\",\"[1]\"]");
     }
 
     #[test]
     fn call_prints_only_the_target_result() {
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.call-target",
             r#""{\"answer\":42}""#,
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["call", "some:ffqn", "[]"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.stdout, "{\n  \"answer\": 42\n}\n");
 
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.call-target",
             r#""\"plain result\"""#,
         );
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["call", "some:ffqn", "[]"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.stdout, "plain result\n");
     }
 
     #[test]
     fn call_failure_is_a_command_error_not_a_result() {
-        let mut host = FakeHost::new();
+        let host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["call", "some:ffqn", "[]"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert!(out.stdout.is_empty());
@@ -2725,33 +3110,33 @@ mod tests {
 
     #[test]
     fn call_falls_back_to_stdin_then_to_empty_array() {
-        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
         let mut i = interp("/workspace");
-        execute_obelisk(
+        execute_app(
             &mut i,
             &words(&["call", "some:ffqn"]),
             "[9]",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
-        assert_eq!(host.calls[0].1, "[\"some:ffqn\",\"[9]\"]");
+        assert_eq!(host.calls()[0].1, "[\"some:ffqn\",\"[9]\"]");
 
-        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
-        execute_obelisk(
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
+        execute_app(
             &mut i,
             &words(&["call", "some:ffqn"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
-        assert_eq!(host.calls[0].1, "[\"some:ffqn\",\"[]\"]");
+        assert_eq!(host.calls()[0].1, "[\"some:ffqn\",\"[]\"]");
     }
 
     #[test]
     fn call_accepts_positional_params_after_separator() {
-        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
         let mut i = interp("/workspace");
-        execute_obelisk(
+        execute_app(
             &mut i,
             &words(&[
                 "call",
@@ -2766,28 +3151,28 @@ mod tests {
             ]),
             "ignored stdin",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(
-            host.calls[0].1,
+            host.calls()[0].1,
             r#"["some:ffqn","[1,true,null,{\"field\":2},\"plain text\",\"42\"]"]"#
         );
     }
 
     #[test]
     fn call_rejects_multiple_arguments_without_separator() {
-        let mut host = FakeHost::new();
+        let host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["call", "some:ffqn", "1", "2"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert!(out.stderr.contains("expected one params JSON array"));
-        assert!(host.calls.is_empty());
+        assert!(host.calls().is_empty());
     }
 
     #[test]
@@ -2795,14 +3180,14 @@ mod tests {
         // `obelisk call ffqn "$(cat missing.json)"` where the substitution is
         // empty: reject instead of silently sending `[]` (which the server then
         // rejects with a confusing cardinality mismatch).
-        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.call-target", "1");
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["call", "some:ffqn", ""]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert!(
@@ -2810,71 +3195,71 @@ mod tests {
             "{}",
             out.stderr
         );
-        assert!(host.calls.is_empty());
+        assert!(host.calls().is_empty());
     }
 
     #[test]
     fn call_requires_ffqn() {
-        let mut host = FakeHost::new();
+        let host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(&mut i, &words(&["call"]), "", &mut no_generate(), &mut host);
+        let out = execute_app(&mut i, &words(&["call"]), "", &mut no_generate(), &host);
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: ffqn is required\n");
     }
 
     #[test]
     fn deployment_active_calls_host() {
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.current-deployment-id",
             "\"dep-1\"",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "active"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.stdout, "dep-1\n");
     }
 
     #[test]
     fn deployment_active_json_quotes_the_id() {
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.current-deployment-id",
             "\"dep-1\"",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "active", "--json"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.stdout, "\"dep-1\"\n");
     }
 
     #[test]
     fn deployment_enqueue_requires_id_forwards_flag_and_reports_outcome() {
-        let mut host = FakeHost::new();
+        let host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "enqueue"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: deployment id is required\n");
 
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.deployment-switch",
             "{\"ok\":\"restart_required\"}",
         );
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
@@ -2884,9 +3269,9 @@ mod tests {
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
-        assert_eq!(host.calls[0].1, "[\"dep-2\",true]");
+        assert_eq!(host.calls()[0].1, "[\"dep-2\",true]");
         assert_eq!(
             out.stdout,
             "Deployment enqueued. Restart the server to apply.\n"
@@ -2895,17 +3280,17 @@ mod tests {
 
     #[test]
     fn deployment_enqueue_reports_already_active() {
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.deployment-switch",
             "{\"ok\":\"switched\"}",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "enqueue", "dep-2"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(
             out.stdout,
@@ -2915,14 +3300,14 @@ mod tests {
 
     #[test]
     fn deployment_apply_requires_id() {
-        let mut host = FakeHost::new();
+        let host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "apply"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert_eq!(
@@ -2933,19 +3318,19 @@ mod tests {
 
     #[test]
     fn deployment_apply_reports_success() {
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.apply-deployment",
             "{\"ok\":\"switched\"}",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "apply", "Dep_2"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
-        assert_eq!(host.calls[0].1, "[\"Dep_2\"]");
+        assert_eq!(host.calls()[0].1, "[\"Dep_2\"]");
         assert_eq!(out.stdout, "Applied successfully.\n");
     }
 
@@ -2957,37 +3342,37 @@ mod tests {
             b"[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n",
         )
         .unwrap();
-        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"").with(
+        let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"").with(
             "obelisk-agent:tools/webapi.apply-deployment",
             "{\"ok\":\"switched\"}",
         );
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "apply", "deployment.toml"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
         assert_eq!(out.stdout, "Submitted as Dep_new\nApplied successfully.\n");
-        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let params: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         assert_eq!(params[3], false);
-        assert_eq!(host.calls[1].1, "[\"Dep_new\"]");
+        assert_eq!(host.calls()[1].1, "[\"Dep_new\"]");
     }
 
     #[test]
     fn deployment_apply_fails_when_only_restart_could_apply() {
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.apply-deployment",
             "{\"ok\":\"restart_required\"}",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "apply", "Dep_2"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert_eq!(
@@ -2998,19 +3383,19 @@ mod tests {
 
     #[test]
     fn deployment_list_renders_a_table_newest_first() {
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.list-deployments",
             "[{\"deployment_id\":\"Dep_2\",\"description\":\"second\",\"status\":\"active\",\"created_at\":\"2026-09-14T08:22:17.592Z\",\"last_active_at\":\"2026-09-14T09:00:00.000Z\"},{\"deployment_id\":\"Dep_1\",\"description\":\"\",\"status\":\"inactive\",\"created_at\":\"2026-09-13T07:00:00.000Z\",\"last_active_at\":null}]",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "list"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
-        assert_eq!(host.calls[0].1, "[\"\",false,20]");
+        assert_eq!(host.calls()[0].1, "[\"\",false,20]");
         let lines: Vec<&str> = out.stdout.split('\n').collect();
         assert_eq!(
             lines[0],
@@ -3028,46 +3413,46 @@ mod tests {
 
     #[test]
     fn deployment_list_reports_empty_catalog() {
-        let mut host = FakeHost::new().with("obelisk-agent:tools/webapi.list-deployments", "[]");
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.list-deployments", "[]");
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "list"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.stdout, "No deployments found.\n");
     }
 
     #[test]
     fn deployment_show_prints_the_stored_manifest() {
-        let mut host = FakeHost::new().with(
+        let host = FakeHost::new().with(
             "obelisk-agent:tools/webapi.get-deployment",
             "{\"deployment_toml\":\"[[activity_js]]\\nname = \\\"x\\\"\\n\"}",
         );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "show", "Dep_1"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
-        assert_eq!(host.calls[0].1, "[\"Dep_1\",null,null,null,null]");
+        assert_eq!(host.calls()[0].1, "[\"Dep_1\",null,null,null,null]");
         assert_eq!(out.stdout, "[[activity_js]]\nname = \"x\"\n");
     }
 
     #[test]
     fn deployment_show_requires_id() {
-        let mut host = FakeHost::new();
+        let host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "show"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk: deployment id is required\n");
@@ -3075,14 +3460,14 @@ mod tests {
 
     #[test]
     fn deployment_unknown_action() {
-        let mut host = FakeHost::new();
+        let host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "bogus"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk deployment: unknown action 'bogus'\n");
@@ -3095,7 +3480,7 @@ mod tests {
         // that it never touches the host (it is a purely local echo).
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_top(
             &mut i,
             &words(&["generate", "deployment"]),
             "",
@@ -3105,7 +3490,7 @@ mod tests {
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.contains("[[activity_wasm]]"), "{}", out.stdout);
         assert!(out.stdout.ends_with('\n'));
-        assert!(host.calls.is_empty());
+        assert!(host.calls().is_empty());
     }
 
     /// A `Generate` for tests that never run `generate new`.
@@ -3113,46 +3498,65 @@ mod tests {
         Generate {
             obelisk_version: "latest".to_string(),
             github: Box::new(|_, _| Err("no GitHub in this test".to_string())),
-            webhook_url: String::new(),
         }
     }
 
-    /// A fake `apps.request` serving a two-level template tree, recording calls.
-    fn template_generate(calls: &Rc<RefCell<Vec<(String, String)>>>) -> Generate {
+    /// A fake `apps.request` serving a two-level template tree at `served_ref`, recording calls.
+    fn template_generate_at(
+        calls: &Rc<RefCell<Vec<(String, String)>>>,
+        obelisk_version: &str,
+        served_ref: &str,
+    ) -> Generate {
         let calls = calls.clone();
+        let served_ref = served_ref.to_string();
         Generate {
-            obelisk_version: "v0.42.0".to_string(),
-            webhook_url: "http://target:9290".to_string(),
+            obelisk_version: obelisk_version.to_string(),
             github: Box::new(move |method, params| {
                 calls
                     .borrow_mut()
                     .push((method.to_string(), params.to_string()));
                 let params: Value = serde_json::from_str(params).unwrap();
-                Ok(match params["path"].as_str().unwrap() {
-                    "examples/templates/js-http" => json!([
+                let path = params["path"].as_str().unwrap();
+                if params["ref"] != served_ref.as_str() {
+                    return Err(format!("404 Not Found: {path}"));
+                }
+                Ok(match path {
+                    "examples/templates" => json!([
+                        {"name": "minimal", "type": "dir"},
+                        {"name": "url-health-dashboard", "type": "dir"}
+                    ])
+                    .to_string(),
+                    "examples/templates/minimal" => json!([
                         {"name": "app.toml", "type": "file"},
                         {"name": "README.md", "type": "file"},
                         {"name": "workflow", "type": "dir"}
                     ])
                     .to_string(),
-                    "examples/templates/js-http/workflow" => {
+                    "examples/templates/minimal/workflow" => {
                         json!([{"name": "run.js", "type": "file"}]).to_string()
                     }
-                    "examples/templates/js-http/workflow/run.js" => "42\n".to_string(),
-                    other => panic!("unexpected path {other}"),
+                    "examples/templates/minimal/app.toml" => {
+                        "app_name = \"__APP_NAME__\"\n".to_string()
+                    }
+                    "examples/templates/minimal/workflow/run.js" => "42\n".to_string(),
+                    other => return Err(format!("404 Not Found: {other}")),
                 })
             }),
         }
     }
 
+    fn template_generate(calls: &Rc<RefCell<Vec<(String, String)>>>) -> Generate {
+        template_generate_at(calls, "v0.42.0", "v0.42.0")
+    }
+
     #[test]
-    fn generate_new_fetches_the_template_at_obelisk_version() {
+    fn generate_new_fetches_the_chosen_template_at_obelisk_version() {
         let mut host = FakeHost::new();
         let calls = Rc::new(RefCell::new(Vec::new()));
         let mut i = interp("/workspace/My Cool_App");
-        let out = execute_obelisk(
+        let out = execute_top(
             &mut i,
-            &words(&["generate", "new"]),
+            &words(&["generate", "new", "--template", "minimal"]),
             "",
             &mut template_generate(&calls),
             &mut host,
@@ -3160,30 +3564,34 @@ mod tests {
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
         assert_eq!(
             out.stdout,
-            "Generated \"/workspace/My Cool_App/workflow/run.js\"\nGenerated \"/workspace/My Cool_App/README.md\"\n"
+            "Generated \"/workspace/My Cool_App/app.toml\"\nGenerated \"/workspace/My Cool_App/workflow/run.js\"\nGenerated \"/workspace/My Cool_App/README.md\"\n"
         );
         let readme =
             String::from_utf8(i.fs.read_file("/workspace/My Cool_App/README.md").unwrap()).unwrap();
-        assert!(readme.contains("curl http://target:9290/run\n"), "{readme}");
-        assert!(!i.fs.exists("/workspace/My Cool_App/app.toml"));
+        assert!(readme.starts_with("# my-cool-app\n"), "{readme}");
+        assert!(readme.contains("obelisk cloud app deploy\n"), "{readme}");
+        assert_eq!(
+            i.fs.read_file("/workspace/My Cool_App/app.toml").unwrap(),
+            b"app_name = \"my-cool-app\"\n"
+        );
         assert_eq!(
             i.fs.read_file("/workspace/My Cool_App/workflow/run.js")
                 .unwrap(),
             b"42\n"
         );
         assert_eq!(
-            calls.borrow()[2],
+            calls.borrow()[3],
             (
                 "read".to_string(),
-                r#"{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/js-http/workflow/run.js"}"#.to_string()
+                r#"{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/minimal/workflow/run.js"}"#.to_string()
             )
         );
-        assert!(host.calls.is_empty());
+        assert!(host.calls().is_empty());
 
         // A second run must not overwrite anything.
-        let out = execute_obelisk(
+        let out = execute_top(
             &mut i,
-            &words(&["generate", "new"]),
+            &words(&["generate", "new", "--template", "minimal"]),
             "",
             &mut template_generate(&calls),
             &mut host,
@@ -3191,9 +3599,9 @@ mod tests {
         assert_eq!(out.exit_code, 2);
         assert!(out.stderr.contains("already exists"), "{}", out.stderr);
 
-        let out = execute_obelisk(
+        let out = execute_top(
             &mut i,
-            &words(&["generate", "new", "chosen-app"]),
+            &words(&["generate", "new", "--template", "minimal", "chosen-app"]),
             "",
             &mut template_generate(&calls),
             &mut host,
@@ -3201,9 +3609,9 @@ mod tests {
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
         assert!(i.fs.is_file("/workspace/My Cool_App/chosen-app/workflow/run.js"));
 
-        let out = execute_obelisk(
+        let out = execute_top(
             &mut i,
-            &words(&["generate", "new", "Bad Name"]),
+            &words(&["generate", "new", "--template", "minimal", "Bad Name"]),
             "",
             &mut template_generate(&calls),
             &mut host,
@@ -3213,10 +3621,65 @@ mod tests {
     }
 
     #[test]
+    fn generate_new_requires_a_template_and_lists_the_available_ones() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let out = execute_top(
+            &mut interp("/workspace/app"),
+            &words(&["generate", "new"]),
+            "",
+            &mut template_generate(&calls),
+            &mut FakeHost::new(),
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(
+            out.stderr.contains(
+                "--template is required; templates at obeli-sk/obelisk@v0.42.0: minimal, url-health-dashboard"
+            ),
+            "{}",
+            out.stderr
+        );
+    }
+
+    #[test]
+    fn generate_new_falls_back_to_main_when_obelisk_version_has_no_such_template() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        for version in ["v0.43.0-rc.6", "latest"] {
+            let mut i = interp("/workspace/app");
+            let out = execute_top(
+                &mut i,
+                &words(&["generate", "new", "--template", "minimal"]),
+                "",
+                &mut template_generate_at(&calls, version, "main"),
+                &mut FakeHost::new(),
+            );
+            assert_eq!(out.exit_code, 0, "{}", out.stderr);
+            assert_eq!(
+                i.fs.read_file("/workspace/app/workflow/run.js").unwrap(),
+                b"42\n"
+            );
+        }
+        let out = execute_top(
+            &mut interp("/workspace/app"),
+            &words(&["generate", "new", "--template", "bogus"]),
+            "",
+            &mut template_generate(&calls),
+            &mut FakeHost::new(),
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(
+            out.stderr
+                .contains("@v0.42.0:examples/templates/bogus: 404 Not Found")
+                && out.stderr.contains("@main:examples/templates/bogus: 404"),
+            "{}",
+            out.stderr
+        );
+    }
+
+    #[test]
     fn generate_requires_a_known_subcommand() {
         let mut host = FakeHost::new();
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_top(
             &mut i,
             &words(&["generate"]),
             "",
@@ -3226,7 +3689,7 @@ mod tests {
         assert_eq!(out.exit_code, 2);
         assert!(out.stderr.contains("a subcommand is required"));
 
-        let out = execute_obelisk(
+        let out = execute_top(
             &mut i,
             &words(&["generate", "bogus"]),
             "",
@@ -3235,19 +3698,19 @@ mod tests {
         );
         assert_eq!(out.exit_code, 2);
         assert_eq!(out.stderr, "obelisk generate: unknown action 'bogus'\n");
-        assert!(host.calls.is_empty());
+        assert!(host.calls().is_empty());
     }
 
     #[test]
     fn host_error_propagates_with_obelisk_prefix() {
-        let mut host = FakeHost::new(); // no fixtures registered
+        let host = FakeHost::new(); // no fixtures registered
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["functions", "list"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert!(out.stderr.starts_with("obelisk: no fixture for"));
@@ -3376,28 +3839,28 @@ location = "second.js"
         // Mount fetches only the manifest; the blob endpoint is never called.
         assert!(
             !host
-                .calls
+                .calls()
                 .iter()
                 .any(|(ffqn, _)| ffqn == "obelisk-agent:tools/webapi.deployment-read-blob")
         );
-        assert!(fs.is_dir("/workspace/deployment/current"));
+        assert!(fs.is_dir("/workspace/cloud/demo/deployment/current"));
         // The mounted manifest is the digest-free view the agent edits.
         assert_eq!(
-            fs.read_file("/workspace/deployment/current/deployment.toml")
+            fs.read_file("/workspace/cloud/demo/deployment/current/deployment.toml")
                 .as_deref(),
             Some(simplify_manifest(manifest).as_bytes())
         );
         // The owned source lists immediately but holds no bytes until a loader
         // is installed and the file is read.
-        assert!(fs.is_file("/workspace/deployment/current/a.wasm"));
+        assert!(fs.is_file("/workspace/cloud/demo/deployment/current/a.wasm"));
         fs.set_blob_loader(FixtureLoader::rc(&[("sha256:1", b"binary-bytes")]));
         assert_eq!(
-            fs.read_file("/workspace/deployment/current/a.wasm")
+            fs.read_file("/workspace/cloud/demo/deployment/current/a.wasm")
                 .as_deref(),
             Some(&b"binary-bytes"[..])
         );
         assert_eq!(
-            fs.read_file("/workspace/deployment/dep-1/a.wasm")
+            fs.read_file("/workspace/cloud/demo/deployment/dep-1/a.wasm")
                 .as_deref(),
             Some(&b"binary-bytes"[..])
         );
@@ -3435,11 +3898,15 @@ content_digest = \"sha256:1\"\n\
         let result = mount(&mut fs, &mut host).unwrap();
         // manifest + the wasm component + the backtrace source.
         assert_eq!(result.files, 3);
-        assert!(fs.is_file("/workspace/deployment/current/workflow/workflow-rs/src/lib.rs"));
+        assert!(
+            fs.is_file("/workspace/cloud/demo/deployment/current/workflow/workflow-rs/src/lib.rs")
+        );
         fs.set_blob_loader(FixtureLoader::rc(&[("sha256:2", b"fn workflow() {}")]));
         assert_eq!(
-            fs.read_file("/workspace/deployment/current/workflow/workflow-rs/src/lib.rs")
-                .as_deref(),
+            fs.read_file(
+                "/workspace/cloud/demo/deployment/current/workflow/workflow-rs/src/lib.rs"
+            )
+            .as_deref(),
             Some(&b"fn workflow() {}"[..])
         );
     }
@@ -3477,13 +3944,13 @@ content_digest = \"sha256:1\"\n\
         assert_eq!(result.deployment_id.as_deref(), Some("Dep_X"));
         // The checkout call gets the unwrapped id, not the still-quoted string.
         assert_eq!(
-            host.calls[1],
+            host.calls()[1],
             (
                 "obelisk-agent:tools/webapi.deployment-checkout".to_string(),
                 "[\"Dep_X\"]".to_string()
             )
         );
-        assert!(fs.is_dir("/workspace/deployment/Dep_X"));
+        assert!(fs.is_dir("/workspace/cloud/demo/deployment/Dep_X"));
     }
 
     #[test]
@@ -3499,7 +3966,7 @@ content_digest = \"sha256:1\"\n\
                 files: 0
             }
         );
-        assert!(!fs.exists("/workspace/deployment"));
+        assert!(!fs.exists("/workspace/cloud/demo/deployment"));
     }
 
     #[test]
@@ -3548,33 +4015,35 @@ content_digest = \"sha256:1\"\n\
                 .to_string(),
             )
             .with(APP_CONFIG_FFQN, "null");
-        let result = refresh_deployment_mount(&mut fs, &mut host_v2, true).unwrap();
+        let result =
+            refresh_deployment_mount(&mut fs, &mut host_v2, None, &app_deployment_root(APP), true)
+                .unwrap();
         assert_eq!(result.deployment_id.as_deref(), Some("dep-2"));
         // The old deployment dir is untouched; `current` now resolves to the new
         // one and reads the new digest (sha256:2).
         assert_eq!(
-            fs.read_file("/workspace/deployment/dep-1/a.wasm")
+            fs.read_file("/workspace/cloud/demo/deployment/dep-1/a.wasm")
                 .as_deref(),
             Some(&b"v1"[..])
         );
         assert_eq!(
-            fs.read_file("/workspace/deployment/current/a.wasm")
+            fs.read_file("/workspace/cloud/demo/deployment/current/a.wasm")
                 .as_deref(),
             Some(&b"v2"[..])
         );
         assert_eq!(
-            fs.read_file("/workspace/deployment/dep-1/app.toml")
+            fs.read_file("/workspace/cloud/demo/deployment/dep-1/app.toml")
                 .as_deref(),
             Some(&b"[policy]\noutbound_http = []\n"[..])
         );
         // The target of dep-2 runs without an app config.
-        assert!(!fs.exists("/workspace/deployment/current/app.toml"));
+        assert!(!fs.exists("/workspace/cloud/demo/deployment/current/app.toml"));
     }
 
     #[test]
     fn deployment_refresh_action_calls_mount_and_reports_json() {
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
-        let mut host = FakeHost::new()
+        let host = FakeHost::new()
             .with(
                 "obelisk-agent:tools/webapi.current-deployment-id",
                 "\"dep-1\"",
@@ -3592,12 +4061,12 @@ content_digest = \"sha256:1\"\n\
                 &json!("bytes").to_string(),
             );
         let mut i = interp("/workspace");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "refresh"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0);
         assert_eq!(
@@ -3611,50 +4080,56 @@ content_digest = \"sha256:1\"\n\
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
         i.fs.write_file(
-            "/workspace/deployment/dep-1/deployment.toml",
+            "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
-        i.fs.write_file("/workspace/deployment/dep-1/a.wasm", b"bytes")
+        i.fs.write_file("/workspace/cloud/demo/deployment/dep-1/a.wasm", b"bytes")
             .unwrap();
-        let mut host = FakeHost::new();
-        let out = execute_obelisk(
+        let host = FakeHost::new();
+        let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "check",
-                "/workspace/deployment/dep-1/deployment.toml",
+                "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         let parsed: Value = serde_json::from_str(&out.stdout).unwrap();
-        assert_eq!(parsed["directory"], "/workspace/deployment/dep-1");
+        assert_eq!(
+            parsed["directory"],
+            "/workspace/cloud/demo/deployment/dep-1"
+        );
         assert_eq!(parsed["owned_sources"], json!(["a.wasm"]));
     }
 
     #[test]
     fn deployment_check_defaults_directory_to_cwd() {
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
-        let mut i = interp("/workspace/deployment/current");
+        let mut i = interp("/workspace/cloud/demo/deployment/current");
         i.fs.write_file(
-            "/workspace/deployment/current/deployment.toml",
+            "/workspace/cloud/demo/deployment/current/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
-        let mut host = FakeHost::new();
-        let out = execute_obelisk(
+        let host = FakeHost::new();
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "check"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         let parsed: Value = serde_json::from_str(&out.stdout).unwrap();
-        assert_eq!(parsed["directory"], "/workspace/deployment/current");
+        assert_eq!(
+            parsed["directory"],
+            "/workspace/cloud/demo/deployment/current"
+        );
     }
 
     #[test]
@@ -3662,15 +4137,15 @@ content_digest = \"sha256:1\"\n\
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
         i.fs.write_file(
-            "/workspace/deployment/dep-1/deployment.toml",
+            "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
         // A locally-written (non-lazy) file whose new digest is not yet in the CAS.
-        i.fs.write_file("/workspace/deployment/dep-1/a.wasm", b"bytes")
+        i.fs.write_file("/workspace/cloud/demo/deployment/dep-1/a.wasm", b"bytes")
             .unwrap();
         let digest = format!("sha256:{}", sha256_hex(b"bytes"));
-        let mut host = FakeHost::new()
+        let host = FakeHost::new()
             .with_err(
                 SUBMIT_FFQN,
                 &format!(
@@ -3678,22 +4153,22 @@ content_digest = \"sha256:1\"\n\
                 ),
             )
             .with(SUBMIT_FFQN, "\"Dep_new\"");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/deployment/dep-1/deployment.toml",
+                "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         assert!(out.stdout.contains("Dep_new"), "stdout: {}", out.stdout);
         // Preflight: manifest re-pins a.wasm from the bytes, carries no
         // attachments, and takes the deployment id from the directory name.
-        let preflight: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let preflight: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         let expected =
             format!("[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"{digest}\"\n");
         assert_eq!(preflight[0], expected);
@@ -3703,7 +4178,7 @@ content_digest = \"sha256:1\"\n\
         assert_eq!(preflight[4], "dep-1");
         // Retry: exactly the missing file, read from the VFS, tagged with the
         // digest the server asked for.
-        let retry: Value = serde_json::from_str(&host.calls[1].1).unwrap();
+        let retry: Value = serde_json::from_str(&host.calls()[1].1).unwrap();
         assert_eq!(
             retry[1],
             json!([{"path": "a.wasm", "digest": digest, "content": "bytes"}])
@@ -3715,23 +4190,23 @@ content_digest = \"sha256:1\"\n\
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
         i.fs.write_file(
-            "/workspace/deployment/current/deployment.toml",
+            "/workspace/cloud/demo/deployment/current/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
-        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
-        execute_obelisk(
+        let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/deployment/current/deployment.toml",
+                "/workspace/cloud/demo/deployment/current/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
-        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let params: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         assert_eq!(params[4], "");
     }
 
@@ -3742,26 +4217,26 @@ content_digest = \"sha256:1\"\n\
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
         i.fs.write_file(
-            "/workspace/deployment/current/deployment.toml",
+            "/workspace/cloud/demo/deployment/current/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
-        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
-        let out = execute_obelisk(
+        let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
                 "--description",
                 "wh",
-                "/workspace/deployment/current/deployment.toml",
+                "/workspace/cloud/demo/deployment/current/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
-        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let params: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         assert_eq!(params[2], "wh");
         assert_eq!(params[4], "");
     }
@@ -3771,19 +4246,19 @@ content_digest = \"sha256:1\"\n\
         // Real obelisk's `submit` requires an explicit file path; unlike
         // `check` (an agent-only convenience with no real-CLI counterpart),
         // it does not default to ./deployment.toml.
-        let mut i = interp("/workspace/deployment/current");
+        let mut i = interp("/workspace/cloud/demo/deployment/current");
         i.fs.write_file(
-            "/workspace/deployment/current/deployment.toml",
+            "/workspace/cloud/demo/deployment/current/deployment.toml",
             b"[[activity_wasm]]\n",
         )
         .unwrap();
-        let mut host = FakeHost::new();
-        let out = execute_obelisk(
+        let host = FakeHost::new();
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "submit"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert!(
@@ -3797,24 +4272,28 @@ content_digest = \"sha256:1\"\n\
     fn deployment_submit_rejects_a_directory_matching_real_obelisk() {
         let mut i = interp("/workspace");
         i.fs.write_file(
-            "/workspace/deployment/current/deployment.toml",
+            "/workspace/cloud/demo/deployment/current/deployment.toml",
             b"[[activity_wasm]]\n",
         )
         .unwrap();
-        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
-        let out = execute_obelisk(
+        let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        let out = execute_app(
             &mut i,
-            &words(&["deployment", "submit", "/workspace/deployment/current"]),
+            &words(&[
+                "deployment",
+                "submit",
+                "/workspace/cloud/demo/deployment/current",
+            ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         // Path-first, byte-identical to just-bash's obelisk-pack.js (a
         // description-first "Is a directory: <path>" broke cross-backend replay).
         assert_eq!(
             out.stderr,
-            "obelisk: /workspace/deployment/current: Is a directory\n"
+            "obelisk: /workspace/cloud/demo/deployment/current: Is a directory\n"
         );
     }
 
@@ -3823,25 +4302,25 @@ content_digest = \"sha256:1\"\n\
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
         i.fs.write_file(
-            "/workspace/deployment/dep-1/deployment.toml",
+            "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
-        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
-        let out = execute_obelisk(
+        let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
+        let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/deployment/dep-1/deployment.toml",
+                "/workspace/cloud/demo/deployment/dep-1/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         // The file's parent directory supplies the deployment id.
-        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let params: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         assert_eq!(params[4], "dep-1");
     }
 
@@ -3860,13 +4339,13 @@ content_digest = \"sha256:1\"\n\
             manifest.as_bytes(),
         )
         .unwrap();
-        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
-        let out = execute_obelisk(
+        let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "submit", "deployment.js.toml"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
     }
@@ -3875,7 +4354,7 @@ content_digest = \"sha256:1\"\n\
     fn deployment_submit_outside_the_deployment_root_sends_an_empty_deployment_id() {
         // Regression: the deployment_id was always the manifest's parent
         // directory's basename (unless literally "current"), a convention
-        // that only holds for DEPLOYMENT_ROOT/<id> checkouts. Submitting
+        // that only holds for CLOUD_ROOT/<app>/deployment/<id> checkouts. Submitting
         // straight from a source-repo checkout like
         // /workspace/workflow-agent/deployment.js.toml sent "workflow-agent"
         // as the deployment_id, which the server rejects with "invalid
@@ -3888,16 +4367,16 @@ content_digest = \"sha256:1\"\n\
             manifest.as_bytes(),
         )
         .unwrap();
-        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
-        let out = execute_obelisk(
+        let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_new\"");
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "submit", "deployment.js.toml"]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
-        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let params: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         assert_eq!(params[4], "");
     }
 
@@ -3925,30 +4404,38 @@ content_digest = \"sha256:1\"\n\
             ("sha256:2", b"rust source"),
         ]));
         i.fs.write_file(
-            "/workspace/deployment/current/deployment.toml",
+            "/workspace/cloud/demo/deployment/current/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
-        i.fs.register_lazy("/workspace/deployment/current/w.wasm", "sha256:1", 10);
-        i.fs.register_lazy("/workspace/deployment/current/src/lib.rs", "sha256:2", 11);
+        i.fs.register_lazy(
+            "/workspace/cloud/demo/deployment/current/w.wasm",
+            "sha256:1",
+            10,
+        );
+        i.fs.register_lazy(
+            "/workspace/cloud/demo/deployment/current/src/lib.rs",
+            "sha256:2",
+            11,
+        );
 
-        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
-        let out = execute_obelisk(
+        let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/deployment/current/deployment.toml",
+                "/workspace/cloud/demo/deployment/current/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         // Preflight only: unchanged lazy sources keep their CAS digest, so the
         // manifest round-trips unchanged and nothing is attached.
-        assert_eq!(host.calls.len(), 1);
-        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        assert_eq!(host.calls().len(), 1);
+        let params: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         assert_eq!(params[0], manifest);
         assert_eq!(params[1], json!([]));
     }
@@ -3969,18 +4456,26 @@ content_digest = \"sha256:1\"\n\
             ("sha256:b", b"old-b"),
         ]));
         i.fs.write_file(
-            "/workspace/deployment/current/deployment.toml",
+            "/workspace/cloud/demo/deployment/current/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
-        i.fs.register_lazy("/workspace/deployment/current/a.js", "sha256:a", 5);
-        i.fs.register_lazy("/workspace/deployment/current/b.js", "sha256:b", 5);
+        i.fs.register_lazy(
+            "/workspace/cloud/demo/deployment/current/a.js",
+            "sha256:a",
+            5,
+        );
+        i.fs.register_lazy(
+            "/workspace/cloud/demo/deployment/current/b.js",
+            "sha256:b",
+            5,
+        );
         // Edit a.js only; b.js stays lazy/unmodified and must not be sent.
-        i.fs.write_file("/workspace/deployment/current/a.js", b"new-a")
+        i.fs.write_file("/workspace/cloud/demo/deployment/current/a.js", b"new-a")
             .unwrap();
 
         let a_digest = format!("sha256:{}", sha256_hex(b"new-a"));
-        let mut host = FakeHost::new()
+        let host = FakeHost::new()
             .with_err(
                 SUBMIT_FFQN,
                 &format!(
@@ -3988,23 +4483,23 @@ content_digest = \"sha256:1\"\n\
                 ),
             )
             .with(SUBMIT_FFQN, "\"Dep_x\"");
-        execute_obelisk(
+        execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/deployment/current/deployment.toml",
+                "/workspace/cloud/demo/deployment/current/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         // Preflight sends no blobs; the retry attaches only the edited a.js, never
         // the unchanged lazy b.js.
-        assert_eq!(host.calls.len(), 2);
-        let preflight: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        assert_eq!(host.calls().len(), 2);
+        let preflight: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         assert_eq!(preflight[1], json!([]));
-        let retry: Value = serde_json::from_str(&host.calls[1].1).unwrap();
+        let retry: Value = serde_json::from_str(&host.calls()[1].1).unwrap();
         assert_eq!(
             retry[1],
             json!([{"path": "a.js", "digest": a_digest, "content": "new-a"}])
@@ -4027,19 +4522,19 @@ content_digest = \"sha256:1\"\n\
         let git_sha = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3";
         let mut i = interp("/workspace");
         i.fs.write_file(
-            "/workspace/deployment/current/deployment.toml",
+            "/workspace/cloud/demo/deployment/current/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
         i.fs.register_lazy_foreign_for_test(
-            "/workspace/deployment/current/a.js",
+            "/workspace/cloud/demo/deployment/current/a.js",
             git_sha,
             4,
             FixtureLoader::rc(&[(git_sha, b"test")]),
         );
 
         let real_digest = format!("sha256:{}", sha256_hex(b"test"));
-        let mut host = FakeHost::new()
+        let host = FakeHost::new()
             .with_err(
                 SUBMIT_FFQN,
                 &format!(
@@ -4047,25 +4542,25 @@ content_digest = \"sha256:1\"\n\
                 ),
             )
             .with(SUBMIT_FFQN, "\"Dep_x\"");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/deployment/current/deployment.toml",
+                "/workspace/cloud/demo/deployment/current/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
-        assert_eq!(host.calls.len(), 2);
-        let preflight: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        assert_eq!(host.calls().len(), 2);
+        let preflight: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         assert_eq!(
             preflight[0],
             format!("[[workflow_js]]\nlocation = \"a.js\"\ncontent_digest = \"{real_digest}\"\n")
         );
-        let retry: Value = serde_json::from_str(&host.calls[1].1).unwrap();
+        let retry: Value = serde_json::from_str(&host.calls()[1].1).unwrap();
         assert_eq!(
             retry[1],
             json!([{"path": "a.js", "digest": real_digest, "content": "test"}])
@@ -4084,42 +4579,42 @@ content_digest = \"sha256:1\"\n\
         );
         let mut i = interp("/workspace");
         i.fs.write_file(
-            "/workspace/deployment/current/deployment.toml",
+            "/workspace/cloud/demo/deployment/current/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
         i.fs.write_file(
-            "/workspace/deployment/current/activity/http.js",
+            "/workspace/cloud/demo/deployment/current/activity/http.js",
             b"export default 1",
         )
         .unwrap();
 
         let digest = format!("sha256:{}", sha256_hex(b"export default 1"));
-        let mut host = FakeHost::new()
+        let host = FakeHost::new()
             .with_err(
                 SUBMIT_FFQN,
                 &format!(r#"{{"permanent_missing_files":[{{"path":"activity/http.js","digest":"{digest}"}}]}}"#),
             )
             .with(SUBMIT_FFQN, "\"Dep_x\"");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/deployment/current/deployment.toml",
+                "/workspace/cloud/demo/deployment/current/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
-        let preflight: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let preflight: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         let expected = format!(
             "[[activity_js]]\nname = \"program_http\"\nlocation = \"activity/http.js\"\ncontent_digest = \"{digest}\"\n"
         );
         assert_eq!(preflight[0], expected);
         assert_eq!(preflight[1], json!([]));
-        let retry: Value = serde_json::from_str(&host.calls[1].1).unwrap();
+        let retry: Value = serde_json::from_str(&host.calls()[1].1).unwrap();
         assert_eq!(
             retry[1],
             json!([{"path": "activity/http.js", "digest": digest, "content": "export default 1"}])
@@ -4136,7 +4631,7 @@ content_digest = \"sha256:1\"\n\
             "location = \"src/index.js\"\n",
         );
         let mut i = interp("/workspace");
-        let dir = "/workspace/deployment/current";
+        let dir = "/workspace/cloud/demo/deployment/current";
         i.fs.write_file(&format!("{dir}/deployment.toml"), manifest.as_bytes())
             .unwrap();
         i.fs.write_file(
@@ -4157,17 +4652,17 @@ content_digest = \"sha256:1\"\n\
         )
         .unwrap();
 
-        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
         let manifest_path = format!("{dir}/deployment.toml");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "submit", &manifest_path]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
-        let params: Value = serde_json::from_str(&host.calls[0].1).unwrap();
+        let params: Value = serde_json::from_str(&host.calls()[0].1).unwrap();
         let prepared = params[0].as_str().unwrap();
         for path in [
             "src/index.js",
@@ -4197,7 +4692,7 @@ content_digest = \"sha256:1\"\n\
             "location = \"src/index.js\"\n",
         );
         let mut i = interp("/workspace");
-        let dir = "/workspace/deployment/current";
+        let dir = "/workspace/cloud/demo/deployment/current";
         i.fs.write_file(&format!("{dir}/deployment.toml"), manifest.as_bytes())
             .unwrap();
         i.fs.write_file(
@@ -4219,14 +4714,14 @@ content_digest = \"sha256:1\"\n\
         )
         .unwrap();
 
-        let mut host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
+        let host = FakeHost::new().with(SUBMIT_FFQN, "\"Dep_x\"");
         let manifest_path = format!("{dir}/deployment.toml");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&["deployment", "submit", &manifest_path]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
     }
@@ -4268,7 +4763,7 @@ content_digest = \"sha256:1\"\n\
             "\"/abs/src/lib.rs\" = \"src/lib.rs\"\n",
         );
         let mut i = interp("/workspace");
-        let dir = "/workspace/deployment/current";
+        let dir = "/workspace/cloud/demo/deployment/current";
         i.fs.write_file(&format!("{dir}/webhook/ui-api.js"), b"api")
             .unwrap();
         i.fs.write_file(&format!("{dir}/webhook/ui/shell.js"), b"shell")
@@ -4306,7 +4801,7 @@ content_digest = \"sha256:1\"\n\
             "component_files = { \"webhook/ui-api.js\" = \"auto\", \"webhook/ui/shell.js\" = \"auto\" }\n",
         );
         let mut i = interp("/workspace");
-        let dir = "/workspace/deployment/current";
+        let dir = "/workspace/cloud/demo/deployment/current";
         i.fs.write_file(&format!("{dir}/deployment.toml"), collapsed.as_bytes())
             .unwrap();
         i.fs.write_file(&format!("{dir}/webhook/ui-api.js"), b"api")
@@ -4314,7 +4809,7 @@ content_digest = \"sha256:1\"\n\
         i.fs.write_file(&format!("{dir}/webhook/ui/shell.js"), b"shell")
             .unwrap();
         let shell = format!("sha256:{}", sha256_hex(b"shell"));
-        let mut host = FakeHost::new()
+        let host = FakeHost::new()
             .with_err(
                 SUBMIT_FFQN,
                 &format!(
@@ -4322,19 +4817,19 @@ content_digest = \"sha256:1\"\n\
                 ),
             )
             .with(SUBMIT_FFQN, "\"Dep_x\"");
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/deployment/current/deployment.toml",
+                "/workspace/cloud/demo/deployment/current/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
-        let retry: Value = serde_json::from_str(&host.calls[1].1).unwrap();
+        let retry: Value = serde_json::from_str(&host.calls()[1].1).unwrap();
         assert_eq!(
             retry[1],
             json!([{"path": "webhook/ui/shell.js", "digest": shell, "content": "shell"}])
@@ -4348,24 +4843,24 @@ content_digest = \"sha256:1\"\n\
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
         i.fs.write_file(
-            "/workspace/deployment/current/deployment.toml",
+            "/workspace/cloud/demo/deployment/current/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
-        let mut host = FakeHost::new().with_err(
+        let host = FakeHost::new().with_err(
             SUBMIT_FFQN,
             "deployment cannot be submitted: unexpected files: x",
         );
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/deployment/current/deployment.toml",
+                "/workspace/cloud/demo/deployment/current/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert!(
@@ -4373,7 +4868,7 @@ content_digest = \"sha256:1\"\n\
             "stderr: {}",
             out.stderr
         );
-        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls().len(), 1);
     }
 
     #[test]
@@ -4384,26 +4879,26 @@ content_digest = \"sha256:1\"\n\
         let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\ncontent_digest = \"sha256:1\"\n";
         let mut i = interp("/workspace");
         i.fs.write_file(
-            "/workspace/deployment/current/deployment.toml",
+            "/workspace/cloud/demo/deployment/current/deployment.toml",
             manifest.as_bytes(),
         )
         .unwrap();
-        i.fs.write_file("/workspace/deployment/current/a.wasm", b"bytes")
+        i.fs.write_file("/workspace/cloud/demo/deployment/current/a.wasm", b"bytes")
             .unwrap();
         let missing = r#"{"permanent_missing_files":[{"path":"a.wasm","digest":"sha256:zz"}]}"#;
-        let mut host = FakeHost::new()
+        let host = FakeHost::new()
             .with_err(SUBMIT_FFQN, missing)
             .with_err(SUBMIT_FFQN, missing);
-        let out = execute_obelisk(
+        let out = execute_app(
             &mut i,
             &words(&[
                 "deployment",
                 "submit",
-                "/workspace/deployment/current/deployment.toml",
+                "/workspace/cloud/demo/deployment/current/deployment.toml",
             ]),
             "",
             &mut no_generate(),
-            &mut host,
+            &host,
         );
         assert_eq!(out.exit_code, 2);
         assert!(
@@ -4411,7 +4906,7 @@ content_digest = \"sha256:1\"\n\
             "stderr: {}",
             out.stderr
         );
-        assert_eq!(host.calls.len(), 2);
+        assert_eq!(host.calls().len(), 2);
     }
 
     // -- wiring: registered via `Bash::register_command`, dispatched through
@@ -4427,9 +4922,13 @@ content_digest = \"sha256:1\"\n\
         });
         bash.register_command(
             "obelisk",
-            command_handler(Box::new(host), no_generate(), None),
+            command_handler(
+                Box::new(FakeHost::new()),
+                no_generate(),
+                Some(Box::new(one_app_cloud(&host))),
+            ),
         );
-        let out = bash.exec("obelisk functions list | cat", Default::default());
+        let out = bash.exec("obelisk cloud app functions list | cat", Default::default());
         assert_eq!(out.exit_code, 0);
         assert_eq!(out.stdout, "");
     }
@@ -4450,31 +4949,95 @@ content_digest = \"sha256:1\"\n\
                 })
                 .to_string(),
             );
+        let cloud = one_app_cloud(&host);
         let mut bash = Bash::new(BashOptions {
             cwd: "/workspace".into(),
             ..Default::default()
         });
-        register_deferred_mount(bash.fs_mut(), Box::new(host));
+        register_deferred_mount(bash.fs_mut(), Box::new(cloud.clone()));
+        let listed = || cloud.0.borrow().runs.len();
 
-        // A session that never references the deployment never checks it out:
-        // the manifest is absent until first access.
+        // A session that never references the cloud never lists it.
         let out = bash.exec("echo hi; ls /workspace", Default::default());
         assert_eq!(out.exit_code, 0);
-        assert!(
-            !bash
-                .fs_mut()
-                .exists("/workspace/deployment/current/deployment.toml")
-        );
+        assert_eq!(listed(), 0);
 
-        // The first command that references the deployment path fires the
-        // checkout and materializes the tree.
+        // Listing the cloud lists the apps without checking any out.
+        let out = bash.exec("ls /workspace/cloud", Default::default());
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert_eq!(out.stdout, "demo\n");
+        assert_eq!(listed(), 1);
+        assert!(host.calls().is_empty());
+
+        // The first command under an app's deployment fires its checkout.
         let out = bash.exec(
-            "cat /workspace/deployment/current/deployment.toml",
+            "cat /workspace/cloud/demo/deployment/current/deployment.toml",
             Default::default(),
         );
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
         assert_eq!(out.stdout, simplify_manifest(manifest));
-        assert!(bash.fs_mut().is_dir("/workspace/deployment/current"));
+        assert_eq!(host.calls().len(), 2);
+
+        // A further access is a no-op (the mount already fired).
+        bash.exec("ls /workspace/cloud/demo/deployment", Default::default());
+        assert_eq!(host.calls().len(), 2);
+        assert_eq!(listed(), 1);
+    }
+
+    #[test]
+    fn deferred_mount_records_a_mount_failure_instead_of_failing() {
+        let mut fs = Vfs::new();
+        register_deferred_mount(&mut fs, Box::new(one_app_cloud(&FakeHost::new())));
+        fs.ensure_mounted_for("/workspace/cloud/demo/deployment/current");
+        let error = fs.read_file("/workspace/.mount-error").unwrap();
+        assert!(String::from_utf8_lossy(&error).contains("no fixture for"));
+    }
+
+    #[test]
+    fn deferred_mount_records_a_failed_app_listing() {
+        let cloud = FakeCloud::default();
+        cloud.0.borrow_mut().listing = Some((String::new(), "denied".to_string(), 1));
+        let mut fs = Vfs::new();
+        register_deferred_mount(&mut fs, Box::new(cloud));
+        fs.ensure_mounted_for("/workspace/cloud/x");
+        assert_eq!(
+            fs.read_file("/workspace/.mount-error").unwrap(),
+            b"cannot list cloud apps: denied"
+        );
+    }
+
+    #[test]
+    fn a_successful_app_command_mounts_that_apps_deployment() {
+        let manifest = "[[activity_wasm]]\nlocation = \"a.wasm\"\n";
+        let host = FakeHost::new()
+            .with(
+                "obelisk-agent:tools/webapi.current-deployment-id",
+                "\"dep-1\"",
+            )
+            .with(
+                "obelisk-agent:tools/webapi.deployment-checkout",
+                &json!({ "deployment_toml": manifest, "files": [] }).to_string(),
+            );
+        let mut i = interp("/workspace");
+        let args = words(&["deployment", "active"]);
+        let out = execute_app(&mut i, &args, "", &mut no_generate(), &host);
+        assert_eq!(out.exit_code, 0, "{}", out.stderr);
+        assert!(i.fs.is_dir("/workspace/cloud/demo/deployment"));
+        i.fs.ensure_mounted_for("/workspace/cloud/demo/deployment/current");
+        assert_eq!(
+            i.fs.read_file("/workspace/cloud/demo/deployment/current/deployment.toml")
+                .unwrap(),
+            manifest.as_bytes()
+        );
+
+        let out = execute_app(
+            &mut interp("/workspace"),
+            &words(&["deployment", "bogus"]),
+            "",
+            &mut no_generate(),
+            &FakeHost::new(),
+        );
+        assert_eq!(out.exit_code, 2);
     }
 
     #[test]
@@ -4487,12 +5050,34 @@ content_digest = \"sha256:1\"\n\
 
     // -- obelisk cloud --
 
-    /// A fake `obelisk-agent:tools/cloud`: records provisioner runs and hands out `apps[name]`.
+    /// A fake `obelisk-agent:tools/cloud`: records provisioner runs and hands out
+    /// `apps[name]`, listing those apps unless `listing` overrides the
+    /// `apps list --json` output. Clones share one state.
+    #[derive(Clone, Default)]
+    struct FakeCloud(Rc<RefCell<FakeCloudState>>);
+
     #[derive(Default)]
-    struct FakeCloud {
+    struct FakeCloudState {
         apps: BTreeMap<String, FakeHost>,
         runs: Vec<(Vec<String>, String, Option<String>)>,
         deploys: Vec<(String, String)>,
+        /// `(stdout, stderr, exit_code)` of `apps list --json`.
+        listing: Option<(String, String, i32)>,
+        asked: Vec<String>,
+    }
+
+    impl FakeCloud {
+        fn with_app(self, name: &str, host: &FakeHost) -> Self {
+            self.0
+                .borrow_mut()
+                .apps
+                .insert(name.to_string(), host.clone());
+            self
+        }
+
+        fn shared(&self) -> SharedCloud {
+            Rc::new(RefCell::new(Box::new(self.clone())))
+        }
     }
 
     impl Cloud for FakeCloud {
@@ -4502,16 +5087,35 @@ content_digest = \"sha256:1\"\n\
             stdin: &str,
             app_toml: Option<&str>,
         ) -> Result<CommandOutput, String> {
-            self.runs.push((
+            let mut state = self.0.borrow_mut();
+            state.runs.push((
                 args.to_vec(),
                 stdin.to_string(),
                 app_toml.map(str::to_string),
             ));
-            Ok(ok("ok\n".to_string()))
+            if args != ["apps", "list", "--json"] {
+                return Ok(ok("ok\n".to_string()));
+            }
+            let (stdout, stderr, exit_code) = state.listing.clone().unwrap_or_else(|| {
+                let apps = state
+                    .apps
+                    .keys()
+                    .map(|name| json!({ "app_name": name }))
+                    .collect::<Vec<_>>();
+                (json!({ "apps": apps }).to_string(), String::new(), 0)
+            });
+            Ok(CommandOutput {
+                stdout,
+                stderr,
+                exit_code,
+            })
         }
 
         fn prepare_deploy(&mut self, app: &str, app_toml: &str) -> Result<DeployTarget, String> {
-            self.deploys.push((app.to_string(), app_toml.to_string()));
+            self.0
+                .borrow_mut()
+                .deploys
+                .push((app.to_string(), app_toml.to_string()));
             Ok(DeployTarget {
                 api_url: "https://demo.test".to_string(),
                 webhook_url: Some("https://demo.test/hook".to_string()),
@@ -4520,16 +5124,28 @@ content_digest = \"sha256:1\"\n\
         }
 
         fn control_plane(&mut self, app: &str) -> Box<dyn ControlPlane> {
-            Box::new(self.apps.remove(app).unwrap_or_else(FakeHost::new))
+            let mut state = self.0.borrow_mut();
+            state.asked.push(app.to_string());
+            Box::new(state.apps.get(app).cloned().unwrap_or_default())
         }
     }
 
     fn cloud_command(
         i: &mut Interpreter,
         args: &[&str],
-        cloud: Option<&mut dyn Cloud>,
+        cloud: Option<&FakeCloud>,
     ) -> CommandOutput {
-        execute_cloud(i, &words(args), "", &mut no_generate(), cloud)
+        let mut argv = words(&["cloud"]);
+        argv.extend(words(args));
+        let cloud = cloud.map(FakeCloud::shared);
+        execute_obelisk(
+            i,
+            &argv,
+            "",
+            &mut no_generate(),
+            &mut FakeHost::new(),
+            cloud.as_ref(),
+        )
     }
 
     #[test]
@@ -4546,12 +5162,11 @@ content_digest = \"sha256:1\"\n\
             "obelisk-agent:tools/webapi.apply-deployment",
             "{\"ok\":\"switched\"}",
         );
-        let mut cloud = FakeCloud::default();
-        cloud.apps.insert("demo".to_string(), app);
-        let out = cloud_command(&mut i, &["app", "deploy"], Some(&mut cloud));
+        let cloud = FakeCloud::default().with_app("demo", &app);
+        let out = cloud_command(&mut i, &["app", "deploy"], Some(&cloud));
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
         assert_eq!(
-            cloud.deploys,
+            cloud.0.borrow().deploys,
             [("demo".to_string(), "app_name = \"demo\"\n".to_string())]
         );
         assert_eq!(
@@ -4568,11 +5183,10 @@ content_digest = \"sha256:1\"\n\
             "obelisk-agent:tools/webapi.get-execution",
             "{\"execution_id\":\"E_1\"}",
         );
-        let mut cloud = FakeCloud::default();
-        cloud.apps.insert("demo".to_string(), app);
+        let cloud = FakeCloud::default().with_app("demo", &app);
         let mut i = interp("/workspace");
         let args = ["app", "--app", "demo", "executions", "get", "E_1"];
-        let out = cloud_command(&mut i, &args, Some(&mut cloud));
+        let out = cloud_command(&mut i, &args, Some(&cloud));
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
         assert!(out.stdout.contains("E_1"), "{}", out.stdout);
     }
@@ -4581,7 +5195,7 @@ content_digest = \"sha256:1\"\n\
     fn cloud_secrets_set_from_env_sends_the_variable_as_stdin() {
         let mut i = interp("/workspace");
         i.env.insert("API_KEY".to_string(), "s3cret".to_string());
-        let mut cloud = FakeCloud::default();
+        let cloud = FakeCloud::default();
         let args = [
             "app",
             "--app",
@@ -4592,12 +5206,15 @@ content_digest = \"sha256:1\"\n\
             "--from-env",
             "API_KEY",
         ];
-        let out = cloud_command(&mut i, &args, Some(&mut cloud));
+        let out = cloud_command(&mut i, &args, Some(&cloud));
         assert_eq!(out.exit_code, 0, "{}", out.stderr);
         let forwarded = words(&[
             "app", "--app", "demo", "secrets", "set", "API_KEY", "--stdin",
         ]);
-        assert_eq!(cloud.runs, [(forwarded, "s3cret".to_string(), None)]);
+        assert_eq!(
+            cloud.0.borrow().runs,
+            [(forwarded, "s3cret".to_string(), None)]
+        );
     }
 
     #[test]

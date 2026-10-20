@@ -18,6 +18,8 @@ exec.lock_expiry.seconds = 30
 env_vars = [
   { key = "DOCS_URLS_JSON", value = "${DOCS_URLS_JSON:-[\"https://obeli.sk/docs/${OBELISK_VERSION:-latest}/llms.txt/\"]}" },
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
 ]
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
@@ -27,6 +29,12 @@ methods = ["GET"]
 pattern = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
 methods = ["GET"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+# Otherwise describes the single-app cloud backed by the target.
+[[activity_js.allowed_host]]
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 # --- Shell programs ----------------------------------------------------------
@@ -150,6 +158,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
   { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
+  { key = "LLM_API_PREFIX", value = "${LLM_API_PREFIX:-}" },
 ]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -198,8 +207,9 @@ replace_in = ["headers"]
 #   { id, label, api_type, path?, wire_model, max_tokens? }
 # Discovery uses GET /v1/models; AGENT_MODELS is the optional fallback
 # (see .envrc-example / models.*.json). The endpoint origin is shared across the
-# catalog via LLM_BASE_URL, and a single LLM_API_KEY secret authenticates it; the
-# per-model `path` is only the provider prefix appended to that origin.
+# catalog via LLM_BASE_URL (an origin, also the allowed_host pattern) plus the
+# optional LLM_API_PREFIX (e.g. "/api" for OpenRouter), and a single LLM_API_KEY
+# secret authenticates it; the per-model `path` is a provider prefix appended to that.
 
 [[activity_js]]
 name = "llm_chat"
@@ -211,6 +221,7 @@ max_retries = 3
 env_vars = [
   { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
   { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
+  { key = "LLM_API_PREFIX", value = "${LLM_API_PREFIX:-}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
 ]
 # Reconstructs history from prior LLM executions (activity/llm-history.js).
@@ -670,6 +681,7 @@ env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
   { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
+  { key = "LLM_API_PREFIX", value = "${LLM_API_PREFIX:-}" },
 ]
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
@@ -703,11 +715,13 @@ request_url_regex = "^PUT ${TARGET_OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1
 secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
-# --- ObeliskNet (`obelisk cloud`) ---------------------------------------------
+# --- Cloud apps (`obelisk cloud`) ---------------------------------------------
 # Back the shell's `obelisk cloud ...`. OBELISK_CLOUD_API_TOKEN authenticates both
-# the provisioner (OBELISK_CLOUD_API_URL) and each app's own API, which lives
-# under OBELISK_CLOUD_APP_API_PATTERN. max_retries = 0: commands are not
-# idempotent across a retry (fresh Idempotency-Key, auto-ID submissions).
+# the ObeliskNet provisioner (OBELISK_CLOUD_API_URL) and each app's own API, which
+# lives under OBELISK_CLOUD_APP_API_PATTERN. Without it, the target
+# (TARGET_OBELISK_*) is the only app of a cloud that cannot provision.
+# max_retries = 0: commands are not idempotent across a retry (fresh
+# Idempotency-Key, auto-ID submissions).
 
 [[activity_js]]
 name = "cloud_run"
@@ -715,11 +729,21 @@ ffqn = "obelisk-agent:tools/cloud.run"
 wit = "wit"
 max_retries = 0
 location = "packs/obelisk-control/cloud/cli.js"
-env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" }]
+env_vars = [
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
+]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
 methods = ["GET", "POST", "PUT", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+# The single-app cloud: the target's own API.
+[[activity_js.allowed_host]]
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -730,11 +754,21 @@ max_retries = 0
 # Creating or restarting an app VM waits for it to come up.
 exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/deploy.js"
-env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" }]
+env_vars = [
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
+]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
 methods = ["GET", "POST", "PUT"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+# The single-app cloud: the target's own API.
+[[activity_js.allowed_host]]
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -745,7 +779,10 @@ max_retries = 0
 # call-target follows the execution; apply re-verifies the deployment.
 exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/tenant.js"
-env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" }]
+env_vars = [
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" },
+]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
 methods = ["GET"]
@@ -755,6 +792,39 @@ replace_in = ["headers"]
 pattern = "${OBELISK_CLOUD_APP_API_PATTERN:-https://*.obelisk.works:5005}"
 methods = ["GET", "POST", "PUT"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+# The single-app cloud: the target's own API.
+[[activity_js.allowed_host]]
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "POST", "PUT"]
+secrets = ["TARGET_OBELISK_TOKEN"]
+replace_in = ["headers"]
+
+# Read-only app API operations, retried on transient errors.
+[[activity_js]]
+name = "cloud_tenant_read"
+ffqn = "obelisk-agent:tools/cloud.tenant-read"
+wit = "wit"
+location = "packs/obelisk-control/cloud/tenant-read.js"
+env_vars = [
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" },
+]
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
+methods = ["GET"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_CLOUD_APP_API_PATTERN:-https://*.obelisk.works:5005}"
+methods = ["GET"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+# The single-app cloud: the target's own API.
+[[activity_js.allowed_host]]
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 # --- MCP servers (stateless) --------------------------------------------------

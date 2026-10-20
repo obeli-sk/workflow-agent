@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proves the actual real-world regression end to end: `obelisk deployment
+# Proves the actual real-world regression end to end: `obelisk cloud app deployment
 # submit` on this app's own deployment.js.toml, fetched cold through the
 # GitHub-backed apps/<name> mount (obelisk-agent:mounts/apps.request),
 # with zero prior ls/readdir anywhere in the tree - exactly reproducing
@@ -82,7 +82,7 @@ UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
 # having none of the real app's outbound_http/secrets configured (storage
 # still fully re-verifies and type-checks every component).
 AUTHOR_SCRIPT="$(printf '%s\n' \
-    "SUBMIT_OUT=\$(obelisk deployment submit --allow-missing-runtime-config /workspace/apps/workflow-agent/deployment.js.toml)" \
+    "SUBMIT_OUT=\$(obelisk cloud app deployment submit --allow-missing-runtime-config /workspace/apps/workflow-agent/deployment.js.toml)" \
     "SUBMIT_CODE=\$?" \
     "echo SUBMIT_OUTPUT:\$SUBMIT_OUT" \
     "if [ \$SUBMIT_CODE -ne 0 ]; then echo SUBMIT_FAILED; exit 1; fi" \

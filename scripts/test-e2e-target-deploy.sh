@@ -11,7 +11,7 @@
 # language implementations of itself via `deployment apply` on its own
 # server, then kept driving it live - risky by construction, and not how
 # workflow-agent is meant to operate: it always redeploys a separate
-# TARGET_OBELISK instance, never itself (see README.md's "Target instance"
+# TARGET_OBELISK instance, never itself (see README.md's "Apps in the cloud"
 # section and this repo's TARGET_OBELISK_* env vars). Cross-language replay
 # compatibility of the driving session is still checked below through the
 # non-destructive `PUT /v1/executions/{id}/replay` RPC.
@@ -60,16 +60,16 @@ TARGET_ORIG_ID="$("$OBELISK" deployment active -a "$E2E_TARGET_API_URL")"
 echo ">>> target starts empty: ${TARGET_ORIG_ID}"
 
 AUTHORED_ID="$("$OBELISK" generate deployment-id)"
-AUTHOR_DIR="/workspace/deployment/$AUTHORED_ID"
+AUTHOR_DIR="/workspace/cloud/workflow-agent-e2e-target/deployment/$AUTHORED_ID"
 AUTHOR_SCRIPT="$(printf '%s\n' \
-    "grep -o obelisk-app-config-v1 /workspace/deployment/current/app.toml" \
+    "grep -o obelisk-app-config-v1 /workspace/cloud/workflow-agent-e2e-target/deployment/current/app.toml" \
     "mkdir -p $AUTHOR_DIR/src $AUTHOR_DIR/wit" \
     "printf '%s\\n' '[[activity_js]]' 'name = \"generated\"' 'ffqn = \"test:generated/api.run\"' 'wit = \"wit\"' 'location = \"src/index.js\"' > $AUTHOR_DIR/deployment.toml" \
     "printf '%s\\n' 'import { value } from \"./lib.js\"; export default function run() { return value; }' > $AUTHOR_DIR/src/index.js" \
     "printf '%s\\n' 'export const value = \"target-deploy-ok\";' > $AUTHOR_DIR/src/lib.js" \
     "printf '%s\\n' 'package test:generated; interface api { run: func() -> result<string>; } world impl { export api; }' > $AUTHOR_DIR/wit/world.wit" \
-    "obelisk deployment submit --allow-missing-runtime-config $AUTHOR_DIR/deployment.toml" \
-    "obelisk deployment apply $AUTHORED_ID")"
+    "obelisk cloud app deployment submit --allow-missing-runtime-config $AUTHOR_DIR/deployment.toml" \
+    "obelisk cloud app deployment apply $AUTHORED_ID")"
 
 # A `$`-prefixed opening prompt runs immediately as a direct shell script,
 # recorded as shell event id "shell-opened-0" (session.rs/session.js).

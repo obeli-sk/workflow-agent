@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Proves `obelisk deployment submit` works from a manifest that does NOT
-# live under /workspace/deployment/<id> - e.g. a manifest checked out
+# Proves `obelisk cloud app deployment submit` works from a manifest that does NOT
+# live under /workspace/cloud/<app>/deployment/<id> - e.g. a manifest checked out
 # straight from a source repo - and that the resulting deployment genuinely
 # activates and serves on the target.
 #
-# Regression coverage for two bugs found in the same DEPLOYMENT_ROOT-shaped
+# Regression coverage for two bugs found in the same deployment-mount-shaped
 # assumption:
 #   - PATH resolution used to only accept a path literally named
 #     "deployment.toml", or a directory (looking for "deployment.toml"
@@ -12,7 +12,7 @@
 #     location was rejected or silently mishandled.
 #   - deployment_id was derived from the manifest's parent directory's
 #     basename (empty only when literally "current"), a convention that
-#     only holds for DEPLOYMENT_ROOT/<id> checkouts. Submitting from
+#     only holds for <deployment mount>/<id> checkouts. Submitting from
 #     anywhere else sent that unrelated directory's basename as the
 #     deployment_id and the server rejected it with "invalid deployment_id:
 #     wrong prefix" (E_01M1MG45ERCAGDE47WQX2GTAEY) instead of letting it
@@ -21,7 +21,7 @@
 # Mirrors test-e2e-target-deploy.sh's shape (separate target instance,
 # verified independently against the target's own API) but authors the
 # manifest under a plain scratch directory instead of
-# /workspace/deployment/<id>, with a filename that isn't literally
+# /workspace/cloud/<app>/deployment/<id>, with a filename that isn't literally
 # "deployment.toml" either, so both bugs are exercised at once.
 #
 # Runs for both rs and js SOURCE backends (the agent side); the target is
@@ -65,10 +65,10 @@ UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
 TARGET_ORIG_ID="$("$OBELISK" deployment active -a "$E2E_TARGET_API_URL")"
 echo ">>> target starts empty: ${TARGET_ORIG_ID}"
 
-# Deliberately outside DEPLOYMENT_ROOT (/workspace/deployment), and named
+# Deliberately outside the app deployment mount (/workspace/cloud/<app>/deployment), and named
 # unlike the literal "deployment.toml", to exercise both fixed bugs: PATH
 # resolution and deployment_id derivation must both cope with a manifest
-# that looks nothing like a DEPLOYMENT_ROOT/<id> checkout.
+# that looks nothing like a <deployment mount>/<id> checkout.
 AUTHOR_DIR="/workspace/outside-deployment-root"
 MANIFEST_NAME="my-app.toml"
 AUTHOR_SCRIPT="$(printf '%s\n' \
@@ -77,8 +77,8 @@ AUTHOR_SCRIPT="$(printf '%s\n' \
     "printf '%s\\n' 'import { value } from \"./lib.js\"; export default function run() { return value; }' > $AUTHOR_DIR/src/index.js" \
     "printf '%s\\n' 'export const value = \"outside-root-deploy-ok\";' > $AUTHOR_DIR/src/lib.js" \
     "printf '%s\\n' 'package test:generated; interface api { run: func() -> result<string>; } world impl { export api; }' > $AUTHOR_DIR/wit/world.wit" \
-    "NEW_ID=\$(obelisk deployment submit --allow-missing-runtime-config $AUTHOR_DIR/$MANIFEST_NAME | jq -r .deployment_id)" \
-    "obelisk deployment apply \"\$NEW_ID\"" \
+    "NEW_ID=\$(obelisk cloud app deployment submit --allow-missing-runtime-config $AUTHOR_DIR/$MANIFEST_NAME | jq -r .deployment_id)" \
+    "obelisk cloud app deployment apply \"\$NEW_ID\"" \
     "echo APPLIED:\$NEW_ID")"
 
 # A `$`-prefixed opening prompt runs immediately as a direct shell script,
@@ -92,7 +92,7 @@ e2e_wait_until e2e_opened_shell_done "$UI_BASE" "$SESSION_ID" \
 OUTPUT="$(node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION")"
 AUTHORED_ID="$(printf '%s' "$OUTPUT" | sed -n 's/^APPLIED://p' | tr -d '[:space:]')"
 [[ -n "$AUTHORED_ID" ]] || { echo "did not capture a server-assigned deployment id: $PROJECTION" >&2; exit 1; }
-echo ">>> agent session E2E PASS: authored outside DEPLOYMENT_ROOT, submitted, and applied (id: ${AUTHORED_ID})"
+echo ">>> agent session E2E PASS: authored outside the deployment mount, submitted, and applied (id: ${AUTHORED_ID})"
 
 # Verify independently against the target's own API - not the agent's
 # report - that the new deployment is really active and really serving.
@@ -115,4 +115,4 @@ echo ">>> target E2E PASS: the target now serves the authored function (${RESULT
 e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
-echo ">>> E2E PASS: the agent (${BACKEND}) submitted+applied a manifest from outside DEPLOYMENT_ROOT and the target ended up with a working deployment"
+echo ">>> E2E PASS: the agent (${BACKEND}) submitted+applied a manifest from outside the app deployment mount and the target ended up with a working deployment"

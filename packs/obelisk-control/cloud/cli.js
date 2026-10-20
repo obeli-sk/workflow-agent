@@ -9,6 +9,7 @@
 import { appRequest, cloudRequest } from "./client.js";
 import { appConfig, validateAppName } from "./policy.js";
 import { humanOutput, renderSummary } from "./output.js";
+import { policyAppName, refusal, requireSingleApp, singleApp, singleAppName, singleAppRow } from "./single-app.js";
 
 export default async function run(args, stdin, appToml) {
     const stderr = [];
@@ -57,12 +58,33 @@ async function execute({ positionals, flags }, stdin, appToml, log) {
         if (flags["--json"]) return `${JSON.stringify(value, null, 2)}\n`;
         return options.verbose ? humanOutput(value) : renderSummary(summary, value);
     };
+    if (singleApp()) return singleAppCommand(group, rest, flags, appToml, print);
     if (group === "apps" && rest[0] === "list") {
         return print(await cloudRequest("GET", ["v1", "apps"], options), { kind: "apps" });
     }
     if (group === "token") return print(...(await tokenCommand(rest, options)));
     if (group === "app") return appCommand(rest, flags, stdin, appToml, options, print);
     throw `unknown command \`cloud ${positionals.join(" ")}\`; expected apps, token or app`;
+}
+
+// The single-app cloud answers reads from the target and refuses everything else.
+async function singleAppCommand(group, [action, which], flags, appToml, print) {
+    if (group === "apps" && action === "list") return print({ apps: [await singleAppRow()] }, { kind: "apps" });
+    if (group === "token") throw "`cloud token` is not available: this cloud has no account tokens";
+    if (group !== "app") throw `unknown command \`cloud ${group ?? ""}\`; expected apps or app`;
+    if (!["get", "status", "endpoint"].includes(action)) throw refusal(`app ${action ?? ""}`.trim(), await singleAppName());
+    const name = await requireSingleApp(flags["--app"] ?? (appToml === null ? null : policyAppName(appToml)));
+    const row = await singleAppRow();
+    if (action === "get") return print(row, { kind: "app" });
+    if (action === "endpoint") {
+        const endpoints = { api_url: row.api_url, webhook_url: row.webhook_url };
+        if (which === undefined) return flags["--json"] ? `${JSON.stringify(endpoints, null, 2)}\n` : humanOutput(endpoints);
+        const key = { api: "api_url", webhook: "webhook_url" }[which];
+        if (!key) throw "expected `endpoint`, `endpoint api` or `endpoint webhook`";
+        if (endpoints[key] === null) throw `${name} has no ${which} URL configured`;
+        return flags["--json"] ? `${JSON.stringify(endpoints[key])}\n` : `${endpoints[key]}\n`;
+    }
+    return print({ app: row, api_ready: row.status === "running" }, { kind: "status" });
 }
 
 async function tokenCommand([action, id], options) {

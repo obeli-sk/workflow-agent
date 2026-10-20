@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 /// Fetches a deployment-owned file's bytes from the content-addressed store by
 /// its `sha256:...` content digest. Installed on the `Vfs` by the session's
-/// deployment mount (`obelisk_pack::mount`) so the file tree is browsable
+/// deployment mounts (`obelisk_pack::refresh_deployment_mount`) so the file tree is browsable
 /// immediately while eligible files' bytes are pulled only when first read
 /// (see `Vfs::register_lazy` / `Vfs::read_file`).
 pub trait BlobLoader {
@@ -323,17 +323,18 @@ impl Vfs {
         self.deferred.push((root, populate));
     }
 
-    /// Run the deferred mount whose root is at or above `path`, if any. A no-op
-    /// once that mount has fired. Called from the interpreter's command dispatch,
-    /// the only `&mut Vfs` chokepoint before a command's `&self` reads. Roots are
-    /// distinct directories, so at most one matches.
+    /// Run every deferred mount whose root is at or above `path`, including ones
+    /// a populate registers (nested mounts); each fires at most once. Called from
+    /// the interpreter's command dispatch, the only `&mut Vfs` chokepoint before a
+    /// command's `&self` reads.
     pub fn ensure_mounted_for(&mut self, path: &str) {
         let path = Self::normalize(path);
-        let hit = self
-            .deferred
-            .iter()
-            .position(|(root, _)| path == *root || path.starts_with(&format!("{root}/")));
-        if let Some(index) = hit {
+        let matching = |deferred: &[(String, DeferredMount)]| {
+            deferred
+                .iter()
+                .position(|(root, _)| path == *root || path.starts_with(&format!("{root}/")))
+        };
+        while let Some(index) = matching(&self.deferred) {
             let (_, populate) = self.deferred.remove(index);
             populate(self);
         }
@@ -1392,6 +1393,29 @@ mod tests {
                 .as_deref(),
             Some(&b"toml"[..])
         );
+    }
+
+    #[test]
+    fn a_deferred_mount_registered_by_a_populate_fires_for_the_same_path() {
+        let fired = Rc::new(RefCell::new(Vec::new()));
+        let log = fired.clone();
+        let mut fs = Vfs::new();
+        fs.register_deferred_mount(
+            "/workspace/cloud",
+            Rc::new(move |fs: &mut Vfs| {
+                log.borrow_mut().push("cloud");
+                for app in ["a", "b"] {
+                    let log = log.clone();
+                    fs.register_deferred_mount(
+                        &format!("/workspace/cloud/{app}/deployment"),
+                        Rc::new(move |_: &mut Vfs| log.borrow_mut().push(app)),
+                    );
+                }
+            }),
+        );
+        fs.ensure_mounted_for("/workspace/cloud/a/deployment/current");
+        assert_eq!(*fired.borrow(), ["cloud", "a"]);
+        assert!(fs.is_dir("/workspace/cloud/b/deployment"));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //
 // Runs one webapi tool (`operation` is its WIT name, `params-json` its
 // positional arguments) against the ObeliskNet app's own API, authenticated by
-// the cloud token. Returns `{"ok": value}`, or `{"missing_files": [...]}` when
+// the cloud token (the single-app cloud uses TARGET_OBELISK_*). Returns `{"ok": value}`, or `{"missing_files": [...]}` when
 // deployment-submit needs attachments.
 import { apiOrigin, appRequest, cloudToken } from "./client.js";
 import { setTarget } from "../tools/target.js";
@@ -28,6 +28,7 @@ import listDeployments from "../tools/list-deployments.js";
 import listExecutions from "../tools/list-executions.js";
 import listFunctions from "../tools/list-functions.js";
 import { validateAppName } from "./policy.js";
+import { requireSingleApp, singleApp } from "./single-app.js";
 
 const OPERATIONS = {
     "apply-deployment": applyDeployment,
@@ -52,6 +53,9 @@ const OPERATIONS = {
     "list-functions": listFunctions,
 };
 
+// Operations that change the app or start executions; everything else only reads.
+export const MUTATING_OPERATIONS = ["apply-deployment", "call-target", "deployment-submit", "deployment-switch"];
+
 export default async function tenant(app, operation, paramsJson) {
     const tool = Object.prototype.hasOwnProperty.call(OPERATIONS, operation) ? OPERATIONS[operation] : null;
     if (!tool) throw `unknown app API operation ${operation}`;
@@ -63,8 +67,14 @@ export default async function tenant(app, operation, paramsJson) {
     }
     if (!Array.isArray(params)) throw "params-json must be a JSON array";
     validateAppName(app);
-    const row = await appRequest(app, "GET", []);
-    setTarget({ base: apiOrigin(row?.api_url), token: cloudToken() });
+    // Drop an override left by an earlier call, so the single app reads the target.
+    setTarget(null);
+    if (singleApp()) {
+        await requireSingleApp(app);
+    } else {
+        const row = await appRequest(app, "GET", []);
+        setTarget({ base: apiOrigin(row?.api_url), token: cloudToken() });
+    }
     try {
         const value = await tool(...params);
         return JSON.stringify({ ok: value === undefined ? null : value });

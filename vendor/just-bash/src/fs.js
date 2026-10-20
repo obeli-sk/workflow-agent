@@ -271,17 +271,17 @@ export class Vfs {
         this.deferred.push({ root: normRoot, populate });
     }
 
-    // Run the deferred mount whose root is at or above `path`, if any; a
-    // no-op once that mount has fired. The interpreter's command-dispatch
-    // chokepoint should call this before each command that touches a path
-    // (mirroring fs.rs's doc comment on `ensure_mounted_for`); not yet wired
-    // here.
+    // Run every deferred mount whose root is at or above `path`, including
+    // ones a populate registers (nested mounts); each fires at most once. The
+    // interpreter calls this before each command that touches a path.
     ensureMountedFor(path) {
         const p = normalizePath(path, "/");
-        const idx = this.deferred.findIndex(({ root }) => p === root || p.startsWith(`${root}/`));
-        if (idx === -1) return;
-        const [{ populate }] = this.deferred.splice(idx, 1);
-        populate(this);
+        let idx = this.deferred.findIndex(({ root }) => p === root || p.startsWith(`${root}/`));
+        while (idx !== -1) {
+            const [{ populate }] = this.deferred.splice(idx, 1);
+            populate(this);
+            idx = this.deferred.findIndex(({ root }) => p === root || p.startsWith(`${root}/`));
+        }
     }
 
     // Drop the deferred mount rooted at `root` without running it.

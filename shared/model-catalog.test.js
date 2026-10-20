@@ -4,13 +4,14 @@ import { loadModelCatalog, resolveModel } from "./model-catalog.js";
 import completion from "../activity/llm-chat.js";
 import { loadModels } from "../webhook/lib/models.js";
 
-async function withEndpoint(catalog, fetcher, run) {
-    const keys = ["AGENT_MODELS", "LLM_BASE_URL", "LLM_API_KEY"];
+async function withEndpoint(catalog, fetcher, run, prefix = "") {
+    const keys = ["AGENT_MODELS", "LLM_BASE_URL", "LLM_API_KEY", "LLM_API_PREFIX"];
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
     const previousFetch = globalThis.fetch;
     process.env.AGENT_MODELS = catalog;
     process.env.LLM_BASE_URL = "http://llm.test/";
     process.env.LLM_API_KEY = "test-key";
+    process.env.LLM_API_PREFIX = prefix;
     globalThis.fetch = fetcher;
     try { await run(); }
     finally {
@@ -60,6 +61,19 @@ test("discovery preserves configured wire adapters and aliases, and prefers adve
         assert.equal(config.max_tokens, 100);
         assert.equal((await resolveModel("legacy")).wire_model, "provider/model");
     });
+});
+
+test("LLM_API_PREFIX applies to discovery and model requests, before a model's own path", async () => {
+    const urls = [];
+    const configured = [{ id: "sonnet", wire_model: "anthropic/sonnet", api_type: "anthropic-messages", path: "/anthropic" }];
+    await withEndpoint(JSON.stringify(configured), async (url) => {
+        urls.push(url);
+        if (url.endsWith("/v1/models")) return response({ data: [{ id: "anthropic/sonnet" }] });
+        return response({ content: [{ type: "text", text: "hi" }], stop_reason: "end_turn" });
+    }, async () => {
+        await completion("", JSON.stringify([{ role: "user", content: [{ type: "text", text: "hi" }] }]), "[]", "sonnet", "", []);
+        assert.deepEqual(urls, ["http://llm.test/api/v1/models", "http://llm.test/api/anthropic/v1/messages"]);
+    }, "api/");
 });
 
 test("discovered ChatGPT-subscription models use the Responses API", async () => {

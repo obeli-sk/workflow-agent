@@ -25,7 +25,7 @@
 
 const DEFAULT_MAX_TOKENS = 8192;
 import { loadMessages, obeliskApi } from "./llm-history.js";
-import { resolveModel } from "../shared/model-catalog.js";
+import { llmEndpoint, resolveModel } from "../shared/model-catalog.js";
 
 export default async function completion(system, deltaJson, toolsJson, model, effort, historyIds) {
     const messages = await loadMessages(historyIds, deltaJson, historyIds.length ? obeliskApi() : null);
@@ -51,16 +51,16 @@ export default async function completion(system, deltaJson, toolsJson, model, ef
 // AGENT_MODELS is a JSON array of { id, label, api_type, path?, wire_model,
 // max_tokens? }. The requested model id selects one entry; an empty id selects
 // the first. The endpoint origin is shared across the whole catalog and comes
-// from LLM_BASE_URL; each model's optional `path` is a provider prefix appended
+// from LLM_BASE_URL plus LLM_API_PREFIX; each model's optional `path` is a provider prefix appended
 // to it (e.g. "/gateway/llm/anthropic"), and each adapter appends its own route
 // (/v1/messages, /v1/chat/completions, /v1/responses).
 // The endpoint origin, shared by every model in the catalog. A single catalog
 // targets a single endpoint (gateway, OpenRouter, or the local backend); switch
 // endpoints by switching both AGENT_MODELS and LLM_BASE_URL together.
 function endpointBase() {
-    const base = process.env['LLM_BASE_URL'];
+    const base = llmEndpoint();
     if (!base) throw 'LLM_BASE_URL is not configured';
-    return String(base).replace(/\/$/, '');
+    return base;
 }
 function pathOf(cfg) {
     const p = cfg.path ? String(cfg.path).trim() : '';

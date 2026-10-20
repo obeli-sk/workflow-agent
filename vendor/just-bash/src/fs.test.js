@@ -246,6 +246,19 @@ test("deferred mount fires exactly once, only on a matching path", () => {
     assert.equal(fs.readFile("/workspace/deployment/current/deployment.toml"), "toml");
 });
 
+test("a deferred mount registered by a populate fires for the same path", () => {
+    const fs = new Vfs();
+    const fired = [];
+    fs.registerDeferredMount("/workspace/cloud", (vfs) => {
+        fired.push("cloud");
+        vfs.registerDeferredMount("/workspace/cloud/a/deployment", () => fired.push("a"));
+        vfs.registerDeferredMount("/workspace/cloud/b/deployment", () => fired.push("b"));
+    });
+    fs.ensureMountedFor("/workspace/cloud/a/deployment/current");
+    assert.deepEqual(fired, ["cloud", "a"]);
+    assert.equal(fs.isDir("/workspace/cloud/b/deployment"), true);
+});
+
 test("clearing a deferred mount stops it from firing", () => {
     const fs = new Vfs();
     let fired = 0;
