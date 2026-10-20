@@ -772,6 +772,33 @@ methods = ["GET", "POST", "PUT"]
 secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
+# Read-only app API operations, retried on transient errors.
+[[activity_js]]
+name = "cloud_tenant_read"
+ffqn = "obelisk-agent:tools/cloud.tenant-read"
+wit = "wit"
+location = "packs/obelisk-control/cloud/tenant-read.js"
+env_vars = [
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" },
+]
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
+methods = ["GET"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_CLOUD_APP_API_PATTERN:-https://*.obelisk.works:5005}"
+methods = ["GET"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+# The single-app cloud: the target's own API.
+[[activity_js.allowed_host]]
+pattern = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+secrets = ["TARGET_OBELISK_TOKEN"]
+replace_in = ["headers"]
+
 # --- MCP servers (stateless) --------------------------------------------------
 # Each configured MCP server is one transport activity block plus one
 # outbound-host grant, mirroring the single-LLM-endpoint precedent. The function

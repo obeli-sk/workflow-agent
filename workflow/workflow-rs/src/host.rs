@@ -2,7 +2,7 @@
 //! at runtime (registry programs, MCP servers), reached over
 //! `workflow-dynamic-support.call-json`, and `ControlPlane` for the pack's
 //! fixed control-plane tools, reached through their link-checked WIT bindings.
-//! With an ObeliskNet app, `ControlPlane` goes through `cloud.tenant` instead.
+//! With a cloud app, `ControlPlane` goes through `cloud.tenant` and `cloud.tenant-read` instead.
 //! Stateless apart from the notification channel ask-user reports through.
 
 use just_bash_rs::interpreter::CommandOutput;
@@ -381,9 +381,23 @@ impl Cloud for CloudHost {
     }
 }
 
+/// Operations that change the app or start executions; `cloud.tenant` runs them
+/// once, while every read goes through the retried `cloud.tenant-read`.
+const MUTATING_OPERATIONS: [&str; 4] = [
+    "apply-deployment",
+    "call-target",
+    "deployment-submit",
+    "deployment-switch",
+];
+
 /// The tenant activity's parsed response: `{"ok": ...}` or `{"missing_files": [...]}`.
 fn tenant_value(app: &str, operation: &str, params: &Value) -> Result<Value, String> {
-    let text = cloud::tenant(app, operation, &params.to_string())?;
+    let params = params.to_string();
+    let text = if MUTATING_OPERATIONS.contains(&operation) {
+        cloud::tenant(app, operation, &params)?
+    } else {
+        cloud::tenant_read(app, operation, &params)?
+    };
     serde_json::from_str(&text)
         .map_err(|err| format!("invalid {operation} response: {err}: {text}"))
 }

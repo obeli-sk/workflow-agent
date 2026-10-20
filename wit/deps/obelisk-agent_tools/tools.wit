@@ -184,4 +184,6 @@ interface cloud {
   prepare-deploy: func(app: string, app-toml: string) -> result<deploy-target, string>;
   // One webapi `operation` with JSON positional params against the app's API; returns JSON.
   tenant: func(app: string, operation: string, params-json: string) -> result<string, string>;
+  // `tenant` limited to read-only operations, so the runtime may retry it.
+  tenant-read: func(app: string, operation: string, params-json: string) -> result<string, string>;
 }

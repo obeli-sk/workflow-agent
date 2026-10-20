@@ -95,10 +95,15 @@ export function createCloud(cloud, obelisk, askUser) {
     };
 }
 
+// Operations that change the app or start executions; `cloud.tenant` runs them
+// once, while every read goes through the retried `cloud.tenant-read`.
+const MUTATING_OPERATIONS = ["apply-deployment", "call-target", "deployment-submit", "deployment-switch"];
+
 // The webapi functions the control plane uses, run by `cloud.tenant` against `app`'s API.
 function tenantWebapi(cloud, app) {
     const call = (operation) => (...params) => {
-        const value = JSON.parse(cloud.tenant(app, operation, JSON.stringify(params)));
+        const run = MUTATING_OPERATIONS.includes(operation) ? cloud.tenant : cloud.tenantRead;
+        const value = JSON.parse(run(app, operation, JSON.stringify(params)));
         if (Array.isArray(value?.missing_files)) throw { missingFiles: value.missing_files };
         return value.ok;
     };

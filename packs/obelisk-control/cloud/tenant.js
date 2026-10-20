@@ -53,6 +53,9 @@ const OPERATIONS = {
     "list-functions": listFunctions,
 };
 
+// Operations that change the app or start executions; everything else only reads.
+export const MUTATING_OPERATIONS = ["apply-deployment", "call-target", "deployment-submit", "deployment-switch"];
+
 export default async function tenant(app, operation, paramsJson) {
     const tool = Object.prototype.hasOwnProperty.call(OPERATIONS, operation) ? OPERATIONS[operation] : null;
     if (!tool) throw `unknown app API operation ${operation}`;

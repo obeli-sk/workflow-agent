@@ -4,6 +4,7 @@ import test from "node:test";
 const { default: run } = await import("./cli.js");
 const { default: prepareDeploy } = await import("./deploy.js");
 const { default: tenant } = await import("./tenant.js");
+const { default: tenantRead } = await import("./tenant-read.js");
 const { appConfig } = await import("./policy.js");
 
 const POLICY = `app_name = "demo"
@@ -162,4 +163,11 @@ test("the single-app cloud deploys and proxies to the target without a policy", 
     assert.deepEqual(current, { ok: '"Dep_1"' });
     assert.equal(requests.at(-1).headers.authorization, "Bearer target-token");
     await assert.rejects(tenant("other", "current-deployment-id", "[]"), /single app, target/);
+});
+
+test("tenant-read runs reads and refuses operations that change the app", async () => {
+    singleTarget();
+    const current = JSON.parse(await tenantRead("solo", "current-deployment-id", "[]"));
+    assert.deepEqual(current, { ok: '"Dep_1"' });
+    await assert.rejects(tenantRead("solo", "apply-deployment", '["Dep_1"]'), /apply-deployment is not a read-only operation/);
 });
