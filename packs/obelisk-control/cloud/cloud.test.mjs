@@ -13,7 +13,21 @@ API_KEY = {}
 EXTRA = { optional = true }
 [public_env]
 MODE = {}
+SELF_API = { type = "internal", source = "api-url" }
+BROWSER_UI = { type = "internal", source = "webui-url" }
 `;
+
+test("app policy preserves internal environment sources and rejects optional", () => {
+    assert.deepEqual(appConfig(POLICY).policy.public_env, [
+        { name: "BROWSER_UI", type: "internal", source: "webui-url" },
+        "MODE",
+        { name: "SELF_API", type: "internal", source: "api-url" },
+    ]);
+    for (const optional of [true, false]) {
+        assert.throws(() => appConfig(POLICY.replace('source = "api-url"', `source = "api-url", optional = ${optional}`)), /unknown field/);
+    }
+    assert.throws(() => appConfig(POLICY.replace('source = "api-url"', 'source = "unknown"')), /source must be/);
+});
 
 const APP_API = "https://demo.obelisk.works:5005";
 
