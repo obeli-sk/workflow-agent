@@ -1,11 +1,10 @@
 use flake .
 
-export OBELISK_API_TOKEN=$(obelisk generate token)
-
 # Target Obelisk: the instance the agent inspects and deploys to.
+# `just serve-target` starts it accepting this token.
 export TARGET_OBELISK_API_URL=http://127.0.0.1:5205
 export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:5205"
-export TARGET_OBELISK_TOKEN="$OBELISK_API_TOKEN"
+export TARGET_OBELISK_TOKEN=$(obelisk generate token)
 # The target's webhook (external) listener; granted GET so the shell can curl
 # deployed webhook endpoints, and printed by `mount`. Defaults to 9290 in
 # app.toml/deployment.rs.toml, matching server-target.toml.

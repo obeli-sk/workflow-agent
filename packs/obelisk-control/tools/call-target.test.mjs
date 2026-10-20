@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const callTargetSource = await readFile(new URL("./call-target.js", import.meta.url), "utf8");
-const { default: callTarget } = await import(
-    `data:text/javascript;base64,${Buffer.from(callTargetSource).toString("base64")}`
-);
+const { default: callTarget } = await import("./call-target.js");
 
 test("call-target submits first and follows the accepted execution by id", async () => {
     process.env.TARGET_OBELISK_API_URL = "http://target.test";

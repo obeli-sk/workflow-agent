@@ -10,15 +10,17 @@
 //
 // allow-missing-runtime-config tolerates absent environment variables / secrets
 // during the pre-enqueue verification (activation may still fail later).
+import { targetBase, targetToken } from "./target.js";
+
 export default async function deployment_switch(deploymentId, allowMissing) {
     if (!deploymentId) throw "deployment-id is required";
-    const base = process.env["TARGET_OBELISK_API_URL"];
+    const base = targetBase();
     if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}/switch`,
         {
             method: "PUT",
-            headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}`, "content-type": "application/json" },
+            headers: { accept: "application/json", authorization: `Bearer ${targetToken()}`, "content-type": "application/json" },
             body: JSON.stringify({ apply: false, allow_unavailable_runtime_config: Boolean(allowMissing) }),
         },
     );

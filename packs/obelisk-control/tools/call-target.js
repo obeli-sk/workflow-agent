@@ -5,6 +5,8 @@
 // ID. The wrapper preserves whether the server rejected the submission or an
 // accepted execution later returned an error. A workflow can't fetch, so this
 // activity is the durable HTTP replacement for the in-process obelisk.call.
+import { targetBase, targetToken } from "./target.js";
+
 export default async function call_target(ffqn, paramsJson) {
     try { return await call_target_impl(ffqn, paramsJson); }
     catch (error) { throw classifyActivityError(error); }
@@ -17,9 +19,9 @@ async function call_target_impl(ffqn, paramsJson) {
     catch (e) { throw `params_json must be valid JSON: ${e.message}`; }
     if (!Array.isArray(params)) throw "params_json must be a JSON array of positional parameters";
 
-    const base = process.env["TARGET_OBELISK_API_URL"];
+    const base = targetBase();
     if (!base) throw "TARGET_OBELISK_API_URL is not configured";
-    const token = process.env["TARGET_OBELISK_TOKEN"];
+    const token = targetToken();
     const headers = {
         accept: "application/json",
         authorization: `Bearer ${token}`,

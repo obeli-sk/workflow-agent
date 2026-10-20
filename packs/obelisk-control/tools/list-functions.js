@@ -8,16 +8,18 @@
 //        variant { permanent-error(string), transient-error(string), execution-failed }>
 // Returns each matching function's metadata plus its full WIT (interface with the
 // single function and every type it references).
+import { targetBase, targetToken } from "./target.js";
+
 export default async function list_functions(ffqnPrefix, length) {
     try { return await list_functions_impl(ffqnPrefix, length); }
     catch (error) { throw classifyActivityError(error); }
 }
 
 async function list_functions_impl(ffqnPrefix, length) {
-    const base = process.env["TARGET_OBELISK_API_URL"];
+    const base = targetBase();
     if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(`${base}/v1/components?exports=true&submittable=true&extensions=true`, {
-        headers: { accept: "application/json", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` },
+        headers: { accept: "application/json", authorization: `Bearer ${targetToken()}` },
     });
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
 
@@ -55,7 +57,7 @@ async function fetchWit(base, ffqn) {
     try {
         const resp = await fetch(
             `${base}/v1/functions/wit?ffqn=${encodeURIComponent(ffqn)}`,
-            { headers: { accept: "text/plain", authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` } },
+            { headers: { accept: "text/plain", authorization: `Bearer ${targetToken()}` } },
         );
         if (!resp.ok) return `<wit unavailable: HTTP ${resp.status}>`;
         return (await resp.text()).trim();

@@ -5,12 +5,14 @@
 // `sha256:...` digest and return it as text. The stored deployment_toml
 // references owned script/exec sources by `location` + `content_digest`; this
 // fetches the body so the workflow can show or edit it.
+import { targetBase, targetToken } from "./target.js";
+
 export default async function deployment_read_blob(digest) {
     if (typeof digest !== "string" || !digest.trim()) throw "digest is required";
-    const base = process.env["TARGET_OBELISK_API_URL"];
+    const base = targetBase();
     if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(`${base}/v1/files/${encodeURIComponent(digest.trim())}`, {
-        headers: { authorization: `Bearer ${process.env["TARGET_OBELISK_TOKEN"]}` },
+        headers: { authorization: `Bearer ${targetToken()}` },
     });
     if (resp.status === 404) throw `no blob for digest ${digest}`;
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;

@@ -2,17 +2,20 @@
 //! at runtime (registry programs, MCP servers), reached over
 //! `workflow-dynamic-support.call-json`, and `ControlPlane` for the pack's
 //! fixed control-plane tools, reached through their link-checked WIT bindings.
+//! With an ObeliskNet app, `ControlPlane` goes through `cloud.tenant` instead.
 //! Stateless apart from the notification channel ask-user reports through.
 
+use just_bash_rs::interpreter::CommandOutput;
 use just_bash_rs::obelisk_pack::{
-    AttachedFile, CheckoutFile, CheckoutResult, ControlPlane, ExtensionKind, FunctionInfo,
-    MissingFile, ObeliskHost, ParameterType, SubmitError,
+    AttachedFile, CheckoutFile, CheckoutResult, Cloud, ControlPlane, DeployTarget, ExtensionKind,
+    FunctionInfo, MissingFile, ObeliskHost, ParameterType, SubmitError,
 };
-use serde_json::Value;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
 use crate::generated::obelisk::workflow::{workflow_dynamic_support, workflow_support};
 use crate::generated::obelisk_agent::stub_obelisk_ext::stub as stub_ext;
-use crate::generated::obelisk_agent::tools::webapi;
+use crate::generated::obelisk_agent::tools::{cloud, webapi};
 use crate::session::{Notifications, SESSION_IDLE_ERROR, idle_timeout};
 use crate::support::{child_error_message, last_response_execution_id, split_ffqn};
 
@@ -20,11 +23,35 @@ const ASK_USER_FFQN: &str = "obelisk-agent:stub/stub.ask-user";
 
 pub struct RealHost {
     notifications: Notifications,
+    /// The ObeliskNet app whose API serves the control plane, none for the local target.
+    app: Option<String>,
 }
 
 impl RealHost {
     pub fn new(notifications: Notifications) -> Self {
-        Self { notifications }
+        Self {
+            notifications,
+            app: None,
+        }
+    }
+
+    fn cloud(notifications: Notifications, app: &str) -> Self {
+        Self {
+            notifications,
+            app: Some(app.to_string()),
+        }
+    }
+
+    /// The app's `operation` result, decoded from the tenant activity's `{"ok": ...}`.
+    fn tenant<T: DeserializeOwned>(
+        &self,
+        app: &str,
+        operation: &str,
+        params: Value,
+    ) -> Result<T, String> {
+        let value = tenant_value(app, operation, &params)?;
+        serde_json::from_value(value["ok"].clone())
+            .map_err(|err| format!("invalid {operation} response: {err}"))
     }
 
     /// Answer `obelisk call obelisk-agent:stub/stub.ask-user` with a real
@@ -82,12 +109,15 @@ impl ControlPlane for RealHost {
         ffqn_prefix: &str,
         length: u32,
     ) -> Result<Vec<FunctionInfo>, String> {
+        if let Some(app) = &self.app {
+            return self.tenant(app, "list-functions", json!([ffqn_prefix, length]));
+        }
         let functions = webapi::list_functions(ffqn_prefix, length).map_err(tool_error)?;
         Ok(functions.into_iter().map(function_info).collect())
     }
 
     fn get_function_wit(&mut self, ffqn: &str) -> Result<String, String> {
-        webapi::get_function_wit(ffqn)
+        function_wit(self.app.as_deref(), ffqn)
     }
 
     fn list_executions(
@@ -98,6 +128,21 @@ impl ControlPlane for RealHost {
         hide_finished: bool,
         length: u32,
     ) -> Result<String, String> {
+        if let Some(app) = &self.app {
+            let params = json!([
+                ffqn_prefix,
+                execution_id_prefix,
+                show_derived,
+                hide_finished,
+                "",
+                "",
+                "",
+                "",
+                false,
+                length
+            ]);
+            return tenant_text(app, "list-executions", params);
+        }
         webapi::list_executions(
             ffqn_prefix,
             execution_id_prefix,
@@ -113,10 +158,28 @@ impl ControlPlane for RealHost {
     }
 
     fn get_execution(&mut self, execution_id: &str) -> Result<String, String> {
+        if let Some(app) = &self.app {
+            return tenant_text(app, "get-execution", json!([execution_id]));
+        }
         webapi::get_execution(execution_id)
     }
 
     fn get_logs(&mut self, execution_id: &str, length: u32) -> Result<String, String> {
+        if let Some(app) = &self.app {
+            let params = json!([
+                execution_id,
+                true,
+                true,
+                true,
+                [],
+                [],
+                "",
+                "",
+                false,
+                length
+            ]);
+            return tenant_text(app, "get-logs", params);
+        }
         webapi::get_logs(
             execution_id,
             true,
@@ -132,26 +195,45 @@ impl ControlPlane for RealHost {
     }
 
     fn get_result_json(&mut self, execution_id: &str) -> Result<String, String> {
+        if let Some(app) = &self.app {
+            return tenant_text(app, "get-result-json", json!([execution_id]));
+        }
         webapi::get_result_json(execution_id)
     }
 
     fn list_deployments(&mut self, length: u32) -> Result<String, String> {
+        if let Some(app) = &self.app {
+            return tenant_text(app, "list-deployments", json!(["", false, length]));
+        }
         webapi::list_deployments("", false, length)
     }
 
     fn get_deployment(&mut self, deployment_id: &str) -> Result<String, String> {
+        if let Some(app) = &self.app {
+            let params = json!([deployment_id, null, null, null, null]);
+            return tenant_text(app, "get-deployment", params);
+        }
         webapi::get_deployment(deployment_id, None, None, None, None)
     }
 
     fn current_deployment_id(&mut self) -> Result<String, String> {
+        if let Some(app) = &self.app {
+            return tenant_text(app, "current-deployment-id", json!([]));
+        }
         webapi::current_deployment_id()
     }
 
     fn get_app_config(&mut self) -> Result<Option<String>, String> {
+        if let Some(app) = &self.app {
+            return self.tenant(app, "get-app-config", json!([]));
+        }
         webapi::get_app_config()
     }
 
     fn deployment_checkout(&mut self, deployment_id: &str) -> Result<CheckoutResult, String> {
+        if let Some(app) = &self.app {
+            return self.tenant(app, "deployment-checkout", json!([deployment_id]));
+        }
         let checkout = webapi::deployment_checkout(deployment_id).map_err(tool_error)?;
         Ok(CheckoutResult {
             deployment_toml: checkout.deployment_toml,
@@ -168,6 +250,9 @@ impl ControlPlane for RealHost {
     }
 
     fn deployment_read_blob(&mut self, digest: &str) -> Result<String, String> {
+        if let Some(app) = &self.app {
+            return tenant_text(app, "deployment-read-blob", json!([digest]));
+        }
         webapi::deployment_read_blob(digest)
     }
 
@@ -179,6 +264,23 @@ impl ControlPlane for RealHost {
         allow_missing_runtime_config: bool,
         deployment_id: &str,
     ) -> Result<String, SubmitError> {
+        if let Some(app) = &self.app {
+            let params = json!([
+                deployment_toml,
+                attachments,
+                description,
+                allow_missing_runtime_config,
+                deployment_id
+            ]);
+            let value =
+                tenant_value(app, "deployment-submit", &params).map_err(SubmitError::Failed)?;
+            if let Some(files) = value.get("missing_files") {
+                let files = serde_json::from_value(files.clone())
+                    .map_err(|err| SubmitError::Failed(format!("invalid missing files: {err}")))?;
+                return Err(SubmitError::MissingFiles(files));
+            }
+            return Ok(text_of(&value["ok"]));
+        }
         let attachments: Vec<_> = attachments
             .iter()
             .map(|file| webapi::AttachedFile {
@@ -217,10 +319,17 @@ impl ControlPlane for RealHost {
         deployment_id: &str,
         allow_missing_runtime_config: bool,
     ) -> Result<String, String> {
+        if let Some(app) = &self.app {
+            let params = json!([deployment_id, allow_missing_runtime_config]);
+            return tenant_text(app, "deployment-switch", params);
+        }
         webapi::deployment_switch(deployment_id, allow_missing_runtime_config)
     }
 
     fn apply_deployment(&mut self, deployment_id: &str) -> Result<String, String> {
+        if let Some(app) = &self.app {
+            return tenant_text(app, "apply-deployment", json!([deployment_id]));
+        }
         webapi::apply_deployment(deployment_id)
     }
 
@@ -228,13 +337,78 @@ impl ControlPlane for RealHost {
         if ffqn == ASK_USER_FFQN {
             return self.ask_user(params_json);
         }
-        call_target(ffqn, params_json)
+        call_target(self.app.as_deref(), ffqn, params_json)
+    }
+}
+
+/// `obelisk cloud`: provisioner activities, and app API control planes for the shell.
+pub struct CloudHost {
+    notifications: Notifications,
+}
+
+impl CloudHost {
+    pub fn new(notifications: Notifications) -> Self {
+        Self { notifications }
+    }
+}
+
+impl Cloud for CloudHost {
+    fn run(
+        &mut self,
+        args: &[String],
+        stdin: &str,
+        app_toml: Option<&str>,
+    ) -> Result<CommandOutput, String> {
+        let output = cloud::run(args, stdin, app_toml)?;
+        Ok(CommandOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code: i32::try_from(output.exit_code).unwrap_or(1),
+        })
+    }
+
+    fn prepare_deploy(&mut self, app: &str, app_toml: &str) -> Result<DeployTarget, String> {
+        let target = cloud::prepare_deploy(app, app_toml)?;
+        Ok(DeployTarget {
+            api_url: target.api_url,
+            webhook_url: target.webhook_url,
+            log: target.log,
+        })
+    }
+
+    fn control_plane(&mut self, app: &str) -> Box<dyn ControlPlane> {
+        Box::new(RealHost::cloud(self.notifications.clone(), app))
+    }
+}
+
+/// The tenant activity's parsed response: `{"ok": ...}` or `{"missing_files": [...]}`.
+fn tenant_value(app: &str, operation: &str, params: &Value) -> Result<Value, String> {
+    let text = cloud::tenant(app, operation, &params.to_string())?;
+    serde_json::from_str(&text)
+        .map_err(|err| format!("invalid {operation} response: {err}: {text}"))
+}
+
+/// A `string`-returning operation's result; JS tools may hand back parsed JSON instead.
+fn tenant_text(app: &str, operation: &str, params: Value) -> Result<String, String> {
+    tenant_value(app, operation, &params).map(|value| text_of(&value["ok"]))
+}
+
+fn text_of(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_string)
+}
+
+fn function_wit(app: Option<&str>, ffqn: &str) -> Result<String, String> {
+    match app {
+        Some(app) => tenant_text(app, "get-function-wit", json!([ffqn])),
+        None => webapi::get_function_wit(ffqn),
     }
 }
 
 /// Unwrap the `webapi.call-target` response like `obelisk.call`: the ok
 /// value's JSON text, or a message for every other outcome.
-fn call_target(ffqn: &str, params_json: &str) -> Result<String, String> {
+fn call_target(app: Option<&str>, ffqn: &str, params_json: &str) -> Result<String, String> {
     if ffqn.is_empty() {
         return Err("ffqn is required".to_string());
     }
@@ -247,23 +421,28 @@ fn call_target(ffqn: &str, params_json: &str) -> Result<String, String> {
         Ok(params @ Value::Array(_)) => params,
         Ok(_) => {
             return Err(wit_hint(
+                app,
                 ffqn,
                 "params_json must be a JSON array of positional parameters",
             ));
         }
         Err(err) => {
             return Err(wit_hint(
+                app,
                 ffqn,
                 &format!("params_json must be valid JSON: {err}"),
             ));
         }
     };
 
-    let call_text = webapi::call_target(ffqn, &params.to_string()).map_err(tool_error)?;
+    let call_text = match app {
+        Some(app) => tenant_text(app, "call-target", json!([ffqn, params.to_string()]))?,
+        None => webapi::call_target(ffqn, &params.to_string()).map_err(tool_error)?,
+    };
     let call_result = serde_json::from_str::<Value>(&call_text)
         .map_err(|err| format!("invalid call-target response: {err}: {call_text}"))?;
     if let Some(reason) = call_result["submission_rejected"].as_str() {
-        return Err(wit_hint(ffqn, reason));
+        return Err(wit_hint(app, ffqn, reason));
     }
     let execution_id = call_result["execution_id"]
         .as_str()
@@ -301,8 +480,8 @@ fn call_target(ffqn: &str, params_json: &str) -> Result<String, String> {
 }
 
 /// A rejected submission means the call never started, so recap the signature.
-fn wit_hint(ffqn: &str, message: &str) -> String {
-    match webapi::get_function_wit(ffqn) {
+fn wit_hint(app: Option<&str>, ffqn: &str, message: &str) -> String {
+    match function_wit(app, ffqn) {
         Ok(wit) => format!("{message}\n\nWIT for {ffqn}:\n{wit}"),
         Err(err) => format!("{message}\n\nCould not fetch WIT for {ffqn}: {err}"),
     }

@@ -1229,3 +1229,65 @@ test("deploymentSources reports only files present under the deployment dir", ()
     // b.wasm is not present at all -> excluded from the report.
     assert.deepEqual(deploymentSources(fs, "/workspace/deployment/current", manifest), ["a.wasm"]);
 });
+
+// -- obelisk cloud --
+
+// A fake `obelisk-agent:tools/cloud`: records provisioner runs and hands out `apps[name]` control planes.
+function fakeCloud(apps = {}) {
+    const cloud = {
+        runs: [],
+        deploys: [],
+        run(args, stdin, appToml) {
+            cloud.runs.push({ args, stdin, appToml });
+            return { stdout: "ok\n", stderr: "", exitCode: 0 };
+        },
+        prepareDeploy(app, appToml) {
+            cloud.deploys.push({ app, appToml });
+            return { apiUrl: "https://demo.test", webhookUrl: "https://demo.test/hook", log: "→ step\n" };
+        },
+        controlPlane(app) {
+            if (!apps[app]) throw `no app ${app}`;
+            return apps[app];
+        },
+    };
+    return cloud;
+}
+
+test("cloud app deploy prepares the app named in app.toml, then applies there", () => {
+    const i = interp("/workspace/app");
+    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
+    i.vfs.writeFile("/workspace/app/deployment.toml", '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n');
+    const app = fakeHost()
+        .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"))
+        .with("obelisk-agent:tools/webapi.apply-deployment", JSON.stringify({ ok: "switched" }));
+    const local = fakeHost();
+    const cloud = fakeCloud({ demo: app });
+    const out = executeObelisk(i, words("cloud app deploy"), "", local, null, cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.deepEqual(cloud.deploys, [{ app: "demo", appToml: 'app_name = "demo"\n' }]);
+    assert.equal(out.stdout, "Submitted as Dep_new\nApplied successfully.\nhttps://demo.test/hook\n");
+    assert.match(out.stderr, /^→ step\n.*deployment apply deployment\.toml.*\nDeployed demo\n$/s);
+    assert.equal(local.calls.length, 0);
+});
+
+test("cloud app API subcommands run against the selected app's control plane", () => {
+    const app = fakeHost().with("obelisk-agent:tools/webapi.get-execution", JSON.stringify({ execution_id: "E_1" }));
+    const out = executeObelisk(interp(), words("cloud app --app demo executions get E_1"), "", fakeHost(), null, fakeCloud({ demo: app }));
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.deepEqual(app.calls, [["obelisk-agent:tools/webapi.get-execution", JSON.stringify(["E_1"])]]);
+});
+
+test("cloud secrets set --from-env sends the variable as stdin", () => {
+    const i = interp();
+    i.setVar("API_KEY", "s3cret");
+    const cloud = fakeCloud();
+    const out = executeObelisk(i, words("cloud app --app demo secrets set API_KEY --from-env API_KEY"), "", fakeHost(), null, cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.deepEqual(cloud.runs, [{ args: words("app --app demo secrets set API_KEY --stdin"), stdin: "s3cret", appToml: null }]);
+});
+
+test("cloud without the cloud tools is an error", () => {
+    const out = executeObelisk(interp(), words("cloud apps list"), "", fakeHost());
+    assert.equal(out.exitCode !== 0, true);
+    assert.match(out.stderr, /not available/);
+});

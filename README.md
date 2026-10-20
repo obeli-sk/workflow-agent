@@ -3,333 +3,187 @@
 > [!NOTE]
 > **Preview only.** APIs and design are unstable and subject to change.
 
-A durable [Obelisk](https://obeli.sk) workflow that *is* an agent loop. It records
-a provider-neutral chat history in LLM execution events, keeps a persistent virtual filesystem, and exposes
-exactly one tool to the model: `bash`.
+A coding agent that runs as a durable [Obelisk](https://obeli.sk) workflow. Each
+chat session has a persistent virtual filesystem and a single tool, `bash`, through
+which the agent explores, builds and deploys Obelisk apps. You can use the same
+shell yourself by prefixing a message with `$ `, e.g. `$ ls /workspace`.
 
-The shell is a Rust rewrite of [just-bash](https://justbash.dev), vendored at
-`vendor/just-bash-rs`. On top of it the workflow adds a VFS that mounts the
-active Obelisk deployment and any stateless MCP servers, so their resources show
-up as files. Obelisk functions and MCP tools are surfaced as ordinary bash
-programs. The same shell is driven by the LLM and, directly, by the user:
-type a command with a `$ ` prefix in the UI to run it yourself, e.g. `$ pwd`.
-
-External programs are Obelisk executions the workflow discovers at session start
-from an operator-owned registry (`PROGRAMS_JSON`), so adding one is a
-`deployment.rs.toml` edit with no workflow rebuild; each entry's description is
-surfaced in the system prompt. The one that ships, a GET-only `curl`, is an
-Obelisk activity. The per-turn model invocation limit comes out of the same
-registry read: `MAX_STEPS`, defaulting to `40`.
+Sessions survive restarts. A session waiting for you or for the model costs
+nothing but a database row, and it resumes exactly where it left off.
 
 ![workflow-agent web UI](docs/workflow-agent.png)
 
-## Architecture
-
-Each chat session is a durable Obelisk execution. The workflow drives a Bash interpreter with a
-virtual filesystem, dispatches tools as child activities, and waits for model responses or user
-input without keeping a dedicated VM alive. Waiting sessions are database rows; the execution log
-reconstructs the workflow and shell state when the session resumes.
-
-![Session workflow, LLM and tool activities, browser UI, and database history](docs/workflow-agent-architecture.svg)
-
-The workflow has two separate implementations: a Rust WASM component in `workflow/workflow-rs`
-and a JavaScript implementation in `workflow/workflow-js`. They export the same function and have
-separate Bash interpreters. Keeping shell output and event ordering identical lets an existing
-session replay across implementations. The JavaScript workflow runs on Boa WASM or native V8,
-selected by the server; the Rust workflow runs in Wasmtime.
-
-Earlier versions kept the full conversation array in the workflow and passed it to every LLM
-activity. Each call persisted that growing prefix again in its `Created` event, duplicating older
-messages and inflating both the workflow's working state and the execution data.
-
-The workflow now handles the latest reply, pending new messages, and the IDs of accepted LLM
-executions, alongside its shell state. The LLM activity rebuilds the conversation through one
-`POST /v1/executions/events/batch` request: each prior child's `Created` event supplies that call's
-new messages, and its `Finished` event supplies the assistant reply. It appends the current delta
-and sends the complete conversation to the model. The workflow does not repeatedly submit the
-full transcript. The batch API preserves request order and reads only these two events per child.
-
-## Run
-
-Configure the LLM endpoint and an optional fallback catalog; `just serve` depends on `build-rs`,
-so the component is always rebuilt from current source first:
+## Quick start
 
 ```sh
-export LLM_BASE_URL=http://127.0.0.1:9190  # discover models from the local backend
-just serve                                 # obelisk server run -d deployment.rs.toml
+nix develop                                # pinned Obelisk and toolchain
+export LLM_BASE_URL=http://127.0.0.1:9190  # any OpenAI- or Anthropic-compatible endpoint
+just serve-js # or just serve-rs
 ```
 
-Everything is pinned by the flake, so `nix develop` provides the matching
-Obelisk and Rust (wasm32) toolchain. The workflow is a native Rust component
-(`workflow/workflow-rs`); no special Obelisk build is required.
+Open http://localhost:9090. Then:
 
-There is a full-parity JS alternative (`workflow/workflow-js`, a hand-written,
-dependency-free `just-bash` interpreter that ships as its own readable
-source, no compile/bundle step) behind `deployment.js.toml`. It exports the
-exact same FFQN as the Rust workflow in `deployment.rs.toml`
-(`obelisk-agent:workflow/workflow.run-cancellable`), so which one runs is a
-deployment choice, not a per-request switch: only one of the two files is
-ever the active deployment. Rust is the default (`just serve`, an alias for
-`just serve-rs`); run `just serve-js` to start the server on the JS
-deployment instead. Both files leave the session workflow's locking strategy
-unset, selecting Obelisk's `auto` default. Switching
-the active deployment therefore replays a runnable in-flight session against
-the new backend and persists the compatible component upgrade before it
-continues. See [`docs/js-backend-migration.md`](docs/js-backend-migration.md)
-for why the JS backend exists and its current status.
+- type a prompt to start a session with the agent,
+- or start with `$ ` to open a session straight in the shell (`$ help` lists the commands).
 
-Then open http://localhost:9090 (the external/webhook listener; `server.toml`
-keeps the built-in default). Create an empty session to use the shell directly,
-or submit a prompt and inspect the same filesystem afterward. The user input
-stays live while a completion is pending, so `$ ` commands can edit the session
-VFS mid-turn; a prompt sent during the wait is queued for the next model turn.
-A session that gets no input or `ask-user` answer for 7 days ends itself with an
-idle-timeout error, so abandoned sessions become terminal and can be retained away.
+You can send messages while the agent is working. A message is queued for the
+agent's next step, and a `$ ` command runs right away. A session with no input
+for 7 days ends on its own.
 
-## Target instance
+`serve-js` and `serve-rs` run the same agent, implemented in JavaScript or Rust.
+Sessions carry over when you switch between them.
 
-There are two Obelisk instances in play:
+## Configuration
 
-- The **agent instance** the workflow-agent runs on. Its own session runs, logs,
-  and the UI's pause/cancel/answer buttons live here, authenticated with
-  `OBELISK_API_TOKEN` (and `OBELISK_UI_URL` for links).
-- The **target instance** the agent inspects and deploys to. Every control/deploy
-  tool (`obelisk functions|executions|call|deployment ...`) and the
-  `/workspace/deployment` mount talk to it, configured by three vars that default
-  to the agent instance:
+All settings are environment variables read at server start.
 
-  ```sh
-  export TARGET_OBELISK_API_URL=http://127.0.0.1:5205
-  export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:5205"
-  export TARGET_OBELISK_TOKEN="$OBELISK_API_TOKEN"
-  ```
+### LLM
 
-  A fourth var, `TARGET_OBELISK_WEBHOOK_URL` (default
-  `http://127.0.0.1:9290`, matching `server-target.toml`), is the target's
-  webhook (external) listener. The shell's GET-only curl is granted access to
-  it, so deployed webhook endpoints can be smoke-tested directly, and `mount`
-  prints it for discovery.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LLM_BASE_URL` | `http://127.0.0.1:9190` | Endpoint origin. Models are discovered from `GET /v1/models`. |
+| `LLM_API_KEY` | unset | Bearer token, if the endpoint needs one. |
+| `AGENT_MODELS` | unset | Fallback model catalog (JSON), used when discovery is unavailable. |
 
-Point these at a separate Obelisk to deploy somewhere other than the agent's own
-instance.
+The default endpoint is
+[agent-backed-llm-server](https://github.com/obeli-sk/agent-backed-llm-server),
+which serves Claude and Codex subscriptions locally. Two ready-made catalogs ship
+for other endpoints, used as `AGENT_MODELS="$(cat models.openrouter.json)"`:
+
+- `models.openrouter.json`: [OpenRouter](https://openrouter.ai), set `LLM_API_KEY`.
+- `models.exe-integration.json`: the keyless exe.dev LLM integration at
+  `https://llm.int.exe.xyz`. From outside exe.dev, use the reverse proxy in
+  [`examples/exe-llm-proxy.conf`](examples/exe-llm-proxy.conf) over an SSH tunnel.
+
+### Target instance
+
+The agent inspects and deploys to a *target* Obelisk instance. By default the
+target is the instance the agent itself runs on.
+
+| Variable | Purpose |
+| --- | --- |
+| `TARGET_OBELISK_API_URL` | Target API, e.g. `http://127.0.0.1:5205`. |
+| `TARGET_OBELISK_API_URL_REGEX` | Regex allowing that URL, e.g. `http://127\\.0\\.0\\.1:5205`. |
+| `TARGET_OBELISK_TOKEN` | API token for the target (required). |
+| `TARGET_OBELISK_WEBHOOK_URL` | Target's webhook listener, reachable by the shell's `curl`. Default `http://127.0.0.1:9290`. |
+
+To run a separate local target:
+
+```sh
+export TARGET_OBELISK_API_URL=http://127.0.0.1:5205
+export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:5205"
+export TARGET_OBELISK_TOKEN=$(obelisk generate token)
+just serve-target
+```
 
 > [!WARNING]
-> The default targets the agent's **own** instance, which is recursive and risky.
-> A deployment the agent applies to itself can remove the agent, or worse remove
-> the very `deployment submit`/`apply` activity that is still running: a hot
-> `deployment apply` closes all executors *before* it acknowledges, so the
-> in-flight control execution is left Pending. Re-activating the previous
-> deployment then immediately switches back to the broken one and re-Pends it. Use
-> a separate target instance for anything beyond local experimentation. (A
-> `deployment enqueue` sidesteps the teardown but only takes effect on the next
-> server restart.)
+> Letting the agent deploy to its own instance is fine for experiments, but a bad
+> deployment can remove the agent itself. Use a separate target for real work.
+> To target the agent's own instance, set `OBELISK_API_TOKEN` to the same value
+> as `TARGET_OBELISK_TOKEN`.
 
-## LLM endpoint
+### ObeliskNet
 
-One endpoint serves the whole catalog, configured by three env vars: the
-fallback catalog JSON `AGENT_MODELS` (optional), the origin `LLM_BASE_URL` (default
-`http://127.0.0.1:9190`), and the bearer `LLM_API_KEY` (unset for keyless).
-Each catalog entry points a model at an OpenAI- or Anthropic-shaped route under
-that origin. The model picker, LLM activity, and `chat models` first try
-`GET <LLM_BASE_URL>/v1/models`, using `LLM_API_KEY` when configured. A nonempty
-discovered catalog supplies the available models; matching configured entries
-retain their aliases, wire adapters, provider paths, and token limits. New models
-use the OpenAI chat-completions adapter. Advertised default models appear first.
-Existing sessions can still resolve configured aliases omitted from discovery.
-An unavailable, empty, or malformed discovery response falls back to
-`AGENT_MODELS`. Without either catalog, model selection fails with a clear error.
-Both workflow implementations use this shared catalog loader.
-
-The local endpoint is the sibling
-[`agent-backed-llm-server`](https://github.com/obeli-sk/agent-backed-llm-server),
-which serves Claude/Codex subscriptions in Docker on `:9190`. Its discovery
-endpoint supplies the model catalog; no local fallback file is needed.
-
-Two optional fallback catalogs ship. Set `AGENT_MODELS="$(cat <catalog-file>)"`
-to use one:
-
-- `models.exe-integration.json` (keyless) : the exe.dev LLM integration —
-  `LLM_BASE_URL=https://llm.int.exe.xyz`. Inside an attached exe.dev VM, exe.dev
-  authenticates at the network edge and plain OpenAI-compatible requests just
-  work, no key:
-
-  ```sh
-  curl -X POST https://llm.int.exe.xyz/v1/chat/completions \
-    -H content-type:application/json \
-    -d '{"model":"...","messages":[{"role":"user","content":"hi"}]}'
-  ```
-
-  From **outside** exe.dev the hostname resolves to a link-local address only
-  exe infra routes, and the https endpoint routes on the Host header, so run an
-  nginx reverse proxy on an attached VM
-  ([`examples/exe-llm-proxy.conf`](examples/exe-llm-proxy.conf)) that fixes the
-  header, and tunnel to it:
-
-  ```sh
-  # on <yourinstance>.exe.xyz:
-  mkdir -p /tmp/exe-llm-proxy/{logs,tmp/body}
-  nginx -c $(pwd)/examples/exe-llm-proxy.conf   # plain HTTP on 127.0.0.1:7071
-
-  # on your machine:
-  ssh -L 7070:127.0.0.1:7071 <yourinstance>.exe.xyz
-  export LLM_BASE_URL=http://localhost:7070     # plain http, no custom CA
-  ```
-
-- `models.openrouter.json` (`LLM_API_KEY`) : [OpenRouter](https://openrouter.ai).
-  The key is injected into the outbound header at the edge, never seen by the JS.
-
-Regenerate the exe.dev catalog from the published model list with
-`node scripts/update-exe-models.mjs`. Leave `LLM_API_KEY` unset.
-
-Any other compatible endpoint (Anthropic/OpenAI directly, vLLM, Ollama) works:
-point `LLM_BASE_URL` at it and configure `AGENT_MODELS` when its discovery
-endpoint is unavailable or its models need a different adapter.
-
-## Documentation
-
-The agent reads the Obelisk docs from the rendered site, not a GitHub mount.
-The `pack.describe` activity fetches each URL in `DOCS_URLS_JSON` and inlines
-the rendered index, including its authoring guidance, into the system prompt;
-the model fetches detail pages through the GET-only
-`curl` program, whose allowlist covers `https://obeli.sk`:
+With an ObeliskNet account token, the agent can manage hosted apps the same way
+the `obelisk cloud` CLI does:
 
 ```sh
-curl https://obeli.sk/docs/latest/js/js-workflows/
+export OBELISK_CLOUD_API_URL=https://...   # the ObeliskNet API
+export OBELISK_CLOUD_API_TOKEN=...
 ```
 
-`OBELISK_VERSION` pins the doc set to the target runtime's version
-(`https://obeli.sk/docs/${OBELISK_VERSION}/llms.txt/`); empty means `latest`.
-Override the whole list with `DOCS_URLS_JSON` (a JSON array of URLs). No GitHub
-credential is involved; the former `/workspace/docs` mount is gone.
+The agent is then told about your apps and can run, for example:
 
-## Example app mounts
+```sh
+obelisk cloud apps list
+obelisk cloud app deploy                    # create or update the app from ./app.toml and deploy
+obelisk cloud app --app NAME executions list
+obelisk cloud app --app NAME secrets set API_KEY --stdin
+```
 
-`APPS_JSON` lists GitHub repos the session mounts read-only and lazily-listed
-under `/workspace/apps/<name>`, sourced from the GitHub contents API
-(`activity/github-contents.js`) through the single `mount_apps` activity
-(one deployed activity backs every mount; which repo each one browses travels
-in the request, not a fixed env var). A directory lists on first `ls` and a
-file's bytes fetch on first `cat`, one recorded activity call each. The
-default list mounts the active examples from the
-[app catalog](https://obeli.sk/docs/latest/apps/), including `demo-agent`,
-`demo-playwright`, `demo-tutorial`, and `workflow-agent` itself. Override it
-to mount a different set, private forks, or pinned refs:
+Interactive and account-level commands (`--fill`, `token new|revoke`) are not
+available from the session. See [`docs/obelisk-cloud.md`](docs/obelisk-cloud.md).
+
+### Docs and example apps
+
+The agent reads the Obelisk documentation from https://obeli.sk.
+`OBELISK_VERSION` pins it to a release (default `latest`), and `DOCS_URLS_JSON`
+replaces the URL list.
+
+Example apps from the [app catalog](https://obeli.sk/docs/latest/apps/) are
+mounted read-only under `/workspace/apps`. Override the list with `APPS_JSON`:
 
 ```sh
 export APPS_JSON='[{"name":"demo-playwright","repo":"demo-playwright","ref":"main"}]'
 ```
 
-Each entry is `{name, repo}` plus optional `owner` (default `obeli-sk`),
-`ref` (default `main`), and `description` (default empty). At session startup,
-each ref resolves to its current commit SHA; that SHA becomes the immutable
-mount ref for the session and is shown in both the system prompt and `mount`.
-The system prompt's "Example apps" section renders each entry as a one-line
-Markdown bullet (`- \`name\` (owner/repo@commit) - description`), so keep `description` to a short
-"Lang: what it's for" phrase; a repo's own README.md is the place for
-detail. `GITHUB_MOUNT_OWNER` (default `obeli-sk`) scopes the deployed
-activity's `allowed_host` boundary to one GitHub org/user; every mounted
-repo's `owner` must fall within it. `GITHUB_MOUNT_TOKEN` is optional: unset, the
-mount shares GitHub's 60 req/h anonymous IP rate limit; set it (e.g. `gh auth
-token`) to raise that to 5000 req/h, which matters once multiple sessions
-share an egress IP. `GITHUB_API_URL` (default `https://api.github.com`, with a matching
-`GITHUB_API_URL_REGEX`) points the mount at another contents API origin; the
-e2e suites use it for a local mock.
+Each entry is `{name, repo}` plus optional `owner` (default `obeli-sk`), `ref`
+(default `main`) and a short `description`. Set `GITHUB_MOUNT_TOKEN` (e.g.
+`gh auth token`) to avoid GitHub's anonymous rate limit, and `GITHUB_MOUNT_OWNER`
+when mounting repos outside `obeli-sk`.
 
 ## The shell
 
-The core registers a broad command catalog ported from just-bash (file, path,
-text, search, checksum, encoding, and inspection tools; no `gzip`/`gunzip`/
-`zcat`). Run `help` to list commands, or `which NAME`.
+`help` lists the commands, which cover the usual file, text and search tools.
+Besides those, the shell provides:
 
-`ask-user` is deliberately not a general model tool or shell program. It is a
-UI-coordinated shell operation for answers needed before the current task can
-continue:
+- `/workspace/deployment`: the target's active deployment, as files.
+- `obelisk functions|executions|call|deployment ...`: the target instance.
+- `obelisk cloud ...`: ObeliskNet, when configured.
+- `curl`: GET-only, limited to the Obelisk docs and the target's webhooks.
+- `mcp` and `/workspace/mcp`: configured MCP servers.
+- `chat`: other sessions (see below).
+- `mount`: what is mounted where.
 
-```sh
-obelisk call obelisk-agent:stub/stub.ask-user '["Which deployment?"]'
-```
+To have the agent stop and ask you something mid-task, it runs
+`obelisk call obelisk-agent:stub/stub.ask-user '["Which deployment?"]'`, and the
+question appears in the UI as a form.
 
-The command blocks until the user answers in the UI, then returns that
-answer to the agent in the same turn. A normal Markdown response ends the turn
-and is still the right way to ask a non-blocking conversational question.
+Background jobs (`&`, `jobs`, `wait`) are not supported.
 
-The deployment mount under `/workspace/deployment` is lazy: the tree lists
-immediately from digests and byte sizes, and bounded file bodies are fetched
-from the content-addressed store on first read. Files over 1 MiB stay
-digest-only and read as a placeholder.
-
-Interactive job control is not available: `jobs`, `wait`, `fg`, `bg`, signals,
-and durable background execution with `&` are unsupported (a trailing `&` is
-rejected rather than run in the foreground). Packs use Obelisk child executions
-for durable external work instead.
-
-## Peer sessions: the `chat` command
-
-Sessions on the same Obelisk instance can talk to each other. The `chat`
-program (available to the agent as a shell command and to you with the `$ `
-prefix) discovers, inspects, messages, and creates peer sessions:
+## Sessions talking to each other: `chat`
 
 ```sh
-chat models                          # LLM catalog: id, label, api type
+chat models                          # available models
 chat list                            # sessions, newest first
-chat read E_...                      # normalized transcript (--tail N, --json)
-chat state E_...                     # one JSON line: state, working, offer id
-chat send E_... please re-check X    # queue a user prompt for a peer
-chat create --model claude "prompt"  # new session; prints its execution id
-chat create '$ ls -la'               # new session opened straight in bash
-chat create --name research "..."    # slug-labeled child (visible in its id)
-chat current                         # this session's identity (JSON)
-chat rename my-session               # slug-name this session ([a-z0-9-])
+chat read E_...                      # transcript (--tail N, --turn N, --json)
+chat state E_...                     # whether a session is working or waiting
+chat send E_... please re-check X    # message another session
+chat create --model claude "prompt"  # start a child session, prints its id
+chat create '$ ls -la'               # start a child session in the shell
+chat create --name research "..."    # named child session
+chat create --top-level "..."        # independent session
+chat current                         # this session's id and name
+chat rename my-session               # rename this session
 ```
 
-Notes:
+Child sessions start with an empty history, so put everything they need in
+the prompt. They are cancelled together with their parent and are listed under
+it in the sidebar.
 
-- `chat` talks to the agent's **own** instance (`OBELISK_API_URL`), unlike the
-  obelisk-control tools which target `TARGET_OBELISK_API_URL`.
-- `send` looks up the peer's open input offer on every call (offers rotate each
-  turn); while the peer is thinking the message queues for its next turn, when
-  idle it is delivered immediately. Never invent or reuse offer ids.
-- `current`, `rename`, and `create` are answered by the session workflow
-  itself, not the HTTP activity: only a session knows its own identity, and by
-  default `create` schedules the new session durably as a child of the caller
-  (it is cancelled together with its parent). Use `create --top-level` for an
-  independent session.
-- A rename is recorded on its own `session-name` join set (via the dedicated
-  `stub.session-renamed` stub), so readers fetch a session's current slug with
-  one small request; the UI sidebar shows the name, falling back to the
-  execution id.
-- A prompt starting with `$` runs directly in that session's shell instead of
-  reaching the model, in `chat create` and the composer alike (the space after
-  `$` is optional).
-- `create --name SLUG` labels the child at birth (published as its session
-  name) and names its join set, so the child's execution id carries the slug
-  (`E_<parent>.n:<slug>_1`). Child sessions start with empty history: pass all
-  context they need in the prompt; a child can read its creator with
-  `chat read <parent>` (its own system prompt names the parent).
-- `chat state` reports `last_reply` (`{"turn": N}`) when a finished assistant
-  message exists; sessions stay pending on an input offer even after a final
-  answer, so this distinguishes "answered" from "still open". Read exactly that
-  message with `chat read ID --turn N`.
-- In the web UI, child sessions are listed indented below their parent.
+## MCP servers
 
-## Stateless MCP sample
-
-A dependency-free sample server exposes tools, a prompt, and two resources.
-Start it with `just sample-mcp-server`; the sample's transport block in
-`deployment.rs.toml`, its outbound-host grant in `app.toml`, and its
-`MCP_SERVERS_JSON` entry are already shipped and enabled, so just build and run
-as above. In a new empty session:
+A sample MCP server is preconfigured. Start it with `just sample-mcp-server`,
+then in a new session:
 
 ```sh
 mcp list
-obelisk-local --help
 obelisk-local tools add --a 2 --b 3
 obelisk-local prompt greeting --name world
 find /workspace/mcp/obelisk-local -type f
 ```
 
-Resources are listed when the session mounts the server and fetched through
-`resources/read` only on first read of their VFS path. See `docs/mcp.md`.
+See [`docs/mcp.md`](docs/mcp.md) for adding your own.
+
+## Development
+
+```sh
+just test-js
+just test-rs
+just test        # including end-to-end tests
+```
+
+Design notes live in [`docs/`](docs/).
 
 ## License
 

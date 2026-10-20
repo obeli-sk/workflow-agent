@@ -7,6 +7,7 @@
 //
 // `createControlPlane` backs obelisk-pack.js's control plane with the
 // statically imported tools, turning child errors into plain messages.
+// `createCloud` backs `obelisk cloud`, reusing it against an app's API.
 
 export function createHost(dynamic, obelisk) {
     return {
@@ -57,6 +58,7 @@ export function createControlPlane(webapi, obelisk, askUser) {
             try {
                 return webapi.deploymentSubmit(manifest, attachments, description, allowMissing, deploymentId);
             } catch (error) {
+                if (Array.isArray(error?.missingFiles)) throw error;
                 const missingFiles = isChildError(error, obelisk) ? error.value?.permanent_missing_files : undefined;
                 if (Array.isArray(missingFiles)) throw { missingFiles };
                 throw childErrorMessage(error, obelisk);
@@ -67,6 +69,56 @@ export function createControlPlane(webapi, obelisk, askUser) {
         callTarget: (ffqn, paramsJson) => (ffqn === ASK_USER_FFQN
             ? askUser(paramsJson)
             : callTarget(webapi, ffqn, paramsJson, (error) => childErrorMessage(error, obelisk))),
+    };
+}
+
+// PORT: host.rs's `CloudHost`. `cloud` is the `obelisk-agent:tools/cloud`
+// namespace import; obelisk-pack.js's `obelisk cloud` calls this.
+export function createCloud(cloud, obelisk, askUser) {
+    const plain = (fn) => {
+        try {
+            return fn();
+        } catch (error) {
+            throw childErrorMessage(error, obelisk);
+        }
+    };
+    return {
+        run(args, stdin, appToml) {
+            const output = plain(() => cloud.run(args, stdin, appToml));
+            return { stdout: output.stdout, stderr: output.stderr, exitCode: output.exit_code };
+        },
+        prepareDeploy(app, appToml) {
+            const target = plain(() => cloud.prepareDeploy(app, appToml));
+            return { apiUrl: target.api_url, webhookUrl: target.webhook_url ?? null, log: target.log };
+        },
+        controlPlane: (app) => createControlPlane(tenantWebapi(cloud, app), obelisk, askUser),
+    };
+}
+
+// The webapi functions the control plane uses, run by `cloud.tenant` against `app`'s API.
+function tenantWebapi(cloud, app) {
+    const call = (operation) => (...params) => {
+        const value = JSON.parse(cloud.tenant(app, operation, JSON.stringify(params)));
+        if (Array.isArray(value?.missing_files)) throw { missingFiles: value.missing_files };
+        return value.ok;
+    };
+    return {
+        listFunctions: call("list-functions"),
+        getFunctionWit: call("get-function-wit"),
+        callTarget: call("call-target"),
+        listExecutions: call("list-executions"),
+        getExecution: call("get-execution"),
+        getLogs: call("get-logs"),
+        getResultJson: call("get-result-json"),
+        listDeployments: call("list-deployments"),
+        getDeployment: call("get-deployment"),
+        currentDeploymentId: call("current-deployment-id"),
+        getAppConfig: call("get-app-config"),
+        deploymentCheckout: call("deployment-checkout"),
+        deploymentReadBlob: call("deployment-read-blob"),
+        deploymentSubmit: call("deployment-submit"),
+        deploymentSwitch: call("deployment-switch"),
+        applyDeployment: call("apply-deployment"),
     };
 }
 

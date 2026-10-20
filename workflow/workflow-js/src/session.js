@@ -24,6 +24,7 @@
 import { discover, inputAcceptedAt } from "obelisk-agent:config/config";
 import { request as appsRequest } from "obelisk-agent:mounts/apps";
 import * as webapi from "obelisk-agent:tools/webapi";
+import * as cloudTools from "obelisk-agent:tools/cloud";
 import * as obelisk from "obelisk:workflow@1.0.0";
 import * as dynamic from "obelisk:workflow-dynamic@1.0.0";
 import { completionSubmit } from "obelisk-agent:llm-obelisk-ext/chat";
@@ -41,7 +42,7 @@ import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
 import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
 import * as obeliskMcp from "../../../vendor/just-bash/src/obelisk-mcp.js";
 import * as obeliskWeb from "../../../vendor/just-bash/src/obelisk-web.js";
-import { childErrorMessage, createControlPlane, createHost } from "./host.js";
+import { childErrorMessage, createCloud, createControlPlane, createHost } from "./host.js";
 import { arm as armScriptWatch } from "./script-watch.js";
 import * as chat from "./chat.js";
 import {
@@ -598,12 +599,13 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const config = loadSessionConfig(executionId, model, effort, initialName);
     const maxSteps = config.maxSteps;
     // Always registered, independent of operator config (mirrors session.rs).
-    const controlPlane = createControlPlane(webapi, obelisk, (paramsJson) => askUser(paramsJson, notifications));
+    const askUserHere = (paramsJson) => askUser(paramsJson, notifications);
+    const controlPlane = createControlPlane(webapi, obelisk, askUserHere);
     bash.registerCommand("obelisk", obeliskPack.commandHandler(controlPlane, {
         obeliskVersion: config.obeliskVersion,
         githubContents,
         webhookUrl: config.webhookUrl,
-    }));
+    }, createCloud(cloudTools, obelisk, askUserHere)));
     const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
     registerProgramsAndMcp(bash, config, ownSession, notifications);
 

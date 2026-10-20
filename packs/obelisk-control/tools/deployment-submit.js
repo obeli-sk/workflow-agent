@@ -16,6 +16,8 @@
 // digest mismatch) is a permanent error. The submitted manifest already carries
 // every content_digest (the workflow expands them from the file bytes), so
 // nothing here computes a digest.
+import { targetBase, targetToken } from "./target.js";
+
 export default async function deployment_submit(
     deploymentToml, attachments, description, allowMissing, deploymentId,
 ) {
@@ -34,9 +36,9 @@ async function deployment_submit_impl(
     if (typeof deploymentToml !== "string" || !deploymentToml.trim()) {
         throw "deployment-toml is required";
     }
-    const base = process.env["TARGET_OBELISK_API_URL"];
+    const base = targetBase();
     if (!base) throw "TARGET_OBELISK_API_URL is not configured";
-    const token = process.env["TARGET_OBELISK_TOKEN"];
+    const token = targetToken();
     const wantedId = (typeof deploymentId === "string" && deploymentId.trim())
         ? deploymentId.trim() : generateDeploymentId();
     const desc = (typeof description === "string" && description.trim())
