@@ -47,9 +47,17 @@ export function appConfig(text, path = "app.toml") {
 
     const publicEnv = Object.entries(table(toml.public_env, "public_env", fail))
         .map(([name, config]) => {
-            for (const key of Object.keys(table(config, `public_env.${name}`, fail))) {
-                if (key !== "optional") fail(`unknown field \`public_env.${name}.${key}\``);
+            config = table(config, `public_env.${name}`, fail);
+            const internal = config.type === "internal";
+            for (const key of Object.keys(config)) {
+                if (!(internal ? ["type", "source"] : ["type", "optional"]).includes(key)) fail(`unknown field \`public_env.${name}.${key}\``);
             }
+            if (internal) {
+                if (!["api-url", "webui-url"].includes(config.source)) fail(`public_env.${name}.source must be "api-url" or "webui-url"`);
+                return { name, type: "internal", source: config.source };
+            }
+            if (config.type !== undefined && config.type !== "env") fail(`public_env.${name}.type must be "env" or "internal"`);
+            if (config.optional !== undefined && typeof config.optional !== "boolean") fail(`public_env.${name}.optional must be a boolean`);
             return config.optional === true ? { name, optional: true } : name;
         })
         .sort((a, b) => compare(entryName(a), entryName(b)));

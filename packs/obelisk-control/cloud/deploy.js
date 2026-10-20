@@ -67,7 +67,9 @@ async function singleAppTarget(app, log, lines) {
 async function checkFill(name, policy, log) {
     const required = [];
     const optional = [];
-    const envNames = policy.public_env.map((entry) => (typeof entry === "string" ? { name: entry, optional: false } : entry));
+    const envNames = policy.public_env
+        .filter((entry) => entry.type !== "internal")
+        .map((entry) => (typeof entry === "string" ? { name: entry, optional: false } : entry));
     const secretNames = Object.entries(policy.secrets)
         .filter(([, secret]) => secret.type !== "internal")
         .map(([secretName, secret]) => ({ name: secretName, optional: secret.optional === true }));
