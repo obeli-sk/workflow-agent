@@ -15,16 +15,13 @@ APPS_JSON = { optional = true }
 TARGET_OBELISK_WEBHOOK_URL = { optional = true }
 OBELISK_API_URL = { optional = true }
 AGENT_MODELS = {}
-OBELISK_API_URL_REGEX = { optional = true }
 GITHUB_MOUNT_OWNER = { optional = true }
 GITHUB_API_URL = { optional = true }
-GITHUB_API_URL_REGEX = { optional = true }
 # The github-mount suite submits the remote main manifest; drop once main uses GITHUB_MOUNT_OWNER.
 GH_OWNER = { optional = true }
 LLM_BASE_URL = { optional = true }
 LLM_API_PREFIX = { optional = true }
 TARGET_OBELISK_API_URL = { optional = true }
-TARGET_OBELISK_API_URL_REGEX = { optional = true }
 MCP_OBELISK_LOCAL_URL = { optional = true }
 OBELISK_UI_URL = { optional = true }
 

@@ -39,7 +39,6 @@ API_PORT=$((28030 + PORT_OFFSET))
 EXTERNAL_PORT=$((28098 + PORT_OFFSET))
 e2e_init "deploy-outside-root-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-deploy-outside-root-token"
 export OBELISK_API_URL="$E2E_API_URL"
-export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 
@@ -50,7 +49,6 @@ TARGET_EXTERNAL_PORT=$((28099 + PORT_OFFSET))
 # set up), keyless since the target runs with --no-auth.
 export TARGET_OBELISK_TOKEN=""
 export TARGET_OBELISK_API_URL="http://127.0.0.1:${TARGET_API_PORT}"
-export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${TARGET_API_PORT}"
 
 e2e_start_target_server "$TARGET_API_PORT" "$TARGET_EXTERNAL_PORT"
 

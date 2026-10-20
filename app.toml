@@ -26,14 +26,11 @@ APPS_JSON = { optional = true }
 TARGET_OBELISK_WEBHOOK_URL = { optional = true }
 OBELISK_API_URL = { optional = true }
 AGENT_MODELS = { optional = true }
-OBELISK_API_URL_REGEX = { optional = true }
 GITHUB_MOUNT_OWNER = { optional = true }
 GITHUB_API_URL = { optional = true }
-GITHUB_API_URL_REGEX = { optional = true }
 LLM_BASE_URL = { optional = true }
 LLM_API_PREFIX = { optional = true }
 TARGET_OBELISK_API_URL = { optional = true }
-TARGET_OBELISK_API_URL_REGEX = { optional = true }
 MCP_OBELISK_LOCAL_URL = { optional = true }
 OBELISK_UI_URL = { optional = true }
 OBELISK_CLOUD_API_URL = { optional = true }
@@ -53,7 +50,7 @@ methods = ["GET"]
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT", "POST"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions|PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub$|POST ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions$"
+request_url_regex = "^GET https?://[^/]+/v1/executions|PUT https?://[^/]+/v1/executions/E_[^/]+/stub$|POST https?://[^/]+/v1/executions$"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
@@ -61,7 +58,7 @@ replace_in = ["headers"]
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["POST"]
-request_url_regex = "^POST ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/events/batch$"
+request_url_regex = "^POST https?://[^/]+/v1/executions/events/batch$"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
@@ -69,7 +66,7 @@ replace_in = ["headers"]
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
-request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/pause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+request_url_regex = "^(PUT https?://[^/]+/v1/executions/E_[^/]+/pause|GET https?://[^/]+/v1/executions/E_[^/]+/status)$"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
@@ -77,7 +74,7 @@ replace_in = ["headers"]
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
-request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/unpause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+request_url_regex = "^(PUT https?://[^/]+/v1/executions/E_[^/]+/unpause|GET https?://[^/]+/v1/executions/E_[^/]+/status)$"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
@@ -85,7 +82,7 @@ replace_in = ["headers"]
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
-request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/cancel|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+request_url_regex = "^(PUT https?://[^/]+/v1/executions/E_[^/]+/cancel|GET https?://[^/]+/v1/executions/E_[^/]+/status)$"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
@@ -93,7 +90,7 @@ replace_in = ["headers"]
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
-request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
+request_url_regex = "^(PUT https?://[^/]+/v1/executions/E_[^/]+/stub|GET https?://[^/]+/v1/executions/E_[^/]+/status)$"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
@@ -103,7 +100,7 @@ replace_in = ["headers"]
 [[outbound_http.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-request_url_regex = "^GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}(/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/)"
+request_url_regex = "^GET https?://[^/]+(/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/)"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 

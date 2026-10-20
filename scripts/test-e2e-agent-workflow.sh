@@ -17,7 +17,6 @@ API_PORT=$((28016 + PORT_OFFSET))
 EXTERNAL_PORT=$((28091 + PORT_OFFSET))
 e2e_init "agent-workflow-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-agent-workflow-token"
 export OBELISK_API_URL="$E2E_API_URL"
-export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${API_PORT}"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 export LLM_BASE_URL="http://127.0.0.1:${EXTERNAL_PORT}"
