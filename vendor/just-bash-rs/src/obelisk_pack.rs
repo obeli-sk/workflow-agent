@@ -3035,8 +3035,7 @@ mod tests {
 
     #[test]
     fn executions_result_forwards_id() {
-        let host =
-            FakeHost::new().with("obelisk-agent:tools/webapi.get-result-json", "{\"ok\":1}");
+        let host = FakeHost::new().with("obelisk-agent:tools/webapi.get-result-json", "{\"ok\":1}");
         let mut i = interp("/workspace");
         let out = execute_app(
             &mut i,
