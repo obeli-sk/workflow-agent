@@ -65,8 +65,8 @@ const DOCS_SECTION = [
 
 // Docs indexes fetched once at session start and inlined into the prompt.
 // DOCS_URLS_JSON (deployment.rs.toml; default: the current llms.txt for this
-// Obelisk version) lists the indexes; fetching here keeps the doc set pinned
-// to the deployed Obelisk without hardcoding anything that could drift. Any
+// Obelisk version, falling back to latest) lists the indexes; fetching here keeps
+// the doc set pinned to the deployed Obelisk without hardcoding anything that could drift. Any
 // failed or oversized fetch degrades to a placeholder plus a warning returned
 // alongside the prompt, so the session surfaces the degraded-docs state to
 // the user instead of failing silently.
@@ -94,19 +94,27 @@ async function loadDocsIndexes() {
     for (const url of urls) {
         if (typeof url !== "string" || !url.startsWith("https://")) continue;
         try {
-            const resp = await fetch(url);
+            let resp = await fetch(url);
+            let heading = url;
+            // Unreleased versions (e.g. release candidates) have no published docs.
+            const latest = url.replace(/\/docs\/[^/]+\//, "/docs/latest/");
+            if (!resp.ok && latest !== url) {
+                const status = resp.status;
+                resp = await fetch(latest);
+                heading = `${latest} (${url} returned HTTP ${status})`;
+            }
             const text = await resp.text();
             if (!resp.ok) {
-                warnings.push(`docs index fetch failed (HTTP ${resp.status}): ${url}; ${DEGRADE_NOTE}`);
-                sections.push(`## ${url}\n\n(index unavailable: HTTP ${resp.status})`);
+                warnings.push(`docs index fetch failed (HTTP ${resp.status}): ${heading}; ${DEGRADE_NOTE}`);
+                sections.push(`## ${heading}\n\n(index unavailable: HTTP ${resp.status})`);
                 continue;
             }
             if (text.length > MAX_INDEX_BYTES) {
-                warnings.push(`docs index truncated (${url} exceeds ${MAX_INDEX_BYTES} bytes); some page URLs may be missing`);
-                sections.push(`## ${url}\n\n${text.slice(0, MAX_INDEX_BYTES)}\n(... truncated)`);
+                warnings.push(`docs index truncated (${heading} exceeds ${MAX_INDEX_BYTES} bytes); some page URLs may be missing`);
+                sections.push(`## ${heading}\n\n${text.slice(0, MAX_INDEX_BYTES)}\n(... truncated)`);
                 continue;
             }
-            sections.push(`## ${url}\n\n${text}`);
+            sections.push(`## ${heading}\n\n${text}`);
         } catch (e) {
             warnings.push(`docs index fetch failed (${String(e)}): ${url}; ${DEGRADE_NOTE}`);
             sections.push(`## ${url}\n\n(index unavailable: ${String(e)})`);
