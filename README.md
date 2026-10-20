@@ -58,10 +58,13 @@ for other endpoints, used as `AGENT_MODELS="$(cat models.openrouter.json)"`:
   `https://llm.int.exe.xyz`. From outside exe.dev, use the reverse proxy in
   [`examples/exe-llm-proxy.conf`](examples/exe-llm-proxy.conf) over an SSH tunnel.
 
-### Target instance
+### Apps in the cloud
 
-The agent inspects and deploys to a *target* Obelisk instance. By default the
-target is the instance the agent itself runs on.
+The agent controls apps in a cloud through `obelisk cloud ...`. Without an
+ObeliskNet token (below), the cloud holds a single app: the *target* Obelisk
+instance, named by the `app_name` its `/v1/info` reports. That app is fixed:
+the agent can inspect and redeploy it, but cannot create, reconfigure, start,
+stop or delete apps. By default the target is the instance the agent itself runs on.
 
 | Variable | Purpose |
 | --- | --- |
@@ -87,8 +90,8 @@ just serve-target
 
 ### ObeliskNet
 
-With an ObeliskNet account token, the agent can manage hosted apps the same way
-the `obelisk cloud` CLI does:
+With an ObeliskNet account token, the cloud is ObeliskNet instead, and the agent
+can manage hosted apps the same way the `obelisk cloud` CLI does:
 
 ```sh
 export OBELISK_CLOUD_API_URL=https://...   # the ObeliskNet API
@@ -130,10 +133,9 @@ when mounting repos outside `obeli-sk`.
 `help` lists the commands, which cover the usual file, text and search tools.
 Besides those, the shell provides:
 
-- `/workspace/deployment`: the target's active deployment, as files.
-- `obelisk functions|executions|call|deployment ...`: the target instance.
-- `obelisk cloud ...`: ObeliskNet, when configured.
-- `curl`: GET-only, limited to the Obelisk docs and the target's webhooks.
+- `/workspace/cloud/<app>/deployment`: each app's active deployment, as files.
+- `obelisk cloud ...`: the apps in the cloud (see above).
+- `curl`: GET-only, limited to the Obelisk docs and the apps' webhooks.
 - `mcp` and `/workspace/mcp`: configured MCP servers.
 - `chat`: other sessions (see below).
 - `mount`: what is mounted where.

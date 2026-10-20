@@ -50,23 +50,22 @@ const SUBAGENTS_SECTION =
 // behavior to port, so it belongs in exactly one place.
 const PACK_SYSTEM_PROMPT =
     "# Deployment authoring\n\n" +
-    "You are on a persistent virtual machine with a filesystem rooted at /workspace. The target " +
-    "Obelisk's active deployment is at /workspace/deployment/current: read and edit its " +
+    "You are on a persistent virtual machine with a filesystem rooted at /workspace. Each cloud app's " +
+    "active deployment is mounted at /workspace/cloud/<app>/deployment/current: read and edit its " +
     "deployment.toml and component sources with ordinary shell commands.\n\n" +
-    "- Use `obelisk` for target-server operations: functions, executions, call, and deployment active/list/show/refresh/check/submit/enqueue/apply.\n" +
-    "- Edits are local until deployed: `obelisk deployment submit` stores them as a new inactive deployment and prints its ID, `obelisk deployment apply ID` hot-redeploys that deployment now, `obelisk deployment enqueue ID` stages it for the next server restart instead, and `obelisk deployment refresh` discards local edits and re-fetches the current one.\n" +
+    "- Use `obelisk cloud app --app NAME ...` for an app's operations: functions, executions, call, and deployment active/list/show/refresh/check/submit/enqueue/apply.\n" +
+    "- Edits are local until deployed: `obelisk cloud app --app NAME deployment submit PATH` stores them as a new inactive deployment and prints its ID, `deployment apply ID` hot-redeploys that deployment now, `deployment enqueue ID` stages it for the next server restart instead, and `deployment refresh` discards local edits and re-fetches the current one.\n" +
     "- Add a component by writing its source plus an `[[activity_js]]`/`[[workflow_js]]` table (name, location, params, return_type); add a bundled JavaScript file by writing it and importing it from the component.\n" +
-    "- Run `obelisk generate deployment` for a fully-commented starter deployment.toml.\n" +
-    "- `obelisk executions list` hides webhook-spawned child executions unless `--show-derived` is passed.\n" +
+    "- Run `obelisk generate deployment` for a fully-commented starter deployment.toml, or `obelisk generate new` to list the starter app templates.\n" +
     "- Follow the rendered llms.txt authoring guidance in the system prompt and fetch relevant linked pages before writing components; never guess API signatures.\n" +
     "- Read-only reference repos for authoring are mounted at /workspace/apps/<name> (see \"Example apps\" above).\n" +
     "\n" +
     "# Mounts and network access\n\n" +
     "Run `mount` to see every mounted app, the network-backed mount points, and whether each MCP server is responding.\n\n" +
-    "- `/workspace/deployment`, `/workspace/apps/*`, and `/workspace/mcp` are lazy: a directory lists and a file's bytes fetch over the network on first access.\n" +
-    "- The deployment mount is cheap (one request for its whole file index); each `/workspace/apps/<name>` tree costs one request per directory listed - avoid `tree`, `find`, or a recursive grep across them, and use targeted `ls`/`cat` or read a known path directly instead.\n" +
+    "- `/workspace/cloud`, `/workspace/apps/*`, and `/workspace/mcp` are lazy: a directory lists and a file's bytes fetch over the network on first access.\n" +
+    "- Listing `/workspace/cloud` lists the apps; each app's deployment mount is cheap (one request for its whole file index); each `/workspace/apps/<name>` tree costs one request per directory listed - avoid `tree`, `find`, or a recursive grep across them, and use targeted `ls`/`cat` or read a known path directly instead.\n" +
     "- The shell's HTTP access goes through an operator allowlist: `curl` (GET only) works only for explicitly granted hosts; anything else is a policy-denied result, not a bug.\n" +
-    "- The target's webhook base URL printed by `mount` is granted for GET, so deployed endpoints can be smoke-tested directly; verify anything else through the control plane (`obelisk executions list` / `logs`) instead of probing the port.\n";
+    "- The app webhook base URL printed by `mount` is granted for GET, so deployed endpoints can be smoke-tested directly; verify anything else through the app's API (`obelisk cloud app --app NAME executions list` / `logs`) instead of probing the port.\n";
 
 // The fixed part of the prompt tail, in the order the workflow renders it:
 // user input, then subagents, then deployment authoring. The per-session

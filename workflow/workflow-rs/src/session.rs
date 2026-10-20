@@ -84,8 +84,8 @@ const BASH_TOOLS_JSON: &str = r#"[{"name":"bash","description":"Run a Bash scrip
 // indent; a `\` line-continuation would strip the continued line's whitespace.
 const MOUNT_HEADER: &str = concat!(
     "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n",
-    "  /workspace/deployment/current  target Obelisk active deployment, editable (one request for its whole file index)\n",
-    "  /workspace/deployment/current/app.toml  target app policy: the hosts, secrets, env vars, and exec activities any deployment may use; only the user can widen it\n",
+    "  /workspace/cloud/<app>/deployment/current  each cloud app's active deployment, editable (one request for its whole file index)\n",
+    "  /workspace/cloud/<app>/deployment/current/app.toml  the app's policy: the hosts, secrets, env vars, and exec activities any deployment may use; only the user can widen it\n",
 );
 const MOUNT_FOOTER: &str = "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
@@ -151,7 +151,7 @@ fn render_mount(
     }
     if !webhook_url.is_empty() {
         text.push_str(&format!(
-            "  {webhook_url}  target Obelisk webhooks (GET allowed via curl)\n"
+            "  {webhook_url}  cloud app webhooks (GET allowed via curl)\n"
         ));
     }
     for (name, ffqn) in mcp_servers {
@@ -643,7 +643,6 @@ pub fn agent_loop(
             obelisk_pack::Generate {
                 obelisk_version: config.obelisk_version,
                 github: github_contents(),
-                webhook_url: config.webhook_url.clone(),
             },
             Some(Box::new(CloudHost::new(notifications.clone()))),
         ),
@@ -814,16 +813,17 @@ pub fn agent_loop(
             // Open the input offer (in open_session) before mounting packs so
             // the UI can identify a live session immediately.
             //
-            // Install the lazy blob loader (cheap, no network), then register
-            // the deployment tree as a *deferred* mount: the checkout runs only
-            // when the session first references `/workspace/deployment`, so a
-            // bash-only session never touches the target. A failed mount records
-            // the reason in `/workspace/.mount-error` (there is no `console.log`
-            // here; see module docs / port-findings.md A). Each owned source is
-            // fetched from the CAS by the blob loader the first time it is read.
-            bash.fs_mut()
-                .set_blob_loader(obelisk_pack::blob_loader(Box::new(host())));
-            obelisk_pack::register_deferred_mount(bash.fs_mut(), Box::new(host()));
+            // Register the cloud's apps as a *deferred* mount: the app listing
+            // and each app's checkout run only when the session first references
+            // `/workspace/cloud`, so a bash-only session never touches the cloud.
+            // A failed mount records the reason in `/workspace/.mount-error`
+            // (there is no `console.log` here; see module docs / port-findings.md
+            // A). Each owned source is fetched from its app's CAS the first time
+            // it is read.
+            obelisk_pack::register_deferred_mount(
+                bash.fs_mut(),
+                Box::new(CloudHost::new(notifications.clone())),
+            );
             // Reference trees for authoring: each APPS_JSON-configured GitHub
             // repo listed and fetched lazily on first `ls`/`cat` (obelisk_web),
             // one deployed activity backing every mount. Read-only;
@@ -1704,11 +1704,14 @@ mod tests {
         }];
         let out = render_mount(&apps, &servers, "http://127.0.0.1:9290", &mut host);
         // Every entry (header, apps, webhook URL, MCP) is indented two spaces consistently.
-        assert!(out.contains("\n  /workspace/deployment/current  "), "{out}");
+        assert!(
+            out.contains("\n  /workspace/cloud/<app>/deployment/current  "),
+            "{out}"
+        );
         assert!(out.contains("\n  /workspace/apps/components  "), "{out}");
         assert!(out.contains("(obeli-sk/components@main)"), "{out}");
         assert!(
-            out.contains("\n  http://127.0.0.1:9290  target Obelisk webhooks"),
+            out.contains("\n  http://127.0.0.1:9290  cloud app webhooks"),
             "{out}"
         );
         assert!(out.contains("\n  /workspace/mcp/up  "), "{out}");

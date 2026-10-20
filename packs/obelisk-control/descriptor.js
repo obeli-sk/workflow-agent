@@ -1,4 +1,4 @@
-// System-prompt descriptor for the "control this Obelisk instance" use case.
+// System-prompt descriptor for the "manage apps in the cloud" use case.
 // The generic session loop calls this FFQN once at startup and prepends the
 // returned prompt to its shell and user-input guidance.
 //
@@ -9,20 +9,21 @@
 // field from the former model-facing catalog and is always empty.
 
 import { cloudRequest } from "./cloud/client.js";
+import { singleApp, singleAppRow } from "./cloud/single-app.js";
 
 const nl = String.fromCharCode(10);
 
-// Encoding rules for `obelisk call <ffqn> <params-json>`, the one shell command
+// Encoding rules for `obelisk cloud app call FFQN PARAMS_JSON`, the one shell command
 // that takes a WIT-typed argument. The rest of the `obelisk` subcommands and
 // the deployment edit/submit/apply flow are documented by the shell pack's own
 // system prompt, which the core appends after this prompt.
 const WIT_JSON_MAPPING = [
-    '## Encoding params for `obelisk call`',
+    '## Encoding params for `obelisk cloud app call`',
     '',
-    '- Run bare `obelisk` to list commands; commands use subcommand pairs such as `obelisk functions list` and `obelisk executions get ID`. Run `obelisk <command> --help` (or `-h`) at any level for usage, e.g. `obelisk deployment submit --help`.',
-    '- Inspect target signatures with `obelisk functions list` before calling one when the parameter types are not already known.',
-    '- Call with a JSON array (`obelisk call FFQN \'[1,"text"]\'`) or positional values (`obelisk call FFQN -- 1 text`); positional values parse as JSON when valid and otherwise as strings.',
-    '- A successful call prints only the target return value; a target `result` err or execution failure exits nonzero and prints the error to stderr.',
+    '- Run `obelisk cloud app --help` for the subcommands; they use pairs such as `obelisk cloud app --app NAME functions list` and `obelisk cloud app --app NAME executions get ID`. Run `--help` (or `-h`) at any level for usage, e.g. `obelisk cloud app deployment submit --help`.',
+    '- Inspect an app\'s signatures with `obelisk cloud app --app NAME functions list` before calling one when the parameter types are not already known.',
+    '- Call with a JSON array (`obelisk cloud app --app NAME call FFQN \'[1,"text"]\'`) or positional values (`... call FFQN -- 1 text`); positional values parse as JSON when valid and otherwise as strings.',
+    '- A successful call prints only the function\'s return value; a `result` err or execution failure exits nonzero and prints the error to stderr.',
     '- params-json is a JSON array of positional arguments in WIT parameter order; kebab-case identifiers become snake_case JSON keys and variant/enum values.',
     '- `bool` maps to JSON `true`/`false`; `char`/`string` map to JSON strings.',
     '- Integers and floats map to JSON numbers; Obelisk rejects lossy numeric conversions instead of rounding.',
@@ -34,7 +35,7 @@ const WIT_JSON_MAPPING = [
 ].join(nl);
 
 const SYSTEM_PROMPT = [
-    'You are the planner inside an Obelisk durable workflow that controls a target Obelisk instance, which may be a different instance than the one you run on. The `obelisk` command and the /workspace/deployment mount act on that target.',
+    'You are the planner inside an Obelisk durable workflow that manages apps in the cloud. Each app is its own Obelisk server, never the instance you run on. `obelisk cloud` controls them (see "Cloud apps" below), and each app\'s active deployment is mounted at /workspace/cloud/<app>/deployment/current.',
     '',
     '- Investigate, plan, and decide which durable actions are needed. Act through bash: shell commands and `obelisk` for durable, replayable actions that appear in the Obelisk execution log; built-in reasoning for the rest.',
     '- Narrate as you work: a short Markdown note alongside each tool call saying what you are about to run and why. Text and a tool call in one response are both kept, and the turn continues.',
@@ -123,29 +124,50 @@ async function loadDocsIndexes() {
     return { body: sections.length ? sections.join(nl + nl) : null, warnings };
 }
 
-const CLOUD_SECTION = [
-    '# ObeliskNet (`obelisk cloud`)',
+const APP_COMMANDS = [
+    '- `obelisk cloud apps list`; `obelisk cloud app --app NAME status|get|endpoint`. `--app` may be left out inside a directory whose app.toml names the app, or when there is only one app.',
+    '- The app\'s own API: `obelisk cloud app --app NAME functions list|wit FFQN`, `executions list|get ID|logs ID|result ID`, `call FFQN PARAMS`, `deployment active|list|show|refresh|check|submit|enqueue|apply`.',
+    '- `obelisk cloud app --app NAME executions list` hides webhook-spawned child executions unless `--show-derived` is passed.',
+];
+
+const OBELISKNET_SECTION = [
+    '# Cloud apps (ObeliskNet)',
     '',
     'An ObeliskNet account is configured, so `obelisk cloud` works like the real CLI against hosted apps (run `obelisk cloud --help`):',
     '',
-    '- `obelisk cloud apps list`; `obelisk cloud app --app NAME status|get|endpoint|apply|start|stop|delete`.',
+    ...APP_COMMANDS,
     '- Create and deploy from the working directory: write `app.toml` (with `app_name`) and `deployment.toml`, then `obelisk cloud app deploy -a app.toml -d deployment.toml`. It creates or restages the app, applies and starts it, uploads the deployment and prints the webhook URL.',
     '- Config: `obelisk cloud app --app NAME env list|set NAME VALUE|unset NAME` and `secrets list|set NAME --stdin|set NAME --from-env VAR|unset NAME`; then `obelisk cloud app --app NAME apply`.',
-    '- The app\'s own API: `obelisk cloud app --app NAME executions list`, `executions logs ID`, `executions get ID`, `functions list`, `call FFQN PARAMS`, `deployment list|active`, same flags as the local commands.',
     '- Destructive commands (`delete`, `stop`) need the user\'s confirmation first.',
 ].join(nl);
 
-// The cloud section when OBELISK_CLOUD_API_TOKEN is set and the provisioner accepts it.
+const SINGLE_APP_SECTION = [
+    '# Cloud apps',
+    '',
+    'This cloud holds a single app, managed by the user: it cannot be created, deleted, started, stopped or reconfigured from here, and its app policy (hosts, secrets, env vars) is fixed. Run `obelisk cloud --help` for usage:',
+    '',
+    ...APP_COMMANDS,
+    '- Deploy with `obelisk cloud app --app NAME deploy -d deployment.toml` (or `deployment apply`). It replaces the app\'s whole active deployment; to keep what already runs there, merge into /workspace/cloud/NAME/deployment/current/deployment.toml and apply that.',
+    '- A deployment cannot widen the app policy in /workspace/cloud/NAME/deployment/current/app.toml; ask the user when it lacks something.',
+].join(nl);
+
+// The cloud section: ObeliskNet with OBELISK_CLOUD_API_TOKEN, else the single-app cloud.
 async function cloudSection() {
-    if (!process.env["OBELISK_CLOUD_API_TOKEN"]) return { section: null, warnings: [] };
     try {
+        if (singleApp()) {
+            const row = await singleAppRow();
+            return { section: `${SINGLE_APP_SECTION}${nl}${nl}The app:${nl}${nl}- ${row.app_name}: ${row.status}`, warnings: [] };
+        }
+        if (!process.env["OBELISK_CLOUD_API_TOKEN"]) {
+            return { section: null, warnings: ["No cloud is configured (neither OBELISK_CLOUD_API_TOKEN nor TARGET_OBELISK_API_URL); `obelisk cloud` is left out of the prompt"] };
+        }
         const listed = await cloudRequest("GET", ["v1", "apps"]);
         const apps = (Array.isArray(listed?.apps) ? listed.apps : [])
             .map((app) => `- ${app?.app_name}: ${app?.status ?? "unknown"}`);
         const existing = apps.length ? `Existing apps:${nl}${nl}${apps.join(nl)}` : 'No apps exist yet.';
-        return { section: `${CLOUD_SECTION}${nl}${nl}${existing}`, warnings: [] };
+        return { section: `${OBELISKNET_SECTION}${nl}${nl}${existing}`, warnings: [] };
     } catch (error) {
-        return { section: null, warnings: [`ObeliskNet is configured but unreachable (${String(error)}); \`obelisk cloud\` is left out of the prompt`] };
+        return { section: null, warnings: [`The cloud is configured but unreachable (${String(error)}); \`obelisk cloud\` is left out of the prompt`] };
     }
 }
 

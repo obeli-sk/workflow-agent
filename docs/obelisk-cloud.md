@@ -10,14 +10,13 @@ and logs of a hosted app.
 - `OBELISK_CLOUD_API_URL` (public env) points at the provisioner. Its default,
   `http://127.0.0.1:9090`, does nothing unless something listens there.
 - `OBELISK_CLOUD_API_TOKEN` (optional secret) is the account token. When it is
-  unset, the system prompt says nothing about `obelisk cloud`.
+  unset, the cloud is the single-app cloud described below.
 - `OBELISK_CLOUD_APP_API_PATTERN` (optional public env) is the allowed-host
   pattern for the hosted apps' own APIs. It defaults to
   `https://*.obelisk.works:5005`.
 
-When the token is set, `packs/obelisk-control/descriptor.js` adds an
-"ObeliskNet" section to the system prompt along with the account's current
-apps. If the provisioner rejects the token or can't be reached, the section is
+`packs/obelisk-control/descriptor.js` adds a "Cloud apps" section to the
+system prompt along with the cloud's current apps. If the provisioner rejects the token or can't be reached, the section is
 left out and a warning is shown instead.
 
 ## Pieces
@@ -46,8 +45,8 @@ to one of three places:
 - `cloud app [--app NAME] functions|executions|call|deployment ...` reuses the
   local command implementations with a control plane routed through `tenant`
   (`createCloud` in `workflow-js/src/host.js` and `CloudHost` in
-  `workflow-rs/src/host.rs`). This way the output, flags and lazy deployment
-  mounts stay identical to those commands.
+  `workflow-rs/src/host.rs`). This way the output and flags stay identical to
+  the real CLI's app commands.
 - `cloud app deploy [-a app.toml] [-d deployment.toml]` calls `prepare-deploy`
   and then `deployment apply` against the app. It uploads the files the server
   asks for, just like the local apply.
@@ -59,69 +58,36 @@ to one of three places:
 
 - Interactive or account-level operations are rejected with a hint:
   `--fill` and `app fill`, `token new|revoke`, `--api-url` and `--api-token`.
-- `cloud app deployment refresh` is rejected, because it would remount the
-  local target.
+- `--app` may be left out when exactly one app exists, in addition to the
+  `./app.toml` lookup. The order is `--app`, the `-a` file's or `./app.toml`'s
+  `app_name`, then the cloud's only app.
+- `obelisk call obelisk-agent:stub/stub.ask-user '["question"]'` stays at the
+  top level: it asks the user, not an app. The other top-level app commands
+  (`functions`, `executions`, `call`, `deployment`) are gone; they print a hint
+  pointing at `obelisk cloud app ...`.
 
-## Proposal: the target as a single-app cloud
+## Deployment mounts
 
-Status: design, not implemented.
+`/workspace/cloud` is a lazy mount: first access lists the apps and registers a
+lazy mount for each at `/workspace/cloud/<app>/deployment`, with `current`
+linked to the active deployment. An app that appears later is mounted after the
+first successful `cloud app --app NAME ...` command against it.
+`cloud app deployment refresh` remounts that app's tree, discarding local
+edits. A failed listing is recorded in `/workspace/.mount-error`.
 
-The original single target (`TARGET_OBELISK_*`) predates `obelisk cloud`. Now
-that hosted apps are the real targets, the session should see one model: it
-controls apps in the cloud. A plain Obelisk server becomes a cloud provider
-with exactly one app that cannot be provisioned, deleted or reconfigured.
+## The single-app cloud
 
-### Provider selection
+Without `OBELISK_CLOUD_API_TOKEN` and with `TARGET_OBELISK_API_URL` set
+(`packs/obelisk-control/cloud/single-app.js`), the `TARGET_OBELISK_*` server is
+a cloud holding one app that cannot be provisioned. Its name is the
+`app_name` reported by the target's `/v1/info`, or `target` when it reports
+none.
 
-- `OBELISK_CLOUD_API_TOKEN` set: ObeliskNet, as today.
-- Else `TARGET_OBELISK_API_URL` set: the single-app provider. The app name is
-  the target's `app_name` (from `/v1/info` or the active deployment's
-  `app.toml`).
-- Else: no cloud section and no `obelisk cloud`.
-
-### Single-app behavior
-
-- `apps list` prints one row; `app get|status` and `endpoint` are answered
-  from the `TARGET_OBELISK_*` URLs and the server's health.
-- `app new|delete|start|stop|stage|apply`, `env ...` and `secrets ...` fail with
-  "this cloud has a single fixed app; ask the user to change it".
-- `app deploy` skips `prepare-deploy`: it checks the deployment against the
-  target's own policy and runs `deployment apply`. It never widens the policy.
-- `app functions|executions|call|deployment` go to the target through the same
-  control plane the tenant routing uses, so output and flags do not change.
-- `--app` other than the single app's name is an error listing the one app.
-
-### Shell
-
-- The top-level `obelisk functions|executions|call|deployment` are removed;
-  `obelisk execution list` reads as if it acted on the server the agent runs
-  on. Only `obelisk cloud app ...`, `obelisk cloud ...` and `obelisk generate`
-  remain, mirroring the real CLI.
-- `--app` may be omitted when exactly one app exists (always for the
-  single-app provider), in addition to the `./app.toml` lookup.
-
-### Deployment mounts
-
-- Each app gets its own lazy mount at `/workspace/cloud/<app>/deployment`,
-  with `current` linked to the active deployment. It is mounted on first use
-  of `cloud app --app NAME deployment ...`, through activities, so replay stays
-  deterministic.
-- `cloud app deployment refresh` remounts that app's tree instead of being
-  rejected. `/workspace/deployment` goes away.
-
-### System prompt
-
-- The planner intro says the agent manages apps in the cloud through
-  `obelisk cloud`, and that none of them is the instance it runs on.
-- One cloud section for both providers: the provider, the apps (one for the
-  single-app provider), what is not allowed (provisioning on the single-app
-  provider) and where each app's deployment is mounted.
-- The `generate new` help and the session-logic mount listing point at the
-  per-app mount instead of `/workspace/deployment/current`.
-
-### Tests
-
-- The e2e suites that use the local target keep working through the
-  single-app provider, rewritten to `obelisk cloud app ...`.
-- JS and Rust shell tests cover: single-app refusals, `--app` defaulting,
-  per-app mounts and `refresh`.
+- `apps list`, `app get|status` and `app endpoint` are answered from the
+  `TARGET_OBELISK_*` URLs and whether `/v1/info` answers.
+- `app new|delete|start|stop|stage|apply`, `env ...`, `secrets ...` and
+  `token ...` are refused, asking the user to change the app.
+- `app deploy` skips provisioning: it checks the app is running and then runs
+  `deployment apply`. The target's own policy still applies, so a deployment
+  cannot widen it.
+- `--app` other than the single app's name is an error naming the one app.

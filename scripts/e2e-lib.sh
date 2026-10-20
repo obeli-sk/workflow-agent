@@ -53,6 +53,8 @@ e2e_init() {
     E2E_DEPLOYMENTS=()
 
     export OBELISK_API_TOKEN="$token"
+    # No provisioner: the target is the single app of the cloud.
+    unset OBELISK_CLOUD_API_TOKEN
     # Control/deploy tools + the deployment mount target this same isolated
     # instance (self-host default; matches OBELISK_API_URL below).
     export TARGET_OBELISK_TOKEN="$token"

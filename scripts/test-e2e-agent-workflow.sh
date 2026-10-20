@@ -159,7 +159,7 @@ echo ">>> running the obelisk/mount custom commands"
 # `mount` time: the first `mount` (before anything touches the tree) shows
 # the requested ref (@main); only the second, after the `cat`, shows the
 # commit it pinned to.
-run_shell_turn "shell-e2e-2" "mount && cat /workspace/apps/components/README.md && mount && echo --- && obelisk functions list --help"
+run_shell_turn "shell-e2e-2" "mount && cat /workspace/apps/components/README.md && mount && echo --- && obelisk cloud app functions list --help"
 if [[ "$SHELL_STDOUT" != *"Network-backed mounts"* ]]; then
     echo "mount command did not print the expected header: $SHELL_STDOUT" >&2
     exit 1
@@ -176,8 +176,8 @@ if [[ "$SHELL_STDOUT" != *"# Obelisk Components"* ]]; then
     echo "GitHub components mount did not read README.md: $SHELL_STDOUT" >&2
     exit 1
 fi
-if [[ "$SHELL_STDOUT" != *"Usage: obelisk functions"* ]]; then
-    echo "obelisk functions --help did not print its usage: $SHELL_STDOUT" >&2
+if [[ "$SHELL_STDOUT" != *"Usage: obelisk cloud app [--app NAME] functions"* ]]; then
+    echo "obelisk cloud app functions --help did not print its usage: $SHELL_STDOUT" >&2
     exit 1
 fi
 echo ">>> obelisk/mount E2E PASS"
@@ -185,7 +185,7 @@ echo ">>> obelisk/mount E2E PASS"
 echo ">>> checking replay-stable ls formatting and collation"
 run_shell_turn "shell-e2e-ls" "touch b A a B && ls -la"
 LS_ORDER="$(printf '%s\n' "$SHELL_STDOUT" | sed -n 's/^[-d][^ ]* 1 user user [ ]*[0-9][0-9]* Jan  1 00:00 //p' | paste -sd ' ' -)"
-if [[ "$LS_ORDER" != ". .. a A apps b B deployment mcp" ]]; then
+if [[ "$LS_ORDER" != ". .. a A apps b B cloud mcp" ]]; then
     echo "ls -la output did not use the replay-stable format/order: $SHELL_STDOUT" >&2
     exit 1
 fi
@@ -223,12 +223,12 @@ fi
 e2e_select_backend "$BACKEND"
 echo ">>> live-swap auto-upgrade E2E PASS"
 
-run_shell_turn "shell-e2e-submit-error" "cd deployment/current && sed 's/GITHUB_MOUNT_TOKEN/REPLAY_MISSING_SECRET/g' deployment.toml > replay-invalid.toml && obelisk deployment submit replay-invalid.toml"
+run_shell_turn "shell-e2e-submit-error" "cd cloud/workflow-agent/deployment/current && sed 's/GITHUB_MOUNT_TOKEN/REPLAY_MISSING_SECRET/g' deployment.toml > replay-invalid.toml && obelisk cloud app deployment submit replay-invalid.toml"
 if [[ "$SHELL_STDERR" != *"REPLAY_MISSING_SECRET"* ]]; then
     echo "deployment submit did not surface its typed server error: $SHELL_STDERR" >&2
     exit 1
 fi
-run_shell_turn "shell-e2e-submit-help" "obelisk deployment submit --help"
+run_shell_turn "shell-e2e-submit-help" "obelisk cloud app deployment submit --help"
 if [[ "$SHELL_STDOUT" != *"any filename -- not just"* ]]; then
     echo "deployment submit help did not match the Rust backend: $SHELL_STDOUT" >&2
     exit 1

@@ -352,16 +352,15 @@ function renderMountOutput(apps, mcpServers, webhookUrl) {
     return renderMount(apps, mcpServers, webhookUrl, probe);
 }
 
-// Registers the deployment tree, each APPS_JSON-configured read-only repo
+// Registers the cloud apps' deployment trees, each APPS_JSON-configured read-only repo
 // reference tree, and each MCP server's resources as lazy VFS mounts (PORT:
 // session.rs's pack_mounted block). None of this makes a host call by itself -
 // a bash-only session that never references a mounted path never touches the
 // network - so it is safe to run unconditionally, once, right after the
 // input offer opens.
-function mountPacks(bash, config, controlPlane) {
+function mountPacks(bash, config, cloud) {
     const fs = bash.fs();
-    fs.setBlobLoader(obeliskPack.blobLoader(controlPlane));
-    obeliskPack.registerDeferredMount(fs, controlPlane);
+    obeliskPack.registerDeferredMount(fs, cloud);
     for (const app of config.apps) {
         // Pass the live app object (not a copy) so `obelisk-web.js` writing
         // `resolvedRef` onto it, once the mount is first used, is visible to
@@ -601,11 +600,11 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     // Always registered, independent of operator config (mirrors session.rs).
     const askUserHere = (paramsJson) => askUser(paramsJson, notifications);
     const controlPlane = createControlPlane(webapi, obelisk, askUserHere);
+    const cloud = createCloud(cloudTools, obelisk, askUserHere);
     bash.registerCommand("obelisk", obeliskPack.commandHandler(controlPlane, {
         obeliskVersion: config.obeliskVersion,
         githubContents,
-        webhookUrl: config.webhookUrl,
-    }, createCloud(cloudTools, obelisk, askUserHere)));
+    }, cloud));
     const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
     registerProgramsAndMcp(bash, config, ownSession, notifications);
 
@@ -636,7 +635,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     // Deployment/components/MCP-resource trees mount lazily: registering them
     // makes no host call itself, so this runs once the input offer is already
     // open (a live session is visible immediately) without delaying startup.
-    mountPacks(bash, config, controlPlane);
+    mountPacks(bash, config, cloud);
     publishAgentStatus(notifications, shouldCallLlm, turnIndex);
 
     try {
