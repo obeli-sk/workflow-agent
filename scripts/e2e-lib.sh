@@ -61,7 +61,8 @@ e2e_init() {
     export TARGET_OBELISK_API_URL="$E2E_API_URL"
     export OBELISK__API__LISTENING_ADDR="127.0.0.1:${api_port}"
     export OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}"
-    export OBELISK__WEBUI__ENABLED=false
+    # OBELISK_UI_URL is a required internal webui-url source, so the Web UI must listen.
+    export OBELISK__WEBUI__LISTENING_ADDR="127.0.0.1:$((api_port + 200))"
     export OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/obelisk-sqlite"
     # Keep default E2E startup hermetic and tokenless; a dedicated suite overrides this.
     export APPS_JSON="[]"
@@ -329,7 +330,7 @@ e2e_start_target_server() {
     env -u OBELISK_API_TOKEN \
     OBELISK__API__LISTENING_ADDR="127.0.0.1:${api_port}" \
     OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}" \
-    OBELISK__WEBUI__ENABLED=false \
+    OBELISK__WEBUI__LISTENING_ADDR="127.0.0.1:$((api_port + 200))" \
     OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/target-obelisk-sqlite" \
         "$OBELISK" server run --empty --no-auth --app-config "$ROOT/app-target-e2e.toml" \
         > "$E2E_TMP/target-server.log" 2>&1 &
