@@ -236,12 +236,12 @@ function timeoutSignal(maxTimeMs) {
     } catch {
         // Fall through to the manual controller for engines without .timeout.
     }
-    if (typeof setTimeout === "function") {
+    if (typeof AbortController === "function" && typeof setTimeout === "function") {
         const controller = new AbortController();
         setTimeout(() => controller.abort(), maxTimeMs);
         return controller.signal;
     }
-    return undefined; // Runtime without timers cannot honor --max-time.
+    return undefined; // Runtimes without abort support cannot honor --max-time.
 }
 
 function isAbort(error) {

@@ -127,9 +127,7 @@ export function renderSystemPrompt(systemPrompt, programs, apps, mountOutput, pr
 
 // PORT: workflow-rs/src/session.rs's `MOUNT_HEADER`/`MOUNT_FOOTER`.
 const MOUNT_HEADER =
-    "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n" +
-    "  /workspace/cloud/<app>/deployment/current  each cloud app's active deployment, editable (one request for its whole file index)\n" +
-    "  /workspace/cloud/<app>/deployment/current/app.toml  the app's policy: the hosts, secrets, env vars, and exec activities any deployment may use; only the user can widen it\n";
+    "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n";
 const MOUNT_FOOTER =
     "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
@@ -141,14 +139,11 @@ const MOUNT_FOOTER =
 // Each app shows `resolvedRef` (the commit its mount pinned to on first
 // `ls`/`cat`, set by obelisk-web.js's `mount`) once present, falling back to
 // the still-unresolved requested `ref` otherwise.
-export function renderMount(apps, mcpServers, webhookUrl, probe) {
+export function renderMount(apps, mcpServers, _webhookUrl, probe) {
     let text = MOUNT_HEADER;
     for (const { name, owner, repo, ref, resolvedRef } of apps) {
         const gitRef = resolvedRef ?? ref;
         text += `  /workspace/apps/${name}          example app, read-only (${owner}/${repo}@${gitRef})\n`;
-    }
-    if (webhookUrl) {
-        text += `  ${webhookUrl}  cloud app webhooks (GET allowed via curl)\n`;
     }
     for (const { name, ffqn } of mcpServers) {
         const error = probe(ffqn);

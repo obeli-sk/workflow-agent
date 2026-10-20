@@ -13,7 +13,22 @@ and logs of a hosted app.
   unset, the cloud is the single-app cloud described below.
 - `OBELISK_CLOUD_APP_API_PATTERN` (optional public env) is the allowed-host
   pattern for the hosted apps' own APIs. It defaults to
-  `https://*.obelisk.works:5005`.
+  `https://*.obelisk.works`.
+- `OBELISK_CLOUD_APP_WEBHOOK_PATTERN` (optional public env) grants the shell's
+  GET-only `curl` access to hosted webhook URLs. It also defaults to
+  `https://*.obelisk.works`.
+
+Public app endpoints use HTTPS port 443: `https://api--<app>.<domain>` for the
+API and `https://<app>.<domain>` for webhooks. Both defaults cover the production
+and `dev.obelisk.works` domains. Set the patterns when using another domain;
+the app policy and both deployment manifests use the same variables. Apply
+the app configuration and redeploy after changing these grants.
+
+Discover any app's webhook with
+`obelisk cloud app --app NAME endpoint webhook`, then fetch its route with
+`curl`. The fixed target's endpoint is configured by
+`TARGET_OBELISK_WEBHOOK_URL`, defaulting to `http://127.0.0.1:9290`.
+The shell uses the same endpoint command for every app.
 
 `packs/obelisk-control/descriptor.js` adds a "Cloud apps" section to the
 system prompt along with the cloud's current apps. If the provisioner rejects the token or can't be reached, the section is
@@ -56,6 +71,7 @@ to one of three places:
 
 ## Differences from the real CLI
 
+- `deployment pull DIRECTORY` is a shell convenience backed by lazy virtual files.
 - Interactive or account-level operations are rejected with a hint:
   `--fill` and `app fill`, `token new|revoke`, `--api-url` and `--api-token`.
 - `--app` may be left out when exactly one app exists, in addition to the
@@ -66,14 +82,29 @@ to one of three places:
   (`functions`, `executions`, `call`, `deployment`) are gone; they print a hint
   pointing at `obelisk cloud app ...`.
 
-## Deployment mounts
+## Pulling deployments
 
-`/workspace/cloud` is a lazy mount: first access lists the apps and registers a
-lazy mount for each at `/workspace/cloud/<app>/deployment`, with `current`
-linked to the active deployment. An app that appears later is mounted after the
-first successful `cloud app --app NAME ...` command against it.
-`cloud app deployment refresh` remounts that app's tree, discarding local
-edits. A failed listing is recorded in `/workspace/.mount-error`.
+```sh
+obelisk cloud apps list
+obelisk cloud app --app example deployment pull /workspace/example
+cd /workspace/example
+cat deployment.toml
+cat webhook/handle.js
+obelisk cloud app deployment apply deployment.toml
+```
+
+`deployment pull DIRECTORY` resolves the active deployment ID and fetches its
+manifest, app policy and file index. It writes `deployment.toml` and, when
+available, `app.toml` directly into the destination. Source files are registered
+with their content digests and load on first read. A remote deployment change
+does not change the pulled files. Edits remain local until submitted or applied;
+submission requests a fresh server-assigned deployment ID.
+
+The destination must be absent or an empty directory. To inspect a newer
+deployment, pull into another directory. Pull errors are reported by the
+command without creating a hidden error file. No automatic cloud deployment
+mount or `deployment refresh` command remains. `mount` lists reference
+repositories and MCP resources, without app endpoint URLs.
 
 ## The single-app cloud
 
@@ -82,6 +113,11 @@ Without `OBELISK_CLOUD_API_TOKEN` and with `TARGET_OBELISK_API_URL` set
 a cloud holding one app that cannot be provisioned. Its name is the
 `app_name` reported by the target's `/v1/info`, or `target` when it reports
 none.
+
+This adapter is an implementation detail. The LLM receives the same cloud
+instructions for every backend; restrictions are reported as command permission
+errors. Deployment pull, lazy file loading, submission and endpoint discovery
+use the same commands.
 
 - `apps list`, `app get|status` and `app endpoint` are answered from the
   `TARGET_OBELISK_*` URLs and whether `/v1/info` answers.

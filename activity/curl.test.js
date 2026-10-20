@@ -150,6 +150,33 @@ test("--max-time rejects invalid values", async () => {
     }
 });
 
+test("--max-time still fetches when the runtime has timers but no abort APIs", async () => {
+    const originalAbortSignal = globalThis.AbortSignal;
+    const originalAbortController = globalThis.AbortController;
+    globalThis.AbortSignal = undefined;
+    globalThis.AbortController = undefined;
+    try {
+        for (const option of ["-m", "--max-time"]) {
+            const { result, calls } = await run([option, "1", "http://example.test/x"]);
+            assert.deepEqual(result, { stdout: "hello", stderr: "", exit_code: 0 });
+            assert.equal(calls.length, 1);
+            assert.equal(calls[0].init.signal, undefined);
+        }
+    } finally {
+        globalThis.AbortSignal = originalAbortSignal;
+        globalThis.AbortController = originalAbortController;
+    }
+});
+
+test("--max-time maps a fetch timeout to exit 28", async () => {
+    const { result, calls } = await run(["--max-time", "0.01", "http://example.test/x"], {
+        responses: [() => { throw new DOMException("timed out", "TimeoutError"); }],
+    });
+    assert.ok(calls[0].init.signal instanceof AbortSignal);
+    assert.equal(result.exit_code, 28);
+    assert.equal(result.stderr, "curl: (28) Operation timed out after 10 ms\n");
+});
+
 test("non-GET methods stay rejected", async () => {
     const { result } = await run(["-X", "POST", "http://example.test/x"]);
     assert.equal(result.exit_code, 2);

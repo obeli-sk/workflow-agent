@@ -184,7 +184,7 @@ echo ">>> obelisk/mount E2E PASS"
 echo ">>> checking replay-stable ls formatting and collation"
 run_shell_turn "shell-e2e-ls" "touch b A a B && ls -la"
 LS_ORDER="$(printf '%s\n' "$SHELL_STDOUT" | sed -n 's/^[-d][^ ]* 1 user user [ ]*[0-9][0-9]* Jan  1 00:00 //p' | paste -sd ' ' -)"
-if [[ "$LS_ORDER" != ". .. a A apps b B cloud mcp" ]]; then
+if [[ "$LS_ORDER" != ". .. a A apps b B mcp" ]]; then
     echo "ls -la output did not use the replay-stable format/order: $SHELL_STDOUT" >&2
     exit 1
 fi
@@ -222,7 +222,7 @@ fi
 e2e_select_backend "$BACKEND"
 echo ">>> live-swap auto-upgrade E2E PASS"
 
-run_shell_turn "shell-e2e-submit-error" "cd cloud/workflow-agent/deployment/current && sed 's/GITHUB_MOUNT_TOKEN/REPLAY_MISSING_SECRET/g' deployment.toml > replay-invalid.toml && obelisk cloud app deployment submit replay-invalid.toml"
+run_shell_turn "shell-e2e-submit-error" "obelisk cloud app deployment pull /workspace/replay-check && cd /workspace/replay-check && sed 's/GITHUB_MOUNT_TOKEN/REPLAY_MISSING_SECRET/g' deployment.toml > replay-invalid.toml && obelisk cloud app deployment submit replay-invalid.toml"
 if [[ "$SHELL_STDERR" != *"REPLAY_MISSING_SECRET"* ]]; then
     echo "deployment submit did not surface its typed server error: $SHELL_STDERR" >&2
     exit 1

@@ -82,11 +82,11 @@ export async function requireSingleApp(name) {
         throw `Cannot reach the target to check app ${name}: ${transportError}; retry the command`;
     }
     if (name && name !== appName) {
-        throw `This cloud has a single app, ${appName}; there is no app ${name}. Use --app ${appName}`;
+        throw `App ${name} is unavailable; use cloud apps list to discover available apps`;
     }
     return appName;
 }
 
 export function refusal(command, appName) {
-    return `\`cloud ${command}\` is not available: this cloud has a single fixed app (${appName}) that cannot be created, reconfigured, started, stopped or deleted. Ask the user to change it`;
+    return `\`cloud ${command}\` is not permitted for app ${appName}: provisioning, configuration and lifecycle management are restricted. Ask the user to change its permissions`;
 }

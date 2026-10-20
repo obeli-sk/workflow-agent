@@ -57,17 +57,23 @@ echo ">>> source (${BACKEND}) active deployment: ${ORIG_ID}"
 TARGET_ORIG_ID="$("$OBELISK" deployment active -a "$E2E_TARGET_API_URL")"
 echo ">>> target starts empty: ${TARGET_ORIG_ID}"
 
-AUTHORED_ID="$("$OBELISK" generate deployment-id)"
-AUTHOR_DIR="/workspace/cloud/workflow-agent-e2e-target/deployment/$AUTHORED_ID"
+AUTHOR_DIR="/workspace/authored-target"
 AUTHOR_SCRIPT="$(printf '%s\n' \
-    "grep -o obelisk-app-config-v1 /workspace/cloud/workflow-agent-e2e-target/deployment/current/app.toml" \
     "mkdir -p $AUTHOR_DIR/src $AUTHOR_DIR/wit" \
     "printf '%s\\n' '[[activity_js]]' 'name = \"generated\"' 'ffqn = \"test:generated/api.run\"' 'wit = \"wit\"' 'location = \"src/index.js\"' > $AUTHOR_DIR/deployment.toml" \
     "printf '%s\\n' 'import { value } from \"./lib.js\"; export default function run() { return value; }' > $AUTHOR_DIR/src/index.js" \
     "printf '%s\\n' 'export const value = \"target-deploy-ok\";' > $AUTHOR_DIR/src/lib.js" \
     "printf '%s\\n' 'package test:generated; interface api { run: func() -> result<string>; } world impl { export api; }' > $AUTHOR_DIR/wit/world.wit" \
-    "obelisk cloud app deployment submit --allow-missing-runtime-config $AUTHOR_DIR/deployment.toml" \
-    "obelisk cloud app deployment apply $AUTHORED_ID")"
+    "NEW_ID=\$(obelisk cloud app deployment submit --allow-missing-runtime-config $AUTHOR_DIR/deployment.toml | jq -r .deployment_id)" \
+    'obelisk cloud app deployment apply "$NEW_ID"' \
+    'obelisk cloud app deployment pull /workspace/pulled-target' \
+    'grep -o obelisk-app-config-v1 /workspace/pulled-target/app.toml' \
+    'cat /workspace/pulled-target/src/lib.js' \
+    'obelisk cloud app endpoint webhook' \
+    'printf "%s\n" '\''export const value = "pulled-deploy-ok";'\'' > /workspace/pulled-target/src/lib.js' \
+    'NEW_ID=$(obelisk cloud app deployment submit --allow-missing-runtime-config /workspace/pulled-target/deployment.toml | jq -r .deployment_id)' \
+    'obelisk cloud app deployment apply "$NEW_ID"' \
+    'printf "APPLIED:%s\n" "$NEW_ID"')"
 
 # A `$`-prefixed opening prompt runs immediately as a direct shell script,
 # recorded as shell event id "shell-opened-0" (session.rs/session.js).
@@ -78,8 +84,10 @@ PARAMS="$(node -e 'process.stdout.write(JSON.stringify(["$" + process.argv[1], n
 e2e_wait_until e2e_opened_shell_done "$UI_BASE" "$SESSION_ID" \
     || { echo "authored submit+apply did not finish: $PROJECTION" >&2; exit 1; }
 OUTPUT="$(node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION")"
-[[ "$OUTPUT" == *"$AUTHORED_ID"* ]] || { echo "authored submit+apply script output unexpected: $PROJECTION" >&2; exit 1; }
-[[ "$OUTPUT" == *obelisk-app-config-v1* ]] || { echo "the target's app policy was not mounted: $PROJECTION" >&2; exit 1; }
+AUTHORED_ID="$(printf '%s' "$OUTPUT" | sed -n 's/^APPLIED://p' | tr -d '[:space:]')"
+[[ -n "$AUTHORED_ID" ]] || { echo "authored submit+apply script output unexpected: $PROJECTION" >&2; exit 1; }
+[[ "$OUTPUT" == *obelisk-app-config-v1* ]] || { echo "the target's app policy was not pulled: $PROJECTION" >&2; exit 1; }
+[[ "$OUTPUT" == *'export const value = "target-deploy-ok";'* ]] || { echo "pulled source did not load: $PROJECTION" >&2; exit 1; }
 echo ">>> agent session E2E PASS: authored, submitted, and applied a deployment against the target"
 
 # Verify independently against the target's own API - not the agent's
@@ -92,7 +100,7 @@ TARGET_NOW_ID="$("$OBELISK" deployment active -a "$E2E_TARGET_API_URL")"
 CHECK_EXEC_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_TARGET_API_URL" -e "$CHECK_EXEC_ID" test:generated/api.run '[]' >/dev/null
 RESULT="$("$OBELISK" execution result --follow -j -a "$E2E_TARGET_API_URL" "$CHECK_EXEC_ID")"
-[[ "$(printf '%s' "$RESULT" | tr -d '[:space:]')" == '{"ok":"target-deploy-ok"}' ]] || {
+[[ "$(printf '%s' "$RESULT" | tr -d '[:space:]')" == '{"ok":"pulled-deploy-ok"}' ]] || {
     echo "target's newly deployed function returned unexpected output: $RESULT" >&2
     exit 1
 }

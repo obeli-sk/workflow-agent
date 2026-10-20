@@ -51,8 +51,7 @@ echo ">>> E2E PASS: redeployed from the content-addressed store (${ORIG_ID} -> $
 
 UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
-AUTHORED_ID="$("$OBELISK" generate deployment-id)"
-AUTHOR_DIR="/workspace/cloud/workflow-agent/deployment/$AUTHORED_ID"
+AUTHOR_DIR="/workspace/authored"
 AUTHOR_SCRIPT="$(printf '%s\n' \
     "mkdir -p $AUTHOR_DIR/src $AUTHOR_DIR/wit" \
     "printf '%s\\n' '[[activity_js]]' 'name = \"generated\"' 'ffqn = \"test:generated/api.run\"' 'wit = \"wit\"' 'location = \"src/index.js\"' > $AUTHOR_DIR/deployment.toml" \
@@ -66,7 +65,12 @@ PARAMS="$(node -e 'process.stdout.write(JSON.stringify(["$" + process.argv[1], n
 e2e_wait_until e2e_opened_shell_done "$UI_BASE" "$SESSION_ID" \
     || { echo "authored submit did not finish: $PROJECTION" >&2; exit 1; }
 OUTPUT="$(node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION")"
-[[ "$OUTPUT" == *"$AUTHORED_ID"* ]] || { echo "authored submit failed: $PROJECTION" >&2; exit 1; }
+AUTHORED_ID="$(jq -r .deployment_id <<<"$OUTPUT")"
+[[ "$AUTHORED_ID" == Dep_* && "$AUTHORED_ID" != "$ORIG_ID" && "$AUTHORED_ID" != "$NEW_ID" ]] \
+    || { echo "authored submit did not return a fresh deployment id: $PROJECTION" >&2; exit 1; }
+AUTHORED_MANIFEST="$("$OBELISK" deployment show -a "$E2E_API_URL" "$AUTHORED_ID")"
+[[ "$AUTHORED_MANIFEST" == *'test:generated'* ]] \
+    || { echo "authored deployment was not stored: $AUTHORED_MANIFEST" >&2; exit 1; }
 
 e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
 

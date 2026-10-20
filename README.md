@@ -111,6 +111,12 @@ obelisk cloud app --app NAME executions list
 obelisk cloud app --app NAME secrets set API_KEY --stdin
 ```
 
+Hosted API and webhook access defaults to `https://*.obelisk.works` on port
+443, including `dev.obelisk.works`. For another domain, set
+`OBELISK_CLOUD_APP_API_PATTERN` and `OBELISK_CLOUD_APP_WEBHOOK_PATTERN` to its
+allowed-host patterns. The webhook grant is GET-only and carries no API token.
+Find the webhook URL with `obelisk cloud app --app NAME endpoint webhook`.
+
 Interactive and account-level commands (`--fill`, `token new|revoke`) are not
 available from the session. See [`docs/obelisk-cloud.md`](docs/obelisk-cloud.md).
 
@@ -137,7 +143,8 @@ when mounting repos outside `obeli-sk`.
 `help` lists the commands, which cover the usual file, text and search tools.
 Besides those, the shell provides:
 
-- `/workspace/cloud/<app>/deployment`: each app's active deployment, as files.
+- `obelisk cloud app --app NAME deployment pull DIRECTORY`: an editable snapshot
+  of the active deployment; source files load when first read.
 - `obelisk cloud ...`: the apps in the cloud (see above).
 - `curl`: GET-only, limited to the Obelisk docs and the apps' webhooks.
 - `mcp` and `/workspace/mcp`: configured MCP servers.
