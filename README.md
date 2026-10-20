@@ -41,7 +41,8 @@ All settings are environment variables read at server start.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LLM_BASE_URL` | `http://127.0.0.1:9190` | Endpoint origin. Models are discovered from `GET /v1/models`. |
+| `LLM_BASE_URL` | `http://127.0.0.1:9190` | Endpoint origin, without a path. |
+| `LLM_API_PREFIX` | empty | Path before `/v1/...` on gateways that need one, e.g. `/api` for OpenRouter. Models are discovered from `GET <LLM_BASE_URL><LLM_API_PREFIX>/v1/models`. |
 | `LLM_API_KEY` | unset | Bearer token, if the endpoint needs one. |
 | `AGENT_MODELS` | unset | Fallback model catalog (JSON), used when discovery is unavailable. |
 
@@ -50,7 +51,9 @@ The default endpoint is
 which serves Claude and Codex subscriptions locally. Two ready-made catalogs ship
 for other endpoints, used as `AGENT_MODELS="$(cat models.openrouter.json)"`:
 
-- `models.openrouter.json`: [OpenRouter](https://openrouter.ai), set `LLM_API_KEY`.
+- `models.openrouter.json`: [OpenRouter](https://openrouter.ai), with
+  `LLM_BASE_URL=https://openrouter.ai`, `LLM_API_PREFIX=/api` and `LLM_API_KEY`.
+  OpenRouter's discovery works too, so the catalog is optional there.
 - `models.exe-integration.json`: the keyless exe.dev LLM integration at
   `https://llm.int.exe.xyz`. From outside exe.dev, use the reverse proxy in
   [`examples/exe-llm-proxy.conf`](examples/exe-llm-proxy.conf) over an SSH tunnel.
