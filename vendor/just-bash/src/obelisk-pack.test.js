@@ -450,30 +450,37 @@ test("generate deployment prints the embedded template", () => {
     assert.equal(host.calls.length, 0);
 });
 
-// A fake `obelisk-agent:mounts/apps.request` serving a two-level template tree.
-function templateSource() {
+// A fake `obelisk-agent:mounts/apps.request` serving a two-level template tree at `ref`.
+function templateSource(obeliskVersion = "v0.42.0", ref = obeliskVersion) {
     const bodies = {
-        "examples/templates/js-http": JSON.stringify([
+        "examples/templates": JSON.stringify([
+            { name: "minimal", type: "dir" },
+            { name: "url-health-dashboard", type: "dir" },
+        ]),
+        "examples/templates/minimal": JSON.stringify([
             { name: "app.toml", type: "file" },
             { name: "README.md", type: "file" },
             { name: "workflow", type: "dir" },
         ]),
-        "examples/templates/js-http/workflow": JSON.stringify([{ name: "run.js", type: "file" }]),
-        "examples/templates/js-http/workflow/run.js": "42\n",
+        "examples/templates/minimal/workflow": JSON.stringify([{ name: "run.js", type: "file" }]),
+        "examples/templates/minimal/workflow/run.js": "42\n",
     };
     const calls = [];
     const githubContents = (method, paramsJson) => {
         calls.push([method, paramsJson]);
-        return bodies[JSON.parse(paramsJson).path];
+        const params = JSON.parse(paramsJson);
+        const body = params.ref === ref ? bodies[params.path] : undefined;
+        if (body === undefined) throw `404 Not Found: ${params.path}`;
+        return body;
     };
-    return { calls, generate: { obeliskVersion: "v0.42.0", githubContents, webhookUrl: "http://target:9290" } };
+    return { calls, generate: { obeliskVersion, githubContents, webhookUrl: "http://target:9290" } };
 }
 
-test("generate new fetches the template at OBELISK_VERSION", () => {
+test("generate new fetches the chosen template at OBELISK_VERSION", () => {
     const i = interp("/workspace/My Cool_App");
     const host = fakeHost();
     let source = templateSource();
-    let out = executeObelisk(i, ["generate", "new"], "", host, source.generate);
+    let out = executeObelisk(i, words("generate new --template minimal"), "", host, source.generate);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(
         out.stdout,
@@ -484,22 +491,41 @@ test("generate new fetches the template at OBELISK_VERSION", () => {
     assert.equal(i.vfs.readFile("/workspace/My Cool_App/workflow/run.js"), "42\n");
     assert.deepEqual(source.calls[2], [
         "read",
-        '{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/js-http/workflow/run.js"}',
+        '{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/minimal/workflow/run.js"}',
     ]);
     assert.deepEqual(host.calls, []);
 
     // A second run must not overwrite anything.
-    out = executeObelisk(i, ["generate", "new"], "", host, templateSource().generate);
+    out = executeObelisk(i, words("generate new --template minimal"), "", host, templateSource().generate);
     assert.equal(out.exitCode, 2);
     assert.match(out.stderr, /already exists/);
 
-    out = executeObelisk(i, ["generate", "new", "chosen-app"], "", host, templateSource().generate);
+    out = executeObelisk(i, words("generate new --template minimal chosen-app"), "", host, templateSource().generate);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(i.vfs.isFile("/workspace/My Cool_App/chosen-app/workflow/run.js"), true);
 
-    out = executeObelisk(i, ["generate", "new", "Bad Name"], "", host, templateSource().generate);
+    out = executeObelisk(i, ["generate", "new", "--template", "minimal", "Bad Name"], "", host, templateSource().generate);
     assert.equal(out.exitCode, 2);
     assert.match(out.stderr, /invalid app name/);
+});
+
+test("generate new requires --template and lists the available ones", () => {
+    const out = executeObelisk(interp("/workspace/app"), words("generate new"), "", fakeHost(), templateSource().generate);
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /--template is required; templates at obeli-sk\/obelisk@v0\.42\.0: minimal, url-health-dashboard/);
+});
+
+test("generate new falls back to main when OBELISK_VERSION has no such template", () => {
+    for (const version of ["v0.43.0-rc.6", "latest"]) {
+        const i = interp("/workspace/app");
+        const source = templateSource(version, "main");
+        const out = executeObelisk(i, words("generate new --template minimal"), "", fakeHost(), source.generate);
+        assert.equal(out.exitCode, 0, out.stderr);
+        assert.equal(i.vfs.readFile("/workspace/app/workflow/run.js"), "42\n");
+    }
+    const out = executeObelisk(interp("/workspace/app"), words("generate new --template bogus"), "", fakeHost(), templateSource().generate);
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /@v0\.42\.0:examples\/templates\/bogus: 404 Not Found.*@main:examples\/templates\/bogus: 404/);
 });
 
 test("generate requires a known subcommand", () => {

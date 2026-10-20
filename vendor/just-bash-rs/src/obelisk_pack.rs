@@ -29,7 +29,9 @@ const APP_POLICY_FILE: &str = "app.toml";
 
 const TEMPLATE_OWNER: &str = "obeli-sk";
 const TEMPLATE_REPO: &str = "obelisk";
-const TEMPLATE_PATH: &str = "examples/templates/js-http";
+const TEMPLATES_ROOT: &str = "examples/templates";
+/// Used when OBELISK_VERSION is not a ref (`latest`) or its templates are missing.
+const TEMPLATE_FALLBACK_REF: &str = "main";
 
 /// The placeholder value the agent sees in `component_files` maps in place of a
 /// pinned digest; `deployment submit` replaces each with the file's real digest.
@@ -497,7 +499,12 @@ fn execute_generate(
 ) -> Result<CommandOutput, String> {
     match action {
         "deployment" => Ok(ok(ensure_trailing_newline(DEPLOYMENT_TEMPLATE.to_string()))),
-        "new" => generate_new(interp, first_positional(args, &[]), generate),
+        "new" => generate_new(
+            interp,
+            first_positional(args, &["--template"]),
+            option(args, "--template", ""),
+            generate,
+        ),
         "" => Ok(fail(format!(
             "obelisk generate: a subcommand is required\n{}",
             generate_help()
@@ -508,14 +515,30 @@ fn execute_generate(
     }
 }
 
-/// PORT: real obelisk `generate new [NAME]`. The template files are read from
-/// the `obelisk` repo at the operator-pinned `OBELISK_VERSION` ref, so they
-/// never drift from the target server.
+/// PORT: real obelisk `generate new [NAME]`, except `--template` is required.
+/// The template is read from the `obelisk` repo at the operator-pinned
+/// `OBELISK_VERSION` ref, so it never drifts from the target server.
 fn generate_new(
     interp: &mut Interpreter,
     name: Option<&str>,
+    template: &str,
     generate: &mut Generate,
 ) -> Result<CommandOutput, String> {
+    if template.is_empty() {
+        let (git_ref, names) = list_templates(generate)?;
+        return Err(format!(
+            "generate new: --template is required; templates at {TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}: {}",
+            names.join(", ")
+        ));
+    }
+    if template == "."
+        || template == ".."
+        || !template
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err(format!("generate new: invalid template name '{template}'"));
+    }
     let app_name = match name {
         Some(name) => name.to_string(),
         None => slugify_app_name(&basename(&interp.cwd)),
@@ -531,19 +554,15 @@ fn generate_new(
         ));
     }
 
-    let git_ref = &generate.obelisk_version;
-    let repo = json!({ "owner": TEMPLATE_OWNER, "repo": TEMPLATE_REPO, "ref": git_ref });
-    let mut files = Vec::new();
-    collect_template_files(&mut generate.github, &repo, "", &mut files).map_err(|error| {
-        format!(
-            "cannot fetch the starter template from {TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{TEMPLATE_PATH}: {error}"
-        )
+    let template_path = format!("{TEMPLATES_ROOT}/{template}");
+    let (_, mut files) = with_template_ref(generate, &template_path, |github, repo| {
+        let mut collected = Vec::new();
+        collect_template_files(github, repo, &template_path, "", &mut collected)?;
+        if collected.is_empty() {
+            return Err("contains no files".to_string());
+        }
+        Ok(collected)
     })?;
-    if files.is_empty() {
-        return Err(format!(
-            "{TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{TEMPLATE_PATH} contains no files"
-        ));
-    }
     files.push((
         "README.md".to_string(),
         sandbox_readme(&generate.webhook_url),
@@ -847,18 +866,64 @@ to allow it (e.g. another host or secret) in the target server's app config.
     )
 }
 
+fn list_templates(generate: &mut Generate) -> Result<(String, Vec<String>), String> {
+    with_template_ref(generate, TEMPLATES_ROOT, |github, repo| {
+        let listing: Value =
+            serde_json::from_str(&github_request(github, "list", repo, TEMPLATES_ROOT)?)
+                .map_err(|e| format!("list did not return JSON: {e}"))?;
+        let entries = listing
+            .as_array()
+            .ok_or_else(|| "list did not return a JSON array".to_string())?;
+        Ok(entries
+            .iter()
+            .filter(|entry| entry.get("type").and_then(Value::as_str) == Some("dir"))
+            .filter_map(|entry| entry.get("name").and_then(Value::as_str).map(str::to_string))
+            .collect())
+    })
+}
+
+/// Runs `fetch` at OBELISK_VERSION, retrying at `TEMPLATE_FALLBACK_REF` when that
+/// fails; returns the ref that worked.
+fn with_template_ref<T>(
+    generate: &mut Generate,
+    path: &str,
+    mut fetch: impl FnMut(&mut GithubContents, &Value) -> Result<T, String>,
+) -> Result<(String, T), String> {
+    let pinned = generate.obelisk_version.as_str();
+    let mut refs = Vec::new();
+    if !pinned.is_empty() && pinned != "latest" && pinned != TEMPLATE_FALLBACK_REF {
+        refs.push(pinned.to_string());
+    }
+    refs.push(TEMPLATE_FALLBACK_REF.to_string());
+    let mut errors = Vec::new();
+    for git_ref in refs {
+        let repo = json!({ "owner": TEMPLATE_OWNER, "repo": TEMPLATE_REPO, "ref": git_ref });
+        match fetch(&mut generate.github, &repo) {
+            Ok(value) => return Ok((git_ref, value)),
+            Err(error) => {
+                errors.push(format!("{TEMPLATE_OWNER}/{TEMPLATE_REPO}@{git_ref}:{path}: {error}"))
+            }
+        }
+    }
+    Err(format!(
+        "cannot fetch the starter template from {}",
+        errors.join("; ")
+    ))
+}
+
 /// Depth-first listing of the template tree; `relative` is the path under
-/// `TEMPLATE_PATH`, collected as `(relative file path, contents)`.
+/// `root`, collected as `(relative file path, contents)`.
 fn collect_template_files(
     github: &mut GithubContents,
     repo: &Value,
+    root: &str,
     relative: &str,
     files: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
     let remote = if relative.is_empty() {
-        TEMPLATE_PATH.to_string()
+        root.to_string()
     } else {
-        format!("{TEMPLATE_PATH}/{relative}")
+        format!("{root}/{relative}")
     };
     let listing: Value = serde_json::from_str(&github_request(github, "list", repo, &remote)?)
         .map_err(|e| format!("list did not return JSON: {e}"))?;
@@ -876,12 +941,12 @@ fn collect_template_files(
             format!("{relative}/{name}")
         };
         match entry.get("type").and_then(Value::as_str) {
-            Some("dir") => collect_template_files(github, repo, &child, files)?,
+            Some("dir") => collect_template_files(github, repo, root, &child, files)?,
             // The app policy lives on the target server, see `sandbox_readme`.
             _ if child == "app.toml" || child == "README.md" => {}
             _ => {
                 let body =
-                    github_request(github, "read", repo, &format!("{TEMPLATE_PATH}/{child}"))?;
+                    github_request(github, "read", repo, &format!("{root}/{child}"))?;
                 files.push((child, body));
             }
         }
@@ -2069,18 +2134,18 @@ Print a starter Obelisk configuration file, or create a new app.\n\
 \n\
 Subcommands:\n\
   deployment   Print a default deployment.toml with every option documented.\n\
-  new [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n"
+  new --template NAME [APP]  Create a JS app from a template, in a new APP directory or the current one.\n"
         .to_string()
 }
 
 fn generate_new_help() -> String {
-    "Usage: obelisk generate new [NAME]\n\
+    "Usage: obelisk generate new --template NAME [APP]\n\
 \n\
-Create a runnable JS starter app (deployment.toml, a webhook, a workflow, an\n\
-HTTP activity, and a README). With NAME, the app is created in a new NAME\n\
-directory; otherwise in the current directory, named after its slug. The files\n\
-are fetched from the obelisk repository at the operator's OBELISK_VERSION. There\n\
-is no app.toml: the target's app policy is in\n\
+Create a runnable JS starter app from the obelisk repository's\n\
+examples/templates/NAME at the operator's OBELISK_VERSION (falling back to main).\n\
+Run without --template to list the templates. With APP, the app is created in a\n\
+new APP directory; otherwise in the current directory, named after its slug.\n\
+There is no app.toml: the target's app policy is in\n\
 /workspace/deployment/current/app.toml.\n"
         .to_string()
 }
@@ -3117,42 +3182,60 @@ mod tests {
         }
     }
 
-    /// A fake `apps.request` serving a two-level template tree, recording calls.
-    fn template_generate(calls: &Rc<RefCell<Vec<(String, String)>>>) -> Generate {
+    /// A fake `apps.request` serving a two-level template tree at `served_ref`, recording calls.
+    fn template_generate_at(
+        calls: &Rc<RefCell<Vec<(String, String)>>>,
+        obelisk_version: &str,
+        served_ref: &str,
+    ) -> Generate {
         let calls = calls.clone();
+        let served_ref = served_ref.to_string();
         Generate {
-            obelisk_version: "v0.42.0".to_string(),
+            obelisk_version: obelisk_version.to_string(),
             webhook_url: "http://target:9290".to_string(),
             github: Box::new(move |method, params| {
                 calls
                     .borrow_mut()
                     .push((method.to_string(), params.to_string()));
                 let params: Value = serde_json::from_str(params).unwrap();
-                Ok(match params["path"].as_str().unwrap() {
-                    "examples/templates/js-http" => json!([
+                let path = params["path"].as_str().unwrap();
+                if params["ref"] != served_ref.as_str() {
+                    return Err(format!("404 Not Found: {path}"));
+                }
+                Ok(match path {
+                    "examples/templates" => json!([
+                        {"name": "minimal", "type": "dir"},
+                        {"name": "url-health-dashboard", "type": "dir"}
+                    ])
+                    .to_string(),
+                    "examples/templates/minimal" => json!([
                         {"name": "app.toml", "type": "file"},
                         {"name": "README.md", "type": "file"},
                         {"name": "workflow", "type": "dir"}
                     ])
                     .to_string(),
-                    "examples/templates/js-http/workflow" => {
+                    "examples/templates/minimal/workflow" => {
                         json!([{"name": "run.js", "type": "file"}]).to_string()
                     }
-                    "examples/templates/js-http/workflow/run.js" => "42\n".to_string(),
-                    other => panic!("unexpected path {other}"),
+                    "examples/templates/minimal/workflow/run.js" => "42\n".to_string(),
+                    other => return Err(format!("404 Not Found: {other}")),
                 })
             }),
         }
     }
 
+    fn template_generate(calls: &Rc<RefCell<Vec<(String, String)>>>) -> Generate {
+        template_generate_at(calls, "v0.42.0", "v0.42.0")
+    }
+
     #[test]
-    fn generate_new_fetches_the_template_at_obelisk_version() {
+    fn generate_new_fetches_the_chosen_template_at_obelisk_version() {
         let mut host = FakeHost::new();
         let calls = Rc::new(RefCell::new(Vec::new()));
         let mut i = interp("/workspace/My Cool_App");
         let out = execute_obelisk(
             &mut i,
-            &words(&["generate", "new"]),
+            &words(&["generate", "new", "--template", "minimal"]),
             "",
             &mut template_generate(&calls),
             &mut host,
@@ -3175,7 +3258,7 @@ mod tests {
             calls.borrow()[2],
             (
                 "read".to_string(),
-                r#"{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/js-http/workflow/run.js"}"#.to_string()
+                r#"{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/minimal/workflow/run.js"}"#.to_string()
             )
         );
         assert!(host.calls.is_empty());
@@ -3183,7 +3266,7 @@ mod tests {
         // A second run must not overwrite anything.
         let out = execute_obelisk(
             &mut i,
-            &words(&["generate", "new"]),
+            &words(&["generate", "new", "--template", "minimal"]),
             "",
             &mut template_generate(&calls),
             &mut host,
@@ -3193,7 +3276,7 @@ mod tests {
 
         let out = execute_obelisk(
             &mut i,
-            &words(&["generate", "new", "chosen-app"]),
+            &words(&["generate", "new", "--template", "minimal", "chosen-app"]),
             "",
             &mut template_generate(&calls),
             &mut host,
@@ -3203,13 +3286,64 @@ mod tests {
 
         let out = execute_obelisk(
             &mut i,
-            &words(&["generate", "new", "Bad Name"]),
+            &words(&["generate", "new", "--template", "minimal", "Bad Name"]),
             "",
             &mut template_generate(&calls),
             &mut host,
         );
         assert_eq!(out.exit_code, 2);
         assert!(out.stderr.contains("invalid app name"), "{}", out.stderr);
+    }
+
+    #[test]
+    fn generate_new_requires_a_template_and_lists_the_available_ones() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let out = execute_obelisk(
+            &mut interp("/workspace/app"),
+            &words(&["generate", "new"]),
+            "",
+            &mut template_generate(&calls),
+            &mut FakeHost::new(),
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(
+            out.stderr.contains(
+                "--template is required; templates at obeli-sk/obelisk@v0.42.0: minimal, url-health-dashboard"
+            ),
+            "{}",
+            out.stderr
+        );
+    }
+
+    #[test]
+    fn generate_new_falls_back_to_main_when_obelisk_version_has_no_such_template() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        for version in ["v0.43.0-rc.6", "latest"] {
+            let mut i = interp("/workspace/app");
+            let out = execute_obelisk(
+                &mut i,
+                &words(&["generate", "new", "--template", "minimal"]),
+                "",
+                &mut template_generate_at(&calls, version, "main"),
+                &mut FakeHost::new(),
+            );
+            assert_eq!(out.exit_code, 0, "{}", out.stderr);
+            assert_eq!(i.fs.read_file("/workspace/app/workflow/run.js").unwrap(), b"42\n");
+        }
+        let out = execute_obelisk(
+            &mut interp("/workspace/app"),
+            &words(&["generate", "new", "--template", "bogus"]),
+            "",
+            &mut template_generate(&calls),
+            &mut FakeHost::new(),
+        );
+        assert_eq!(out.exit_code, 2);
+        assert!(
+            out.stderr.contains("@v0.42.0:examples/templates/bogus: 404 Not Found")
+                && out.stderr.contains("@main:examples/templates/bogus: 404"),
+            "{}",
+            out.stderr
+        );
     }
 
     #[test]

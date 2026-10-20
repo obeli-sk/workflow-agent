@@ -32,7 +32,9 @@ const APP_POLICY_FILE = "app.toml";
 
 const TEMPLATE_OWNER = "obeli-sk";
 const TEMPLATE_REPO = "obelisk";
-const TEMPLATE_PATH = "examples/templates/js-http";
+const TEMPLATES_ROOT = "examples/templates";
+// Used when OBELISK_VERSION is not a ref (`latest`) or its templates are missing.
+const TEMPLATE_FALLBACK_REF = "main";
 
 // The placeholder value the agent sees in `component_files` maps in place of
 // a pinned digest; `deployment submit` replaces each with the file's real
@@ -391,15 +393,24 @@ to allow it (e.g. another host or secret) in the target server's app config.
 // `generate new` fetches the starter app from GitHub at `generate.obeliskVersion`.
 function executeGenerate(interp, action, args, generate) {
     if (action === "deployment") return ok(ensureTrailingNewline(DEPLOYMENT_TEMPLATE));
-    if (action === "new") return generateNew(interp, firstPositional(args, []), generate);
+    if (action === "new") {
+        return generateNew(interp, firstPositional(args, ["--template"]), option(args, "--template", ""), generate);
+    }
     if (action === "") return fail(`obelisk generate: a subcommand is required\n${generateHelp}`);
     return fail(`obelisk generate: unknown action '${action}'\n`);
 }
 
-// PORT: real obelisk `generate new [NAME]`. The template files are read from
-// the `obelisk` repo at the operator-pinned `OBELISK_VERSION` ref, so they
-// never drift from the target server.
-function generateNew(interp, name, generate) {
+// PORT: real obelisk `generate new [NAME]`, except `--template` is required.
+// The template is read from the `obelisk` repo at the operator-pinned
+// `OBELISK_VERSION` ref, so it never drifts from the target server.
+function generateNew(interp, name, template, generate) {
+    if (!template) {
+        const { ref, names } = listTemplates(generate);
+        throw `generate new: --template is required; templates at ${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${ref}: ${names.join(", ")}`;
+    }
+    if (!/^[A-Za-z0-9._-]+$/.test(template) || template === "." || template === "..") {
+        throw `generate new: invalid template name '${template}'`;
+    }
     const appName = name !== undefined ? name : slugifyAppName(basename(interp.cwd));
     validateAppName(appName);
     const outputDir = name !== undefined ? interp.resolvePath(appName) : interp.cwd;
@@ -407,17 +418,13 @@ function generateNew(interp, name, generate) {
         throw `cannot create new app directory ${outputDir}: File exists`;
     }
 
-    const gitRef = generate.obeliskVersion;
-    const repo = { owner: TEMPLATE_OWNER, repo: TEMPLATE_REPO, ref: gitRef };
-    const files = [];
-    try {
-        collectTemplateFiles(generate.githubContents, repo, "", files);
-    } catch (error) {
-        throw `cannot fetch the starter template from ${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${gitRef}:${TEMPLATE_PATH}: ${error}`;
-    }
-    if (files.length === 0) {
-        throw `${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${gitRef}:${TEMPLATE_PATH} contains no files`;
-    }
+    const templatePath = `${TEMPLATES_ROOT}/${template}`;
+    const files = withTemplateRef(generate, templatePath, (repo) => {
+        const collected = [];
+        collectTemplateFiles(generate.githubContents, repo, templatePath, "", collected);
+        if (collected.length === 0) throw "contains no files";
+        return collected;
+    });
     files.push(["README.md", sandboxReadme(generate.webhookUrl)]);
     for (const [relative] of files) {
         const path = `${outputDir}/${relative}`;
@@ -433,21 +440,47 @@ function generateNew(interp, name, generate) {
     return ok(stdout);
 }
 
+function listTemplates(generate) {
+    let ref = "";
+    const names = withTemplateRef(generate, TEMPLATES_ROOT, (repo) => {
+        ref = repo.ref;
+        const entries = decodeJson(generate.githubContents("list", JSON.stringify({ ...repo, path: TEMPLATES_ROOT })));
+        if (!Array.isArray(entries)) throw "list did not return a JSON array";
+        return entries.filter((entry) => entry?.type === "dir").map((entry) => entry.name);
+    });
+    return { ref, names };
+}
+
+// Runs `fetch` at OBELISK_VERSION, retrying at TEMPLATE_FALLBACK_REF when that fails.
+function withTemplateRef(generate, path, fetch) {
+    const pinned = generate.obeliskVersion && generate.obeliskVersion !== "latest" ? generate.obeliskVersion : "";
+    const refs = pinned && pinned !== TEMPLATE_FALLBACK_REF ? [pinned, TEMPLATE_FALLBACK_REF] : [TEMPLATE_FALLBACK_REF];
+    const errors = [];
+    for (const ref of refs) {
+        try {
+            return fetch({ owner: TEMPLATE_OWNER, repo: TEMPLATE_REPO, ref });
+        } catch (error) {
+            errors.push(`${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${ref}:${path}: ${error}`);
+        }
+    }
+    throw `cannot fetch the starter template from ${errors.join("; ")}`;
+}
+
 // Depth-first listing of the template tree; `relative` is the path under
-// TEMPLATE_PATH, collected as `[relative file path, contents]`.
-function collectTemplateFiles(githubContents, repo, relative, files) {
-    const remote = relative === "" ? TEMPLATE_PATH : `${TEMPLATE_PATH}/${relative}`;
+// `root`, collected as `[relative file path, contents]`.
+function collectTemplateFiles(githubContents, repo, root, relative, files) {
+    const remote = relative === "" ? root : `${root}/${relative}`;
     const entries = decodeJson(githubContents("list", JSON.stringify({ ...repo, path: remote })));
     if (!Array.isArray(entries)) throw "list did not return a JSON array";
     for (const entry of entries) {
         if (typeof entry?.name !== "string") throw `list entry without a name: ${JSON.stringify(entry)}`;
         const child = relative === "" ? entry.name : `${relative}/${entry.name}`;
         if (entry.type === "dir") {
-            collectTemplateFiles(githubContents, repo, child, files);
+            collectTemplateFiles(githubContents, repo, root, child, files);
         } else if (child === "app.toml" || child === "README.md") {
             // The app policy lives on the target server, see `sandboxReadme`.
         } else {
-            files.push([child, githubContents("read", JSON.stringify({ ...repo, path: `${TEMPLATE_PATH}/${child}` }))]);
+            files.push([child, githubContents("read", JSON.stringify({ ...repo, path: `${root}/${child}` }))]);
         }
     }
 }
@@ -954,10 +987,10 @@ const deploymentApplyHelp =
     "Usage: obelisk deployment apply [OPTIONS] PATH|ID\n\nHot-redeploy now (fails if it cannot be applied live). A deployment TOML PATH is\nsubmitted first, like `submit`; a `Dep_` ID applies a stored deployment.\n\nOptions:\n--description TEXT   Human-readable description for a newly submitted deployment.\n";
 
 const generateHelp =
-    "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file, or create a new app.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\nnew [NAME]   Create a JS app in a new NAME directory, or in the current directory.\n";
+    "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file, or create a new app.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\nnew --template NAME [APP]  Create a JS app from a template, in a new APP directory or the current one.\n";
 
 const generateNewHelp =
-    "Usage: obelisk generate new [NAME]\n\nCreate a runnable JS starter app (deployment.toml, a webhook, a workflow, an\nHTTP activity, and a README). With NAME, the app is created in a new NAME\ndirectory; otherwise in the current directory, named after its slug. The files\nare fetched from the obelisk repository at the operator's OBELISK_VERSION. There\nis no app.toml: the target's app policy is in\n/workspace/deployment/current/app.toml.\n";
+    "Usage: obelisk generate new --template NAME [APP]\n\nCreate a runnable JS starter app from the obelisk repository's\nexamples/templates/NAME at the operator's OBELISK_VERSION (falling back to main).\nRun without --template to list the templates. With APP, the app is created in a\nnew APP directory; otherwise in the current directory, named after its slug.\nThere is no app.toml: the target's app policy is in\n/workspace/deployment/current/app.toml.\n";
 
 const generateDeploymentHelp =
     "Usage: obelisk generate deployment\n\nPrint a default deployment.toml with every option documented as comments.\nRedirect it to a file to scaffold a new deployment, e.g.\n`obelisk generate deployment > deployment.toml`.\n";
