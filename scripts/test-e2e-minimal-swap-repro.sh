@@ -18,7 +18,6 @@ source "$ROOT/scripts/e2e-lib.sh"
 BACKEND="${1:-rs}"
 e2e_init "minimal-swap-repro-$BACKEND" 28022 28094 "minimal-swap-repro-token"
 export OBELISK_API_URL="$E2E_API_URL"
-export OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:28022"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 

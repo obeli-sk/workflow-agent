@@ -69,7 +69,6 @@ stop or delete apps. By default the target is the instance the agent itself runs
 | Variable | Purpose |
 | --- | --- |
 | `TARGET_OBELISK_API_URL` | Target API, e.g. `http://127.0.0.1:5205`. |
-| `TARGET_OBELISK_API_URL_REGEX` | Regex allowing that URL, e.g. `http://127\\.0\\.0\\.1:5205`. |
 | `TARGET_OBELISK_TOKEN` | API token for the target (required). |
 | `TARGET_OBELISK_WEBHOOK_URL` | Target's webhook listener, reachable by the shell's `curl`. Default `http://127.0.0.1:9290`. |
 
@@ -77,7 +76,6 @@ To run a separate local target:
 
 ```sh
 export TARGET_OBELISK_API_URL=http://127.0.0.1:5205
-export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:5205"
 export TARGET_OBELISK_TOKEN=$(obelisk generate token)
 just serve-target
 ```

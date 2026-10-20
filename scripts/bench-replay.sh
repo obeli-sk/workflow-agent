@@ -9,7 +9,6 @@ OUTPUT_DIR="$(realpath -m "${1:-/tmp/workflow-agent-replay-benchmark}")"
 mkdir -p "$OUTPUT_DIR"
 e2e_init replay-benchmark "${BENCH_API_PORT:-15005}" "${BENCH_EXTERNAL_PORT:-19090}" replay-benchmark
 export OBELISK_API_URL="$E2E_API_URL"
-export OBELISK_API_URL_REGEX="$TARGET_OBELISK_API_URL_REGEX"
 export AGENT_MODELS='[]' DOCS_URLS_JSON='[]' MCP_SERVERS_JSON='[]' PROGRAMS_JSON='[]'
 export OBELISK_JS_RUNTIME=v8
 unset MCP_SERVER_TOKEN

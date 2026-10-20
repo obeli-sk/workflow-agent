@@ -59,7 +59,6 @@ e2e_init() {
     # instance (self-host default; matches OBELISK_API_URL below).
     export TARGET_OBELISK_TOKEN="$token"
     export TARGET_OBELISK_API_URL="$E2E_API_URL"
-    export TARGET_OBELISK_API_URL_REGEX="http://127\\.0\\.0\\.1:${api_port}"
     export OBELISK__API__LISTENING_ADDR="127.0.0.1:${api_port}"
     export OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}"
     export OBELISK__WEBUI__ENABLED=false
@@ -70,7 +69,6 @@ e2e_init() {
     export LLM_BASE_URL="http://127.0.0.1:9"
     # Closed port, so no suite reaches the real GitHub API; mount suites start their own mock.
     export GITHUB_API_URL="http://127.0.0.1:9"
-    export GITHUB_API_URL_REGEX="http://127\\.0\\.0\\.1:9"
     unset GITHUB_MOUNT_TOKEN
     # No live docs fetch at session start; the system prompt keeps its placeholder.
     export DOCS_URLS_JSON="[]"
@@ -91,7 +89,6 @@ e2e_start_github_mock() {
     E2E_GITHUB_PID=$!
     e2e_wait_until e2e_github_listening || { echo "fake github did not start: $(cat "$E2E_TMP/github.log")" >&2; return 1; }
     export GITHUB_API_URL="http://127.0.0.1:${E2E_GITHUB_PORT}"
-    export GITHUB_API_URL_REGEX="http://127\\.0\\.0\\.1:${E2E_GITHUB_PORT}"
 }
 
 # Port offset for a suite's own rs/js pair: 0 for rs, 1000 for js. Suites add
