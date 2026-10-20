@@ -65,7 +65,7 @@ const PACK_SYSTEM_PROMPT =
     "- `/workspace/cloud`, `/workspace/apps/*`, and `/workspace/mcp` are lazy: a directory lists and a file's bytes fetch over the network on first access.\n" +
     "- Listing `/workspace/cloud` lists the apps; each app's deployment mount is cheap (one request for its whole file index); each `/workspace/apps/<name>` tree costs one request per directory listed - avoid `tree`, `find`, or a recursive grep across them, and use targeted `ls`/`cat` or read a known path directly instead.\n" +
     "- The shell's HTTP access goes through an operator allowlist: `curl` (GET only) works only for explicitly granted hosts; anything else is a policy-denied result, not a bug.\n" +
-    "- The app webhook base URL printed by `mount` is granted for GET, so deployed endpoints can be smoke-tested directly; verify anything else through the app's API (`obelisk cloud app --app NAME executions list` / `logs`) instead of probing the port.\n";
+    "- For hosted apps, discover the public webhook URL with `obelisk cloud app --app NAME endpoint webhook` and smoke-test its routes with `curl`. The local URL printed by `mount` is the single-app target; hosted apps do not need a local listener. Verify executions through the app's API (`obelisk cloud app --app NAME executions list` / `logs`).\n";
 
 // The fixed part of the prompt tail, in the order the workflow renders it:
 // user input, then subagents, then deployment authoring. The per-session

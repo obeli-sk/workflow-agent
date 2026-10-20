@@ -35,6 +35,7 @@ MCP_OBELISK_LOCAL_URL = { optional = true }
 OBELISK_UI_URL = { type = "internal", source = "webui-url" }
 OBELISK_CLOUD_API_URL = { optional = true }
 OBELISK_CLOUD_APP_API_PATTERN = { optional = true }
+OBELISK_CLOUD_APP_WEBHOOK_PATTERN = { optional = true }
 
 # Allow reading documentation
 [[outbound_http.allowed_host]]
@@ -119,7 +120,7 @@ secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 [[outbound_http.allowed_host]]
-pattern = "${OBELISK_CLOUD_APP_API_PATTERN:-https://*.obelisk.works:5005}"
+pattern = "${OBELISK_CLOUD_APP_API_PATTERN:-https://*.obelisk.works}"
 methods = ["GET", "POST", "PUT"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
@@ -127,6 +128,11 @@ replace_in = ["headers"]
 # Target instance webhooks
 [[outbound_http.allowed_host]]
 pattern = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}"
+methods = ["GET"]
+
+# Hosted app webhooks use the public HTTPS listener.
+[[outbound_http.allowed_host]]
+pattern = "${OBELISK_CLOUD_APP_WEBHOOK_PATTERN:-https://*.obelisk.works}"
 methods = ["GET"]
 
 # GitHub contents API for mount points. Read only PAT for public repos is enough.

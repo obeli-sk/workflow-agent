@@ -13,7 +13,22 @@ and logs of a hosted app.
   unset, the cloud is the single-app cloud described below.
 - `OBELISK_CLOUD_APP_API_PATTERN` (optional public env) is the allowed-host
   pattern for the hosted apps' own APIs. It defaults to
-  `https://*.obelisk.works:5005`.
+  `https://*.obelisk.works`.
+- `OBELISK_CLOUD_APP_WEBHOOK_PATTERN` (optional public env) grants the shell's
+  GET-only `curl` access to hosted webhook URLs. It also defaults to
+  `https://*.obelisk.works`.
+
+Public app endpoints use HTTPS port 443: `https://api--<app>.<domain>` for the
+API and `https://<app>.<domain>` for webhooks. Both defaults cover the production
+and `dev.obelisk.works` domains. Set the patterns when using another domain;
+the app policy and both deployment manifests use the same variables. Apply
+the app configuration and redeploy after changing these grants.
+
+Discover a hosted app's webhook with
+`obelisk cloud app --app NAME endpoint webhook`, then fetch its route with
+`curl`. `TARGET_OBELISK_WEBHOOK_URL` and the URL printed by `mount` describe
+the separate single-app target, defaulting to `http://127.0.0.1:9290`; hosted
+apps do not require a listener at that address.
 
 `packs/obelisk-control/descriptor.js` adds a "Cloud apps" section to the
 system prompt along with the cloud's current apps. If the provisioner rejects the token or can't be reached, the section is

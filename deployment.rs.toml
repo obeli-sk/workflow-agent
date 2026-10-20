@@ -139,6 +139,11 @@ methods = ["GET"]
 pattern = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}"
 methods = ["GET"]
 
+# Hosted app webhook URLs are discovered with `obelisk cloud app endpoint webhook`.
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_CLOUD_APP_WEBHOOK_PATTERN:-https://*.obelisk.works}"
+methods = ["GET"]
+
 # Peer sessions: discover, inspect, message, and create other workflow-agent
 # sessions on THIS instance (OBELISK_API_URL, not the target one).
 [[activity_js]]
@@ -789,7 +794,7 @@ methods = ["GET"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_CLOUD_APP_API_PATTERN:-https://*.obelisk.works:5005}"
+pattern = "${OBELISK_CLOUD_APP_API_PATTERN:-https://*.obelisk.works}"
 methods = ["GET", "POST", "PUT"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
@@ -816,7 +821,7 @@ methods = ["GET"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 [[activity_js.allowed_host]]
-pattern = "${OBELISK_CLOUD_APP_API_PATTERN:-https://*.obelisk.works:5005}"
+pattern = "${OBELISK_CLOUD_APP_API_PATTERN:-https://*.obelisk.works}"
 methods = ["GET"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
