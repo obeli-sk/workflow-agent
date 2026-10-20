@@ -732,16 +732,23 @@ async function apiJson(method, path, body) {
     }
 }
 
+// GETs retry transport errors in place: the activity itself has max_retries = 0.
+const GET_ATTEMPTS = 3;
+
 async function apiText(method, path, body) {
+    const attempts = method === "GET" ? GET_ATTEMPTS : 1;
     let resp;
-    try {
-        resp = await fetch(apiBase() + path, {
-            method,
-            headers: body !== undefined ? authHeaders({ "content-type": "application/json" }) : authHeaders(),
-            body: body !== undefined ? JSON.stringify(body) : undefined,
-        });
-    } catch (error) {
-        throw new Error(`request failed: ${message(error)}`);
+    for (let attempt = 1; resp === undefined; attempt++) {
+        try {
+            resp = await fetch(apiBase() + path, {
+                method,
+                headers: body !== undefined ? authHeaders({ "content-type": "application/json" }) : authHeaders(),
+                body: body !== undefined ? JSON.stringify(body) : undefined,
+            });
+        } catch (error) {
+            if (attempt >= attempts) throw new Error(`request failed: ${message(error)}`);
+            await sleepMs(100 * attempt);
+        }
     }
     const text = await safeText(resp);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${truncate(text, 300)}`);
