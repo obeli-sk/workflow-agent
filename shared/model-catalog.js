@@ -18,13 +18,12 @@ function discoveredApiType(model) {
     return model.owned_by === "chatgpt" ? "openai-responses" : "openai-chat-completions";
 }
 
-// LLM_BASE_URL is an origin (it doubles as the allowed_host pattern, which cannot
-// carry a path); LLM_API_PREFIX holds the gateway's API prefix, e.g. "/api" for OpenRouter.
+// LLM_BASE_URL is the endpoint up to `/v1`, including any gateway prefix,
+// e.g. "https://openrouter.ai/api"; it is also the allowed_host url_prefix.
 export function llmEndpoint() {
     const base = process.env.LLM_BASE_URL;
     if (!base) return "";
-    const prefix = String(process.env.LLM_API_PREFIX || "").trim().replace(/^\/*/, "/").replace(/\/+$/, "");
-    return String(base).replace(/\/+$/, "") + prefix;
+    return String(base).trim().replace(/\/+$/, "");
 }
 
 export async function loadModelCatalog() {

@@ -11,18 +11,16 @@ and logs of a hosted app.
   `http://127.0.0.1:9090`, does nothing unless something listens there.
 - `OBELISK_CLOUD_API_TOKEN` (optional secret) is the account token. When it is
   unset, the cloud is the single-app cloud described below.
-- `OBELISK_CLOUD_APP_API_PATTERN` (optional public env) is the allowed-host
-  pattern for the hosted apps' own APIs. It defaults to
-  `https://*.obelisk.works`.
-- `OBELISK_CLOUD_APP_WEBHOOK_PATTERN` (optional public env) grants the shell's
-  GET-only `curl` access to hosted webhook URLs. It also defaults to
-  `https://*.obelisk.works`.
+- `OBELISK_CLOUD_APPS_DOMAIN` (optional public env) is the hosted apps' domain,
+  the same variable the real CLI reads for `--apps-domain`. It defaults to
+  `obelisk.works`. The app policy and both deployment manifests derive the
+  allowed-host pattern `https://*.<domain>` from it, covering the hosted apps'
+  own APIs and the shell's GET-only `curl` access to hosted webhook URLs.
 
 Public app endpoints use HTTPS port 443: `https://api--<app>.<domain>` for the
-API and `https://<app>.<domain>` for webhooks. Both defaults cover the production
-and `dev.obelisk.works` domains. Set the patterns when using another domain;
-the app policy and both deployment manifests use the same variables. Apply
-the app configuration and redeploy after changing these grants.
+API and `https://<app>.<domain>` for webhooks. The default pattern
+`https://*.obelisk.works` covers both the production and `dev.obelisk.works`
+domains. Apply the app configuration and redeploy after changing the domain.
 
 Discover any app's webhook with
 `obelisk cloud app --app NAME endpoint webhook`, then fetch its route with
@@ -40,7 +38,7 @@ The `obelisk-agent:tools/cloud` interface has three activities
 (`packs/obelisk-control/cloud/`), each with `max_retries = 0`:
 
 - `run` (`cli.js`) runs the provisioner commands: `apps list`,
-  `token list|get`, `app new|get|status|stage|apply|start|stop|delete`,
+  `token list|get`, `app new|get|status|stage|apply|reactivate|deactivate|delete`,
   `env ...`, `secrets ...` and `endpoint`. It returns stdout, stderr and an
   exit code, and its errors use the real CLI's wording.
 - `prepare-deploy` (`deploy.js`) runs the provisioner part of `app deploy`:
@@ -121,7 +119,7 @@ use the same commands.
 
 - `apps list`, `app get|status` and `app endpoint` are answered from the
   `TARGET_OBELISK_*` URLs and whether `/v1/info` answers.
-- `app new|delete|start|stop|stage|apply`, `env ...`, `secrets ...` and
+- `app new|delete|reactivate|deactivate|stage|apply`, `env ...`, `secrets ...` and
   `token ...` are refused, asking the user to change the app.
 - `app deploy` skips provisioning: it checks the app is running and then runs
   `deployment apply`. The target's own policy still applies, so a deployment

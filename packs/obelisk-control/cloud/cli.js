@@ -118,8 +118,10 @@ async function appCommand([action, ...rest], flags, stdin, appToml, options, pri
         const body = { force: flags["--force"] === true };
         return print(await appRequest(name, "POST", ["apply"], { ...command, body }), { kind: "lifecycle" });
     }
-    if (action === "start" || action === "stop") {
-        return print(await appRequest(name, "POST", [action], command), { kind: "lifecycle" });
+    // The CLI's `reactivate`/`deactivate` map to the provisioner's start/stop endpoints.
+    const lifecycle = { reactivate: "start", deactivate: "stop" }[action];
+    if (lifecycle) {
+        return print(await appRequest(name, "POST", [lifecycle], command), { kind: "lifecycle" });
     }
     if (action === "delete") return print(await appRequest(name, "DELETE", [], command), { kind: "message", message: "App deleted." });
     if (action === "env") return envCommand(name, rest, command, options, print, apply);

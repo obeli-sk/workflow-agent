@@ -47,8 +47,7 @@ Web UI addresses are internal public-env sources declared in `app.toml`:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LLM_BASE_URL` | `http://127.0.0.1:9190` | Endpoint origin, without a path. |
-| `LLM_API_PREFIX` | empty | Path before `/v1/...` on gateways that need one, e.g. `/api` for OpenRouter. Models are discovered from `GET <LLM_BASE_URL><LLM_API_PREFIX>/v1/models`. |
+| `LLM_BASE_URL` | `http://127.0.0.1:9190` | Endpoint URL up to `/v1`, including any gateway prefix, e.g. `https://openrouter.ai/api`. Models are discovered from `GET <LLM_BASE_URL>/v1/models`. |
 | `LLM_API_KEY` | unset | Bearer token, if the endpoint needs one. |
 | `AGENT_MODELS` | unset | Fallback model catalog (JSON), used when discovery is unavailable. |
 
@@ -58,7 +57,7 @@ which serves Claude and Codex subscriptions locally. Two ready-made catalogs shi
 for other endpoints, used as `AGENT_MODELS="$(cat models.openrouter.json)"`:
 
 - `models.openrouter.json`: [OpenRouter](https://openrouter.ai), with
-  `LLM_BASE_URL=https://openrouter.ai`, `LLM_API_PREFIX=/api` and `LLM_API_KEY`.
+  `LLM_BASE_URL=https://openrouter.ai/api` and `LLM_API_KEY`.
   OpenRouter's discovery works too, so the catalog is optional there.
 - `models.exe-integration.json`: the keyless exe.dev LLM integration at
   `https://llm.int.exe.xyz`. From outside exe.dev, use the reverse proxy in
@@ -113,8 +112,7 @@ obelisk cloud app --app NAME secrets set API_KEY --stdin
 
 Hosted API and webhook access defaults to `https://*.obelisk.works` on port
 443, including `dev.obelisk.works`. For another domain, set
-`OBELISK_CLOUD_APP_API_PATTERN` and `OBELISK_CLOUD_APP_WEBHOOK_PATTERN` to its
-allowed-host patterns. The webhook grant is GET-only and carries no API token.
+`OBELISK_CLOUD_APPS_DOMAIN`; the grant becomes `https://*.<domain>`. The webhook grant is GET-only and carries no API token.
 Find the webhook URL with `obelisk cloud app --app NAME endpoint webhook`.
 
 Interactive and account-level commands (`--fill`, `token new|revoke`) are not

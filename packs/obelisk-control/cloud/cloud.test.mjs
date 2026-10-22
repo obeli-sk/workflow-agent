@@ -29,6 +29,27 @@ test("app policy preserves internal environment sources and rejects optional", (
     assert.throws(() => appConfig(POLICY.replace('source = "api-url"', 'source = "unknown"')), /source must be/);
 });
 
+test("app policy accepts url_prefix rules in the server's stored shape", () => {
+    const hosts = `
+[[outbound_http.allowed_host]]
+url_prefix = "https://example.com/api/"
+url_regex_suffix = "/v1/x$"
+methods = ["GET"]
+[[outbound_http.allowed_host]]
+url_prefix = "https://example.org"
+[[outbound_http.allowed_host]]
+pattern = "https://*.example.net"
+request_url_regex = "^GET https://a\\\\.example\\\\.net/"
+`;
+    assert.deepEqual(appConfig(hosts).policy.outbound_http, [
+        { url_prefix: "https://example.com/api/", url_regex_suffix: "/v1/x$", methods: ["GET"], request_url_regex: null, secrets: [], replace_in: [] },
+        { url_prefix: "https://example.org", methods: null, request_url_regex: null, secrets: [], replace_in: [] },
+        { pattern: "https://*.example.net", methods: null, request_url_regex: "^GET https://a\\.example\\.net/", secrets: [], replace_in: [] },
+    ]);
+    assert.throws(() => appConfig(`[[outbound_http.allowed_host]]\nurl_prefix = "https://a.b"\npattern = "https://a.b"\n`), /cannot be combined/);
+    assert.throws(() => appConfig(`[[outbound_http.allowed_host]]\npattern = "https://a.b"\nurl_regex_suffix = "/x"\n`), /requires url_prefix/);
+});
+
 const APP_API = "https://demo.obelisk.works:5005";
 
 // A fake provisioner: `routes` maps "METHOD /path" to a response body, or a function of the request.
@@ -117,7 +138,7 @@ test("run reports provisioner errors with the command id and rejects credential 
     provisioner({
         "POST /v1/apps/demo/stop": () => new Response(JSON.stringify({ error: "app is busy" }), { status: 409 }),
     });
-    const stopped = await run(["app", "--app", "demo", "stop", "--command-id", "E_cmd"], "", null);
+    const stopped = await run(["app", "--app", "demo", "deactivate", "--command-id", "E_cmd"], "", null);
     assert.equal(stopped.exit_code, 1);
     assert.equal(stopped.stderr, "obelisk: app is busy (HTTP 409). Command ID: E_cmd\n");
 

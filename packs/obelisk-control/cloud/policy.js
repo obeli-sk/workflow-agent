@@ -3,7 +3,7 @@
 import { parseToml } from "./toml.js";
 
 const TOP_LEVEL = ["app_name", "cloud", "secrets", "public_env", "allowed_exec_activities", "outbound_http"];
-const HOST_FIELDS = ["pattern", "methods", "request_url_regex", "secrets", "replace_in"];
+const HOST_FIELDS = ["pattern", "url_prefix", "url_regex_suffix", "methods", "request_url_regex", "secrets", "replace_in"];
 
 export function appConfig(text, path = "app.toml") {
     let toml;
@@ -88,14 +88,32 @@ function allowedHost(host, label, fail) {
     for (const key of Object.keys(host)) {
         if (!HOST_FIELDS.includes(key)) fail(`unknown field \`${label}.${key}\``);
     }
-    if (typeof host.pattern !== "string") fail(`${label}.pattern must be a string`);
+    // Either a `pattern` (optionally narrowed by `request_url_regex`) or a
+    // `url_prefix` (optionally followed by `url_regex_suffix`), never both.
+    const prefixed = host.url_prefix !== undefined;
+    if (prefixed) {
+        if (typeof host.url_prefix !== "string") fail(`${label}.url_prefix must be a string`);
+        if (host.pattern !== undefined || host.request_url_regex !== undefined) {
+            fail(`${label}: url_prefix cannot be combined with pattern or request_url_regex`);
+        }
+        if (host.url_regex_suffix !== undefined && typeof host.url_regex_suffix !== "string") {
+            fail(`${label}.url_regex_suffix must be a string`);
+        }
+    } else {
+        if (typeof host.pattern !== "string") fail(`${label}.pattern must be a string`);
+        if (host.url_regex_suffix !== undefined) fail(`${label}.url_regex_suffix requires url_prefix`);
+    }
     const secrets = (host.secrets ?? []).map((secret) => {
         if (typeof secret === "string") return secret;
         if (secret && typeof secret.name === "string") return secret.optional === true ? { name: secret.name, optional: true } : secret.name;
         return fail(`${label}.secrets entries must be names or { name, optional } tables`);
     });
+    // Field order and omissions follow the server's stored policy (GET /v1/app-policy).
+    const origin = prefixed
+        ? { url_prefix: host.url_prefix, ...(host.url_regex_suffix !== undefined && { url_regex_suffix: host.url_regex_suffix }) }
+        : { pattern: host.pattern };
     return {
-        pattern: host.pattern,
+        ...origin,
         methods: host.methods ?? null,
         request_url_regex: host.request_url_regex ?? null,
         secrets,
