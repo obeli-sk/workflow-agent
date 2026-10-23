@@ -129,7 +129,7 @@ url_regex_suffix = "/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
-# ObeliskNet provisioner and app APIs (cloud_run, cloud_prepare_deploy, cloud_tenant).
+# ObeliskNet provisioner and app APIs (cloud_run, cloud_prepare_deploy, cloud_finish_deploy, cloud_tenant).
 [[outbound_http.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
 methods = ["GET", "POST", "PUT", "DELETE"]

@@ -85,7 +85,11 @@ export function createCloud(cloud, obelisk, askUser) {
         },
         prepareDeploy(app, appToml) {
             const target = plain(() => cloud.prepareDeploy(app, appToml));
-            return { apiUrl: target.api_url, webhookUrl: target.webhook_url ?? null, log: target.log };
+            return { apiUrl: target.api_url, log: target.log };
+        },
+        finishDeploy(app, appToml, deploymentId) {
+            const deployed = plain(() => cloud.finishDeploy(app, appToml, deploymentId));
+            return { webhookUrl: deployed.webhook_url ?? null, log: deployed.log };
         },
         controlPlane: (app) => createControlPlane(tenantWebapi(cloud, app), obelisk, askUser),
     };

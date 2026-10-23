@@ -87,3 +87,21 @@ export function executionIdTopLevel() {
     for (let i = 0; i < 16; i++) random += CROCKFORD[Math.floor(Math.random() * 32)];
     return `E_${timePart}${random}`;
 }
+
+// GET on an app's own API, authenticated by the cloud token.
+export async function appApiGet(apiUrl, segments) {
+    const url = `${apiOrigin(apiUrl)}/${segments.map(encodeURIComponent).join("/")}`;
+    let response;
+    try {
+        response = await fetch(url, { headers: { accept: "application/json", authorization: `Bearer ${cloudToken()}` } });
+    } catch (error) {
+        throw `App API request failed: ${error}`;
+    }
+    const text = await response.text();
+    if (response.status < 200 || response.status >= 300) throw `App API returned ${response.status}: ${text}`;
+    try {
+        return JSON.parse(text);
+    } catch {
+        throw "Cannot read app API response";
+    }
+}

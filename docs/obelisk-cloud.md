@@ -32,19 +32,21 @@ left out and a warning is shown instead.
 
 ## Pieces
 
-The `obelisk-agent:tools/cloud` interface has three activities
-(`packs/obelisk-control/cloud/`), each with `max_retries = 0`:
+The `obelisk-agent:tools/cloud` interface has these activities
+(`packs/obelisk-control/cloud/`); all but `tenant-read` have `max_retries = 0`:
 
 - `run` (`cli.js`) runs the provisioner commands: `apps list`,
   `token list|get`, `app new|get|status|stage|apply|reactivate|deactivate|delete`,
   `env ...`, `secrets ...` and `endpoint`. It returns stdout, stderr and an
   exit code, and its errors use the real CLI's wording.
-- `prepare-deploy` (`deploy.js`) runs the provisioner part of `app deploy`:
-  1. It creates the app, or restages it when the stored policy or cloud config
-     differs.
-  2. It checks the required env and secrets.
-  3. It applies the config and starts the app when needed.
-  4. It returns the app's API origin and webhook URL.
+- `prepare-deploy` (`deploy.js`) and `finish-deploy` (`finish-deploy.js`)
+  run the provisioner part of `app deploy`, in the real CLI's order:
+  1. `prepare-deploy` stages the config of an existing app, or creates the
+     app. A new app whose policy requires env or secrets is refused, since
+     `--fill` is not available here.
+  2. The shell submits and enqueues the deployment on the app's API.
+  3. `finish-deploy` checks the required env and secrets, applies the config
+     with the enqueued deployment's ID and requires the app to be running.
 - `tenant` (`tenant.js`) runs one webapi tool (`packs/obelisk-control/tools/*.js`)
   against an app's API, authenticated with the cloud token. `tenant` points
   `tools/target.js` at the app before running the tool.
@@ -56,9 +58,9 @@ to one of three places:
   local command implementations with a control plane routed through `tenant`
   (`createCloud` in `workflow-js/src/host.js`). This way the output and flags stay identical to
   the real CLI's app commands.
-- `cloud app deploy [-a app.toml] [-d deployment.toml]` calls `prepare-deploy`
-  and then `deployment apply` against the app. It uploads the files the server
-  asks for, just like the local apply.
+- `cloud app deploy [-a app.toml] [-d deployment.toml]` calls `prepare-deploy`,
+  submits and enqueues the deployment against the app (uploading only the files
+  the server asks for), then calls `finish-deploy` with its ID.
 - Everything else goes to `run` with the app policy's text: the `-a` file,
   else `./app.toml`. `--from-env VAR` turns into `--stdin` with the shell
   variable's value, so secret values never appear in argv.
@@ -66,6 +68,8 @@ to one of three places:
 ## Differences from the real CLI
 
 - `deployment pull DIRECTORY` is a shell convenience backed by lazy virtual files.
+- `app deploy` always submits a new deployment, where the real CLI reuses the
+  active one when its content is unchanged.
 - Interactive or account-level operations are rejected with a hint:
   `--fill` and `app fill`, `token new|revoke`, `--api-url` and `--api-token`.
 - `--app` may be left out when exactly one app exists, in addition to the

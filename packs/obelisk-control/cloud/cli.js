@@ -6,7 +6,8 @@
 // (apps, tokens, app lifecycle, env and secrets); the shell's `obelisk` command
 // handles `app deploy` and the app API subcommands itself. `app-toml` is the
 // policy file's text (`-a PATH`, else ./app.toml) when the shell found one.
-import { appRequest, cloudRequest } from "./client.js";
+import { appApiGet, appRequest, cloudRequest } from "./client.js";
+import { checkFill, sameConfig } from "./fill.js";
 import { appConfig, validateAppName } from "./policy.js";
 import { humanOutput, renderSummary } from "./output.js";
 
@@ -23,7 +24,7 @@ export default async function run(args, stdin, appToml) {
 }
 
 const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config"];
-const BOOLEAN_FLAGS = ["--json", "--verbose", "--force", "--stdin"];
+const BOOLEAN_FLAGS = ["--json", "--verbose", "--force", "--stdin", "--staged"];
 
 // Split argv into positionals and flags; flags may appear anywhere, like clap's globals.
 export function parseArgs(args) {
@@ -75,6 +76,7 @@ async function tokenCommand([action, id], options) {
 }
 
 async function appCommand([action, ...rest], flags, stdin, appToml, options, print) {
+    const { log } = options;
     const config = appToml === null ? null : appConfig(appToml, flags["-a"] ?? "app.toml");
     const command = { ...options, kind: "command" };
     if (action === "new") {
@@ -93,13 +95,18 @@ async function appCommand([action, ...rest], flags, stdin, appToml, options, pri
         return print(await appRequest(name, "PUT", ["config"], { ...command, body }), { kind: "staged", message: "Configuration staged.", apply });
     }
     if (action === "apply") {
-        const body = { force: flags["--force"] === true };
+        if (flags["--staged"] && flags["-a"]) throw "the argument '--staged' cannot be used with '--app-config'";
+        const current = await appRequest(name, "GET", [], options);
+        // A discovered ./app.toml naming another app is not this app's configuration.
+        const local = flags["--staged"] || !config || (!flags["-a"] && config.appName && config.appName !== name) ? null : config;
+        const desired = stagedOrLocal(current, local, name, flags["-a"] ?? "app.toml");
+        await checkFill(name, desired.policy, log);
+        const deploymentId = await appApiGet(current?.api_url, ["v1", "deployment-id"]);
+        const body = { force: flags["--force"] === true, config: desired, deployment_id: deploymentId };
         return print(await appRequest(name, "POST", ["apply"], { ...command, body }), { kind: "lifecycle" });
     }
-    // The CLI's `reactivate`/`deactivate` map to the provisioner's start/stop endpoints.
-    const lifecycle = { reactivate: "start", deactivate: "stop" }[action];
-    if (lifecycle) {
-        return print(await appRequest(name, "POST", [lifecycle], command), { kind: "lifecycle" });
+    if (action === "reactivate" || action === "deactivate") {
+        return print(await appRequest(name, "POST", [action], command), { kind: "lifecycle" });
     }
     if (action === "delete") return print(await appRequest(name, "DELETE", [], command), { kind: "message", message: "App deleted." });
     if (action === "env") return envCommand(name, rest, command, options, print, apply);
@@ -183,4 +190,14 @@ export function configName(name) {
 function required(value, label) {
     if (typeof value === "string" && value !== "") return value;
     throw `${label} is required`;
+}
+
+// PORT: cloud.rs's `staged_or_local` without the prompt.
+function stagedOrLocal(current, local, name, path) {
+    const staged = { policy: current?.policy, cloud: current?.cloud };
+    if (!local || sameConfig(current, local)) return staged;
+    const policy = !sameConfig({ policy: current?.policy, cloud: local.cloud }, local);
+    const cloud = !sameConfig({ policy: local.policy, cloud: current?.cloud }, local);
+    const differs = policy && cloud ? "policy and cloud settings" : cloud ? "cloud settings" : "policy";
+    throw `${path} differs from the staged configuration (${differs}).\nRun \`obelisk cloud app --app ${name} stage -a ${path}\`, or pass \`--staged\` to use the staged configuration`;
 }

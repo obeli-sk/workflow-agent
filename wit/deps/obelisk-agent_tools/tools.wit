@@ -38,14 +38,20 @@ interface cloud {
 
   record deploy-target {
     api-url: string,
+    log: string,
+  }
+
+  record deployed {
     webhook-url: option<string>,
     log: string,
   }
 
   // Provisioner commands (`obelisk cloud apps|token|app ...` minus deploy and app API calls).
   run: func(args: list<string>, stdin: string, app-toml: option<string>) -> result<command-output, string>;
-  // Create or restage the app from `app-toml`, apply and start it, return where to deploy.
+  // Stage the app's config from `app-toml` or create the app, return where to enqueue the deployment.
   prepare-deploy: func(app: string, app-toml: string) -> result<deploy-target, string>;
+  // Apply the config with the enqueued deployment and require the app to be running.
+  finish-deploy: func(app: string, app-toml: string, deployment-id: string) -> result<deployed, string>;
   // One webapi `operation` with JSON positional params against the app's API; returns JSON.
   tenant: func(app: string, operation: string, params-json: string) -> result<string, string>;
   // `tenant` limited to read-only operations, so the runtime may retry it.

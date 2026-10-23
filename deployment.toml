@@ -440,13 +440,18 @@ url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
 methods = ["GET", "POST", "PUT", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
+[[activity_js.allowed_host]]
+pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
+methods = ["GET"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "cloud_prepare_deploy"
 ffqn = "obelisk-agent:tools/cloud.prepare-deploy"
 wit = "wit"
 max_retries = 0
-# Creating or restarting an app VM waits for it to come up.
+# Creating an app waits for its VM to come up.
 exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/deploy.js"
 env_vars = [
@@ -455,6 +460,23 @@ env_vars = [
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
 methods = ["GET", "POST", "PUT"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+
+[[activity_js]]
+name = "cloud_finish_deploy"
+ffqn = "obelisk-agent:tools/cloud.finish-deploy"
+wit = "wit"
+max_retries = 0
+# Applying waits for the app VM to come up.
+exec.lock_expiry.minutes = 10
+location = "packs/obelisk-control/cloud/finish-deploy.js"
+env_vars = [
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+]
+[[activity_js.allowed_host]]
+url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
+methods = ["GET", "POST"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 

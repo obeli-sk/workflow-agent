@@ -1233,7 +1233,11 @@ function fakeCloud(apps = {}) {
         },
         prepareDeploy(app, appToml) {
             cloud.deploys.push({ app, appToml });
-            return { apiUrl: "https://demo.test", webhookUrl: "https://demo.test/hook", log: "→ step\n" };
+            return { apiUrl: "https://demo.test", log: "→ prepare\n" };
+        },
+        finishDeploy(app, appToml, deploymentId) {
+            cloud.deploys.push({ app, appToml, deploymentId });
+            return { webhookUrl: "https://demo.test/hook", log: "→ finish\n" };
         },
         controlPlane(app) {
             if (!apps[app]) throw `no app ${app}`;
@@ -1243,21 +1247,35 @@ function fakeCloud(apps = {}) {
     return cloud;
 }
 
-test("cloud app deploy prepares the app named in app.toml, then applies there", () => {
+test("cloud app deploy prepares the app, enqueues the deployment there, then finishes with its id", () => {
     const i = interp("/workspace/app");
     i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
     i.vfs.writeFile("/workspace/app/deployment.toml", '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n');
     const app = fakeHost()
         .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"))
-        .with("obelisk-agent:tools/webapi.apply-deployment", JSON.stringify({ ok: "switched" }));
+        .with("obelisk-agent:tools/webapi.deployment-switch", JSON.stringify({ ok: "restart_required" }));
     const local = fakeHost();
     const cloud = fakeCloud({ demo: app });
     const out = executeObelisk(i, words("cloud app deploy"), "", local, null, cloud);
     assert.equal(out.exitCode, 0, out.stderr);
-    assert.deepEqual(cloud.deploys, [{ app: "demo", appToml: 'app_name = "demo"\n' }]);
-    assert.equal(out.stdout, "Submitted as Dep_new\nApplied successfully.\nhttps://demo.test/hook\n");
-    assert.match(out.stderr, /^→ step\n.*deployment apply deployment\.toml.*\nDeployed demo\n$/s);
+    const policy = 'app_name = "demo"\n';
+    assert.deepEqual(cloud.deploys, [{ app: "demo", appToml: policy }, { app: "demo", appToml: policy, deploymentId: "Dep_new" }]);
+    assert.deepEqual(app.calls.at(-1), ["obelisk-agent:tools/webapi.deployment-switch", JSON.stringify(["Dep_new", true])]);
+    assert.equal(out.stdout, "https://demo.test/hook\n");
+    assert.equal(out.stderr, "→ prepare\n→ obelisk cloud app deployment enqueue\n→ finish\nDeployed demo\n");
     assert.equal(local.calls.length, 0);
+});
+
+test("cloud app deploy stops before applying when the enqueue fails", () => {
+    const i = interp("/workspace/app");
+    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
+    i.vfs.writeFile("/workspace/app/deployment.toml", '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n');
+    const app = fakeHost().withErr("obelisk-agent:tools/webapi.deployment-submit", "invalid deployment");
+    const cloud = fakeCloud({ demo: app });
+    const out = executeObelisk(i, words("cloud app deploy"), "", fakeHost(), null, cloud);
+    assert.notEqual(out.exitCode, 0);
+    assert.match(out.stderr, /Deployment staging failed; inspect `obelisk cloud app --app demo status` and retry deploy: .*invalid deployment/);
+    assert.equal(cloud.deploys.length, 1);
 });
 
 test("cloud app API subcommands run against the selected app's control plane", () => {

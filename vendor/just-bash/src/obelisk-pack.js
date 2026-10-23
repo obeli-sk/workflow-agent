@@ -9,9 +9,10 @@
 // answers the top-level `obelisk call obelisk-agent:stub/stub.ask-user`.
 //
 // `cloud` backs `obelisk cloud ...`: `run(args, stdin, appToml)` for
-// provisioner commands, `prepareDeploy(app, appToml)` for the first half of
-// `app deploy`, and `controlPlane(app)` for a control plane against that
-// app's own API (see host.js's `createCloud`).
+// provisioner commands, `prepareDeploy(app, appToml)` and
+// `finishDeploy(app, appToml, deploymentId)` around `app deploy`'s enqueue,
+// and `controlPlane(app)` for a control plane against that app's own API
+// (see host.js's `createCloud`).
 //
 // Custom-command handlers receive the full argv including argv[0] (see
 // interpreter.js's `invoke`); `commandHandler` strips it with
@@ -271,8 +272,9 @@ function readAppPolicy(interp, path, required) {
     return null;
 }
 
-// PORT: obelisk's cloud/deploy.rs: the provisioner steps run in an activity,
-// then the deployment is applied against the app's API like `deployment apply`.
+// PORT: obelisk's cloud/deploy.rs: `prepare-deploy` stages or creates the app,
+// the deployment is submitted and enqueued on the app's API, then
+// `finish-deploy` applies the config with that deployment.
 function cloudDeploy(interp, flags, args, cloud) {
     let appConfig = flags.appConfig;
     let deployment = "deployment.toml";
@@ -292,22 +294,24 @@ function cloudDeploy(interp, flags, args, cloud) {
     } catch (error) {
         return fail(`obelisk: ${error}\n`);
     }
-    const step = `→ obelisk cloud app --app ${app} deployment apply ${deployment}  Uploading and activating deployment\n`;
-    let applied;
+    let stderr = `${target.log}→ obelisk cloud app deployment enqueue\n`;
+    let id;
     try {
-        applied = tryExecuteObelisk(interp, ["deployment", "apply", deployment], "", cloud.controlPlane(app), null, app);
-    } catch (message) {
-        applied = fail(`obelisk: ${typeof message === "string" ? message : String(message?.message ?? message)}\n`);
+        const controlPlane = cloud.controlPlane(app);
+        id = submitManifest(interp, controlPlane, deployment, [], true);
+        switchOutcome(controlPlane.deploymentSwitch(id, true));
+    } catch (error) {
+        const message = typeof error === "string" ? error : String(error?.message ?? error);
+        return fail(`${stderr}obelisk: Deployment staging failed; inspect \`obelisk cloud app --app ${app} status\` and retry deploy: ${message}\n`);
     }
-    let stderr = `${target.log}${step}${applied.stderr}`;
-    if (applied.exitCode !== 0) {
-        const policyFlag = appConfig === undefined ? "" : ` -a ${appConfig}`;
-        stderr += `obelisk: Deployment did not complete; inspect \`obelisk cloud app --app ${app} deployment active\` to see what is serving, then retry \`obelisk cloud app --app ${app} deploy${policyFlag} -d ${deployment}\`\n`;
-        return { stdout: applied.stdout, stderr, exitCode: applied.exitCode };
+    let deployed;
+    try {
+        deployed = cloud.finishDeploy(app, policy, id);
+    } catch (error) {
+        return fail(`${stderr}obelisk: ${error}\n`);
     }
-    stderr += `Deployed ${app}\n`;
-    const webhook = target.webhookUrl === null ? "" : `${target.webhookUrl}\n`;
-    return { stdout: `${applied.stdout}${webhook}`, stderr, exitCode: 0 };
+    stderr += `${deployed.log}Deployed ${app}\n`;
+    return { stdout: deployed.webhookUrl === null ? "" : `${deployed.webhookUrl}\n`, stderr, exitCode: 0 };
 }
 
 // Provisioner commands, run by the `cloud.run` activity with the app policy's text.
@@ -902,7 +906,7 @@ const cloudHelp =
     "Usage: obelisk cloud <command> [args]\n\nManage the apps in the cloud.\n\nCommands:\napps list                  List apps.\ntoken list|get ID          List API tokens, or show one.\napp [--app NAME] ...       Manage one app; run `obelisk cloud app --help`.\n\nGlobal options: --json, --verbose, --command-id ID.\n";
 
 const cloudAppHelp =
-    "Usage: obelisk cloud app [--app NAME] [-a APP.TOML] <subcommand>\n\nThe app is --app, else app_name in the -a file or ./app.toml, else the cloud's only app.\n\nSubcommands:\nnew [NAME]                       Create the app from the app policy.\ndeploy [-a APP.TOML] [-d DEPLOYMENT.TOML]\nCreate or restage, apply, reactivate, and deploy; prints the webhook URL.\nget | status                     Show the app or its runtime status.\nstage                            Stage the app policy from -a or ./app.toml.\napply [--force]                  Apply staged changes.\nreactivate | deactivate          Start or stop the app VM.\ndelete                           Delete the app.\nenv list|set NAME VALUE|unset NAME\nsecrets list|set NAME (--stdin|--from-env VAR)|unset NAME\nendpoint [api|webhook|webui]     Print the app's URLs.\nfunctions ...                    List the app's functions, or print one's WIT.\nexecutions ...                   List the app's executions, or show one.\ncall FFQN [PARAMS_JSON]          Call one of the app's functions.\ndeployment ...                   Inspect, edit, submit, and activate the app's deployments.\n\nRun `obelisk cloud app <subcommand> --help` for its options.\n";
+    "Usage: obelisk cloud app [--app NAME] [-a APP.TOML] <subcommand>\n\nThe app is --app, else app_name in the -a file or ./app.toml, else the cloud's only app.\n\nSubcommands:\nnew [NAME]                       Create the app from the app policy.\ndeploy [-a APP.TOML] [-d DEPLOYMENT.TOML]\nCreate or restage the app, enqueue the deployment, and apply both; prints the webhook URL.\nget | status                     Show the app or its runtime status.\nstage                            Stage the app policy from -a or ./app.toml.\napply [--staged] [--force]       Apply the staged configuration and the enqueued (or active) deployment.\nreactivate | deactivate          Reactivate or deactivate the app.\ndelete                           Delete the app.\nenv list|set NAME VALUE|unset NAME\nsecrets list|set NAME (--stdin|--from-env VAR)|unset NAME\nendpoint [api|webhook|webui]     Print the app's URLs.\nfunctions ...                    List the app's functions, or print one's WIT.\nexecutions ...                   List the app's executions, or show one.\ncall FFQN [PARAMS_JSON]          Call one of the app's functions.\ndeployment ...                   Inspect, edit, submit, and activate the app's deployments.\n\nRun `obelisk cloud app <subcommand> --help` for its options.\n";
 
 const functionsHelp =
     "Usage: obelisk cloud app [--app NAME] functions <subcommand>\n\nList the app's functions, or print a single function's WIT interface.\n\nSubcommands:\nlist [--prefix PREFIX] [--length N] [--json]   List functions and their signatures.\nwit FFQN                                        Print the WIT interface for one function.\n";
