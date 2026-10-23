@@ -206,9 +206,9 @@ location = "activity/github-contents.js"
 exec.lock_expiry.seconds = 30
 env_vars = [{ key = "GITHUB_API_URL", value = "${GITHUB_API_URL:-https://api.github.com}" }]
 [[activity_js.allowed_host]]
-url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos/"
+url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos"
 methods = ["GET"]
-url_regex_suffix = "[^/]+/[^/]+/(contents|commits/)"
+url_regex_suffix = "/[^/]+/[^/]+/(contents|commits/)"
 secrets = [{ name = "GITHUB_MOUNT_TOKEN", optional = true }]
 replace_in = ["headers"]
 
