@@ -2,13 +2,8 @@ app_name = "workflow-agent"
 
 [secrets]
 LLM_API_KEY = { optional = true }
-# The target Obelisk the agent deploys to/controls. Stays env-backed because it
-# usually authenticates against a different server (see README, Target instance).
-TARGET_OBELISK_TOKEN = {}
 # The agent's own Obelisk server, accessed e.g. by the UI to get execution state.
 OBELISK_API_TOKEN = { type = "internal" }
-# Leave unset for a keyless MCP server (e.g. the testing one).
-MCP_SERVER_TOKEN = { optional = true }
 # Optional: raises the GitHub API rate limit for the /workspace/components
 # mount from the shared 60 req/h anonymous IP pool to 5000 req/h. Leave it unset
 # for occasional use.
@@ -21,16 +16,11 @@ DOCS_URLS_JSON = { optional = true }
 OBELISK_VERSION = { optional = true }
 MAX_STEPS = { optional = true }
 PROGRAMS_JSON = { optional = true }
-MCP_SERVERS_JSON = { optional = true }
 APPS_JSON = { optional = true }
-TARGET_OBELISK_WEBHOOK_URL = { optional = true }
 OBELISK_API_URL = { type = "internal", source = "api-url" }
 AGENT_MODELS = { optional = true }
-GITHUB_MOUNT_OWNER = { optional = true }
 GITHUB_API_URL = { optional = true }
 LLM_BASE_URL = { optional = true }
-TARGET_OBELISK_API_URL = { optional = true }
-MCP_OBELISK_LOCAL_URL = { optional = true }
 OBELISK_UI_URL = { type = "internal", source = "webui-url" }
 OBELISK_CLOUD_API_URL = { optional = true }
 OBELISK_CLOUD_APPS_DOMAIN = { optional = true }
@@ -41,7 +31,7 @@ pattern = "https://obeli.sk"
 methods = ["GET"]
 
 # Agent's own instance. These mirror the components' declarations in
-# deployment.{js,rs}.toml one-for-one rather than being consolidated into one
+# deployment.toml one-for-one rather than being consolidated into one
 # broader grant; both this and the component's url_regex_suffix apply to
 # every request.
 
@@ -139,14 +129,7 @@ url_regex_suffix = "/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
-# Target instance: the control/deploy tools and the VFS deployment mount.
-[[outbound_http.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "POST", "PUT"]
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-# ObeliskNet provisioner and app APIs (cloud_run, cloud_prepare_deploy, cloud_tenant).
+# ObeliskNet provisioner and app APIs (cloud_run, cloud_prepare_deploy, cloud_finish_deploy, cloud_tenant).
 [[outbound_http.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
 methods = ["GET", "POST", "PUT", "DELETE"]
@@ -155,25 +138,18 @@ replace_in = ["headers"]
 
 [[outbound_http.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
-methods = ["GET", "POST", "PUT"]
+methods = ["GET", "POST", "PUT", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
-
-# Target instance webhooks
-[[outbound_http.allowed_host]]
-url_prefix = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}"
-methods = ["GET"]
 
 # Hosted app webhooks use the public HTTPS listener.
 [[outbound_http.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["GET"]
 
-# GitHub contents API for mount points. Read only PAT for public repos is enough.
+# GitHub repository reads for mount points.
 [[outbound_http.allowed_host]]
-url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_MOUNT_OWNER:-obeli-sk}"
-# The prefix is a plain string prefix; require `/` so it cannot match another owner.
-url_regex_suffix = "/"
+url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos/"
 methods = ["GET"]
 secrets = ["GITHUB_MOUNT_TOKEN"]
 replace_in = ["headers"]
@@ -190,11 +166,4 @@ url_prefix = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
 url_regex_suffix = "(/[^/]+)*/v1/(messages|chat/completions|responses)$"
 secrets = ["LLM_API_KEY"]
-replace_in = ["headers"]
-
-# MCP servers
-[[outbound_http.allowed_host]]
-url_prefix = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071/mcp}"
-methods = ["POST"]
-secrets = ["MCP_SERVER_TOKEN"]
 replace_in = ["headers"]

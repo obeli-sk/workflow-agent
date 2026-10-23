@@ -1,5 +1,3 @@
-// PORT: vendor/just-bash-rs/src/watch.rs
-//
 // Host-installed abort watcher for one running bash script. The session loop
 // arms a watcher around every script invocation (in workflow-js: a fresh
 // join set holding an operator-interrupt offer stub and an optional
@@ -8,8 +6,7 @@
 // custom command completes and inside `sleep`, so nothing executing is ever
 // killed mid-command; whatever ran already stays recorded in the output.
 //
-// Rust's `ScriptWatch` is a trait with a `poll`/`sleep` pair and a separate
-// `InterruptKind` enum; JS has no enum, so the "kind" is just one of the two
+// A watch is a `poll`/`sleep` pair; the interrupt "kind" is one of the two
 // string constants below. Those strings double as `ExecResult.interrupted`
 // and the WIT-level `shell-result.interrupted` field, so no further mapping
 // is needed crossing that boundary.
@@ -26,8 +23,7 @@
 //
 //     // Durably wait `ms` milliseconds, waking early when the signal
 //     // lands. Returns `{ interrupted: TIMEOUT | OPERATOR | null }` rather
-//     // than throwing, mirroring Rust's `Result<(), InterruptKind>` --
-//     // the `sleep` builtin decides what to do with it (see
+//     // than throwing -- the `sleep` builtin decides what to do with it (see
 //     // commands/timeutil.js).
 //     sleep(ms) { ... },
 //   }

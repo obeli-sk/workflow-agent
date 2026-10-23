@@ -1,7 +1,5 @@
-// Builtin command registry + dispatch. Full command-set parity with
-// vendor/just-bash-rs/src/commands/*.rs is landed — see
-// docs/js-backend-migration.md for the tracker and any noted scope gaps
-// (jq/awk are deliberately-scoped subsets, not full implementations).
+// Builtin command registry + dispatch. jq/awk are deliberately-scoped
+// subsets, not full implementations.
 
 import { core, ok, fail, unknownOption } from "./core.js";
 import { fsutil } from "./fsutil.js";

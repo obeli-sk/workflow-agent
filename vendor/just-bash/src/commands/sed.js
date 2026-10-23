@@ -1,9 +1,8 @@
-// PORT (simplified): vendor/just-bash-rs/src/commands/sed.rs
 // sed [-n] [-E|-r] [-i] [-e SCRIPT]... [SCRIPT] [FILE...]
 // Addressing: line number, $, /regex/, addr1,addr2 ranges, leading !.
 // Commands: s///[flags] (g/i/p, Nth-occurrence), d, p, q, r file, a/i/c text.
 // Not ported: hold space, branching/labels, multiline N/D/P, y,
-// step/relative addresses, { } blocks — matches the Rust port's scope.
+// step/relative addresses, { } blocks.
 
 import { fail } from "./core.js";
 import { translateBre } from "../regex-bre.js";
@@ -303,7 +302,7 @@ export function sedCommand(interp, args, stdin) {
         else if (arg === "-e" && i + 1 < args.length) { i++; scripts.push(args[i]); }
         else if (arg.startsWith("--expression=")) scripts.push(arg.slice("--expression=".length));
         else if (arg.startsWith("-e") && arg.length > 2) scripts.push(arg.slice(2));
-        else if (arg.startsWith("-") && arg !== "-") { /* unrecognized flag: ignored, matches the Rust port */ }
+        else if (arg.startsWith("-") && arg !== "-") { /* unrecognized flag: ignored */ }
         else if (scripts.length === 0) scripts.push(arg);
         else files.push(arg);
     }

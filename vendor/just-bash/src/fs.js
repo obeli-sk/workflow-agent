@@ -1,18 +1,15 @@
 // In-memory virtual filesystem. Paths are always absolute inside the VFS;
 // callers normalize relative paths against cwd before calling in.
 //
-// PORT: vendor/just-bash-rs/src/fs.rs
 //
 // The tree of nodes (root/children Maps) covers the eager files and
 // directories the shell itself creates. Everything mount-related (symlinks,
 // lazy/pending files, deferred mounts, web mounts, the executable bit) is
 // layered on top as separate overlays, consulted by `isFile`/`isDir`/
 // `exists`/`readFile`/`writeFile`/`readdir`/`remove` before or after the
-// plain tree lookup, mirroring the corresponding checks in fs.rs. Content is
-// always a JS string (this port's convention throughout, see `readFile`),
-// not a byte buffer, so `MAX_LAZY_FETCH_BYTES` bounds string length rather
-// than a true byte count; that is a deliberate deviation from fs.rs's
-// `Vec<u8>`-based cap, acceptable because nothing in this codebase deals in
+// plain tree lookup. Content is always a JS string (see `readFile`), not
+// a byte buffer, so `MAX_LAZY_FETCH_BYTES` bounds string length rather than
+// a true byte count, acceptable because nothing in this codebase deals in
 // raw bytes.
 
 export function normalizePath(path, cwd) {
@@ -45,18 +42,16 @@ export function basename(path) {
 }
 
 // Largest lazy file this VFS will materialize.
-// PORT: fs.rs's MAX_LAZY_FETCH_BYTES.
 export const MAX_LAZY_FETCH_BYTES = 1024 * 1024;
 
 // True if `digest` is namespaced in our own CAS scheme (`sha256:...`). A
 // `lazyFileRef().digest` is only trustworthy as a `content_digest` when this
-// holds: deployment mounts and MCP resources are always CAS-addressed this
+// holds: deployment mounts are always CAS-addressed this
 // way, but a git/web mount's digest is the remote's own foreign hash (e.g. a
 // GitHub blob's 40-hex git SHA-1, no `sha256:` prefix at all) and must not be
 // reused as one. Deliberately a prefix check, not a strict-shape one: plenty
 // of tests use short placeholder digests like `sha256:1`, and a malformed
 // real one is still caught later by the server's own verify step.
-// PORT: fs.rs's `is_cas_namespaced_digest`.
 export function isCasNamespacedDigest(digest) {
     return digest.startsWith("sha256:");
 }
@@ -104,7 +99,6 @@ export class Vfs {
         // same unchanged bytes twice. Cleared by any write to that path
         // (`writeFile`, `remove`). A `pending` file already carries its own
         // cached digest via `lazyFileRef` and never enters this map.
-        // PORT: fs.rs's `content_digest_cache`.
         this.contentDigestCache = new Map();
     }
 
@@ -169,12 +163,9 @@ export class Vfs {
     // Rewrite `path` through the longest matching symlink prefix (exact
     // match, or the path is inside a linked directory), bounded to a few
     // hops so a link cycle resolves to whatever the last hop produces rather
-    // than looping forever. Every other operation calls this first, the same
-    // way fs.rs calls `self.resolve(path)` at the top of nearly every method.
-    // PORT: fs.rs's `resolve` (there: first BTreeMap-order match; here:
-    // explicit longest-prefix, a minor deliberate improvement since links
-    // never nest in practice but longest-prefix is the more obviously
-    // correct tie-break).
+    // than looping forever. Every other operation calls this first. Links
+    // never nest in practice, but longest-prefix is the obviously correct
+    // tie-break.
     resolve(path) {
         let current = normalizePath(path, "/");
         for (let hop = 0; hop < 8; hop++) {
@@ -215,7 +206,7 @@ export class Vfs {
         return this.executable.has(this.resolve(path));
     }
 
-    // Register a deployment-owned (or MCP-resource-owned) file by digest and
+    // Register a deployment-owned file by digest and
     // size. The path lists immediately but holds no bytes yet; a read fetches
     // the body lazily, once, only when it is within MAX_LAZY_FETCH_BYTES.
     // Overwrites any node already at `path`, including a previously
@@ -558,7 +549,6 @@ export class Vfs {
     // guaranteed identical - a copy of a file that was already read or hashed
     // must not pay for either again. A modified or eager source copies its
     // bytes.
-    // PORT: fs.rs's `copy_file`.
     copyFile(from, to) {
         const fromResolved = this.resolve(from);
         const node = this.lookup(fromResolved);

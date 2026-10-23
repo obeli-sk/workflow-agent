@@ -4,7 +4,7 @@ import discover from "./config-discover.js";
 
 // Isolate each test from whatever the real environment (or a prior test)
 // left behind; config-discover.js reads these lazily on every call.
-const ENV_KEYS = ["MAX_STEPS", "PROGRAMS_JSON", "MCP_SERVERS_JSON", "APPS_JSON", "TARGET_OBELISK_WEBHOOK_URL"];
+const ENV_KEYS = ["MAX_STEPS", "PROGRAMS_JSON", "APPS_JSON"];
 
 function withEnv(overrides, fn) {
     const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -24,22 +24,18 @@ test("discover defaults MAX_STEPS and the built-in registries when unset", async
     const config = await withEnv({}, () => discover("E_01XYZ", "", "", null));
     assert.equal(config.max_steps, 10);
     assert.deepEqual(config.programs, []);
-    assert.deepEqual(config.mcp_servers, []);
     assert.deepEqual(config.apps, []);
-    assert.equal(config.webhook_url, "");
 });
 
-test("discover parses PROGRAMS_JSON/MCP_SERVERS_JSON/APPS_JSON", async () => {
+test("discover parses PROGRAMS_JSON/APPS_JSON", async () => {
     const config = await withEnv(
         {
             PROGRAMS_JSON: JSON.stringify([{ name: "curl", ffqn: "ns:programs/program.curl", description: "fetch" }]),
-            MCP_SERVERS_JSON: JSON.stringify([{ name: "srv", ffqn: "ns:mcp/server.srv" }]),
             APPS_JSON: JSON.stringify([{ name: "components", repo: "components" }]),
         },
         () => discover("E_01XYZ", "", "", null),
     );
     assert.deepEqual(config.programs, [{ name: "curl", ffqn: "ns:programs/program.curl", description: "fetch" }]);
-    assert.deepEqual(config.mcp_servers, [{ name: "srv", ffqn: "ns:mcp/server.srv" }]);
     assert.deepEqual(config.apps, [
         { name: "components", owner: "obeli-sk", repo: "components", ref: "main", description: "" },
     ]);

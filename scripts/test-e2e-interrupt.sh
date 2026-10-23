@@ -12,21 +12,17 @@
 #      turn on its own, verifying the turn ends deterministically and the
 #      session takes further input afterward.
 # Each suite runs against its own isolated, throwaway obelisk server.
-# Usage: test-e2e-interrupt.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
-BACKEND="${1:-rs}"
-PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
-API_PORT=$((28019 + PORT_OFFSET))
-EXTERNAL_PORT=$((28094 + PORT_OFFSET))
-LLM_PORT=$((28095 + PORT_OFFSET))
-e2e_init "interrupt-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-interrupt-token"
+API_PORT=28019
+EXTERNAL_PORT=28094
+LLM_PORT=28095
+e2e_init "interrupt-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-interrupt-token"
 export OBELISK_API_URL="$E2E_API_URL"
-unset MCP_SERVER_TOKEN
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"},{"id":"fake-loop","label":"Fake Loop","api_type":"openai-chat-completions"}]'
 export LLM_BASE_URL="http://127.0.0.1:${LLM_PORT}"
 
@@ -40,10 +36,7 @@ trap cleanup EXIT
 llm_listening() { grep -q "fake llm listening" "$E2E_TMP/llm.log"; }
 e2e_wait_until llm_listening || { echo "fake llm did not start: $(cat "$E2E_TMP/llm.log")" >&2; exit 1; }
 
-e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-interrupt-deployment-$BACKEND.toml"
-e2e_patch_workflow_manifest "$DEPLOY"
-e2e_start_server "$DEPLOY"
+e2e_start_server
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
@@ -152,7 +145,6 @@ FOLLOWUP_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-loop-followup 
     echo "follow-up output wrong after composer stop: $FOLLOWUP_OUT" >&2
     exit 1
 }
-e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$LOOP_SESSION"
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$LOOP_SESSION" >/dev/null || true
 echo ">>> session survival after composer stop E2E PASS"

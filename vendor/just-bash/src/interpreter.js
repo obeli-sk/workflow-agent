@@ -26,9 +26,7 @@ export class ExitSignal {
 // read back off `interp.interrupted` (see `checkWatch`/`Bash#exec`), not off
 // this signal, since the boundary that notices the flag (a loop header, a
 // statement-list check) is not necessarily the boundary that set it (after a
-// custom command, or inside `sleep`). Mirrors just-bash-rs's `interpreter.rs`
-// `halted()` check, ported to JS's exception-based control flow instead of a
-// per-call boolean return.
+// custom command, or inside `sleep`).
 export class WatchInterrupt {}
 
 export class OutputLog {
@@ -85,8 +83,7 @@ export class Interpreter {
         // Host-installed abort watcher (watch.js's duck-typed ScriptWatch),
         // installed by `Bash#exec` for the duration of one script.
         this.watcher = null;
-        // Set once the watcher fires (PORT: interpreter.rs's `interrupted`
-        // field); `null` while the script runs normally. Read directly by
+        // Set once the watcher fires; `null` while the script runs normally. Read directly by
         // `Bash#exec` after the run, so the exit code is correct even when
         // nothing after the triggering point calls `checkWatch` again (e.g.
         // the interrupted command was the script's last statement).
@@ -99,7 +96,7 @@ export class Interpreter {
         this.invocationDepth = 0;
     }
 
-    // Durable boundary check (PORT: interpreter.rs's `halted()`), called at
+    // Durable boundary check, called at
     // every statement-list/loop-iteration boundary. Peeking the watcher
     // itself only happens in `pollWatchAfterCustomCommand`/`sleep` -- this
     // just observes the flag those set and unwinds once it's there.
@@ -107,11 +104,11 @@ export class Interpreter {
         if (this.interrupted !== null) throw new WatchInterrupt();
     }
 
-    // Durable boundary (PORT: commands/mod.rs's `poll_script_watch`), called
+    // Durable boundary, called
     // once right after a *custom* command handler returns (never after a
     // builtin). Records the signal without unwinding: this command's own
-    // output/status still land normally, matching Rust's "the remaining
-    // statements are skipped but this command's output and status stand."
+    // output/status still land normally; only the remaining statements are
+    // skipped.
     pollWatchAfterCustomCommand() {
         if (!this.watcher || this.interrupted !== null) return;
         const kind = this.watcher.poll();
@@ -294,8 +291,8 @@ export class Interpreter {
         }
         const words = cmd.words.flatMap(braceExpandWord);
         const args = words.flatMap((w) => expandWordToFields(w, ctx));
-        // Fire a deferred mount (the deployment tree, an MCP server's
-        // resources, ...) if this command references a path under its root,
+        // Fire a deferred mount (the deployment tree, an app
+        // reference repo, ...) if this command references a path under its root,
         // so a session that never touches a given mount never fetches it.
         // Checks cwd (for `cd .../current; cat foo`) and each expanded
         // argument (absolute or relative references); runs after glob
@@ -309,7 +306,7 @@ export class Interpreter {
         for (const [name, prev] of savedVars) {
             if (prev === undefined) this.vars.delete(name); else this.vars.set(name, prev);
         }
-        // Deliver stderr before stdout, matching just-bash-rs's run_pipeline order.
+        // Deliver stderr before stdout.
         this.deliver(bindings[2], result.stderr);
         this.deliver(bindings[1], result.stdout);
         this.lastExitCode = result.exitCode;

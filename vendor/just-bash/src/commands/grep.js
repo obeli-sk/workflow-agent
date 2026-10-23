@@ -1,4 +1,3 @@
-// PORT: vendor/just-bash-rs/src/commands/grep.rs
 // grep [-E|-F] [-i] [-v] [-n] [-c] [-l|-L] [-o] [-w] [-x] [-r|-R] [-q] [-h]
 // [-m N] [-A/-B/-C N] [-e PATTERN] PATTERN [FILE...]
 

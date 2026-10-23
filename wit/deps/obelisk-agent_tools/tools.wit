@@ -1,71 +1,8 @@
 package obelisk-agent:tools;
 
-// Shared WIT for control-plane activities and workflow imports.
+// This instance's execution controls, used by the UI webhook.
 interface webapi {
   variant tool-error {
-    permanent-error(string),
-    transient-error(string),
-    execution-failed,
-  }
-
-  record parameter-type {
-    name: string,
-    wit-type: string,
-  }
-
-  enum extension-kind {
-    submit,
-    await-next,
-    schedule,
-    stub,
-    get,
-  }
-
-  record function-info {
-    ffqn: string,
-    parameter-types: list<parameter-type>,
-    return-type: string,
-    extension: option<extension-kind>,
-    wit: string,
-  }
-
-  record component-source {
-    section: string,
-    ffqn: option<string>,
-    name: option<string>,
-    location: option<string>,
-    content-digest: string,
-    source-bytes: u64,
-    offset: u64,
-    length: u64,
-    next-offset: option<u64>,
-    raw-body: string,
-  }
-
-  record checkout-file {
-    path: string,
-    digest: string,
-    size: u64,
-  }
-
-  record checkout-result {
-    deployment-toml: string,
-    files: list<checkout-file>,
-  }
-
-  record attached-file {
-    path: string,
-    digest: string,
-    content: string,
-  }
-
-  record missing-file {
-    path: string,
-    digest: string,
-  }
-
-  variant submit-error {
-    permanent-missing-files(list<missing-file>),
     permanent-error(string),
     transient-error(string),
     execution-failed,
@@ -85,83 +22,10 @@ interface webapi {
     already: bool,
   }
 
-  list-functions: func(ffqn-prefix: string, length: u32) -> result<list<function-info>, tool-error>;
-  get-function-wit: func(ffqn: string) -> result<string, string>;
-  // Submit `ffqn` to the target Obelisk and follow the accepted execution by ID,
-  // returning a JSON wrapper that distinguishes rejection from execution result.
-  call-target: func(ffqn: string, params-json: string) -> result<string, tool-error>;
-  list-executions: func(
-    ffqn-prefix: string,
-    execution-id-prefix: string,
-    show-derived: bool,
-    hide-finished: bool,
-    component-digest: string,
-    deployment-id: string,
-    cursor: string,
-    direction: string,
-    including-cursor: bool,
-    length: u32,
-  ) -> result<string, string>;
-  get-execution: func(execution-id: string) -> result<string, string>;
-  get-execution-record: func(execution-id: string) -> result<string, string>;
-  get-events: func(
-    execution-id: string,
-    cursor-kind: string,
-    cursor: u32,
-    including-cursor: bool,
-    length: u32,
-  ) -> result<string, string>;
-  get-responses: func(
-    execution-id: string,
-    cursor: u32,
-    including-cursor: bool,
-    length: u32,
-  ) -> result<string, string>;
-  get-logs: func(
-    execution-id: string,
-    show-derived: bool,
-    show-logs: bool,
-    show-streams: bool,
-    levels: list<string>,
-    stream-types: list<string>,
-    cursor: string,
-    direction: string,
-    including-cursor: bool,
-    length: u32,
-  ) -> result<string, string>;
-  get-result-json: func(execution-id: string) -> result<string, string>;
-  list-deployments: func(cursor-from: string, including-cursor: bool, length: u32) -> result<string, string>;
-  get-deployment: func(
-    deployment-id: string,
-    component-type: option<string>,
-    offset: option<u32>,
-    length: option<u32>,
-    max-bytes: option<u32>,
-  ) -> result<string, string>;
-  get-component-source: func(
-    deployment-id: string,
-    component: string,
-    offset: u32,
-    length: u32,
-  ) -> result<component-source, tool-error>;
-  current-deployment-id: func() -> result<string, string>;
-  // The target's app policy as TOML, none when it runs without an app config.
-  get-app-config: func() -> result<option<string>, string>;
-  deployment-checkout: func(deployment-id: string) -> result<checkout-result, tool-error>;
-  deployment-read-blob: func(digest: string) -> result<string, string>;
-  deployment-submit: func(
-    deployment-toml: string,
-    attachments: list<attached-file>,
-    description: string,
-    allow-missing-runtime-config: bool,
-    deployment-id: string,
-  ) -> result<string, submit-error>;
-  deployment-switch: func(deployment-id: string, allow-missing-runtime-config: bool) -> result<string, string>;
   pause-execution: func(execution-id: string) -> result<action-result, tool-error>;
   unpause-execution: func(execution-id: string) -> result<action-result, tool-error>;
   cancel-execution: func(execution-id: string) -> result<action-result, tool-error>;
   stub-execution: func(execution-id: string, result-json: string) -> result<action-result, tool-error>;
-  apply-deployment: func(deployment-id: string) -> result<string, string>;
 }
 
 // ObeliskNet (`obelisk cloud`), authenticated by OBELISK_CLOUD_API_TOKEN.
@@ -173,17 +37,32 @@ interface cloud {
   }
 
   record deploy-target {
-    api-url: string,
-    webhook-url: option<string>,
+    created: bool,
     log: string,
   }
 
+  record deployed {
+    app-json: string,
+    log: string,
+  }
+
+  record response {
+    status: u16,
+    body: string,
+  }
+
+  // `fill-env` is the shell's exported variables when `--fill-non-interactive`
+  // (or `fill --non-interactive`) asks for same-named values; none otherwise.
+
   // Provisioner commands (`obelisk cloud apps|token|app ...` minus deploy and app API calls).
-  run: func(args: list<string>, stdin: string, app-toml: option<string>) -> result<command-output, string>;
-  // Create or restage the app from `app-toml`, apply and start it, return where to deploy.
-  prepare-deploy: func(app: string, app-toml: string) -> result<deploy-target, string>;
-  // One webapi `operation` with JSON positional params against the app's API; returns JSON.
-  tenant: func(app: string, operation: string, params-json: string) -> result<string, string>;
-  // `tenant` limited to read-only operations, so the runtime may retry it.
-  tenant-read: func(app: string, operation: string, params-json: string) -> result<string, string>;
+  run: func(args: list<string>, stdin: string, app-toml: option<string>, fill-env: option<list<tuple<string, string>>>) -> result<command-output, string>;
+  // Stage the app's config from `app-toml`, or create the app. The err carries the log so far.
+  prepare-deploy: func(app: string, app-toml: string, fill-env: option<list<tuple<string, string>>>) -> result<deploy-target, string>;
+  // Fill an app that was not `created`, apply the config with the enqueued deployment and
+  // require the app to be running; returns the app row. The err carries the log so far.
+  finish-deploy: func(app: string, app-toml: string, deployment-id: string, created: bool, fill-env: option<list<tuple<string, string>>>) -> result<deployed, string>;
+  // GET `path` (with its query) on the app's API; err only when no response arrived.
+  tenant-read: func(app: string, path: string) -> result<response, string>;
+  // Any other request on the app's API, sent once.
+  tenant: func(app: string, method: string, path: string, content-type: option<string>, body: option<string>) -> result<response, string>;
 }

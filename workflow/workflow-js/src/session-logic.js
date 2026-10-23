@@ -32,10 +32,10 @@ export const BASH_TOOLS_JSON = JSON.stringify([
     },
 ]);
 
-// PORT: chat.rs's `parse_duration_ms`. Sleep-style durations: `90s`,
+// Sleep-style durations: `90s`,
 // `500ms`, `5m`, `2h`, composites like `1m30s`; a bare number is seconds.
-// Shared between the bash tool's `timeout` argument (Phase 4) and `chat
-// send --timeout` (Phase 5). Throws a string message on an invalid form.
+// Shared between the bash tool's `timeout` argument and `chat send
+// --timeout`. Throws a string message on an invalid form.
 export function parseDurationMs(text) {
     const invalid = () => `invalid duration ${JSON.stringify(text)} (use forms like 30s, 500ms, 5m, 1h30m)`;
     if (!text) throw invalid();
@@ -56,7 +56,7 @@ export function parseDurationMs(text) {
     return totalMs;
 }
 
-// PORT: session.rs's `parse_tool_timeout`. The bash tool's optional
+// The bash tool's optional
 // `timeout`: sleep-style duration text. An absent or blank value means no
 // watchdog (`null`). Throws a string message on an invalid form.
 export function parseToolTimeout(value) {
@@ -70,10 +70,8 @@ export function parseToolTimeout(value) {
 
 const MAX_SLUG_LEN = 64;
 
-// PORT: chat.rs's `validate_slug` (the shared naming rule for both an
-// initial `name` and a later `chat rename`, Phase 5). Kept here rather than
-// deferred entirely to Phase 5 since Phase 4's session_renamed already needs
-// it for the at-creation name. Returns an error string, or null when valid.
+// The shared naming rule for both an initial `name` and a later `chat
+// rename`. Returns an error string, or null when valid.
 export function validateSlug(name) {
     if (!name || name.length > MAX_SLUG_LEN) return `slug must be 1..=${MAX_SLUG_LEN} characters`;
     if (!/^[a-z0-9-]+$/.test(name)) return "slug allows lowercase letters, digits, and dashes";
@@ -83,7 +81,7 @@ export function validateSlug(name) {
     return null;
 }
 
-// PORT: workflow-rs/src/session.rs's `render_program_help`. `programs` is the
+// `programs` is the
 // operator-owned PROGRAMS_JSON registry (see activity/config-discover.js) -
 // each `{name, ffqn, description}`.
 export function renderProgramHelp(programs) {
@@ -97,7 +95,7 @@ export function renderProgramHelp(programs) {
     return text;
 }
 
-// PORT: session.rs's `render_app_help`. `apps` is the operator-owned
+// `apps` is the operator-owned
 // APPS_JSON registry (see activity/config-discover.js) - each
 // `{name, owner, repo, ref, description}`. Empty when no apps are
 // configured, keeping the prompt lean (mirrors renderProgramHelp).
@@ -118,46 +116,27 @@ export function renderAppHelp(apps) {
 
 // `promptTail` is everything after "# Example apps" (user input, subagents,
 // deployment authoring, and "# This session") from config-discover.js's
-// discover() (PORT-OF-RECORD there), single-sourced given this execution's
-// identity so this backend and workflow-rs's session.rs don't hand-duplicate
-// any of that text.
+// discover(), given this execution's identity.
 export function renderSystemPrompt(systemPrompt, programs, apps, mountOutput, promptTail) {
     return `${systemPrompt}\n\n# Shell\n\n${renderProgramHelp(programs)}\n${renderAppHelp(apps)}# Mounts at session start\n\n\`\`\`text\n${mountOutput}\`\`\`\n\n${promptTail}`;
 }
 
-// PORT: workflow-rs/src/session.rs's `MOUNT_HEADER`/`MOUNT_FOOTER`.
 const MOUNT_HEADER =
     "Network-backed mounts (lazy: a directory lists and a file's bytes fetch on first access):\n";
 const MOUNT_FOOTER =
     "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
-// PORT: workflow-rs/src/session.rs's `render_mount`. `probe(ffqn)` returns
-// `null` when the server responds, or an error message string when it
-// doesn't (session.js supplies a real `host.callJson` probe; tests supply a
-// fake) - kept a plain function argument rather than a `host` object so this
-// stays a pure, host-agnostic renderer like every other helper in this file.
 // Each app shows `resolvedRef` (the commit its mount pinned to on first
 // `ls`/`cat`, set by obelisk-web.js's `mount`) once present, falling back to
 // the still-unresolved requested `ref` otherwise.
-export function renderMount(apps, mcpServers, _webhookUrl, probe) {
+export function renderMount(apps) {
     let text = MOUNT_HEADER;
     for (const { name, owner, repo, ref, resolvedRef } of apps) {
         const gitRef = resolvedRef ?? ref;
         text += `  /workspace/apps/${name}          example app, read-only (${owner}/${repo}@${gitRef})\n`;
     }
-    for (const { name, ffqn } of mcpServers) {
-        const error = probe(ffqn);
-        const status = error === null ? "responding" : `not responding: ${mountProbeReason(error)}`;
-        text += `  /workspace/mcp/${name}  MCP server, read-only (${status})\n`;
-    }
     text += MOUNT_FOOTER;
     return text;
-}
-
-// PORT: `mount_probe_reason` - a transport failure is often multi-line/verbose;
-// reduce it to a short single-line reason for the `mount` listing.
-function mountProbeReason(error) {
-    return String(error).split("\n")[0].slice(0, 80);
 }
 
 export function stepLimitError(turnIndex, maxSteps) {

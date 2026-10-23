@@ -1,5 +1,3 @@
-// PORT: workflow/workflow-rs/src/chat.rs
-//
 // Caller-aware subcommands of the `chat` shell program. The activity behind
 // `chat` speaks HTTP to this Obelisk instance but cannot know which session
 // invoked it, nor schedule child executions; `commandHandler` wraps that
@@ -11,10 +9,8 @@
 //
 // Custom-command handlers in this runtime receive the *full* argv including
 // argv[0] = the command name (see obelisk-program.js's header comment and
-// interpreter.js's `invoke`), unlike workflow-rs's `CustomCommandHandler`
-// (argv[0] already stripped). `commandHandler`'s returned function strips it
-// once (`stripped = args.slice(1)`) so the rest of this module can mirror
-// chat.rs's already-stripped `args` byte-for-byte; every call this module
+// interpreter.js's `invoke`). `commandHandler`'s returned function strips it
+// once (`stripped = args.slice(1)`); every call this module
 // makes back into `delegate` (from `watchLoop`/`attachFinal`, and the default
 // pass-through) must in turn supply its own leading placeholder element
 // (`"chat"`) since `delegate` applies the same `.slice(1)` convention.
@@ -41,11 +37,7 @@ export { parentOf };
 
 
 // Live identity of the invoking session, captured where commands are
-// registered (the activity cannot learn its caller). PORT: chat.rs's
-// `ChatSelf` -- Rust needs `Rc<RefCell<...>>` for shared mutability across
-// the closures `command_handler` builds; a plain mutable field/`Map` on a
-// plain JS object already has that (JS closures capture by reference), so no
-// such wrapper is needed here.
+// registered (the activity cannot learn its caller).
 export class ChatSelf {
     constructor(executionId, backend, effort, name = null) {
         this.executionId = executionId;
@@ -65,9 +57,7 @@ export class ChatSelf {
         return parentOf(this.executionId);
     }
 
-    // PORT: Rust's implicit `Drop` of `chat.rs`'s `peers` map when
-    // `agent_loop` unwinds -- JS has no destructor, so `agentLoop`'s
-    // `finally` calls this explicitly on every exit path instead.
+    // `agentLoop`'s `finally` calls this on every exit path.
     close() {
         for (const joinSet of this.peers.values()) {
             joinSet.close();
@@ -75,7 +65,6 @@ export class ChatSelf {
     }
 }
 
-// PORT: chat.rs's `command_handler`.
 export function commandHandler(delegate, own, notifications) {
     return (interp, args, stdin) => {
         const stripped = args.slice(1);
@@ -97,7 +86,7 @@ export function commandHandler(delegate, own, notifications) {
     };
 }
 
-// PORT: chat.rs's `rename`. `args` is the stripped subcommand argv
+// `args` is the stripped subcommand argv
 // (`args[0] === "rename"`, `args[1]` the slug).
 export function rename(args, own, notifications) {
     const name = args[1];
@@ -114,8 +103,7 @@ export function rename(args, own, notifications) {
     return { stdout: `renamed to ${name}\n`, stderr: "", exitCode: 0 };
 }
 
-// PORT: chat.rs's `create_child`. `args` is `rest` (the `create` argv without
-// the `create` word itself, matching chat.rs's already-stripped call site).
+// `args` is `rest` (the `create` argv without the `create` word itself).
 export function createChild(own, args, delegate, interp) {
     let parsed;
     try {
@@ -155,7 +143,7 @@ export function createChild(own, args, delegate, interp) {
 
 // ----- chat watch -----------------------------------------------------
 
-// PORT: chat.rs's `watch_command`. `args` is `rest` (the `watch` argv without
+// `args` is `rest` (the `watch` argv without
 // the `watch` word itself).
 export function watchCommand(delegate, interp, args) {
     let parsed;
@@ -170,7 +158,7 @@ export function watchCommand(delegate, interp, args) {
 // Poll `chat state` for one session until it reports a wake state or the
 // timeout elapses. Each poll goes through `delegate` (a durable activity
 // call) and each wait is a durable sleep, so the whole loop survives
-// restarts and pause. PORT: chat.rs's `watch_loop`.
+// restarts and pause.
 export function watchLoop(delegate, interp, parsed) {
     const startedMs = nowMs();
     const deadline = startedMs + parsed.timeoutMs;
@@ -227,7 +215,6 @@ export function watchLoop(delegate, interp, parsed) {
 // prints (finished reply, error/failure reason, or pending question), so a
 // caller does not need a second round trip after `watch` wakes. Best effort:
 // a failed read leaves `final` absent rather than failing the whole watch.
-// PORT: chat.rs's `attach_final`.
 export function attachFinal(delegate, interp, id, payload) {
     const out = delegate(interp, ["chat", "read", id, "--final"], "");
     if (out.exitCode === 0 && payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
@@ -235,10 +222,8 @@ export function attachFinal(delegate, interp, id, payload) {
     }
 }
 
-// Current time as Unix epoch milliseconds. PORT: chat.rs's `now_ms` (which
-// reads the durable clock via `workflow_support::sleep(ScheduleAt::Now)`);
-// this file follows session.js's `hostNowMs` precedent of calling `Date.now()`
-// directly instead, since the value here only ever drives watch-loop
+// Current time as Unix epoch milliseconds. Follows session.js's `hostNowMs`
+// precedent of calling `Date.now()` directly, since the value here only ever drives watch-loop
 // timing/reporting (deadline math, `waited_ms`), the same non-determinism
 // tradeoff session.js already made throughout its own turn/duration
 // accounting.

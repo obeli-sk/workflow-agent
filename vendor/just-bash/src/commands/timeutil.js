@@ -1,4 +1,3 @@
-// PORT: vendor/just-bash-rs/src/commands/timeutil.rs
 // date [-u] [-d STRING] [-I] [-R] [+FORMAT], expr, sleep, timeout, time.
 //
 // Five small commands grouped here because they share either the clock
@@ -16,10 +15,8 @@
 // workflow shell anyway.
 //
 // A fuller `sleepCommand` is included here too (multi-arg summing + the
-// same invalid-interval error text as upstream) since it is part of
-// timeutil.rs's own scope, even though `commands/core.js` already has a
-// minimal single-arg `sleep`. See the migration doc / this port's commit
-// message for which one the command registry should end up using.
+// same invalid-interval error text as upstream), even though
+// `commands/core.js` already has a minimal single-arg `sleep`.
 
 import { ok, fail } from "./core.js";
 import { translateBre } from "../regex-bre.js";
@@ -354,8 +351,7 @@ function matchBre(text, pattern) {
 // integers, string otherwise), `+ -`, `* / %`, a `:` regex-match operator
 // (POSIX BRE anchored at the start, translated via the same `translateBre`
 // grep/sed share), `match`/`substr`/`index`/`length`, and parens. Regular
-// (safe-integer) JS number arithmetic, not POSIX's arbitrary precision — a
-// scope simplification matching the Rust port's own i64 simplification.
+// (safe-integer) JS number arithmetic, not POSIX's arbitrary precision.
 class ExprParser {
     constructor(args) {
         this.args = args;
@@ -526,8 +522,7 @@ function parseDurationMs(s) {
 // With a script watch installed (`interp.watcher`, see watch.js), the delay
 // joins the watch instead: a timeout or operator interrupt ends the sleep
 // early and records `interp.interrupted`, so the script's remaining
-// statements are skipped at the next boundary check (PORT: timeutil.rs's
-// `sleep_cmd`).
+// statements are skipped at the next boundary check.
 export function sleepCommand(interp, args) {
     const rest = args.slice(1);
     if (rest.length === 0) return fail("sleep: missing operand\n", 1);

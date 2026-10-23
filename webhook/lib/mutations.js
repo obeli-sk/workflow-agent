@@ -13,11 +13,6 @@ import {
     unpauseObeliskExecution,
 } from "./obelisk-api.js";
 
-// Both the Rust and JS workflow backends export
-// obelisk-agent:workflow/workflow.run-cancellable (see
-// docs/js-backend-migration.md); which implementation actually runs it is a
-// deployment choice (deployment.rs.toml vs deployment.js.toml), not something
-// this file picks per request.
 function scheduleSession(prompt, backend, effort) {
     return runCancellableSchedule(null, prompt, backend, null, effort, null);
 }

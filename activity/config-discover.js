@@ -3,37 +3,26 @@
 //     -> result<record {
 //     max-steps: u32,
 //     programs: list<record { name: string, ffqn: string, description: string }>,
-//     mcp-servers: list<record { name: string, ffqn: string }>,
 //     apps: list<record { name: string, owner: string, repo: string, ref: string, description: string }>,
-//     webhook-url: string,
 //     obelisk-version: string,
 //     prompt-tail: string
 //   }, string>
 //
 // prompt-tail is the whole system prompt after "# Example apps": user-input
 // guidance, subagent delegation, deployment authoring, and the per-session
-// "# This session" text - not operator config. It lives here (one JS
-// activity both workflow backends already call at session start) so
-// session.rs and session-logic.js don't each hand-carry their own copy of
-// this prose, "# This session" included: execution-id/backend/effort/name
-// are cheap to pass in (no network round trip either way), so there is no
-// cost to fully centralizing it here too.
+// "# This session" text - not operator config.
 
 const DEFAULT_MAX_STEPS = 10;
 const DEFAULT_APP_OWNER = "obeli-sk";
 const DEFAULT_APP_REF = "main";
 
-// PORT-OF-RECORD: session.rs's inline "# User input" text and
-// session-logic.js's (now-deleted) USER_INPUT_SECTION constant.
 const USER_INPUT_SECTION =
     "# User input\n\n" +
     "When you need a user answer before you can continue the current task, run " +
-    "`obelisk call obelisk-agent:stub/stub.ask-user '[\"Your question\"]'`. It publishes the question " +
+    "`ask-user \"Your question\"`. It publishes the question " +
     "to the UI, blocks, and returns the answer so you can continue in the same turn. Use it only when " +
     "the answer is required to proceed; to end the turn, reply in Markdown without a command.";
 
-// PORT-OF-RECORD: session.rs's inline "# Subagents" text and
-// session-logic.js's (now-deleted) SUBAGENTS_SECTION constant.
 const SUBAGENTS_SECTION =
     "# Subagents\n\n" +
     "Delegate self-contained work with `chat create [--name slug] PROMPT`.\n\n" +
@@ -43,39 +32,33 @@ const SUBAGENTS_SECTION =
     "- Never poll a child with sleep loops.\n" +
     "- A child parked in step-limit resumes where it left off when you send it `chat send ID continue`; its budget resets for the new turn.";
 
-// PORT-OF-RECORD: vendor/just-bash-rs/src/obelisk_pack.rs's (now-deleted)
-// SYSTEM_PROMPT constant and vendor/just-bash/src/obelisk-pack.js's matching
-// (now-deleted) export - the "obelisk" shell command's own logic stays
-// vendored/ported per backend, but this descriptive text has no per-backend
-// behavior to port, so it belongs in exactly one place.
 const PACK_SYSTEM_PROMPT =
     "# Deployment authoring\n\n" +
     "You are on a persistent virtual machine with a filesystem rooted at /workspace. Pull an app's " +
     "deployment into a working directory and edit deployment.toml and component sources with ordinary shell commands.\n\n" +
-    "- Use `obelisk cloud app --app NAME ...` for an app's operations: functions, executions, call, and deployment active/list/show/pull/check/submit/enqueue/apply.\n" +
-    "- Edits are local until deployed: `obelisk cloud app --app NAME deployment submit PATH` stores them as a new inactive deployment and prints its ID, `deployment apply ID` hot-redeploys that deployment now, `deployment enqueue ID` stages it for the next server restart instead, and `deployment pull DIRECTORY` checks out the active deployment into an empty directory.\n" +
-    "- Pull before editing an existing app: `obelisk cloud app --app NAME deployment pull /workspace/NAME`. It pins the active deployment, fetches its manifest, policy and file index, and loads source bytes only when read. Pull into a new directory to inspect a newer deployment without losing local edits.\n" +
+    "- Use `obelisk cloud app --app NAME ...` for an app's operations, as in the real CLI: `component list`, `execution ...`, `deployment active|list|show|pull|submit|enqueue|apply`.\n" +
+    "- Edits are local until deployed: inside the app directory, `obelisk cloud app deploy` submits deployment.toml (PATH defaults to it), applies it with app.toml, and prints the webhook URL. `deployment submit` only stores a new inactive deployment and prints its ID; `deployment apply [PATH|ID]` submits and hot-redeploys now. An unchanged deployment reuses the active ID.\n" +
+    "- Pull before editing an existing app: `obelisk cloud app --app NAME deployment pull $(obelisk cloud app --app NAME deployment active) -o /workspace/NAME`. It writes deployment.toml and loads source bytes only when read; the pull refuses to overwrite files unless `--force`. Leave `content_digest` and `component_files` out of deployment.toml: they are generated on submit.\n" +
     "- Add a component by writing its source plus an `[[activity_js]]`/`[[workflow_js]]` table (name, location, params, return_type); add a bundled JavaScript file by writing it and importing it from the component.\n" +
     "- Run `obelisk generate deployment` for a fully-commented starter deployment.toml, or `obelisk generate new` to list the starter app templates.\n" +
     "- Follow the rendered llms.txt authoring guidance in the system prompt and fetch relevant linked pages before writing components; never guess API signatures.\n" +
     "- Read-only reference repos for authoring are mounted at /workspace/apps/<name> (see \"Example apps\" above).\n" +
     "\n" +
     "# Mounts and network access\n\n" +
-    "Run `mount` to see every mounted app, the network-backed mount points, and whether each MCP server is responding.\n\n" +
-    "- `/workspace/apps/*` and `/workspace/mcp` are lazy: a directory lists and a file's bytes fetch over the network on first access.\n" +
+    "Run `mount` to see every mounted app and its network-backed mount point.\n\n" +
+    "- `/workspace/apps/*` are lazy: a directory lists and a file's bytes fetch over the network on first access.\n" +
     "- Each `/workspace/apps/<name>` tree costs one request per directory listed - avoid `tree`, `find`, or a recursive grep across them, and use targeted `ls`/`cat` or read a known path directly instead.\n" +
     "- The shell's HTTP access goes through an operator allowlist: `curl` (GET only) works only for explicitly granted hosts; anything else is a policy-denied result, not a bug.\n" +
-    "- Discover an app's webhook URL with `obelisk cloud app --app NAME endpoint webhook` and smoke-test its routes with `curl`. Verify executions through the app's API (`obelisk cloud app --app NAME executions list` / `logs`).\n";
+    "- Discover an app's webhook URL with `obelisk cloud app --app NAME endpoint webhook` and smoke-test its routes with `curl`. Verify executions through the app's API (`obelisk cloud app --app NAME execution list`, `execution logs ID`).\n";
 
 // The fixed part of the prompt tail, in the order the workflow renders it:
 // user input, then subagents, then deployment authoring. The per-session
 // "# This session" text (built by renderSelfSection) follows this.
 const STATIC_SECTIONS = [USER_INPUT_SECTION, SUBAGENTS_SECTION, PACK_SYSTEM_PROMPT].join("\n\n");
 
-// PORT-OF-RECORD: session.rs's chat::self_section / (now-deleted)
-// chat-logic.js's selfSection - the "# This session" paragraph: the
-// session's own identity (exactly what `chat current` prints), its parent
-// for context gathering, and when to rename itself.
+// The "# This session" paragraph: the session's own identity (exactly what
+// `chat current` prints), its parent for context gathering, and when to rename
+// itself.
 function renderSelfSection(executionId, backend, effort, name) {
     const payload = JSON.stringify({
         execution_id: executionId,
@@ -104,8 +87,7 @@ function renderSelfSection(executionId, backend, effort, name) {
     return text;
 }
 
-// PORT-OF-RECORD: chat.rs's parent_of / chat-logic.js's parentOf. The
-// session that created an execution, derived from the derived-execution id
+// The session that created an execution, derived from the derived-execution id
 // shape (`<parent-id>.<join-set-ref>`); null for top-level executions.
 function parentOf(executionId) {
     const dot = executionId.lastIndexOf(".");
@@ -116,9 +98,7 @@ export default async function discover(executionId, backend, effort, name) {
     return {
         max_steps: parseMaxSteps(process.env["MAX_STEPS"]),
         programs: parseRegistry("PROGRAMS_JSON", parseProgram),
-        mcp_servers: parseRegistry("MCP_SERVERS_JSON", parseMcpServer),
         apps: parseRegistry("APPS_JSON", parseApp),
-        webhook_url: (process.env["TARGET_OBELISK_WEBHOOK_URL"] ?? "").trim(),
         obelisk_version: (process.env["OBELISK_VERSION"] ?? "").trim() || "latest",
         // STATIC_SECTIONS already ends in one "\n" (from PACK_SYSTEM_PROMPT);
         // one more here yields the same blank-line gap as every other
@@ -157,14 +137,6 @@ function parseProgram(entry, index, envName) {
     if (typeof ffqn !== "string" || !ffqn) throw `${envName}[${index}] has no ffqn`;
     if (typeof description !== "string") throw `${envName}[${index}] description must be a string`;
     return { name, ffqn, description };
-}
-
-function parseMcpServer(entry, index, envName) {
-    const name = entry?.name;
-    const ffqn = entry?.ffqn;
-    if (typeof name !== "string" || !name) throw `${envName}[${index}] has no name`;
-    if (typeof ffqn !== "string" || !ffqn) throw `${envName}[${index}] has no ffqn`;
-    return { name, ffqn };
 }
 
 // An APPS_JSON entry: a lazily-mounted GitHub repo tree, browsed at

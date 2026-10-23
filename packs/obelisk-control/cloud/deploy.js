@@ -1,112 +1,39 @@
 // obelisk-agent:tools/cloud.prepare-deploy:
-//   func(app: string, app-toml: string)
-//     -> result<record { api-url: string, webhook-url: option<string>, log: string }, string>
+//   func(app: string, app-toml: string, fill-env: option<list<tuple<string, string>>>)
+//     -> result<record { created: bool, log: string }, string>
 //
-// PORT: obelisk's src/command/cloud/deploy.rs up to the deployment apply:
-// create or restage the app, check required config, apply and start it, then
-// hand back its API URL so the shell applies the deployment there.
-import { apiOrigin, appRequest, cloudRequest, lookupApp } from "./client.js";
-import { appConfig, validateAppName } from "./policy.js";
-import { lifecycleOutcome } from "./output.js";
-import { requireSingleApp, singleApp, singleAppRow } from "./single-app.js";
+// PORT: obelisk's src/command/cloud/deploy.rs up to the deployment enqueue:
+// stage the config of an existing app or create a new one, so the shell can
+// enqueue the deployment on its API before `finish-deploy`.
+import { cloudRequest, lookupApp, appRequest } from "./client.js";
+import { appConfig, validateCloudAppName } from "./policy.js";
+import { initialValues } from "./fill.js";
 
-export default async function prepare_deploy(app, appToml) {
+export default async function prepare_deploy(app, appToml, fillEnv) {
     const lines = [];
     const log = (line) => lines.push(`${line}\n`);
-    if (singleApp()) return singleAppTarget(app, log, lines);
-    if (!appToml) throw "Cannot read policy app.toml: pass -a APP.TOML or write ./app.toml with app_name";
     const config = appConfig(appToml);
     const name = app || config.appName;
-    if (!name) throw "Select an app with --app or app_name in app.toml";
-    validateAppName(name);
-    const step = (command, message) => log(`→ obelisk cloud app --app ${name} ${command}  ${message}`);
-    const command = { kind: "command" };
-
-    let row = await lookupApp(name);
-    if (row === null) {
-        step("new -a app.toml", "Creating app");
-        row = await cloudRequest("POST", ["v1", "apps"], {
-            ...command,
-            body: { app_name: name, policy: config.policy, cloud: config.cloud },
+    if (!name) throw "Set app_name in ./app.toml, --app or OBELISK_APP_NAME";
+    validateCloudAppName(name);
+    log(`Deploying ${name}`);
+    const step = (command) => log(`→ obelisk cloud app ${command}`);
+    const desired = { policy: config.policy, cloud: config.cloud };
+    try {
+        if ((await lookupApp(name)) !== null) {
+            step("stage");
+            await appRequest(name, "PUT", ["config"], { kind: "command", body: desired });
+            return { created: false, log: lines.join("") };
+        }
+        if (fillEnv) step("fill");
+        const values = initialValues(config.policy, fillEnv ? Object.fromEntries(fillEnv) : null);
+        step("new");
+        await cloudRequest("POST", ["v1", "apps"], {
+            kind: "secret-command",
+            body: { ...desired, app_name: name, env: values.env, secrets: values.secrets },
         });
-    } else if (!sameConfig(row, config)) {
-        step("stage -a app.toml", "Staging app configuration");
-        row = await appRequest(name, "PUT", ["config"], { ...command, body: { policy: config.policy, cloud: config.cloud } });
-    } else {
-        log("App configuration unchanged.");
+        return { created: true, log: lines.join("") };
+    } catch (error) {
+        throw `${lines.join("")}Error: ${error}`;
     }
-
-    await checkFill(name, config.policy, log);
-
-    if (row?.potentially_stale === true || row?.applied_revision === 0 || row?.apply_required === true) {
-        step("apply", "Applying staged configuration");
-        row = await appRequest(name, "POST", ["apply"], { ...command, body: { force: false } });
-        log(lifecycleOutcome(row));
-    }
-    if (row?.status === "stopped") {
-        step("start", "Starting VM");
-        row = await appRequest(name, "POST", ["start"], command);
-        log(lifecycleOutcome(row));
-    }
-    if (row?.status !== "running") {
-        throw `App is ${row?.status ?? "unknown"}; inspect it with \`obelisk cloud app --app ${name} status\``;
-    }
-    const webhook = typeof row.webhook_url === "string" ? row.webhook_url : null;
-    return { api_url: apiOrigin(row.api_url), webhook_url: webhook, log: lines.join("") };
-}
-
-// Nothing to provision: the app's policy is fixed, so the deployment must fit it.
-async function singleAppTarget(app, log, lines) {
-    const name = await requireSingleApp(app);
-    const row = await singleAppRow();
-    if (row.status !== "running") throw `App ${name} is ${row.status}; ask the user to check its server`;
-    log(`App ${name} has a fixed policy; skipping provisioning.`);
-    return { api_url: row.api_url, webhook_url: row.webhook_url, log: lines.join("") };
-}
-
-async function checkFill(name, policy, log) {
-    const required = [];
-    const optional = [];
-    const envNames = policy.public_env
-        .filter((entry) => entry.type !== "internal")
-        .map((entry) => (typeof entry === "string" ? { name: entry, optional: false } : entry));
-    const secretNames = Object.entries(policy.secrets)
-        .filter(([, secret]) => secret.type !== "internal")
-        .map(([secretName, secret]) => ({ name: secretName, optional: secret.optional === true }));
-    if (envNames.length > 0) {
-        const env = (await appRequest(name, "GET", ["env"]))?.env ?? {};
-        for (const entry of envNames) {
-            if (!Object.prototype.hasOwnProperty.call(env, entry.name)) (entry.optional ? optional : required).push(`env ${entry.name}`);
-        }
-    }
-    if (secretNames.length > 0) {
-        const listed = (await appRequest(name, "GET", ["secrets"], { kind: "secret" }))?.secrets ?? [];
-        const present = new Set(listed.map((secret) => secret?.name));
-        for (const entry of secretNames) {
-            if (!present.has(entry.name)) (entry.optional ? optional : required).push(`secret ${entry.name}`);
-        }
-    }
-    if (required.length > 0) {
-        throw `Missing required configuration: ${required.join(", ")}. Set it with \`obelisk cloud app --app ${name} env set NAME VALUE\` or \`obelisk cloud app --app ${name} secrets set NAME --stdin\`, then retry the deploy`;
-    }
-    if (optional.length > 0) log(`Optional configuration not set: ${optional.join(", ")}`);
-}
-
-// Whether the provisioner already holds this policy and cloud config.
-export function sameConfig(row, config) {
-    return canonical(row?.policy) === canonical(config.policy) && canonical(row?.cloud ?? {}) === canonical(config.cloud);
-}
-
-function canonical(value) {
-    return JSON.stringify(normalize(value));
-}
-
-function normalize(value) {
-    if (Array.isArray(value)) return value.map(normalize);
-    if (value === null || typeof value !== "object") return value;
-    const out = {};
-    for (const key of Object.keys(value).sort()) {
-        if (value[key] !== null && value[key] !== undefined) out[key] = normalize(value[key]);
-    }
-    return out;
 }

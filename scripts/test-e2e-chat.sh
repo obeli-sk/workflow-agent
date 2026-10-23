@@ -1,24 +1,17 @@
 #!/usr/bin/env bash
-# Usage: test-e2e-chat.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
-BACKEND="${1:-rs}"
-PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
-API_PORT=$((28018 + PORT_OFFSET))
-EXTERNAL_PORT=$((28093 + PORT_OFFSET))
-e2e_init "chat-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-chat-token"
+API_PORT=28018
+EXTERNAL_PORT=28093
+e2e_init "chat-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-chat-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions","wire_model":"fake"}]'
-unset MCP_SERVER_TOKEN
 
-e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-chat-deployment-$BACKEND.toml"
-e2e_patch_workflow_manifest "$DEPLOY"
-e2e_start_server "$DEPLOY"
+e2e_start_server
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 CHAT_FFQN="obelisk-agent:programs/program.chat"
@@ -196,8 +189,6 @@ grep -q '"state":"cancelled"' <<<"$WATCH_OUT" \
     || { echo "watch did not report cancelled: $WATCH_OUT" >&2; exit 1; }
 
 # KNOWN-RED: an Obelisk-core replay-finalize gap, not a workflow-agent bug -
-# see the KNOWN-RED note on e2e_verify_replay_parity in e2e-lib.sh.
-e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$PARENT_ID"
 
 echo ">>> cleaning up sessions"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$PARENT_ID" >/dev/null || true

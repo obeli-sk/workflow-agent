@@ -1,4 +1,3 @@
-// PORT: vendor/just-bash-rs/src/commands/hash.rs
 // base64 [-d] [-w COLS] [FILE], md5sum [-c] [FILE]..., sha256sum [FILE]...
 
 import { ok, fail, unknownOption } from "./core.js";
@@ -20,7 +19,7 @@ function base64Encode(bytes) {
     return out;
 }
 
-function base64Decode(text) {
+export function base64Decode(text) {
     const cleaned = [...text].filter((c) => !/\s/.test(c));
     const values = [];
     for (const c of cleaned) {
@@ -272,7 +271,6 @@ export function sha256Hex(bytes) {
 // at most once via the existing lazy read cache - and hashing them, after
 // which the result is cached for next time. Returns null if the file is
 // missing.
-// PORT: fs.rs's `content_sha256_hex`.
 function contentSha256Hex(interp, path) {
     const lazy = interp.vfs.lazyFileRef(path);
     if (lazy && isCasNamespacedDigest(lazy.digest)) {

@@ -1,5 +1,3 @@
-// PORT: workflow/workflow-rs/src/script_watch.rs
-//
 // Host-facing half of the per-script watch: submits the real interrupt
 // offer (plus an optional watchdog delay) onto a fresh `obelisk`
 // join set and hands back a `ScriptWatchGuard`. All the actual
@@ -25,18 +23,9 @@ export { ScriptWatchGuard };
 
 // Submit the interrupt offer, plus the watchdog delay when `timeoutMs` is
 // given (a number of milliseconds; `null`/`undefined` for "no timeout"),
-// onto a fresh anonymous join set. PORT: script_watch.rs's
-// `ScriptWatchGuard::arm`, which uses Rust's `workflow_support::
-// join_set_create()` (unnamed). `obelisk.createJoinSet()` with no `name`
-// makes the same kind of unnamed, ordinal-numbered join set (confirmed
-// against obelisk's workflow-js-runtime tests), matching Rust's replay
-// history exactly - a *named* join set here (an earlier version of this
-// file used one keyed by the calling script id, to sidestep
-// `JoinSetCreateError::Conflict` on a second same-named call) diverges from
-// Rust's anonymous one and fails cross-backend replay with a
-// NonDeterminismError (see scripts/test-e2e-replay-parity.sh). Anonymous
-// join sets have no such conflict to sidestep in the first place: each call
-// gets its own ordinal, unique by construction.
+// onto a fresh anonymous join set. Each anonymous join set gets its own
+// ordinal, so repeated calls never conflict. Switching to a named join set
+// would change the replay history of existing sessions.
 export function arm(timeoutMs, obelisk) {
     console.debug(`script-watch arm: creating join set, timeoutMs=${timeoutMs}`);
     const joinSet = obelisk.createJoinSet();

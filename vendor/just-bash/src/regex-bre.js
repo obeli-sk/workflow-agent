@@ -3,7 +3,6 @@
 // BRE's `\(` `\)` `\{` `\}` `\+` `\?` `\|` are the special forms; bare
 // `( ) { } + ? |` are literal. Also expands POSIX bracket classes
 // (`[:digit:]` etc.) since JS RegExp doesn't support them natively.
-// PORT: vendor/just-bash-rs/src/commands/grep.rs's translate_bre.
 
 const POSIX_CLASSES = {
     alnum: "0-9A-Za-z",
@@ -48,7 +47,7 @@ function findBracketEnd(chars, start) {
 
 // Expand `[:class:]` POSIX classes inside `[...]` bracket expressions,
 // leaving everything else untouched. Needed even in ERE/extended mode since
-// (unlike Rust's `regex` crate) JS RegExp has no native POSIX-class support.
+// JS RegExp has no native POSIX-class support.
 export function expandPosixBracketClasses(pattern) {
     const chars = [...pattern];
     let out = "";

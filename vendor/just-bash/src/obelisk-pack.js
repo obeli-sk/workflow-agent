@@ -1,38 +1,27 @@
-// PORT: vendor/just-bash-rs/src/obelisk_pack.rs
+// The obelisk-control pack: one custom command, `obelisk`, mirroring the real
+// obelisk CLI's `cloud` and `generate` subcommands.
 //
-// The obelisk-control pack: one custom command, `obelisk`, whose `cloud`
-// subcommand manages apps in the cloud and whose `generate` subcommand writes
-// starter files. `obelisk cloud app [--app NAME] functions|executions|call|
-// deployment ...` run against one app's API through a control plane: an
-// object with the same methods as obelisk_pack.rs's `ControlPlane` trait (see
-// workflow/workflow-js/src/host.js's `createControlPlane`; tests pass a fake).
-// Methods return the decoded ok value and throw a plain message on error,
-// except `deploymentSubmit`, which throws `{ missingFiles }` for the
-// recoverable missing-files arm. The session's own `controlPlane` only
-// answers the top-level `obelisk call obelisk-agent:stub/stub.ask-user`.
-//
-// `cloud` backs `obelisk cloud ...`: `run(args, stdin, appToml)` for
-// provisioner commands, `prepareDeploy(app, appToml)` for the first half of
-// `app deploy`, and `controlPlane(app)` for a control plane against that
-// app's own API (see host.js's `createCloud`).
+// `cloud` (host.js's `createCloud`) backs `obelisk cloud ...`:
+// `run(args, stdin, appToml, fillEnv)` runs the provisioner commands,
+// `prepareDeploy`/`finishDeploy` wrap `app deploy`'s enqueue, and
+// `get(app, path)`/`send(app, method, path, contentType, body)` call the app's
+// own API, returning `{ status, body }`. The app API subcommands (`execution`,
+// `component`, `deployment`, `admin`) are ported here from obelisk's
+// src/command/*.rs: human output on stderr, JSON and values on stdout, errors
+// as `Error: ...` with exit 1 and usage errors with exit 2.
 //
 // Custom-command handlers receive the full argv including argv[0] (see
-// interpreter.js's `invoke`), unlike workflow-rs's `CustomCommandHandler`
-// (argv[0] already stripped) - `commandHandler`'s `args.slice(1)` accounts
-// for that, same as obelisk-program.js.
+// interpreter.js's `invoke`); `commandHandler` strips it with
+// `args.slice(1)`, same as obelisk-program.js.
 
-import { sha256Hex } from "./commands/hash.js";
-import { utf8Encode } from "./utf8.js";
+import { base64Decode, sha256Hex } from "./commands/hash.js";
+import { utf8Decode, utf8Encode } from "./utf8.js";
 import { DEPLOYMENT_TEMPLATE } from "./obelisk-deployment-template.js";
 import { isCasNamespacedDigest } from "./fs.js";
+import { parseToml } from "../../../packs/obelisk-control/cloud/toml.js";
 
-
-// The app's policy, written next to the pulled deployment.toml.
 const APP_POLICY_FILE = "app.toml";
-// Answered by the session itself rather than by a cloud app.
-const ASK_USER_FFQN = "obelisk-agent:stub/stub.ask-user";
-// `obelisk cloud app` subcommands served by the app's own API.
-const CLOUD_APP_API = ["functions", "executions", "call", "deployment"];
+const APP_API_GROUPS = ["execution", "component", "deployment", "admin"];
 
 const TEMPLATE_OWNER = "obeli-sk";
 const TEMPLATE_REPO = "obelisk";
@@ -40,307 +29,1377 @@ const TEMPLATES_ROOT = "examples/templates";
 // Used when OBELISK_VERSION is not a ref (`latest`) or its templates are missing.
 const TEMPLATE_FALLBACK_REF = "main";
 
-// The placeholder value the agent sees in `component_files` maps in place of
-// a pinned digest; `deployment submit` replaces each with the file's real
-// digest.
-const AUTO_DIGEST = "auto";
+// A command-line error, reported like clap's (exit 2).
+class UsageError extends Error {}
+// The failure is already on stderr; exit 1 without an `Error:` line.
+const ALREADY_PRINTED = Symbol("already printed");
 
-// ---------------------------------------------------------------------------
-// Command registration
-// ---------------------------------------------------------------------------
-
-// Build the `obelisk` custom-command handler. Register it with
-// `commands.set("obelisk", obelisk.commandHandler(controlPlane, generate))`. The handler owns
-// `controlPlane` for the life of the session (a plain closure capture, not an
-// Rc<RefCell<_>> as in the Rust port, since JS closures already close over a
-// shared mutable reference). `generate` is `{ obeliskVersion, githubContents }`: the
-// obelisk repo ref and the statically imported `obelisk-agent:mounts/apps.request`
-// that `generate new` fetches the starter app with.
-export function commandHandler(controlPlane, generate, cloud = null) {
-    return (interp, args, stdin) => executeObelisk(interp, args.slice(1), stdin, controlPlane, generate, cloud);
+// Build the `obelisk` custom-command handler. `generate` is
+// `{ obeliskVersion, githubContents }`: the obelisk repo ref and the
+// `obelisk-agent:mounts/apps.request` import `generate new` fetches the
+// starter app with.
+export function commandHandler(generate, cloud) {
+    return (interp, args, stdin) => executeObelisk(interp, args.slice(1), stdin, generate, cloud);
 }
 
-// ---------------------------------------------------------------------------
-// Deployment pull
-// ---------------------------------------------------------------------------
-
-// Pull metadata now and pin source files to their CAS digests until first read.
-export function pullDeployment(fs, controlPlane, dir) {
-    if (fs.exists(dir) && (!fs.isDir(dir) || fs.readdir(dir).length > 0)) {
-        throw `pull destination must be an empty directory: ${dir}`;
-    }
-    const deploymentId = decodeString(controlPlane.currentDeploymentId());
-    if (deploymentId === "") throw "app has no active deployment";
-    const { deployment_toml: manifest, files: indexedFiles } = controlPlane.deploymentCheckout(deploymentId);
-    const policy = controlPlane.getAppConfig();
-    fs.mkdirp(dir);
-    fs.writeFile(`${dir}/deployment.toml`, simplifyManifest(manifest));
-    if (policy !== null) fs.writeFile(`${dir}/${APP_POLICY_FILE}`, policy);
-    const loader = blobLoader(controlPlane);
-    for (const reference of indexedFiles) {
-        fs.registerLazyWithLoader(`${dir}/${reference.path}`, reference.digest, reference.size, loader);
-    }
-    return { deploymentId, directory: dir, files: indexedFiles.length + 1 };
-}
-
-// The `Vfs` blob loader for an app's deployment files: fetch a file's bytes
-// by content digest via `deployment-read-blob`.
-export function blobLoader(controlPlane) {
-    return (digest) => controlPlane.deploymentReadBlob(digest);
-}
-
-// ---------------------------------------------------------------------------
-// CLI dispatch
-// ---------------------------------------------------------------------------
-
-// Directly callable by tests, mirroring the Rust test module's
-// `execute_obelisk(&mut interp, &words(...), stdin, &mut generate, &mut host)` -
-// `args` here does NOT include the command name itself (see `commandHandler`).
-export function executeObelisk(interp, args, stdin, controlPlane, generate, cloud = null) {
+// Directly callable by tests; `args` does NOT include the command name itself.
+export function executeObelisk(interp, args, stdin, generate, cloud) {
+    const out = { stdout: "", stderr: "" };
     try {
-        if (args[0] === "cloud") return executeCloud(interp, args.slice(1), stdin, generate, cloud);
-        return tryExecuteTopLevel(interp, args, stdin, controlPlane, generate);
-    } catch (message) {
-        return fail(`obelisk: ${typeof message === "string" ? message : String(message?.message ?? message)}\n`);
+        if (args[0] === "cloud") return executeCloud(interp, args.slice(1), stdin, cloud, out);
+        if (args.length === 0 || isHelpFlag(args[0])) return { ...out, stdout: helpText, exitCode: 0 };
+        if (args[0] === "generate") {
+            executeGenerate(interp, args.slice(1), generate, out);
+            return { ...out, exitCode: 0 };
+        }
+        throw new UsageError(`unrecognized subcommand '${args[0]}'`);
+    } catch (error) {
+        if (error === ALREADY_PRINTED) return { ...out, exitCode: 1 };
+        if (error instanceof UsageError) {
+            return { stdout: out.stdout, stderr: `${out.stderr}error: ${error.message}\n\nFor more information, try '--help'.\n`, exitCode: 2 };
+        }
+        return { stdout: out.stdout, stderr: `${out.stderr}Error: ${message(error)}\n`, exitCode: 1 };
     }
 }
 
-// Only `cloud`, `generate` and the ask-user call run at the top level; the app
-// commands need an app, so point at `obelisk cloud app`.
-function tryExecuteTopLevel(interp, args, stdin, controlPlane, generate) {
-    const group = args[0] ?? "";
-    if (group === "" || isHelpFlag(group)) return ok(helpText);
-    if (group === "generate" || (group === "call" && args[1] === ASK_USER_FFQN)) {
-        return tryExecuteObelisk(interp, args, stdin, controlPlane, generate, null);
-    }
-    if (CLOUD_APP_API.includes(group)) {
-        throw `\`obelisk ${group}\` runs against a cloud app: use \`obelisk cloud app [--app NAME] ${args.join(" ")}\` (see \`obelisk cloud apps list\`)`;
-    }
-    return fail(`obelisk: unknown command '${args.join(" ")}'\n${helpText}`);
+function message(error) {
+    return typeof error === "string" ? error : String(error?.message ?? error);
 }
 
-// `app` is the cloud app `controlPlane` serves, or null for `generate` and ask-user.
-function tryExecuteObelisk(interp, args, stdin, controlPlane, generate, app) {
-    const group = args[0] ?? "";
-    const action = args[1] ?? "";
-    const rest = args.length > 2 ? args.slice(2) : [];
-
-    if (group === "" || isHelpFlag(group)) return ok(helpText);
-    const help = requestedHelp(args);
-    if (help !== null) return ok(help);
-
-    if (group === "functions" && action === "list") {
-        const functions = controlPlane.listFunctions(option(rest, "--prefix", ""), integerOption(rest, "--length", 100));
-        if (flag(rest, "--json")) return ok(ensureTrailingNewline(prettyJson(functions)));
-        return listFunctions(functions);
-    }
-    if (group === "functions" && action === "wit") {
-        return textOutput(controlPlane.getFunctionWit(required(rest[0], "ffqn")));
-    }
-    if (group === "executions" && action === "list") {
-        return textOutput(controlPlane.listExecutions(
-            option(rest, "--ffqn-prefix", ""),
-            option(rest, "--id-prefix", ""),
-            flag(rest, "--show-derived"),
-            flag(rest, "--hide-finished"),
-            integerOption(rest, "--length", 20),
-        ));
-    }
-    if (group === "executions" && action === "get") {
-        return textOutput(controlPlane.getExecution(required(rest[0], "execution id")));
-    }
-    if (group === "executions" && action === "logs") {
-        return textOutput(controlPlane.getLogs(required(rest[0], "execution id"), integerOption(rest, "--length", 200)));
-    }
-    if (group === "executions" && action === "result") {
-        return textOutput(controlPlane.getResultJson(required(rest[0], "execution id")));
-    }
-    if (group === "call") {
-        const ffqn = required(action, "ffqn");
-        if (rest[0] === "--") {
-            const params = rest.slice(1).map((argument) => {
-                try {
-                    return JSON.parse(argument);
-                } catch {
-                    return argument;
-                }
-            });
-            return targetCall(controlPlane, ffqn, JSON.stringify(params));
-        }
-        if (rest.length > 1) {
-            throw "call: expected one params JSON array, or `--` followed by positional parameters";
-        }
-        // A params-json positional that is present but empty is almost
-        // always a shell expansion that produced nothing (e.g.
-        // `"$(cat missing.json)"`). Silently defaulting it to `[]`
-        // dispatches zero arguments and surfaces as a confusing server-side
-        // cardinality mismatch, so reject it here. Only a genuinely absent
-        // argument (with empty stdin) defaults to `[]`, which is correct for
-        // a target that takes no parameters.
-        if (rest[0] === "") {
-            throw "call: params-json argument is empty (a shell expansion likely produced nothing); pass a JSON array such as [] explicitly";
-        }
-        const paramsJson = rest[0] !== undefined && rest[0] !== "" ? rest[0] : stdin && stdin !== "" ? stdin : "[]";
-        return targetCall(controlPlane, ffqn, paramsJson);
-    }
-    if (group === "generate") return executeGenerate(interp, action, rest, generate);
-    if (group === "deployment") return executeDeployment(interp, action, rest, controlPlane, app);
-    return fail(`obelisk: unknown command '${args.join(" ")}'\n${groupHelp(group)}`);
-}
-
-// `-h`/`--help` at any level asks for the matching usage: as the action
-// (`deployment -h`) the group help, further right (`deployment submit -h`)
-// the subcommand help. For `call`, only a help flag before `--` is help;
-// after it, it is a positional parameter. Null when no help is asked for.
-function requestedHelp(args) {
-    const group = args[0] ?? "";
-    const action = args[1] ?? "";
-    const rest = args.slice(2);
-    if (isHelpFlag(action)) return groupHelp(group);
-    const sepIdx = rest.indexOf("--");
-    const helpScan = group === "call" ? rest.slice(0, sepIdx === -1 ? rest.length : sepIdx) : rest;
-    return helpRequested(helpScan) ? actionHelp(group, action) : null;
+// anyhow's `{:?}` of an error with context.
+function withContext(context, error) {
+    return `${context}\n\nCaused by:\n    ${message(error).replaceAll("\n", "\n    ")}`;
 }
 
 // ---------------------------------------------------------------------------
-// Cloud apps (`obelisk cloud`)
+// `obelisk cloud`
 // ---------------------------------------------------------------------------
 
-function executeCloud(interp, args, stdin, generate, cloud) {
-    if (args.length === 0 || isHelpFlag(args[0])) return ok(cloudHelp);
-    if (cloud === null) throw "`obelisk cloud` is not available in this session";
-    if (args[0] === "app") {
-        const { flags, rest } = leadingCloudFlags(args.slice(1));
-        const sub = rest[0] ?? "";
-        if (sub === "" || isHelpFlag(sub)) return ok(cloudAppHelp);
-        if (CLOUD_APP_API.includes(sub)) {
-            const help = requestedHelp(rest);
-            if (help !== null) return ok(help);
-            const app = cloudAppName(interp, flags, cloud);
-            const result = tryExecuteObelisk(interp, rest, stdin, cloud.controlPlane(app), generate, app);
-            return result;
+function executeCloud(interp, args, stdin, cloud, out) {
+    const { globals, rest } = cloudGlobals(args);
+    const [group, sub] = rest;
+    if (group === undefined || isHelpFlag(group)) return done(out, cloudHelp);
+    if (group === "app" && (sub === undefined || isHelpFlag(sub))) return done(out, cloudAppHelp);
+    if (group === "app" && APP_API_GROUPS.includes(sub)) {
+        const commandArgs = rest.slice(2);
+        if (commandArgs[0] === undefined || helpRequested(commandArgs)) return done(out, API_HELP[sub]);
+        const app = appName(interp, globals.app);
+        const api = {
+            get: (path) => cloud.get(app, path),
+            send: (method, path, contentType = null, body = null) => cloud.send(app, method, path, contentType, body),
+        };
+        const context = { interp, stdin, api, out, json: globals.json, verbose: globals.verbose };
+        if (sub === "execution") executionCommand(context, commandArgs);
+        else if (sub === "component") componentCommand(context, commandArgs);
+        else if (sub === "deployment") deploymentCommand(context, commandArgs);
+        else adminCommand(context, commandArgs);
+        return { ...out, exitCode: 0 };
+    }
+    if (group === "app" && sub === "deploy") {
+        if (helpRequested(rest)) return done(out, cloudAppHelp);
+        cloudDeploy(interp, rest.slice(2), globals, cloud, out);
+        return { ...out, exitCode: 0 };
+    }
+    if (helpRequested(rest)) return done(out, group === "app" ? cloudAppHelp : cloudHelp);
+    return cloudRun(interp, args, stdin, cloud, globals);
+}
+
+function done(out, stdout) {
+    return { ...out, stdout: out.stdout + stdout, exitCode: 0 };
+}
+
+// `--app`, `--json` and `--verbose` are global: accepted anywhere before `--`.
+function cloudGlobals(args) {
+    const globals = { app: undefined, json: false, verbose: false };
+    const rest = [];
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === "--") {
+            rest.push(...args.slice(i));
+            break;
         }
-        if (helpRequested(rest)) return ok(cloudAppHelp);
-        if (sub === "deploy") return cloudDeploy(interp, flags, rest.slice(1), cloud);
+        if (arg === "--json") globals.json = true;
+        else if (arg === "--verbose") globals.verbose = true;
+        else if (arg === "--app") {
+            globals.app = args[++i];
+            if (globals.app === undefined) throw new UsageError("a value is required for '--app <NAME>' but none was supplied");
+        } else if (arg.startsWith("--app=")) globals.app = arg.slice("--app=".length);
+        else if (["--api-url", "--api-token", "--apps-domain"].includes(arg.split("=")[0])) {
+            throw `${arg.split("=")[0]} is not supported here; the cloud comes from OBELISK_CLOUD_API_URL, OBELISK_CLOUD_API_TOKEN and OBELISK_CLOUD_APPS_DOMAIN`;
+        } else rest.push(arg);
     }
-    if (helpRequested(args)) return ok(cloudHelp);
-    return cloudRun(interp, args, stdin, cloud);
+    return { globals, rest };
 }
 
-// `--app NAME` and `-a PATH` given before the subcommand; the rest from the subcommand on.
-function leadingCloudFlags(args) {
-    const flags = {};
-    let i = 0;
-    while (i < args.length && args[i].startsWith("-") && !isHelpFlag(args[i])) {
-        const [name, inline] = args[i].includes("=") ? args[i].split(/=(.*)/s, 2) : [args[i], undefined];
-        const key = { "--app": "app", "-a": "appConfig", "--app-config": "appConfig" }[name];
-        if (!key) break;
-        const value = inline ?? args[i + 1];
-        if (value === undefined) throw `${name} requires a value`;
-        flags[key] = value;
-        i += inline === undefined ? 2 : 1;
+// A variable the shell exported, like the real CLI's process environment.
+function exportedVar(interp, name) {
+    return interp.exported.has(name) ? interp.vars.get(name) : undefined;
+}
+
+function exportedEnv(interp) {
+    return [...interp.exported].filter((name) => interp.vars.get(name) !== undefined).map((name) => [name, interp.vars.get(name)]);
+}
+
+// PORT: cloud.rs's `app_name`: `--app`, else OBELISK_APP_NAME, else `app_name` in ./app.toml.
+function appName(interp, flag) {
+    const name = flag ?? exportedVar(interp, "OBELISK_APP_NAME");
+    if (name !== undefined) return name;
+    const policy = readPolicy(interp, APP_POLICY_FILE);
+    if (policy === null) {
+        throw "Select an app with --app, OBELISK_APP_NAME or app_name in ./app.toml\n\nCaused by:\n    Cannot read policy app.toml: No such file or directory";
     }
-    return { flags, rest: args.slice(i) };
+    const configured = parsePolicy(policy, APP_POLICY_FILE).app_name;
+    if (typeof configured !== "string") throw "Set app_name in ./app.toml, --app or OBELISK_APP_NAME";
+    return configured;
 }
 
-// The app: `--app`, else `app_name` in the `-a` file or ./app.toml, else the cloud's only app.
-function cloudAppName(interp, flags, cloud) {
-    if (flags.app) return flags.app;
-    const policy = readAppPolicy(interp, flags.appConfig ?? APP_POLICY_FILE, flags.appConfig !== undefined);
-    const name = policy === null ? null : appNameOf(policy);
-    if (name !== null) return name;
-    const apps = listCloudApps(cloud);
-    if (apps.length === 1) return apps[0];
-    throw `Select an app with --app NAME (apps: ${apps.length === 0 ? "none" : apps.join(", ")}) or app_name in ./app.toml`;
-}
-
-// The names `obelisk cloud apps list --json` reports.
-function listCloudApps(cloud) {
-    const output = cloud.run(["apps", "list", "--json"], "", null);
-    if (output.exitCode !== 0) throw `cannot list cloud apps: ${(output.stderr || output.stdout).trim()}`;
-    let rows;
+function parsePolicy(text, path) {
     try {
-        rows = JSON.parse(output.stdout)?.apps;
-    } catch {
-        rows = undefined;
+        return parseToml(text);
+    } catch (error) {
+        throw withContext(`Invalid policy ${path}`, error);
     }
-    if (!Array.isArray(rows)) throw "cannot list cloud apps: unexpected `apps list --json` output";
-    return rows.map((row) => row?.app_name).filter((name) => typeof name === "string");
 }
 
-function appNameOf(policy) {
-    return /^[ \t]*app_name[ \t]*=[ \t]*["']([^"'\n]*)["']/m.exec(policy)?.[1] ?? null;
-}
-
-function readAppPolicy(interp, path, required) {
+function readPolicy(interp, path) {
     const resolved = interp.resolvePath(path);
     if (interp.vfs.exists(resolved) && !interp.vfs.isDir(resolved)) return interp.vfs.readFile(resolved);
-    if (required) throw `Cannot read policy ${path}: No such file or directory`;
     return null;
 }
 
-// PORT: obelisk's cloud/deploy.rs: the provisioner steps run in an activity,
-// then the deployment is applied against the app's API like `deployment apply`.
-function cloudDeploy(interp, flags, args, cloud) {
-    let appConfig = flags.appConfig;
-    let deployment = "deployment.toml";
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (arg === "--app") flags.app = required(args[++i], arg);
-        else if (arg === "-a" || arg === "--app-config") appConfig = required(args[++i], arg);
-        else if (arg === "-d" || arg === "--deployment") deployment = required(args[++i], arg);
-        else if (arg === "--fill") throw "`--fill` is interactive; set values with `obelisk cloud app --app NAME env set` and `secrets set`, then retry";
-        else throw `cloud app deploy: unexpected argument '${arg}'`;
-    }
-    // The policy is optional so a fixed app (single-app cloud) deploys without one.
-    const policy = readAppPolicy(interp, appConfig ?? APP_POLICY_FILE, appConfig !== undefined);
-    const app = cloudAppName(interp, { app: flags.app, appConfig }, cloud);
-    let target;
-    try {
-        target = cloud.prepareDeploy(app, policy ?? "");
-    } catch (error) {
-        return fail(`obelisk: ${error}\n`);
-    }
-    const step = `→ obelisk cloud app --app ${app} deployment apply ${deployment}  Uploading and activating deployment\n`;
-    let applied;
-    try {
-        applied = tryExecuteObelisk(interp, ["deployment", "apply", deployment], "", cloud.controlPlane(app), null, app);
-    } catch (message) {
-        applied = fail(`obelisk: ${typeof message === "string" ? message : String(message?.message ?? message)}\n`);
-    }
-    let stderr = `${target.log}${step}${applied.stderr}`;
-    if (applied.exitCode !== 0) {
-        const policyFlag = appConfig === undefined ? "" : ` -a ${appConfig}`;
-        stderr += `obelisk: Deployment did not complete; inspect \`obelisk cloud app --app ${app} deployment active\` to see what is serving, then retry \`obelisk cloud app --app ${app} deploy${policyFlag} -d ${deployment}\`\n`;
-        return { stdout: applied.stdout, stderr, exitCode: applied.exitCode };
-    }
-    stderr += `Deployed ${app}\n`;
-    const webhook = target.webhookUrl === null ? "" : `${target.webhookUrl}\n`;
-    return { stdout: `${applied.stdout}${webhook}`, stderr, exitCode: 0 };
-}
-
-// Provisioner commands, run by the `cloud.run` activity with the app policy's text.
-function cloudRun(interp, args, stdin, cloud) {
+// Provisioner commands, run by the `cloud.run` activity with the policy text,
+// OBELISK_APP_NAME as `--app`, and the exported variables for `fill`.
+function cloudRun(interp, args, stdin, cloud, globals) {
     const forwarded = [];
     let input = stdin ?? "";
     let appConfig = null;
+    let fill = false;
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (arg === "--from-env") {
-            const name = required(args[++i], "--from-env");
-            const value = interp.getVar(name);
+            const name = args[++i];
+            if (name === undefined) throw new UsageError("a value is required for '--from-env <FROM_ENV>' but none was supplied");
+            const value = exportedVar(interp, name);
             if (value === undefined) throw `environment variable ${name} is not set`;
             input = value;
             forwarded.push("--stdin");
-        } else {
-            if (arg === "-a" || arg === "--app-config") appConfig = args[i + 1];
-            forwarded.push(arg);
+            continue;
         }
+        if (arg === "-a" || arg === "--app-config") appConfig = args[i + 1];
+        if (arg.startsWith("--app-config=")) appConfig = arg.slice("--app-config=".length);
+        if (arg === "--fill-non-interactive" || arg === "--non-interactive") fill = true;
+        forwarded.push(arg);
     }
-    const policy = readAppPolicy(interp, appConfig ?? APP_POLICY_FILE, appConfig !== null);
-    const output = cloud.run(forwarded, input, policy);
+    const envApp = exportedVar(interp, "OBELISK_APP_NAME");
+    if (args[0] === "app" && globals.app === undefined && envApp !== undefined) forwarded.push("--app", envApp);
+    const policy = readPolicy(interp, appConfig ?? APP_POLICY_FILE);
+    if (appConfig !== null && policy === null) throw `Cannot read policy ${appConfig}: No such file or directory`;
+    const output = cloud.run(forwarded, input, policy, fill ? exportedEnv(interp) : null);
     return { stdout: output.stdout, stderr: output.stderr, exitCode: output.exitCode };
 }
+
+// PORT: obelisk's src/command/cloud/deploy.rs. `prepareDeploy` stages or
+// creates the app, the deployment is enqueued on the app's API here, then
+// `finishDeploy` fills and applies.
+function cloudDeploy(interp, args, globals, cloud, out) {
+    const { opts } = parseOptions(args, {
+        "-a": "--app-config", "--app-config": true, "-d": "--deployment", "--deployment": true,
+        "--fill": false, "--fill-non-interactive": false,
+    }, []);
+    if (opts["--fill"] && opts["--fill-non-interactive"]) {
+        throw new UsageError("the argument '--fill' cannot be used with '--fill-non-interactive'");
+    }
+    const configPath = opts["--app-config"] ?? APP_POLICY_FILE;
+    const policy = readPolicy(interp, configPath);
+    if (policy === null) throw `Cannot read policy ${configPath}: No such file or directory`;
+    const name = globals.app ?? exportedVar(interp, "OBELISK_APP_NAME") ?? parsePolicy(policy, configPath).app_name;
+    if (typeof name !== "string") throw "Set app_name in ./app.toml, --app or OBELISK_APP_NAME";
+    if (opts["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
+    const prepared = prepareManifest(interp, opts["--deployment"] ?? "deployment.toml");
+    const fillEnv = opts["--fill-non-interactive"] ? exportedEnv(interp) : null;
+    const activity = (call) => {
+        try {
+            return call();
+        } catch (error) {
+            out.stderr += `${message(error)}\n`;
+            throw ALREADY_PRINTED;
+        }
+    };
+    const target = activity(() => cloud.prepareDeploy(name, policy, fillEnv));
+    out.stderr += `${target.log}→ obelisk cloud app deployment enqueue\n`;
+    const context = {
+        interp, out, verbose: globals.verbose,
+        api: {
+            get: (path) => cloud.get(name, path),
+            send: (method, path, contentType = null, body = null) => cloud.send(name, method, path, contentType, body),
+        },
+    };
+    let id;
+    try {
+        id = submitPrepared(context, prepared, true, null, null);
+        switchDeployment(context, id, true, "enqueue");
+    } catch (error) {
+        throw withContext(`Deployment staging failed; inspect \`obelisk cloud app --app ${name} status\` and retry deploy`, error);
+    }
+    const deployed = activity(() => cloud.finishDeploy(name, policy, id, target.created, fillEnv));
+    out.stderr += deployed.log;
+    const row = deployed.app;
+    if (globals.json) {
+        out.stdout += `${prettyJson({ app: row, deployment_id: id, outcomes: row.outcome === undefined ? [] : [row.outcome] })}\n`;
+    } else {
+        out.stderr += `Deployed ${name}\n`;
+        if (typeof row.webhook_url === "string") out.stdout += `${row.webhook_url}\n`;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// App API: shared helpers
+// ---------------------------------------------------------------------------
+
+// reqwest's `StatusCode` display.
+const REASONS = {
+    200: "OK", 201: "Created", 202: "Accepted", 204: "No Content", 400: "Bad Request", 401: "Unauthorized",
+    403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 406: "Not Acceptable", 408: "Request Timeout",
+    409: "Conflict", 413: "Payload Too Large", 415: "Unsupported Media Type", 422: "Unprocessable Entity",
+    429: "Too Many Requests", 500: "Internal Server Error", 502: "Bad Gateway", 503: "Service Unavailable",
+    504: "Gateway Timeout",
+};
+
+function statusLine(status) {
+    return REASONS[status] ? `${status} ${REASONS[status]}` : String(status);
+}
+
+function success(response) {
+    return response.status >= 200 && response.status < 300;
+}
+
+// PORT: client.rs's `send_json`/`send_empty`/`send_bytes`.
+function checked(response) {
+    if (!success(response)) throw `server returned ${statusLine(response.status)}: ${response.body}`;
+    return response;
+}
+
+function parseBody(response) {
+    try {
+        return JSON.parse(response.body);
+    } catch (error) {
+        throw `error decoding response body: ${error.message}`;
+    }
+}
+
+function getJson(api, path) {
+    return parseBody(checked(api.get(path)));
+}
+
+function sendJson(api, method, path, value) {
+    return checked(api.send(method, path, value === undefined ? null : "application/json", value === undefined ? null : JSON.stringify(value)));
+}
+
+function query(params) {
+    const parts = [];
+    for (const [key, value] of params) {
+        if (value === undefined || value === null) continue;
+        parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
+    }
+    return parts.length === 0 ? "" : `?${parts.join("&")}`;
+}
+
+function prettyJson(value) {
+    return JSON.stringify(value, null, 2);
+}
+
+// output.rs's `print_json`/`print_ndjson`/`print_value`.
+function printJson(out, value) {
+    out.stdout += `${prettyJson(value)}\n`;
+}
+
+function printNdjson(out, value) {
+    out.stdout += `${JSON.stringify(value)}\n`;
+}
+
+function printValue(out, value, json) {
+    out.stdout += json ? `${prettyJson(value)}\n` : `${value}\n`;
+}
+
+// Parse a subcommand's arguments. `spec` maps each flag to `true` (takes a
+// value), `false` (boolean) or the long flag it abbreviates; `names` are the
+// positional value names, a trailing `...` one collecting the rest.
+function parseOptions(args, spec, names) {
+    const opts = {};
+    const positionals = [];
+    let dashdash = false;
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (!dashdash && arg === "--") {
+            dashdash = true;
+            continue;
+        }
+        if (dashdash || !arg.startsWith("-") || arg === "-") {
+            positionals.push(arg);
+            continue;
+        }
+        const eq = arg.startsWith("--") ? arg.indexOf("=") : -1;
+        let name = eq === -1 ? arg : arg.slice(0, eq);
+        if (typeof spec[name] === "string") name = spec[name];
+        if (spec[name] === undefined) throw new UsageError(`unexpected argument '${arg}' found`);
+        if (spec[name] === true) {
+            const value = eq === -1 ? args[++i] : arg.slice(eq + 1);
+            if (value === undefined) throw new UsageError(`a value is required for '${name} <${valueName(name)}>' but none was supplied`);
+            opts[name] = value;
+        } else {
+            if (eq !== -1) throw new UsageError(`unexpected value '${arg.slice(eq + 1)}' for '${name}' found; no more were expected`);
+            opts[name] = true;
+        }
+    }
+    const variadic = names.length > 0 && names[names.length - 1].endsWith("...");
+    if (!variadic && positionals.length > names.length) throw new UsageError(`unexpected argument '${positionals[names.length]}' found`);
+    return { opts, positionals };
+}
+
+function valueName(flag) {
+    return flag.replace(/^-+/, "").replaceAll("-", "_").toUpperCase();
+}
+
+function requiredArg(value, name) {
+    if (value === undefined) throw new UsageError(`the following required arguments were not provided:\n  <${name}>`);
+    return value;
+}
+
+function integer(opts, flag, fallback) {
+    const raw = opts[flag];
+    if (raw === undefined) return fallback;
+    if (!/^\d+$/.test(raw)) throw new UsageError(`invalid value '${raw}' for '${flag} <${valueName(flag)}>': invalid digit found in string`);
+    return Number(raw);
+}
+
+// chrono's `Display` of a `DateTime<Utc>` from its RFC 3339 serialization.
+function displayTime(value) {
+    return typeof value === "string" ? value.replace("T", " ").replace(/Z$/, " UTC") : String(value);
+}
+
+function pascal(snake) {
+    return String(snake).split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("");
+}
+
+function capitalize(value) {
+    return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+// A Crockford base32 ULID, as in `ExecutionId::generate`.
+function ulid() {
+    const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let time = Date.now();
+    let id = "";
+    for (let i = 0; i < 10; i++) {
+        id = alphabet[time % 32] + id;
+        time = Math.floor(time / 32);
+    }
+    for (let i = 0; i < 16; i++) id += alphabet[Math.floor(Math.random() * 32)];
+    return id;
+}
+
+// One poll interval of a follow loop; true when the shell was interrupted.
+function pollWait(interp) {
+    if (interp.watcher) {
+        const { interrupted } = interp.watcher.sleep(1000);
+        if (interrupted && interp.interrupted === null) interp.interrupted = interrupted;
+        return Boolean(interrupted);
+    }
+    interp.sleepFn(1000);
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Display ports of obelisk's concepts types
+// ---------------------------------------------------------------------------
+
+// web_api_server.rs's `format_execution_status_text`.
+function statusText(state) {
+    switch (state?.status) {
+        case "locked": return "Locked";
+        case "pending_at": return `Pending at ${displayTime(state.scheduled_at)}`;
+        case "blocked_by_join_set": return `Blocked by ${state.join_set_id}${state.closing ? " (closing)" : ""}`;
+        case "paused": return "Paused";
+        case "cancelling": return "Cancelling";
+        case "finished": return `Finished: ${finishedKind(state.result_kind)}`;
+        default: return JSON.stringify(state);
+    }
+}
+
+function finishedKind(kind) {
+    if (kind === "ok") return "OK";
+    if (kind?.err === "error") return "Error";
+    if (kind?.err?.execution_failure !== undefined) return `Execution failure (${pascal(kind.err.execution_failure)})`;
+    return JSON.stringify(kind);
+}
+
+// `PendingState`'s `Display`.
+function pendingStateDisplay(state) {
+    switch (state?.status) {
+        case "locked": return lockedDisplay(state);
+        case "pending_at": return `PendingAt(${pendingAtDisplay(state)})`;
+        case "blocked_by_join_set": return `BlockedByJoinSet(${blockedDisplay(state)})`;
+        case "paused": return `Paused(${wrappedStateDisplay(state)})`;
+        case "cancelling": return `Cancelling(${wrappedStateDisplay(state)})`;
+        case "finished": return `Finished: ${finishedKind(state.result_kind)}`;
+        default: return JSON.stringify(state);
+    }
+}
+
+function lockedDisplay(locked) {
+    return `Locked(\`${displayTime(locked.lock_expires_at)}\`, ${locked.locked_by?.executor_id}, ${locked.locked_by?.run_id})`;
+}
+
+function pendingAtDisplay(pending) {
+    const lock = pending.last_lock
+        ? `Some(LockedBy { executor_id: ${pending.last_lock.executor_id}, run_id: ${pending.last_lock.run_id} })`
+        : "None";
+    return `\`${displayTime(pending.scheduled_at)}\`, last_lock=${lock}`;
+}
+
+function blockedDisplay(blocked) {
+    return `${blocked.join_set_id}, \`${displayTime(blocked.lock_expires_at)}\`, closing=${blocked.closing}`;
+}
+
+// `PendingStatePaused`/`PendingStateCancelling`, externally tagged inside the state.
+function wrappedStateDisplay(state) {
+    if (state.Locked) return `Locked(${lockedDisplay(state.Locked)})`;
+    if (state.PendingAt) return `PendingAt(${pendingAtDisplay(state.PendingAt)})`;
+    if (state.BlockedByJoinSet) return `BlockedByJoinSet(${blockedDisplay(state.BlockedByJoinSet)})`;
+    return JSON.stringify(state);
+}
+
+// `SupportedFunctionReturnValue`'s `Display`.
+function retvalDisplay(retval) {
+    if (retval && "ok" in retval) return "completed successfully";
+    if (retval && "err" in retval) return "Error";
+    if (retval?.execution_failure) return `Execution failure (${pascal(retval.execution_failure.kind)})`;
+    return JSON.stringify(retval);
+}
+
+function componentIdDisplay(id) {
+    return `${id?.component_type}:${id?.name}:${id?.component_digest}`;
+}
+
+// `ExecutionRequest`'s `Display`.
+function executionRequestDisplay(request) {
+    if (typeof request === "string") {
+        return { paused: "Paused", unpaused: "Unpaused", cancellation_requested: "CancellationRequested" }[request] ?? request;
+    }
+    const [kind, value] = Object.entries(request ?? {})[0] ?? [];
+    switch (kind) {
+        case "created": return `Created(${value.ffqn}, \`${displayTime(value.scheduled_at)}\`)`;
+        case "locked": return `Locked(\`${displayTime(value.lock_expires_at)}\`, ${componentIdDisplay(value.component_id)})`;
+        case "unlocked": return `Unlocked(${value.reason}, pending at ${displayTime(value.backoff_expires_at)})`;
+        case "component_upgrade_finished": return `ComponentUpgradeFinished(${value.component_digest})`;
+        case "temporarily_failed": return `TemporarilyFailed(\`${displayTime(value.backoff_expires_at)}\`)`;
+        case "temporarily_timed_out": return `TemporarilyTimedOut(\`${displayTime(value.backoff_expires_at)}\`)`;
+        case "finished": return `Finished: ${retvalDisplay(value.retval)}`;
+        case "history_event": return `HistoryEvent(${historyEventDisplay(value.event)})`;
+        default: return JSON.stringify(request);
+    }
+}
+
+function historyEventDisplay(event) {
+    switch (event?.type) {
+        case "persist": return "Persist";
+        case "join_set_create": return `JoinSetCreate(${event.join_set_id})`;
+        case "join_set_request": return `JoinSetRequest(${joinSetRequestDisplay(event.request)})`;
+        case "join_next": return `JoinNext(${event.join_set_id})`;
+        case "join_next_try": return `JoinNextTry(${event.join_set_id}, ${event.outcome})`;
+        case "join_next_too_many": return `JoinNextTooMany(${event.join_set_id})`;
+        case "schedule": return `Schedule(${event.execution_id}, ${scheduleAtDisplay(event.schedule_at)})`;
+        case "stub": return `Stub(${event.target_execution_id})`;
+        default: return JSON.stringify(event);
+    }
+}
+
+function joinSetRequestDisplay(request) {
+    if (request?.type === "delay_request") {
+        return `DelayRequest(${request.delay_id}, expires_at: \`${displayTime(request.expires_at)}\`, schedule_at: \`${scheduleAtDisplay(request.schedule_at)}\`)`;
+    }
+    if (request?.type === "child_execution_request") {
+        return `ChildExecutionRequest(${request.child_execution_id}, ${request.target_ffqn}, params: ${JSON.stringify(request.params)})`;
+    }
+    return JSON.stringify(request);
+}
+
+// `HistoryEventScheduleAt`'s `Display`; `In` shows the duration like Rust's `Debug`.
+function scheduleAtDisplay(at) {
+    if (at === "now") return "Now";
+    if (at?.at !== undefined) return `At(\`${displayTime(at.at)}\`)`;
+    if (at?.in !== undefined) {
+        const secs = (at.in.secs ?? 0) + (at.in.nanos ?? 0) / 1e9;
+        return `In(${secs >= 1 || secs === 0 ? `${secs}s` : secs >= 1e-3 ? `${secs * 1e3}ms` : `${secs * 1e6}µs`})`;
+    }
+    return JSON.stringify(at);
+}
+
+function joinSetResponseDisplay(response) {
+    if (response?.type === "delay_finished") {
+        return `delay ${response.result && "Ok" in response.result ? "finished" : "cancelled"}: ${response.delay_id}`;
+    }
+    if (response?.type === "child_execution_finished") return `${retvalDisplay(response.result)}: ${response.child_execution_id}`;
+    return JSON.stringify(response);
+}
+
+// execution.rs's `format_execution_failure`.
+function executionFailureDisplay(failure) {
+    let text = `Execution failure (${pascal(failure.kind)})`;
+    if (failure.reason !== undefined && failure.reason !== null) text += `: \`${failure.reason}\``;
+    if (failure.detail !== undefined && failure.detail !== null) text += `\n${failure.detail}`;
+    return text;
+}
+
+// ---------------------------------------------------------------------------
+// `execution` (PORT: obelisk's src/command/execution.rs)
+// ---------------------------------------------------------------------------
+
+const LOG_LEVELS = {
+    off: [], trace: ["trace", "debug", "info", "warn", "error"], debug: ["debug", "info", "warn", "error"],
+    info: ["info", "warn", "error"], warn: ["warn", "error"], error: ["error"],
+};
+
+function executionCommand(context, [action, ...args]) {
+    const { api, out } = context;
+    const json = (opts) => context.json || opts["--json"] === true;
+    switch (action) {
+        case "list": {
+            const { opts } = parseOptions(args, {
+                "--ffqn": true, "-e": "--execution-id", "--execution-id": true, "--show-derived": false,
+                "--hide-finished": false, "--limit": true, "-j": "--json", "--json": false,
+            }, []);
+            const executions = getJson(api, `/v1/executions${query([
+                ["length", integer(opts, "--limit", 20)],
+                ["ffqn_prefix", opts["--ffqn"]],
+                ["execution_id_prefix", opts["--execution-id"]],
+                ["show_derived", opts["--show-derived"] ? "true" : undefined],
+                ["hide_finished", opts["--hide-finished"] ? "true" : undefined],
+            ])}`);
+            if (json(opts)) return printJson(out, executions);
+            for (const execution of executions) {
+                if (context.verbose) {
+                    out.stderr += `${execution.execution_id} \`${pendingStateDisplay(execution.pending_state)}\` ${execution.ffqn} \`${displayTime(execution.first_scheduled_at)}\`\n`;
+                } else {
+                    const state = execution.pending_state;
+                    const status = state?.status === "locked" ? "Running" : state?.status === "blocked_by_join_set" ? "Waiting" : statusText(state);
+                    out.stderr += `${execution.execution_id} \`${status}\` ${execution.ffqn}\n`;
+                }
+            }
+            return;
+        }
+        case "logs": {
+            const { opts, positionals } = parseOptions(args, {
+                "--show-derived": false, "--level": true, "--stream-type": true, "--show-run-id": false,
+                "--after": true, "--follow": false, "--limit": true, "-j": "--json", "--json": false,
+            }, ["EXECUTION_ID"]);
+            const id = requiredArg(positionals[0], "EXECUTION_ID");
+            const logs = logsOptions(opts["--level"] ?? "debug", opts["--stream-type"], opts["--show-derived"] === true, opts["--show-run-id"] === true, integer(opts, "--limit", 20));
+            if (opts["--follow"]) return followLogs(context, id, logs, opts["--after"], json(opts));
+            const items = fetchLogs(api, id, logs, null, opts["--after"]);
+            printLogItems(out, items, json(opts), logs);
+            return;
+        }
+        case "events": {
+            const { opts, positionals } = parseOptions(args, { "--from": true, "--limit": true, "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
+            const id = requiredArg(positionals[0], "EXECUTION_ID");
+            const from = opts["--from"] === undefined ? undefined : integer(opts, "--from");
+            const response = getJson(api, `/v1/executions/${id}/events${query([
+                ["length", integer(opts, "--limit", 20)],
+                ...(from === undefined ? [["direction", "older"]] : [["version", from], ["including_cursor", "true"]]),
+            ])}`);
+            if (json(opts)) return printJson(out, response);
+            for (const event of response.events) {
+                out.stderr += `${event.version} \`${displayTime(event.created_at)}\` ${executionRequestDisplay(event.event)}\n`;
+            }
+            return;
+        }
+        case "responses": {
+            const { opts, positionals } = parseOptions(args, { "--from": true, "--limit": true, "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
+            const id = requiredArg(positionals[0], "EXECUTION_ID");
+            const from = opts["--from"] === undefined ? undefined : integer(opts, "--from");
+            const response = getJson(api, `/v1/executions/${id}/responses${query([
+                ["length", integer(opts, "--limit", 20)],
+                ...(from === undefined ? [["direction", "older"]] : [["cursor", from], ["including_cursor", "true"]]),
+            ])}`);
+            if (json(opts)) return printJson(out, response);
+            for (const { cursor, event } of response.responses) {
+                out.stderr += `${cursor} \`${displayTime(event.created_at)}\` ${event.event.join_set_id} ${joinSetResponseDisplay(event.event.event)}\n`;
+            }
+            return;
+        }
+        case "submit": return submitExecution(context, args, json);
+        case "stub": {
+            const { positionals } = parseOptions(args, {}, ["EXECUTION_ID", "RETURN_VAL"]);
+            const id = requiredArg(positionals[0], "EXECUTION_ID");
+            const raw = requiredArg(positionals[1], "RETURN_VAL");
+            let value;
+            try {
+                value = JSON.parse(raw);
+            } catch (error) {
+                throw withContext("return value must be valid JSON", error);
+            }
+            sendJson(api, "PUT", `/v1/executions/${id}/stub`, value);
+            return;
+        }
+        case "status":
+        case "get": {
+            const { opts, positionals } = parseOptions(args, { "-f": "--follow", "--follow": false, "--no-reconnect": false, "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
+            const id = requiredArg(positionals[0], "EXECUTION_ID");
+            if (opts["--no-reconnect"] && !opts["--follow"]) throw new UsageError("the following required arguments were not provided:\n  --follow");
+            if (opts["--follow"]) return followStatus(context, id, json(opts), true);
+            const status = getJson(api, `/v1/executions/${id}/status`);
+            if (json(opts)) printJson(out, status);
+            else out.stderr += `${statusText(status.pending_state)}\n`;
+            return;
+        }
+        case "result": {
+            const { opts, positionals } = parseOptions(args, { "-f": "--follow", "--follow": false, "--no-reconnect": false, "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
+            const id = requiredArg(positionals[0], "EXECUTION_ID");
+            if (opts["--no-reconnect"] && !opts["--follow"]) throw new UsageError("the following required arguments were not provided:\n  --follow");
+            return executionResult(context, id, opts["--follow"] === true, json(opts));
+        }
+        case "cancel": {
+            const { opts, positionals } = parseOptions(args, { "--json": false }, ["ID"]);
+            const path = idPath(requiredArg(positionals[0], "ID"), "cancel");
+            const response = api.send("PUT", path, null, null);
+            const body = parseBody(response);
+            if (success(response)) return printOutcome(context, json(opts), body.ok, capitalize(body.ok));
+            if (response.status === 409) return printOutcome(context, json(opts), body.err, capitalize(body.err));
+            throw `server returned ${statusLine(response.status)}: ${body.err}`;
+        }
+        case "pause":
+        case "unpause": {
+            const { opts, positionals } = parseOptions(args, { "--json": false }, ["ID"]);
+            checked(api.send("PUT", idPath(requiredArg(positionals[0], "ID"), action), null, null));
+            return printOutcome(context, json(opts), `${action}d`, `${capitalize(action)}d`);
+        }
+        case "replay": {
+            const { opts, positionals } = parseOptions(args, { "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
+            const response = replay(api, requiredArg(positionals[0], "EXECUTION_ID"));
+            if (json(opts)) return printJson(out, response);
+            out.stderr += `replayed_event_count: ${response.replayed_event_count}\nreplay_duration_ms: ${response.replay_duration_ms}\nreplay_version: ${response.replay_version}\n`;
+            if (response.type === "advanceable") out.stderr += `outcome: advanceable, ${response.captured_writes.length} writes\n`;
+            else if (response.type === "finished") out.stderr += `outcome: finished\nresult: ${JSON.stringify(response.retval)}\n`;
+            else if (response.type === "blocked") out.stderr += "outcome: blocked\n";
+            else if (response.type === "replay_failed") {
+                out.stderr += `outcome: replay_failed, error: ${response.error}, ${response.captured_writes.length} writes\n`;
+                if (response.failure) out.stderr += `${executionFailureDisplay(response.failure)}\n`;
+            }
+            return;
+        }
+        case "persist-backtraces": {
+            const { positionals } = parseOptions(args, {}, ["EXECUTION_ID"]);
+            const id = requiredArg(positionals[0], "EXECUTION_ID");
+            const response = parseBody(checked(api.send("PUT", `/v1/executions/${id}/backtrace/persist`, null, null)));
+            out.stderr += `Persisted ${response.persisted_backtrace_count} backtraces\n`;
+            return;
+        }
+        case "advance": return advanceExecution(context, args, json);
+        case "upgrade": {
+            const { opts, positionals } = parseOptions(args, { "--skip-determinism-check": false, "--json": false }, ["EXECUTION_ID"]);
+            const id = requiredArg(positionals[0], "EXECUTION_ID");
+            const summary = getJson(api, `/v1/executions/${id}/status`);
+            let components;
+            try {
+                components = getJson(api, `/v1/components${query([["ffqn", summary.ffqn]])}`);
+            } catch (error) {
+                throw withContext("failed to list components", error);
+            }
+            if (components.length === 0) throw `no component in the active deployment exports \`${summary.ffqn}\``;
+            if (components.length > 1) {
+                throw `multiple components export \`${summary.ffqn}\`: [${components.map((c) => JSON.stringify(c.component_id.name)).join(", ")}]`;
+            }
+            const oldDigest = summary.component_digest;
+            const newDigest = components[0].component_id.component_digest;
+            if (oldDigest === newDigest) return printOutcome(context, json(opts), "already_up_to_date", `Already up to date (${oldDigest})`);
+            out.stderr += `Upgrading from ${oldDigest} to ${newDigest}\n`;
+            try {
+                sendJson(api, "PUT", `/v1/executions/${id}/upgrade`, { old: oldDigest, new: newDigest, skip_determinism_check: opts["--skip-determinism-check"] === true });
+            } catch (error) {
+                throw withContext("upgrade failed", error);
+            }
+            return printOutcome(context, json(opts), "upgraded", "Upgraded");
+        }
+        default:
+            throw new UsageError(`unrecognized subcommand '${action}'`);
+    }
+}
+
+function printOutcome(context, json, outcome, text) {
+    if (json) printJson(context.out, { ok: outcome });
+    else context.out.stderr += `${text}\n`;
+}
+
+// `ExecutionIdOrDelayId`: delays have their own routes.
+function idPath(id, action) {
+    if (id.startsWith("E_")) return `/v1/executions/${id}/${action}`;
+    if (id.startsWith("Delay_")) return `/v1/delays/${id}/${action}`;
+    throw new UsageError(`invalid value '${id}' for '<ID>': cannot parse \`${id}\` as an execution ID or a delay ID`);
+}
+
+function submitExecution(context, args, json) {
+    const { api, out, interp, stdin } = context;
+    const { opts, positionals } = parseOptions(args, {
+        "-e": "--execution-id", "--execution-id": true, "-f": "--follow", "--follow": false, "--follow-logs": false,
+        "--no-reconnect": false, "--paused": false, "-j": "--json", "--json": false,
+    }, ["FUNCTION", "parameters..."]);
+    const target = requiredArg(positionals[0], "FUNCTION");
+    const params = parseParams(interp, positionals.slice(1), stdin, args[args.length - 2] === "--");
+    const asJson = json(opts);
+    const followLogsEnabled = opts["--follow-logs"] === true;
+    const follow = opts["--follow"] === true || followLogsEnabled;
+    let ffqn = target;
+    if (target.startsWith(".../")) {
+        const [ifcName, functionName, extra] = target.slice(4).split(".");
+        if (functionName === undefined || extra !== undefined) throw new UsageError(`invalid value '${target}' for '<FUNCTION>'`);
+        const components = getJson(api, `/v1/components${query([["exports", "true"], ["extensions", "false"]])}`);
+        const matched = components.flatMap((component) => component.exports ?? []).map((fn) => fn.ffqn).filter((candidate) => {
+            const dot = candidate.lastIndexOf(".");
+            const ifc = candidate.slice(candidate.indexOf("/") + 1, dot).split("@")[0];
+            return candidate.slice(dot + 1) === functionName && ifc === ifcName;
+        });
+        if (matched.length === 0) throw "no matching function found";
+        if (matched.length > 1) throw `more than one matching function found: [${matched.join(", ")}]`;
+        ffqn = matched[0];
+        if (!asJson) out.stderr += `Matched ${ffqn}\n`;
+    }
+    const id = opts["--execution-id"] ?? `E_${ulid()}`;
+    const response = api.send("PUT", `/v1/executions/${id}`, "application/json", JSON.stringify({ ffqn, params, paused: opts["--paused"] === true }));
+    if (!success(response)) throw `server returned ${statusLine(response.status)}: ${response.body}`;
+    const body = parseBody(response);
+    if (asJson) {
+        if (follow) printNdjson(out, body);
+        else printJson(out, body);
+    } else {
+        out.stdout += `${body.ok}\n`;
+    }
+    if (followLogsEnabled) {
+        followLogs(context, id, logsOptions("debug", undefined, false, false, 20), undefined, asJson);
+        printRetval(context, getJson(api, `/v1/executions/${id}?follow=false`), asJson, true);
+    } else if (follow) {
+        executionResult(context, id, true, asJson);
+    }
+}
+
+// PORT: args.rs's `params::parse_params`.
+function parseParams(interp, params, stdin, dashdash) {
+    const readParam = (path, label) => {
+        const resolved = interp.resolvePath(path);
+        if (!interp.vfs.exists(resolved) || interp.vfs.isDir(resolved)) {
+            throw `${label}parameter parsing failed: failed to read file '${path}': No such file or directory (os error 2)`;
+        }
+        return interp.vfs.readFile(resolved);
+    };
+    const jsonArray = (text) => {
+        let value;
+        try {
+            value = JSON.parse(text);
+        } catch (error) {
+            throw `Invalid JSON array for parameters: ${error.message}`;
+        }
+        if (!Array.isArray(value)) throw "Parameter provided as JSON must be a JSON array.";
+        return value;
+    };
+    if (params.length === 0) return [];
+    if (params.length === 1 && params[0] === "-") return jsonArray(stdin ?? "");
+    if (params.length === 1 && !dashdash) {
+        return jsonArray(params[0].startsWith("@") ? readParam(params[0].slice(1), "") : params[0]);
+    }
+    return params.map((param, index) => {
+        const text = param.startsWith("@") ? readParam(param.slice(1), `${index + 1}-th `) : param;
+        try {
+            return JSON.parse(text);
+        } catch (error) {
+            throw `cannot parse ${index + 1}-th parameter \`${text}\` as JSON -  ${error.message}`;
+        }
+    });
+}
+
+// Follow the status stream (`?follow=true`, read whole once it ends at the
+// finished state), printing each status, NDJSON with `json`.
+function followStatus(context, id, json, emit) {
+    const response = checked(context.api.get(`/v1/executions/${id}/status?follow=true`));
+    let finished = false;
+    for (const frame of response.body.split("\n\n")) {
+        const data = frame.split("\n").find((line) => line.startsWith("data: "));
+        if (data === undefined) continue;
+        const status = JSON.parse(data.slice("data: ".length));
+        if (emit) {
+            if (json) printNdjson(context.out, status);
+            else context.out.stderr += `${statusText(status.pending_state)}\n`;
+        }
+        if (status.pending_state?.status === "finished") {
+            finished = true;
+            break;
+        }
+    }
+    if (!finished) throw "status stream ended before execution finished";
+}
+
+function executionResult(context, id, follow, json) {
+    if (follow) followStatus(context, id, false, !json);
+    printRetval(context, getJson(context.api, `/v1/executions/${id}?follow=false`), json, follow);
+}
+
+// execution.rs's `print_retval`; an error result exits 1 after printing.
+function printRetval(context, result, json, streaming) {
+    const { out } = context;
+    if (json) {
+        if (streaming) printNdjson(out, result);
+        else printJson(out, result);
+        return;
+    }
+    const value = (v) => (v === null || v === undefined ? "(no return value)" : JSON.stringify(v));
+    if ("ok" in result) {
+        out.stderr += `Execution finished: OK: ${value(result.ok)}\n`;
+        return;
+    }
+    if ("err" in result) out.stderr += `Execution finished: Error: ${value(result.err)}\n`;
+    else out.stderr += `Execution finished: ${executionFailureDisplay(result.execution_failed)}\n`;
+    throw ALREADY_PRINTED;
+}
+
+function logsOptions(level, streamType, showDerived, showRunId, limit) {
+    const levels = LOG_LEVELS[level];
+    if (levels === undefined) throw new UsageError(`invalid value '${level}' for '--level <LEVEL>': Matching variant not found`);
+    const streams = { undefined: ["stdout", "stderr"], stdout: ["stdout"], stderr: ["stderr"], none: [] }[streamType];
+    if (streams === undefined) throw new UsageError(`invalid value '${streamType}' for '--stream-type <TYPE>': Matching variant not found`);
+    if (levels.length === 0 && streams.length === 0) {
+        throw "either `--level` must not be `off`, or `--stream-type` must not be `none`";
+    }
+    return { levels, streams, showDerived, showRunId, limit };
+}
+
+function fetchLogs(api, id, logs, cursor, after) {
+    return getJson(api, `/v1/executions/${id}/logs${query([
+        ["length", logs.limit],
+        ["direction", "newer"],
+        ["show_logs", logs.levels.length > 0 ? "true" : "false"],
+        ...logs.levels.map((level) => ["level", level]),
+        ["show_streams", logs.streams.length > 0 ? "true" : "false"],
+        ...logs.streams.map((stream) => ["stream_type", stream]),
+        ["show_derived", logs.showDerived ? "true" : undefined],
+        ...(cursor === null ? [] : [["cursor", cursor], ["including_cursor", "false"]]),
+        ["after", after],
+    ])}`);
+}
+
+function printLogItems(out, items, json, logs) {
+    for (const item of items) {
+        if (json) {
+            printNdjson(out, item);
+            continue;
+        }
+        const prefix = `${logs.showRunId ? `${item.run_id} ` : ""}${logs.showDerived ? `${item.execution_id} ` : ""}`;
+        if (item.type === "log") {
+            out.stdout += `${displayTime(item.created_at)} [${item.level.padEnd(6)}] ${prefix}${item.message}\n`;
+        } else {
+            const payload = utf8Decode(base64Decode(item.payload ?? "") ?? []);
+            out.stdout += `${displayTime(item.created_at)} [${item.stream_type.padEnd(6)}] ${prefix}${payload}\n`;
+        }
+    }
+    return items.length === 0 ? null : items[items.length - 1].cursor;
+}
+
+// Poll for new entries until the execution has finished and none are left.
+function followLogs(context, id, logs, after, json) {
+    let cursor = null;
+    for (;;) {
+        const items = fetchLogs(context.api, id, logs, cursor, after);
+        const last = printLogItems(context.out, items, json, logs);
+        if (last !== null) cursor = last;
+        const status = getJson(context.api, `/v1/executions/${id}/status`);
+        if (status.pending_state?.status === "finished" && last === null) return;
+        if (last === null && pollWait(context.interp)) throw "interrupted";
+    }
+}
+
+// Accepts 409, whose body is the replay failure.
+function replay(api, id) {
+    const response = api.send("PUT", `/v1/executions/${id}/replay`, null, null);
+    if (!success(response) && response.status !== 409) throw `server returned ${statusLine(response.status)}: ${response.body}`;
+    try {
+        return JSON.parse(response.body);
+    } catch (error) {
+        throw withContext("failed to decode replay response as JSON", error);
+    }
+}
+
+function advanceExecution(context, args, json) {
+    const { api, out } = context;
+    const { opts, positionals } = parseOptions(args, {
+        "-j": "--json", "--json": false, "--trim": true, "-p": "--pause-all", "--pause": "--pause-all", "--pause-all": false,
+        "--pause-submitted-executions": false, "--pause-delays": false, "--force": false,
+    }, ["EXECUTION_ID"]);
+    const id = requiredArg(positionals[0], "EXECUTION_ID");
+    const response = replay(api, id);
+    if (response.type === "finished") throw "execution is already finished";
+    if (response.type === "blocked") throw "execution is blocked";
+    let writes = response.captured_writes;
+    if (response.type === "replay_failed") {
+        const diagnostic = response.failure ? executionFailureDisplay(response.failure) : response.error;
+        if (!opts["--force"]) {
+            throw `replay failed: ${diagnostic}, ${writes.length} captured writes available (use --force to advance with execution failure)`;
+        }
+        out.stderr += `Replay failed: ${diagnostic}. Advancing with --force to persist execution failure.\n`;
+    }
+    if (opts["--trim"] !== undefined) writes = writes.slice(0, integer(opts, "--trim"));
+    if (opts["--pause-all"] || opts["--pause-submitted-executions"]) {
+        for (const write of writes) {
+            if (write.type === "append_batch_create_new_execution") for (const child of write.child_requests) child.paused = true;
+        }
+    }
+    if (opts["--pause-all"] || opts["--pause-delays"]) {
+        for (const write of writes) {
+            const events = write.type === "append" ? [write.event] : ["append_batch", "append_batch_create_new_execution", "append_stub_response"].includes(write.type) ? write.events : [];
+            for (const append of events) {
+                const request = append.event?.history_event?.event?.request;
+                if (append.event?.history_event?.event?.type === "join_set_request" && request?.type === "delay_request") request.paused = true;
+            }
+        }
+    }
+    const result = parseBody(sendJson(api, "PUT", `/v1/executions/${id}/advance`, { captured_writes: writes, persist_backtrace: true }));
+    if (json(opts)) return printJson(out, result);
+    if (result.type === "finished") out.stderr += `success:\n${prettyJson(result.value)}\n`;
+    else out.stderr += `success, current state: ${pendingStateDisplay(result.pending_state)}\n`;
+}
+
+// ---------------------------------------------------------------------------
+// `component` (PORT: obelisk's src/command/component.rs)
+// ---------------------------------------------------------------------------
+
+function componentCommand(context, [action, ...args]) {
+    const { api, out } = context;
+    if (action === "push" || action === "add") {
+        throw `\`component ${action}\` needs an OCI registry and is not available in the sandbox; run it with the real obelisk CLI`;
+    }
+    if (action !== "list") throw new UsageError(`unrecognized subcommand '${action}'`);
+    const { opts } = parseOptions(args, { "-i": "--imports", "--imports": false, "--json": false, "-e": "--extensions", "--extensions": false }, []);
+    const components = getJson(api, `/v1/components${query([
+        ["exports", "true"],
+        ["imports", opts["--imports"] ? "true" : "false"],
+        ["extensions", opts["--extensions"] ? "true" : "false"],
+    ])}`);
+    if (context.json || opts["--json"]) return printJson(out, components);
+    const functions = (list) => (list ?? []).map((fn) =>
+        `\t${fn.ffqn}: func(${fn.parameter_types.map((p) => `${p.name}: ${p.wit_type}`).join(", ")}) -> ${fn.return_type}\n`).join("");
+    for (const { component_id: id, exports, imports } of components) {
+        out.stderr += context.verbose ? `${id.name}\t${id.component_type}\t${id.component_digest}\n` : `${id.name}\t${id.component_type}\n`;
+        out.stderr += `Exports:\n${functions(exports)}`;
+        if (opts["--imports"]) out.stderr += `Imports:\n${functions(imports)}`;
+        out.stderr += "\n";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `deployment` (PORT: obelisk's src/command/deployment.rs)
+// ---------------------------------------------------------------------------
+
+function deploymentCommand(context, [action, ...args]) {
+    const { api, out, interp } = context;
+    const json = (opts) => context.json || opts["--json"] === true;
+    switch (action) {
+        case "submit":
+        case "enqueue":
+        case "apply": {
+            const spec = { "--empty": false, "--description": true, "--deployment-id": true, "--json": false };
+            if (action !== "apply") spec["--allow-unavailable-runtime-config"] = false;
+            const { opts, positionals } = parseOptions(args, spec, [action === "submit" ? "PATH" : "PATH|ID"]);
+            if (opts["--empty"] && positionals.length > 0) {
+                throw new UsageError(`the argument '--empty' cannot be used with '[${action === "submit" ? "PATH" : "PATH|ID"}]'`);
+            }
+            const source = opts["--empty"] ? null : positionals[0] ?? "deployment.toml";
+            const allow = opts["--allow-unavailable-runtime-config"] === true;
+            const id = submitDeployment(context, source, action === "submit" ? allow : action === "enqueue", opts["--description"] ?? null, opts["--deployment-id"] ?? null);
+            if (action === "enqueue") switchDeployment(context, id, allow, "enqueue");
+            if (action === "apply") switchDeployment(context, id, false, "apply");
+            return printValue(out, id, json(opts));
+        }
+        case "list": {
+            const { opts } = parseOptions(args, { "--json": false }, []);
+            const deployments = getJson(api, "/v1/deployments");
+            if (json(opts)) return printJson(out, deployments);
+            if (deployments.length === 0) {
+                out.stderr += "No deployments found.\n";
+                return;
+            }
+            const status = (s) => ({ inactive: "Inactive", enqueued: "Enqueued", active: "Active" })[s] ?? String(s);
+            const time = (t) => (typeof t === "string" ? t.replace("T", " ").slice(0, 19) : "");
+            out.stderr += context.verbose
+                ? `${"ID".padEnd(32)}  ${"STATUS".padEnd(12)}  ${"CREATED_AT".padEnd(19)}  ${"LAST_ACTIVE_AT".padEnd(19)}  DESCRIPTION\n`
+                : `${"ID".padEnd(32)}  ${"STATUS".padEnd(12)}  DESCRIPTION\n`;
+            for (const dep of deployments) {
+                out.stderr += context.verbose
+                    ? `${dep.deployment_id.padEnd(32)}  ${status(dep.status).padEnd(12)}  ${time(dep.created_at).padEnd(19)}  ${time(dep.last_active_at).padEnd(19)}  ${dep.description ?? ""}\n`
+                    : `${dep.deployment_id.padEnd(32)}  ${status(dep.status).padEnd(12)}  ${dep.description ?? ""}\n`;
+            }
+            return;
+        }
+        case "active": {
+            const { opts } = parseOptions(args, { "--json": false }, []);
+            return printValue(out, getJson(api, "/v1/deployment-id"), json(opts));
+        }
+        case "show": {
+            const { opts, positionals } = parseOptions(args, { "--json": false }, ["ID", "FILE"]);
+            const id = requiredArg(positionals[0], "ID");
+            const file = positionals[1];
+            if (file !== undefined && opts["--json"]) throw new UsageError("the argument '[FILE]' cannot be used with '--json'");
+            const dep = getJson(api, `/v1/deployments/${id}?include_generated_metadata=true`);
+            if (file !== undefined) {
+                let rel;
+                try {
+                    rel = normalizeDeploymentPath(file);
+                } catch (error) {
+                    throw withContext(`invalid source path \`${file}\``, error);
+                }
+                const ref = dep.files.find((f) => f.path === rel);
+                if (!ref) throw `deployment ${id} has no deployment-owned source file \`${rel}\``;
+                out.stdout += fetchFile(api, ref.digest);
+                return;
+            }
+            if (json(opts)) {
+                let value;
+                try {
+                    value = parseToml(dep.deployment_toml);
+                } catch (error) {
+                    throw withContext("cannot parse stored deployment manifest", error);
+                }
+                return printJson(out, value);
+            }
+            out.stdout += dep.deployment_toml;
+            return;
+        }
+        case "pull": {
+            const { opts, positionals } = parseOptions(args, {
+                "-o": "--output", "--output": true, "-f": "--force", "--force": false, "--include-generated-metadata": false,
+            }, ["ID"]);
+            const id = requiredArg(positionals[0], "ID");
+            const dep = getJson(api, `/v1/deployments/${id}?include_generated_metadata=${opts["--include-generated-metadata"] === true}`);
+            const output = opts["--output"] ?? ".";
+            const dir = interp.resolvePath(output);
+            if (interp.vfs.exists(dir) && !interp.vfs.isDir(dir)) {
+                throw withContext(`cannot create output directory ${JSON.stringify(output)}`, "File exists (os error 17)");
+            }
+            interp.vfs.mkdirp(dir);
+            const display = (rel) => JSON.stringify(output === "." ? `./${rel}` : `${output.replace(/\/+$/, "")}/${rel}`);
+            const writable = (rel) => {
+                const path = `${dir}/${rel}`;
+                if (interp.vfs.isDir(path) || (!opts["--force"] && interp.vfs.exists(path))) {
+                    throw withContext(`cannot open ${display(rel)} for writing${opts["--force"] ? "" : ", try using `--force`"}`, "File exists (os error 17)");
+                }
+                return path;
+            };
+            interp.vfs.writeFile(writable("deployment.toml"), dep.deployment_toml);
+            // Source bytes are fetched on first read.
+            const loader = (digest) => fetchFile(api, digest);
+            for (const ref of dep.files) {
+                let rel;
+                try {
+                    rel = normalizeDeploymentPath(ref.path);
+                } catch (error) {
+                    throw withContext(`refusing to write unsafe source path \`${ref.path}\``, error);
+                }
+                interp.vfs.registerLazyWithLoader(writable(rel), ref.digest, ref.size, loader);
+            }
+            const count = dep.files.length;
+            out.stderr += `Wrote ${display("deployment.toml").slice(1, -1)} (${count} source file${count === 1 ? "" : "s"}) for deployment ${id}\n`;
+            return;
+        }
+        case "verify":
+            throw "`deployment verify` compiles components locally and is not available in the sandbox; `deployment submit` verifies on the server";
+        default:
+            throw new UsageError(`unrecognized subcommand '${action}'`);
+    }
+}
+
+function fetchFile(api, digest) {
+    try {
+        return checked(api.get(`/v1/files/${digest}`)).body;
+    } catch (error) {
+        throw withContext(`cannot fetch deployment file \`${digest}\``, error);
+    }
+}
+
+// An existing `Dep_` ID is returned as is; a manifest (or `--empty`) is submitted.
+function submitDeployment(context, source, allow, description, deploymentId) {
+    if (source !== null && /^Dep_[0-9A-HJKMNP-TV-Z]{26}$/.test(source)) {
+        if (description !== null) throw "--description cannot be used with an existing deployment ID";
+        if (deploymentId !== null) throw "--deployment-id cannot be used with an existing deployment ID source";
+        return source;
+    }
+    const prepared = source === null ? { dir: context.interp.cwd, toml: "" } : prepareManifest(context.interp, source);
+    return submitPrepared(context, prepared, allow, description, deploymentId);
+}
+
+// PORT: prepared.rs's `prepare_deployment_manifest_from_disk`: the manifest
+// with every owned file's `content_digest` and generated `component_files`.
+function prepareManifest(interp, path) {
+    const resolved = interp.resolvePath(path);
+    if (!interp.vfs.exists(resolved) || interp.vfs.isDir(resolved)) {
+        throw withContext(`cannot read deployment manifest ${JSON.stringify(path)}`, interp.vfs.isDir(resolved) ? "Is a directory (os error 21)" : "No such file or directory (os error 2)");
+    }
+    const manifest = interp.vfs.readFile(resolved);
+    let doc;
+    try {
+        doc = parseToml(manifest);
+    } catch (error) {
+        throw withContext("cannot parse deployment manifest as TOML", error);
+    }
+    for (const [section, components] of Object.entries(doc)) {
+        if (!Array.isArray(components)) continue;
+        for (const field of ["content_digest", "component_files"]) {
+            if (components.some((component) => component && typeof component === "object" && field in component)) {
+                throw `${section}.${field} is generated submission metadata; remove it from deployment.toml`;
+            }
+        }
+    }
+    const dir = parentDir(resolved);
+    return { dir, toml: manifestWithDigests(interp.vfs, dir, manifestWithGeneratedFiles(interp.vfs, dir, manifest)) };
+}
+
+// Reuses the active deployment when its description and content are unchanged.
+function submitPrepared(context, prepared, allow, description, deploymentId) {
+    const { api, out } = context;
+    if (deploymentId === null) {
+        const response = api.get("/v1/deployment-id");
+        if (response.status !== 404) {
+            const activeId = parseBody(checked(response));
+            const active = getJson(api, `/v1/deployments/${activeId}`);
+            if ((active.description ?? null) === description && sameToml(active.deployment_toml, prepared.toml)) {
+                out.stderr += `Deployment content unchanged; using ${activeId}\n`;
+                return activeId;
+            }
+        }
+    }
+    const id = uploadAndSubmit(context, prepared, allow, description, deploymentId ?? `Dep_${ulid()}`);
+    out.stderr += `Submitted as ${id}\n`;
+    return id;
+}
+
+function sameToml(a, b) {
+    try {
+        return canonicalJson(parseToml(a)) === canonicalJson(parseToml(b));
+    } catch {
+        return false;
+    }
+}
+
+function canonicalJson(value) {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+    if (value && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+}
+
+// A preflight without blobs, then one retry attaching only the files the server is missing.
+function uploadAndSubmit(context, prepared, allow, description, id) {
+    const missing = submitAttempt(context.api, prepared, allow, description, id, []);
+    if (missing === null) return id;
+    const files = missing.map((issue) => {
+        const path = `${prepared.dir}/${issue.path}`;
+        if (issue.path === null || issue.path === undefined || !context.interp.vfs.exists(path)) {
+            throw `server is missing ${issue.field_path} (${issue.digest}), which is not in the deployment tree`;
+        }
+        return { digest: issue.digest, path: issue.path, content: context.interp.vfs.readFile(path) };
+    });
+    const still = submitAttempt(context.api, prepared, allow, description, id, files);
+    if (still === null) return id;
+    throw `server is still missing ${still.length} file blob(s) after upload: ${still.map((issue) => issue.digest).join(", ")}`;
+}
+
+// One submit request: null when stored, else the missing-file issues.
+function submitAttempt(api, prepared, allow, description, id, files) {
+    const path = `/v1/deployments/${id}`;
+    let response;
+    if (files.length === 0) {
+        response = api.send("PUT", path, "application/json", JSON.stringify({
+            deployment_toml: prepared.toml, description, allow_unavailable_runtime_config: allow,
+        }));
+    } else {
+        const boundary = `obelisk-${ulid()}`;
+        const part = (name, filename, value) =>
+            `--${boundary}\r\nContent-Disposition: form-data; name="${name}"${filename === null ? "" : `; filename="${filename}"`}\r\n` +
+            `${filename === null ? "" : "Content-Type: application/octet-stream\r\n"}\r\n${value}\r\n`;
+        let body = part("deployment_toml", null, prepared.toml) + part("allow_unavailable_runtime_config", null, String(allow));
+        if (description !== null) body += part("description", null, description);
+        for (const file of files) body += part(file.digest, file.path, file.content);
+        response = api.send("PUT", path, `multipart/form-data; boundary=${boundary}`, `${body}--${boundary}--\r\n`);
+    }
+    if (success(response)) return null;
+    if (response.status === 409) {
+        const detail = parseBody(response);
+        const others = ["unexpected_files", "digest_mismatches", "oversized_files", "missing_digest_fields"];
+        if (others.every((key) => (detail[key] ?? []).length === 0) && (detail.missing_files ?? []).length > 0) {
+            return detail.missing_files.filter((issue) => issue.digest !== null && issue.digest !== undefined);
+        }
+        throw `deployment submit rejected: ${formatSubmitDetail(detail)}`;
+    }
+    let detail = null;
+    try {
+        detail = JSON.parse(response.body);
+    } catch { /* not JSON */ }
+    if (["missing_runtime_config", "unregistered_secrets"].includes(detail?.error)) {
+        throw `deployment rejected by the server: ${missingRuntimeConfig(detail)}`;
+    }
+    throw `server returned ${statusLine(response.status)}: ${response.body}`;
+}
+
+function formatSubmitDetail(detail) {
+    return [
+        ...(detail.missing_digest_fields ?? []).map((i) => `missing content_digest at ${i.field_path}`),
+        ...(detail.missing_files ?? []).map((i) => `missing file at ${i.field_path} (${i.message})`),
+        ...(detail.unexpected_files ?? []).map((i) => `unexpected file ${i.field_path}`),
+        ...(detail.digest_mismatches ?? []).map((m) => `digest mismatch for ${m.file.field_path}: supplied ${m.supplied_digest}, actual ${m.actual_digest}`),
+        ...(detail.oversized_files ?? []).map((i) => `oversized file ${i.field_path}`),
+    ].join("; ");
+}
+
+// config_prepass.rs's `MissingRuntimeConfigError` display, without the app.toml snippet.
+function missingRuntimeConfig(detail) {
+    const list = (names) => `\`${names.join("`, `")}\``;
+    const findings = [];
+    if ((detail.public_env ?? []).length > 0) findings.push(`environment variable(s) ${list(detail.public_env)} not declared in app.toml \`[public_env]\``);
+    if ((detail.secrets ?? []).length > 0) findings.push(`secret(s) ${list(detail.secrets)} not registered in app.toml \`[secrets]\``);
+    const lines = [];
+    if (findings.length > 0) lines.push(`configuration references ${findings.join(" and ")}. Add them to app.toml, or remove the references`);
+    if ((detail.unset_secrets ?? []).length > 0) {
+        lines.push(`configuration requires optional secret(s) ${list(detail.unset_secrets)} whose app.toml \`[secrets]\` environment variables are unset. Set them and restart the server, or mark every reference to them in the component \`optional = true\``);
+    }
+    return lines.length > 0 ? lines.join("\n") : JSON.stringify(detail);
+}
+
+function switchDeployment(context, id, allow, command) {
+    const response = parseBody(sendJson(context.api, "PUT", `/v1/deployments/${id}/switch`, {
+        allow_unavailable_runtime_config: allow, apply: command === "apply",
+    }));
+    const outcome = response.ok;
+    if (command === "apply" && outcome === "switched") context.out.stderr += "Applied successfully.\n";
+    else if (command === "apply" && outcome === "restart_required") throw "Could not apply immediately; deployment enqueued. Restart the server to apply.";
+    else if (command === "enqueue" && outcome === "switched") context.out.stderr += "Deployment already active; it will remain active after restart.\n";
+    else if (command === "enqueue" && outcome === "restart_required") context.out.stderr += "Deployment staged for cloud app apply.\n";
+    else throw `unexpected outcome from server: ${outcome}`;
+}
+
+// ---------------------------------------------------------------------------
+// `admin` (PORT: obelisk's src/command/admin.rs)
+// ---------------------------------------------------------------------------
+
+const FORCE_WARNING = "WARNING: forcibly deleting non-terminal execution trees whose roots do not belong to the active deployment\n";
+
+function adminCommand(context, [group, action, ...args]) {
+    const { api, out } = context;
+    const result = (opts, value, text) => {
+        if (context.json || opts["--json"]) printJson(out, value);
+        else out.stderr += `${text}\n`;
+    };
+    const eventLine = (event) => `${String(event.created_at).replace(/Z$/, "+00:00")} ${event.level} ${event.code}: ${event.message}\n`;
+    if (group === "node-run-id") {
+        const { opts } = parseOptions([action, ...args].filter((arg) => arg !== undefined), { "--json": false }, []);
+        const id = getJson(api, "/v1/info").node_run_id;
+        out.stdout += context.json || opts["--json"] ? `"${id}"\n` : `${id}\n`;
+        return;
+    }
+    if (group === "storage" && action === "show") {
+        const { opts } = parseOptions(args, { "--json": false }, []);
+        const r = getJson(api, "/v1/admin/storage");
+        return result(opts, r, `database: ${r.database_bytes ?? "unknown"} bytes; executions: ${r.execution_count}; deployments: ${r.deployment_count}; system events: ${r.system_event_count}`);
+    }
+    if (group === "events" && action === "get") {
+        const { opts, positionals } = parseOptions(args, { "--json": false }, ["EVENT_ID"]);
+        const event = getJson(api, `/v1/admin/system-events/${requiredArg(positionals[0], "EVENT_ID")}`);
+        if (context.json || opts["--json"]) printJson(out, event);
+        else out.stderr += eventLine(event);
+        return;
+    }
+    if (group === "events" && action === "list") {
+        const { opts } = parseOptions(args, {
+            "--node-run-id": true, "--level": true, "--code": true, "--from": true, "--to": true, "--limit": true, "--json": false,
+        }, []);
+        const response = getJson(api, `/v1/admin/system-events${query([
+            ["node_run_id", opts["--node-run-id"]], ["level", opts["--level"]], ["code", opts["--code"]],
+            ["created_from", opts["--from"]], ["created_to", opts["--to"]], ["limit", integer(opts, "--limit", 100)],
+        ])}`);
+        if (context.json || opts["--json"]) printJson(out, response);
+        else for (const event of response.events) out.stderr += eventLine(event);
+        return;
+    }
+    if (group === "events" && action === "retain") {
+        const { opts } = parseOptions(args, { "--max-age": true, "--batch-size": true, "--json": false }, []);
+        if (opts["--max-age"] === undefined) throw new UsageError("the following required arguments were not provided:\n  --max-age <MAX_AGE>");
+        const r = parseBody(sendJson(api, "POST", "/v1/admin/system-events/retain", {
+            max_age_seconds: retentionAge(opts["--max-age"]), batch_size: integer(opts, "--batch-size", 1000), dry_run: false,
+        }));
+        return result(opts, r, `${r.deleted} system event(s) deleted; has_more=${r.has_more}`);
+    }
+    if ((group === "executions" || group === "deployments") && action === "delete") {
+        const executions = group === "executions";
+        const { opts, positionals } = parseOptions(args, executions
+            ? { "--force": false, "--json": false }
+            : { "--delete-executions": false, "--force": false, "--json": false }, ["IDS..."]);
+        if (positionals.length === 0) throw new UsageError(`the following required arguments were not provided:\n  <${executions ? "EXECUTION_IDS" : "DEPLOYMENT_IDS"}>...`);
+        if (!executions && opts["--force"] && !opts["--delete-executions"]) throw new UsageError("the following required arguments were not provided:\n  --delete-executions");
+        if (opts["--force"]) out.stderr += FORCE_WARNING;
+        const json = context.json || opts["--json"];
+        const results = [];
+        for (const id of positionals) {
+            out.stderr += executions ? `Deleting execution tree ${id}\n` : `Deleting deployment ${id}\n`;
+            const params = executions
+                ? [["force_non_terminal", opts["--force"] === true]]
+                : [["delete_executions", opts["--delete-executions"] === true], ["force_non_terminal", opts["--force"] === true]];
+            const r = parseBody(checked(api.send("DELETE", `/v1/admin/${group}/${id}${query(params)}`, null, null)));
+            const state = r.deleted ? "deleted" : "already absent";
+            if (!json) out.stderr += executions ? `${id}: ${state}\n` : `${id}: ${state} (${r.deleted_execution_trees} execution tree(s) deleted)\n`;
+            results.push({ [executions ? "execution_id" : "deployment_id"]: id, ...r });
+        }
+        if (json) printJson(out, results);
+        return;
+    }
+    if ((group === "executions" || group === "deployments") && action === "retain") {
+        const executions = group === "executions";
+        const { opts } = parseOptions(args, {
+            "--count": true, "--max-age": true, "--batch-size": true, "--force": false, "--dry-run": false, "--json": false,
+            ...(executions ? {} : { "--delete-executions": false }),
+        }, []);
+        if (opts["--count"] === undefined && opts["--max-age"] === undefined) throw new UsageError("the following required arguments were not provided:\n  --count <COUNT>");
+        if (opts["--count"] !== undefined && opts["--max-age"] !== undefined) throw new UsageError("the argument '--count <COUNT>' cannot be used with '--max-age <MAX_AGE>'");
+        if (!executions && opts["--force"] && !opts["--delete-executions"]) throw new UsageError("the following required arguments were not provided:\n  --delete-executions");
+        if (opts["--force"]) out.stderr += FORCE_WARNING;
+        const dryRun = opts["--dry-run"] === true;
+        if (!dryRun) out.stderr += executions ? "Deleting execution trees outside the retention policy\n" : "Deleting inactive deployments outside the retention policy\n";
+        const body = {
+            retain_count: opts["--count"] === undefined ? null : integer(opts, "--count"),
+            max_age_seconds: opts["--max-age"] === undefined ? null : retentionAge(opts["--max-age"]),
+            batch_size: integer(opts, "--batch-size", 100),
+            ...(executions ? {} : { delete_executions: opts["--delete-executions"] === true }),
+            force_non_terminal: opts["--force"] === true,
+            dry_run: dryRun,
+        };
+        const r = parseBody(sendJson(api, "POST", `/v1/admin/${group}/retain`, body));
+        const verb = dryRun ? "would delete" : "deleted";
+        return result(opts, r, executions
+            ? `${r.deleted_execution_trees} execution tree(s) ${verb}; ${r.blocked_non_terminal} blocked; has_more=${r.has_more}`
+            : `${r.deleted_deployments} deployment(s) ${verb}; ${r.blocked_by_execution_reference} referenced and ${r.blocked_non_terminal} non-terminal blocked; has_more=${r.has_more}`);
+    }
+    throw new UsageError(`unrecognized subcommand '${[group, action].filter((part) => part !== undefined).join(" ")}'`);
+}
+
+// args.rs's `parse_retention_age`, in seconds.
+function retentionAge(value) {
+    const match = /^(\d+)(.*)$/.exec(value);
+    const invalid = (reason) => new UsageError(`invalid value '${value}' for '--max-age <MAX_AGE>': ${reason}`);
+    if (!match || match[2] === "") throw invalid(match ? "duration must have a unit: s, m, h, or d" : "duration must start with a positive integer");
+    const amount = Number(match[1]);
+    if (amount === 0) throw invalid("duration must be greater than zero");
+    const multiplier = { s: 1, m: 60, h: 3600, d: 86400 }[match[2]];
+    if (multiplier === undefined) throw invalid("duration unit must be s, m, h, or d");
+    return amount * multiplier;
+}
+
+// ---------------------------------------------------------------------------
+// `generate`
+// ---------------------------------------------------------------------------
 
 // Written in place of the template's README.md, whose `obelisk server run` steps do not apply here.
 function sandboxReadme(appName) {
@@ -354,25 +1413,38 @@ deployment may use. Deploy from this directory:
 obelisk cloud app deploy
 \`\`\`
 
-This creates the app from \`app.toml\` when needed, replaces its whole active deployment with
-\`deployment.toml\`, and prints the webhook URL. Then inspect it with
-\`obelisk cloud app --app ${appName} functions list\` and \`executions list\`.
+This creates the app from \`app.toml\` when needed, enqueues \`deployment.toml\`, applies both, and
+prints the webhook URL. Then inspect it with \`obelisk cloud app component list\` and
+\`obelisk cloud app execution list\`.
 
-To edit an existing app, run \`obelisk cloud app --app NAME deployment pull DIRECTORY\` and edit
-the pulled files. Check the pulled \`app.toml\` allows what \`deployment.toml\` requests; if the app
-cannot be reconfigured, ask the user to allow any missing permissions.
+To edit an existing app, run \`obelisk cloud app --app NAME deployment pull ID -o DIRECTORY\` (the
+active ID is \`obelisk cloud app --app NAME deployment active\`) and edit the pulled files.
 `;
 }
 
 // `generate deployment` echoes a template baked in at build time;
 // `generate new` fetches the starter app from GitHub at `generate.obeliskVersion`.
-function executeGenerate(interp, action, args, generate) {
-    if (action === "deployment") return ok(ensureTrailingNewline(DEPLOYMENT_TEMPLATE));
-    if (action === "new") {
-        return generateNew(interp, firstPositional(args, ["--template"]), option(args, "--template", ""), generate);
+function executeGenerate(interp, args, generate, out) {
+    const [action, ...rest] = args;
+    if (action === undefined || isHelpFlag(action)) {
+        out.stdout += generateHelp;
+        return;
     }
-    if (action === "") return fail(`obelisk generate: a subcommand is required\n${generateHelp}`);
-    return fail(`obelisk generate: unknown action '${action}'\n`);
+    if (helpRequested(rest)) {
+        out.stdout += action === "new" ? generateNewHelp : action === "deployment" ? generateDeploymentHelp : generateHelp;
+        return;
+    }
+    if (action === "deployment") {
+        parseOptions(rest, {}, []);
+        out.stdout += DEPLOYMENT_TEMPLATE.endsWith("\n") ? DEPLOYMENT_TEMPLATE : `${DEPLOYMENT_TEMPLATE}\n`;
+        return;
+    }
+    if (action === "new") {
+        const { opts, positionals } = parseOptions(rest, { "--template": true }, ["APP"]);
+        out.stdout += generateNew(interp, positionals[0], opts["--template"], generate);
+        return;
+    }
+    throw new UsageError(`unrecognized subcommand '${action}'`);
 }
 
 // PORT: real obelisk `generate new [NAME]`, except `--template` is required.
@@ -412,7 +1484,7 @@ function generateNew(interp, name, template, generate) {
         interp.vfs.writeFile(path, contents);
         stdout += `Generated ${JSON.stringify(path)}\n`;
     }
-    return ok(stdout);
+    return stdout;
 }
 
 function listTemplates(generate) {
@@ -480,344 +1552,6 @@ function validateAppName(name) {
     }
 }
 
-function executeDeployment(interp, action, args, controlPlane, app) {
-    if (action === "active") {
-        // Print the active deployment id, or its JSON-quoted form with --json,
-        // matching real obelisk `deployment active`.
-        const id = decodeString(controlPlane.currentDeploymentId());
-        return ok(flag(args, "--json") ? `${JSON.stringify(id)}\n` : `${id}\n`);
-    }
-    if (action === "list") {
-        return deploymentList(controlPlane);
-    }
-    if (action === "show") {
-        return deploymentShow(controlPlane, args);
-    }
-    if (action === "pull") {
-        if (args.length !== 1 || args[0].startsWith("-")) throw "usage: deployment pull DIRECTORY";
-        const dir = interp.resolvePath(required(args[0], "DIRECTORY"));
-        return ok(`${pullResultJson(pullDeployment(interp.vfs, controlPlane, dir))}\n`);
-    }
-    if (action === "check") {
-        // Unlike `submit`, `check` has no real-obelisk counterpart to match,
-        // so it keeps its own PATH-optional convenience: default to
-        // ./deployment.toml in the cwd.
-        const positional = firstPositional(args, []);
-        const { dir, file } = resolveDeploymentManifest(interp, positional !== undefined && positional !== "" ? positional : "./deployment.toml");
-        const manifest = readManifest(interp.vfs, dir, file);
-        const sources = deploymentSources(interp.vfs, dir, manifest);
-        const payload = { directory: dir, manifest_bytes: utf8Encode(manifest).length, owned_sources: sources };
-        return ok(`${prettyJson(payload)}\n`);
-    }
-    if (action === "submit") {
-        // The PATH is positional, so skip flags (and `--description`'s
-        // value) when finding it; otherwise `submit --description X` reads
-        // `X`, or even `--description` itself, as the deployment directory.
-        const path = firstPositional(args, ["--description"]);
-        const id = submitManifest(interp, controlPlane, path, args, flagRuntimeConfig(args));
-        return ok(`${prettyJson({ deployment_id: id })}\n`);
-    }
-    if (action === "enqueue") {
-        // Stage the deployment for the next server restart (never hot-swaps),
-        // mirroring real obelisk `deployment enqueue`'s wording exactly.
-        const outcome = switchOutcome(controlPlane.deploymentSwitch(required(args[0], "deployment id"), flagRuntimeConfig(args)));
-        if (outcome === "switched") return ok("Deployment already active; it will remain active after restart.\n");
-        if (outcome === "restart_required") return ok("Deployment enqueued. Restart the server to apply.\n");
-        throw `unexpected outcome from server: ${outcome}`;
-    }
-    if (action === "apply") {
-        // Like real obelisk, a `Dep_` ID is applied as is, while a manifest
-        // path is submitted first (never allowing missing runtime config).
-        const source = required(firstPositional(args, ["--description"]), "deployment id or PATH-TO-DEPLOYMENT.TOML");
-        let id = source;
-        let submitted = "";
-        if (!source.startsWith("Dep_")) {
-            id = submitManifest(interp, controlPlane, source, args, false);
-            submitted = `Submitted as ${id}\n`;
-        }
-        // Hot-redeploy now; a server that can only stage the switch reports
-        // restart_required, which real obelisk `deployment apply` treats as a
-        // failure rather than a silent enqueue.
-        let error;
-        try {
-            const outcome = switchOutcome(controlPlane.applyDeployment(id));
-            if (outcome === "switched") return ok(`${submitted}Applied successfully.\n`);
-            error =
-                outcome === "restart_required"
-                    ? "Could not apply immediately; deployment enqueued. Restart the server to apply."
-                    : `unexpected outcome from server: ${outcome}`;
-        } catch (thrown) {
-            error = thrown;
-        }
-        return { stdout: submitted, stderr: `obelisk: ${error}\n`, exitCode: 2 };
-    }
-    return fail(`obelisk deployment: unknown action '${action}'\n`);
-}
-
-// Map the `{ok:<outcome>}` switch response (the web API body the
-// deployment-switch/apply tools return verbatim) to its outcome string.
-function switchOutcome(value) {
-    if (value && typeof value === "object" && typeof value.ok === "string") return value.ok;
-    if (typeof value === "string") {
-        try {
-            const parsed = JSON.parse(value);
-            if (parsed && typeof parsed === "object" && typeof parsed.ok === "string") return parsed.ok;
-        } catch (_) { /* not JSON, fall through */ }
-        if (value.trim() !== "") return value.trim();
-    }
-    throw "deployment activation returned no outcome";
-}
-
-// PORT: real obelisk `deployment list` - a fixed-width table (newest first),
-// or "No deployments found.". The list-deployments tool returns the web API's
-// DeploymentStateSer array verbatim.
-function deploymentList(controlPlane) {
-    const deployments = decodeJson(controlPlane.listDeployments(20));
-    if (!Array.isArray(deployments)) throw "deployment list returned a non-array response";
-    if (deployments.length === 0) return ok("No deployments found.\n");
-    const lines = [padColumn("ID", 32) + "  " + padColumn("STATUS", 12) + "  " + padColumn("CREATED_AT", 19) + "  " + padColumn("LAST_ACTIVE_AT", 19) + "  DESCRIPTION"];
-    for (const dep of deployments) {
-        const id = typeof dep?.deployment_id === "string" ? dep.deployment_id : "";
-        const status = formatDeploymentStatus(dep?.status);
-        const created = formatDeploymentTimestamp(dep?.created_at);
-        const lastActive = dep?.last_active_at ? formatDeploymentTimestamp(dep.last_active_at) : "";
-        const description = typeof dep?.description === "string" ? dep.description : "";
-        lines.push(padColumn(id, 32) + "  " + padColumn(status, 12) + "  " + padColumn(created, 19) + "  " + padColumn(lastActive, 19) + "  " + description);
-    }
-    return ok(`${lines.join("\n")}\n`);
-}
-
-// PORT: real obelisk `deployment show ID` - print the stored TOML manifest.
-// The real CLI's FILE and --json variants need a source-blob fetch and a
-// TOML parser (unavailable here), so only the default manifest form is shown.
-function deploymentShow(controlPlane, args) {
-    const id = required(firstPositional(args, []), "deployment id");
-    const record = decodeJson(controlPlane.getDeployment(id));
-    const toml = typeof record?.deployment_toml === "string" ? record.deployment_toml : "";
-    return ok(ensureTrailingNewline(toml));
-}
-
-function padColumn(text, width) {
-    return text.length >= width ? text : text + " ".repeat(width - text.length);
-}
-
-function formatDeploymentStatus(status) {
-    if (status === "inactive") return "Inactive";
-    if (status === "enqueued") return "Enqueued";
-    if (status === "active") return "Active";
-    return typeof status === "string" ? status : "";
-}
-
-// The web API serializes timestamps as RFC 3339; real obelisk prints them as
-// `%Y-%m-%d %H:%M:%S`, so keep the date and clock and drop the sub-second/zone.
-function formatDeploymentTimestamp(value) {
-    if (typeof value !== "string") return "";
-    const match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/.exec(value);
-    return match ? `${match[1]} ${match[2]}` : value;
-}
-
-// Submit the manifest at `path` from the VFS and return the new deployment ID.
-function submitManifest(interp, controlPlane, path, args, allowMissing) {
-    const { dir, file } = resolveDeploymentManifest(interp, path);
-    const manifest = readManifest(interp.vfs, dir, file);
-    const prepared = manifestWithGeneratedFiles(interp.vfs, dir, manifest);
-    // Expand the digest-free view back to what the server stores: every
-    // `content_digest`, `component_files` value, and `backtrace.sources`
-    // table, each digest recomputed from the file's current bytes (an
-    // unchanged file keeps its CAS digest, a changed one is re-hashed).
-    const expanded = manifestWithDigests(interp.vfs, dir, prepared);
-    const description = option(args, "--description", "Submitted from workflow-agent VFS");
-    return submitDeployment(interp.vfs, controlPlane, dir, expanded, description, allowMissing, "");
-}
-
-// The workflow half of the submit contract: drive the dumb
-// `deployment-submit` activity's preflight/attach loop. The first call
-// carries no blobs (a JSON preflight); each `{ missingFiles }` error names
-// the blobs the CAS lacks, which we read straight from the VFS and
-// resubmit as a multipart package, until the server accepts it. A run that
-// keeps reporting the same files after they were attached is a digest
-// mismatch we cannot fix by resending, so it errors instead of looping.
-function submitDeployment(fs, controlPlane, dir, manifest, description, allowMissing, deploymentId) {
-    let attachments = [];
-    let previous = null;
-    for (;;) {
-        let missing;
-        try {
-            const id = controlPlane.deploymentSubmit(manifest, attachments, description, allowMissing, deploymentId);
-            return decodeString(id);
-        } catch (error) {
-            if (!Array.isArray(error?.missingFiles)) throw error;
-            missing = error.missingFiles;
-        }
-        const paths = missing.map((m) => m.path);
-        if (previous !== null && arraysEqual(previous, paths)) {
-            throw `server still missing ${paths.length} file(s) after they were attached (digest mismatch?): ${paths.join(", ")}`;
-        }
-        const next = [];
-        for (const { path, digest } of missing) {
-            let content;
-            try {
-                content = fs.readFile(`${dir}/${path}`);
-            } catch {
-                throw `server needs ${path} but it is not in the deployment tree; write the file before submitting`;
-            }
-            next.push({ path, digest, content });
-        }
-        attachments = next;
-        previous = paths;
-    }
-}
-
-function arraysEqual(a, b) {
-    return a.length === b.length && a.every((v, i) => v === b[i]);
-}
-
-// The deployment-owned source paths a submit would carry: only those the
-// session modified locally (`deployment check` reports them). An unmodified
-// file stays a lazy `pending` VFS entry whose blob is already in the CAS, so
-// `manifestWithDigests` re-pins its existing digest and `submitDeployment`
-// never uploads it (the "upload only what the server is missing" contract).
-// Skipping unmodified files keeps a redeploy from touching every component,
-// notably the multi-MB workflow and activity WASM. A `pending` file with a
-// foreign (non-CAS) digest, e.g. copied in from a git/web mount and never
-// locally edited, is *not* skipped: its bytes were never uploaded here under
-// that digest, so it must go out like a modified file (see
-// `ownedSourceDigest`).
-export function deploymentSources(fs, dir, manifest) {
-    const files = [];
-    for (const location of ownedSourceLocations(manifest)) {
-        const path = `${dir}/${location}`;
-        // A local write clears the pending flag; a mere read does not. So a
-        // file still pending with a real CAS digest is unmodified and
-        // already uploaded - skip it.
-        const lazy = fs.lazyFileRef(path);
-        if (lazy && isCasNamespacedDigest(lazy.digest)) continue;
-        if (fs.exists(path)) files.push(location);
-    }
-    return files;
-}
-
-// Resolve the manifest to read from a positional argument: `{dir, file}`,
-// `dir` being the base for every relative path *inside* the manifest
-// (component/wit locations) and `file` the manifest's own name within it.
-// PATH is always a path to the manifest file itself, matching real obelisk
-// (its `submit`/`enqueue`/`apply`/`verify` all take a literal file path, no
-// directory fallback) - but any filename, not just the literal
-// "deployment.toml" (this repo's own deployment.js.toml/deployment.rs.toml
-// are exactly this case). Callers that allow PATH to be omitted must supply
-// their own default value before calling; `required()` rejects an absent one.
-function resolveDeploymentManifest(interp, value) {
-    const resolved = interp.resolvePath(required(value, "PATH-TO-DEPLOYMENT.TOML"));
-    return { dir: parentDir(resolved), file: basename(resolved) };
-}
-
-function parentDir(path) {
-    const idx = path.lastIndexOf("/");
-    return idx <= 0 ? "/" : path.slice(0, idx);
-}
-
-// The first positional argument, skipping flags. A flag named in
-// `valueFlags` also consumes the following token as its value; `--` ends
-// flag parsing so the next token is positional. Keeps `submit --description
-// X` from reading a flag (or its value) as the PATH.
-function firstPositional(args, valueFlags) {
-    let i = 0;
-    while (i < args.length) {
-        const arg = args[i];
-        if (arg === "--") return args[i + 1];
-        if (arg.startsWith("-") && arg.length > 1) {
-            i += valueFlags.includes(arg) ? 2 : 1;
-            continue;
-        }
-        return arg;
-    }
-    return undefined;
-}
-
-// The runtime-config override, accepting both the pack's original flag name
-// and obelisk's `--allow-unavailable-runtime-config` spelling.
-function flagRuntimeConfig(args) {
-    return flag(args, "--allow-missing-runtime-config") || flag(args, "--allow-unavailable-runtime-config");
-}
-
-function readManifest(fs, dir, file) {
-    const path = `${dir}/${file}`;
-    // A directory reads as a path-first I/O error (matching just-bash's own
-    // grep/cat and the Rust port's read_manifest), not fs.readFile's
-    // description-first FsError.
-    if (fs.isDir(path)) throw `${path}: Is a directory`;
-    if (!fs.exists(path)) throw `${path}: No such file or directory`;
-    return fs.readFile(path);
-}
-
-// A `string`-returning tool's result, rendered for the shell.
-function textOutput(text) {
-    return ok(ensureTrailingNewline(renderOutput(text)));
-}
-
-function targetCall(controlPlane, ffqn, paramsJson) {
-    return ok(ensureTrailingNewline(renderOutput(decodeJson(controlPlane.callTarget(ffqn, paramsJson)))));
-}
-
-function listFunctions(functions) {
-    const lines = functions
-        .filter((fn) => fn.extension === undefined || fn.extension === null)
-        .map((fn) => {
-            const parameters = fn.parameter_types.map(({ name, wit_type }) => `${name}: ${wit_type}`).join(", ");
-            return `${fn.ffqn} : func(${parameters}) -> ${fn.return_type}`;
-        });
-    return ok(lines.length ? `${lines.join("\n")}\n` : "");
-}
-
-// Render an FFQN result for the shell. The endpoints return JSON *text*, so
-// a structural result (array/object) is pretty-printed - one element/field
-// per line - to stay readable and greppable rather than a single dense
-// line. A string body that is not itself structural JSON (WIT text,
-// execution logs, a bare deployment id) prints verbatim, as does a scalar.
-// `null` (no body) stays `null`.
-function renderOutput(value) {
-    if (typeof value === "string") {
-        try {
-            const inner = JSON.parse(value);
-            if (Array.isArray(inner) || (inner !== null && typeof inner === "object")) return prettyJson(inner);
-            return value;
-        } catch {
-            return value;
-        }
-    }
-    return prettyJson(value);
-}
-
-function prettyJson(value) {
-    return JSON.stringify(value, null, 2);
-}
-
-function ensureTrailingNewline(text) {
-    return text.endsWith("\n") ? text : `${text}\n`;
-}
-
-function pullResultJson(result) {
-    return prettyJson({ deployment_id: result.deploymentId, directory: result.directory, files: result.files });
-}
-
-// PORT: `decodeString`. A string that itself parses as a JSON string yields
-// the inner contents (the `current-deployment-id` case, whose body is
-// `resp.text()` of a JSON string, so it arrives double-quoted); a string that
-// parses as an object falls back to its `deployment_id` field; anything else
-// is the trimmed string.
-function decodeString(text) {
-    try {
-        const inner = JSON.parse(text);
-        if (typeof inner === "string") return inner;
-        if (inner !== null && typeof inner === "object" && !Array.isArray(inner)) {
-            return typeof inner.deployment_id === "string" ? inner.deployment_id : "";
-        }
-        return "";
-    } catch {
-        return text.trim();
-    }
-}
-
 function decodeJson(text) {
     try {
         return JSON.parse(text);
@@ -826,27 +1560,9 @@ function decodeJson(text) {
     }
 }
 
-function required(value, label) {
-    if (typeof value === "string" && value !== "") return value;
-    throw `${label} is required`;
-}
-
-function option(args, name, fallback) {
-    const i = args.indexOf(name);
-    if (i === -1 || i + 1 >= args.length) return fallback;
-    return args[i + 1];
-}
-
-function integerOption(args, name, fallback) {
-    const i = args.indexOf(name);
-    const raw = i === -1 ? undefined : args[i + 1];
-    if (raw === undefined) return fallback;
-    const n = /^-?\d+$/.test(raw) ? parseInt(raw, 10) : NaN;
-    return Number.isInteger(n) && n >= 0 ? n : fallback;
-}
-
-function flag(args, name) {
-    return args.includes(name);
+function parentDir(path) {
+    const idx = path.lastIndexOf("/");
+    return idx <= 0 ? "/" : path.slice(0, idx);
 }
 
 function basename(path) {
@@ -855,115 +1571,193 @@ function basename(path) {
     return idx === -1 ? trimmed : trimmed.slice(idx + 1);
 }
 
-function ok(stdout = "") {
-    return { stdout, stderr: "", exitCode: 0 };
-}
-
-function fail(stderr) {
-    return { stdout: "", stderr, exitCode: 2 };
-}
-
 function isHelpFlag(arg) {
     return arg === "-h" || arg === "--help";
 }
 
+// A help flag before any `--`.
 function helpRequested(args) {
-    return args.some(isHelpFlag);
+    const end = args.indexOf("--");
+    return (end === -1 ? args : args.slice(0, end)).some(isHelpFlag);
 }
 
-// Usage for a command group (`obelisk <group> --help`), or the top-level
-// help for an unrecognized group.
-function groupHelp(group) {
-    switch (group) {
-        case "functions":
-            return functionsHelp;
-        case "executions":
-            return executionsHelp;
-        case "call":
-            return callHelp;
-        case "deployment":
-            return deploymentHelp;
-        case "generate":
-            return generateHelp;
-        default:
-            return helpText;
-    }
-}
+// ---------------------------------------------------------------------------
+// Help
+// ---------------------------------------------------------------------------
 
-// Usage for a specific subcommand (`obelisk <group> <action> --help`). Only
-// the deployment subcommands (and `call`) carry their own option list;
-// everything else falls back to the group help, which already lists each
-// subcommand.
-function actionHelp(group, action) {
-    if (group === "call") return callHelp;
-    if (group === "deployment" && action === "submit") return deploymentSubmitHelp;
-    if (group === "deployment" && action === "check") return deploymentCheckHelp;
-    if (group === "deployment" && action === "enqueue") return deploymentEnqueueHelp;
-    if (group === "deployment" && action === "apply") return deploymentApplyHelp;
-    if (group === "generate" && action === "deployment") return generateDeploymentHelp;
-    if (group === "generate" && action === "new") return generateNewHelp;
-    return groupHelp(group);
-}
+const helpText = `Obelisk: deterministic workflow engine
 
-// PORT: obelisk_pack.rs's `help()` - Rust's multi-line string literals with a
-// trailing `\` continuation strip ALL leading whitespace on the next source
-// line (a language quirk, not a formatting choice), so the visually-indented
-// subcommand names in the .rs source actually compile to unindented lines.
-// These JS literals must match that stripped (unindented) output exactly.
-const helpText =
-    "Usage: obelisk <command> [args]\n\nManage apps in the cloud, and write starter files.\n\nCommands:\ncloud        Manage cloud apps; each app's functions, executions, calls, and deployments\nare under `obelisk cloud app [--app NAME]`.\ngenerate     Print a starter configuration file, or create a new app.\ncall obelisk-agent:stub/stub.ask-user '[\"QUESTION\"]'\nAsk the user a question and print the answer.\n\nPull an app deployment into a working directory with `deployment pull DIRECTORY`.\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
+Usage: obelisk <COMMAND>
 
-const cloudHelp =
-    "Usage: obelisk cloud <command> [args]\n\nManage the apps in the cloud.\n\nCommands:\napps list                  List apps.\ntoken list|get ID          List API tokens, or show one.\napp [--app NAME] ...       Manage one app; run `obelisk cloud app --help`.\n\nGlobal options: --json, --verbose, --command-id ID.\n";
+Commands:
+  cloud     Manage apps through the Obelisk cloud control plane
+  generate  Generate configuration files and starter apps
 
-const cloudAppHelp =
-    "Usage: obelisk cloud app [--app NAME] [-a APP.TOML] <subcommand>\n\nThe app is --app, else app_name in the -a file or ./app.toml, else the cloud's only app.\n\nSubcommands:\nnew [NAME]                       Create the app from the app policy.\ndeploy [-a APP.TOML] [-d DEPLOYMENT.TOML]\nCreate or restage, apply, reactivate, and deploy; prints the webhook URL.\nget | status                     Show the app or its runtime status.\nstage                            Stage the app policy from -a or ./app.toml.\napply [--force]                  Apply staged changes.\nreactivate | deactivate          Start or stop the app VM.\ndelete                           Delete the app.\nenv list|set NAME VALUE|unset NAME\nsecrets list|set NAME (--stdin|--from-env VAR)|unset NAME\nendpoint [api|webhook|webui]     Print the app's URLs.\nfunctions ...                    List the app's functions, or print one's WIT.\nexecutions ...                   List the app's executions, or show one.\ncall FFQN [PARAMS_JSON]          Call one of the app's functions.\ndeployment ...                   Inspect, edit, submit, and activate the app's deployments.\n\nRun `obelisk cloud app <subcommand> --help` for its options.\n";
+\`obelisk server\` and the top-level app API commands are not available here; use
+\`obelisk cloud app ...\`. Ask the user a question with \`ask-user QUESTION\`.
+`;
 
-const functionsHelp =
-    "Usage: obelisk cloud app [--app NAME] functions <subcommand>\n\nList the app's functions, or print a single function's WIT interface.\n\nSubcommands:\nlist [--prefix PREFIX] [--length N] [--json]   List functions and their signatures.\nwit FFQN                                        Print the WIT interface for one function.\n";
+const cloudHelp = `Manage apps through the Obelisk cloud control plane
 
-const executionsHelp =
-    "Usage: obelisk cloud app [--app NAME] executions <subcommand>\n\nList the app's executions, or show one execution's record, logs, or result.\n\nSubcommands:\nlist [--ffqn-prefix PREFIX] [--id-prefix PREFIX] [--show-derived] [--hide-finished] [--length N]\nList executions (most recent first).\nget ID                                          Show an execution's record.\nlogs ID [--length N]                            Show an execution's logs.\nresult ID                                       Show an execution's result value.\n";
+Usage: obelisk cloud [OPTIONS] <COMMAND>
 
-const callHelp =
-    "Usage: obelisk cloud app [--app NAME] call FFQN [PARAMS_JSON]\nobelisk cloud app [--app NAME] call FFQN -- PARAM...\n\nCall one of the app's functions and print its result. Pass parameters as one JSON array\nin WIT parameter order, or after `--` as positional values (each parsed as JSON\nwhen valid, otherwise as a string). With neither, parameters are read from stdin,\ndefaulting to `[]`.\n";
+Commands:
+  token  Inspect cloud bearer tokens (list, get ID)
+  apps   List apps owned by the authenticated user (apps list)
+  app    Manage an app and its deployments, executions and configuration
 
-const deploymentHelp =
-    "Usage: obelisk cloud app [--app NAME] deployment <subcommand>\n\nInspect, edit, submit, and activate the app's deployments.\nPull into an empty directory; source bytes are fetched on first read.\n\nSubcommands:\nactive [--json]           Print the active deployment ID.\nlist                      List recent deployments.\nshow ID                   Print a stored deployment's TOML manifest.\npull DIRECTORY            Pull the active deployment into an empty directory, loading sources lazily.\ncheck [PATH]              Report a deployment's manifest and locally-edited sources.\nsubmit PATH [OPTIONS]     Store the edited deployment as a new inactive deployment.\nenqueue ID [OPTIONS]      Enqueue a stored deployment for the next server restart.\napply PATH|ID             Submit-and-apply: hot-redeploy a manifest or stored deployment now.\n\nRun `obelisk cloud app [--app NAME] deployment <subcommand> --help` for a subcommand's options.\n";
+Options:
+      --json        Print machine-readable JSON instead of human-readable output
+      --verbose     Show detailed metadata and command diagnostics
+      --app <NAME>  Selected cloud app; defaults to $OBELISK_APP_NAME, then app_name in ./app.toml
+`;
 
-const deploymentSubmitHelp =
-    "Usage: obelisk cloud app [--app NAME] deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML\n\nStore the edited deployment as a new inactive deployment and print its ID. PATH\nis the path to the deployment TOML file to submit (any filename -- not just the\nliteral \"deployment.toml\"); it must be a file, not a directory, matching real\nobelisk. Digests are recomputed from the files, so leave them out.\n\nOptions:\n--description TEXT               Human-readable description for the new deployment.\n--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n(alias: --allow-unavailable-runtime-config)\n";
+const cloudAppHelp = `Manage an app and its deployments, executions and configuration
 
-const deploymentCheckHelp =
-    "Usage: obelisk cloud app [--app NAME] deployment check [PATH-TO-DEPLOYMENT.TOML]\n\nReport a deployment's manifest size and the owned sources edited locally (the\nfiles a submit would upload). PATH is the path to the deployment TOML file (any\nfilename); it must be a file, not a directory, and defaults to ./deployment.toml.\n";
+Usage: obelisk cloud app [--app <NAME>] <COMMAND>
 
-const deploymentEnqueueHelp =
-    "Usage: obelisk cloud app [--app NAME] deployment enqueue [OPTIONS] ID\n\nEnqueue a stored deployment; it is verified and applied on the next server\nrestart. Use `apply` to hot-redeploy without a restart.\n\nOptions:\n--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.\n(alias: --allow-unavailable-runtime-config)\n";
+Commands:
+  deployment  Manage deployments through the selected app's API
+  execution   Manage executions through the selected app's API
+  component   Inspect components
+  admin       Perform operator-only destructive maintenance on the selected app
+  new         Create a stopped app; apply explicitly to start it
+                [NAME] [-a APP_CONFIG] [--fill-non-interactive] [--command-id ID]
+  get         Inspect the app row
+  status      Inspect management, Machine and target API health
+  stage       Stage app policy and cloud settings without restarting the VM [-a APP_CONFIG]
+  deploy      Publish the local project, creating or configuring the app and activating its deployment
+                [-a APP_CONFIG] [-d DEPLOYMENT] [--fill-non-interactive]
+  apply       Apply the staged configuration and the enqueued (or active) deployment
+                [-a APP_CONFIG | --staged] [--fill-non-interactive] [--force]
+  reactivate  Reactivate the app
+  deactivate  Deactivate the app
+  delete      Delete the app
+  fill        Stage declared env vars and secrets from same-named exported variables
+                --non-interactive [-a APP_CONFIG | --staged]
+  env         list | set NAME VALUE | unset NAME
+  secrets     list | set NAME (--from-env VAR | --stdin) | unset NAME
+  endpoint    Show all endpoints, or select api, webhook or webui
 
-const deploymentApplyHelp =
-    "Usage: obelisk cloud app [--app NAME] deployment apply [OPTIONS] PATH|ID\n\nHot-redeploy now (fails if it cannot be applied live). A deployment TOML PATH is\nsubmitted first, like `submit`; a `Dep_` ID applies a stored deployment.\n\nOptions:\n--description TEXT   Human-readable description for a newly submitted deployment.\n";
+Run \`obelisk cloud app <COMMAND> --help\` for a command's subcommands.
+`;
 
-const generateHelp =
-    "Usage: obelisk generate <subcommand>\n\nPrint a starter Obelisk configuration file, or create a new app.\n\nSubcommands:\ndeployment   Print a default deployment.toml with every option documented.\nnew --template NAME [APP]  Create a JS app from a template, in a new APP directory or the current one.\n";
+const executionHelp = `Manage executions through the selected app's API
 
-const generateNewHelp =
-    "Usage: obelisk generate new --template NAME [APP]\n\nCreate a runnable JS starter app from the obelisk repository's\nexamples/templates/NAME at the operator's OBELISK_VERSION (falling back to main).\nRun without --template to list the templates. With APP, the app is created in a\nnew APP directory; otherwise in the current directory, named after its slug.\nThe template's app.toml gets the app name; deploy with `obelisk cloud app deploy`.\n";
+Usage: obelisk cloud app execution <COMMAND>
 
-const generateDeploymentHelp =
-    "Usage: obelisk generate deployment\n\nPrint a default deployment.toml with every option documented as comments.\nRedirect it to a file to scaffold a new deployment, e.g.\n`obelisk generate deployment > deployment.toml`.\n";
+Commands:
+  list                List recent executions
+                        [--ffqn PREFIX] [-e|--execution-id PREFIX] [--show-derived] [--hide-finished] [--limit 20] [-j]
+  logs                Fetch structured logs for an execution
+                        EXECUTION_ID [--show-derived] [--level trace|debug|info|warn|error|off] [--stream-type stdout|stderr|none]
+                        [--show-run-id] [--after TIMESTAMP] [--follow] [--limit 20] [-j]
+  events              Show the execution event log: EXECUTION_ID [--from VERSION] [--limit 20] [-j]
+  responses           Show join-set responses: EXECUTION_ID [--from CURSOR] [--limit 20] [-j]
+  submit              Submit a new execution: [-e ID] FUNCTION [PARAMS]... [-f] [--follow-logs] [--paused] [-j]
+                        FUNCTION is \`ns:pkg/ifc.fn\` or \`.../ifc.fn\`. PARAMS: one JSON array ('["a", 1]'), @file.json,
+                        \`-\` for stdin, or after \`--\` one JSON value (or @file) per argument; none for no parameters
+  stub                Write a stubbed execution's return value: EXECUTION_ID RETURN_VAL_JSON
+  status              Get an execution's current state (alias: get): EXECUTION_ID [-f] [-j]
+  result              Get an execution's final result: EXECUTION_ID [-f] [-j]
+  cancel              Cancel an activity or delay: ID [--json]
+  pause               Pause a workflow execution or delay: ID [--json]
+  unpause             Resume a paused execution or delay: ID [--json]
+  replay              Replay a workflow, checking for non-determinism: EXECUTION_ID [-j]
+  persist-backtraces  Replay a workflow and persist its call-site backtraces: EXECUTION_ID
+  advance             Advance a paused workflow by its next captured writes
+                        EXECUTION_ID [--trim N] [-p|--pause-all] [--pause-submitted-executions] [--pause-delays] [--force] [-j]
+  upgrade             Upgrade a workflow to the active deployment's component: EXECUTION_ID [--skip-determinism-check] [--json]
+`;
+
+const componentHelp = `Inspect components
+
+Usage: obelisk cloud app component <COMMAND>
+
+Commands:
+  list  List components: [-i|--imports] [-e|--extensions] [--json]
+  push  Not available in the sandbox (needs an OCI registry)
+  add   Not available in the sandbox (needs an OCI registry)
+`;
+
+const deploymentHelp = `Manage deployments through the selected app's API
+
+Usage: obelisk cloud app deployment <COMMAND>
+
+Commands:
+  submit   Submit a deployment TOML; print the deployment ID
+             [PATH (default deployment.toml) | --empty] [--allow-unavailable-runtime-config] [--description TEXT]
+             [--deployment-id ID] [--json]
+  enqueue  Submit and stage for cloud app apply
+             [PATH|ID | --empty] [--allow-unavailable-runtime-config] [--description TEXT] [--deployment-id ID] [--json]
+  apply    Submit (if a file is given) and apply immediately; fails if not possible
+             [PATH|ID | --empty] [--description TEXT] [--deployment-id ID] [--json]
+  list     List recent deployments [--json]
+  active   Print the ID of the currently active deployment [--json]
+  show     Show a deployment's manifest, one source FILE, or the manifest as JSON: ID [FILE] [--json]
+  pull     Write a deployment's editable deployment.toml and source files (fetched on first read)
+             ID [-o|--output DIR] [-f|--force] [--include-generated-metadata]
+
+Submit, enqueue and apply reuse the active deployment when its content and description are unchanged.
+Leave \`content_digest\` and \`component_files\` out of deployment.toml; they are generated on submit.
+`;
+
+const adminHelp = `Perform operator-only destructive maintenance on the selected app
+
+Usage: obelisk cloud app admin <COMMAND>
+
+Commands:
+  executions delete IDS... [--force] [--json]
+  executions retain (--count N | --max-age AGE) [--batch-size 100] [--force] [--dry-run] [--json]
+  deployments delete IDS... [--delete-executions [--force]] [--json]
+  deployments retain (--count N | --max-age AGE) [--delete-executions [--force]] [--batch-size 100] [--dry-run] [--json]
+  events get EVENT_ID [--json]
+  events list [--node-run-id ID] [--level L] [--code C] [--from RFC3339] [--to RFC3339] [--limit 100] [--json]
+  events retain --max-age AGE [--batch-size 1000] [--json]
+  storage show [--json]
+  node-run-id [--json]
+
+AGE is a positive integer with a unit: s, m, h or d.
+`;
+
+const API_HELP = { execution: executionHelp, component: componentHelp, deployment: deploymentHelp, admin: adminHelp };
+
+const generateHelp = `Generate configuration files and starter apps
+
+Usage: obelisk generate <COMMAND>
+
+Commands:
+  deployment  Print a default deployment.toml with every option documented
+  new         Create a JS app from a template: --template NAME [APP]
+`;
+
+const generateNewHelp = `Usage: obelisk generate new --template NAME [APP]
+
+Create a runnable JS starter app from the obelisk repository's
+examples/templates/NAME at the operator's OBELISK_VERSION (falling back to main).
+Run without --template to list the templates. With APP, the app is created in a
+new APP directory; otherwise in the current directory, named after its slug.
+The template's app.toml gets the app name; deploy with \`obelisk cloud app deploy\`.
+`;
+
+const generateDeploymentHelp = `Usage: obelisk generate deployment
+
+Print a default deployment.toml with every option documented as comments.
+Redirect it to a file to scaffold a new deployment, e.g.
+\`obelisk generate deployment > deployment.toml\`.
+`;
 
 // ---------------------------------------------------------------------------
 // TOML editor
 //
 // A hand-written, purpose-built editor scoped to exactly what
-// `simplifyManifest`/`manifestWithDigests`/`ownedSourceLocations` need - not
+// `manifestWithGeneratedFiles`/`manifestWithDigests` need - not
 // a general TOML parser (no bare npm dependency resolves in the deployed
-// component, so a real TOML library is not an option; see
-// docs/js-backend-migration.md). It works by locating byte ranges ("edits")
+// component, so a real TOML library is not an option). It works by locating byte ranges ("edits")
 // to rewrite and applying them over the original text verbatim, so every
 // other byte (comments, blank lines, unrelated keys, formatting, key
 // ordering) survives untouched - a surgical value-level rewrite rather than
-// a parse/mutate/re-serialize round trip like the Rust port's `toml_edit`.
+// a parse/mutate/re-serialize round trip.
 //
 // The scanner recognizes each top-level `[[array-of-tables]]` header
 // generically (no fixed list of table names) and tracks, per block
@@ -1057,80 +1851,20 @@ function backtraceEntries(manifest, block) {
     return [];
 }
 
-// Collapse a stored manifest into the digest-free view the agent edits:
-// drop `content_digest`, blank `component_files` values to `"auto"`, reduce
-// each `backtrace.sources` entry to its path. Inverse of
-// `manifestWithDigests`.
-export function simplifyManifest(manifest) {
-    const blocks = groupBlocks(findRegions(manifest));
-    const edits = [];
-    for (const block of blocks) {
-        const digestAssign = findAssignment(manifest, block.root.start, block.root.end, "content_digest");
-        if (digestAssign) {
-            edits.push({ start: digestAssign.line.lineStart, end: digestAssign.line.lineEnd, text: "" });
-        }
-
-        const filesAssign = findAssignment(manifest, block.root.start, block.root.end, "component_files");
-        if (filesAssign && manifest[filesAssign.valueStart] === "{") {
-            for (const entry of scanEntries(manifest, filesAssign.valueStart + 1, filesAssign.valueEnd - 1)) {
-                const key = unquoteString(manifest.slice(entry.keyStart, entry.keyEnd));
-                if (key.startsWith("oci://")) continue;
-                edits.push({ start: entry.valueStart, end: entry.valueEnd, text: quoteString(AUTO_DIGEST) });
-            }
-        }
-
-        for (const entry of backtraceEntries(manifest, block)) {
-            const valueText = manifest.slice(entry.valueStart, entry.valueEnd).trim();
-            if (!valueText.startsWith("{")) continue; // already simplified (a plain path string); leave as-is
-            const path = extractInlineField(manifest, entry.valueStart, entry.valueEnd, "path");
-            if (path === null || path.startsWith("oci://")) continue;
-            edits.push({ start: entry.valueStart, end: entry.valueEnd, text: quoteString(path) });
-        }
-    }
-    return applyEdits(manifest, edits);
-}
-
-// Inverse of `simplifyManifest`: re-pin each `content_digest` and
-// `component_files` value from the file's current bytes (a missing file is
-// left as-is). `backtrace.sources` stays a plain path map: its digest lives in
-// `component_files` (added by `manifestWithGeneratedFiles`, which always runs
-// first), matching the server's plain-string schema (matches the Rust port).
+// Pin each owned `location`'s `content_digest` from the file's current bytes
+// (a missing file is left for the server to report).
 export function manifestWithDigests(fs, dir, manifest) {
-    const blocks = groupBlocks(findRegions(manifest));
     const edits = [];
-    for (const block of blocks) {
+    for (const block of groupBlocks(findRegions(manifest))) {
         const locationAssign = findAssignment(manifest, block.root.start, block.root.end, "location");
-        let digest = null;
-        if (locationAssign) {
-            const location = unquoteString(manifest.slice(locationAssign.valueStart, locationAssign.valueEnd));
-            if (!location.startsWith("oci://")) digest = ownedSourceDigest(fs, `${dir}/${location}`);
-        }
-        if (digest !== null) {
-            const digestAssign = findAssignment(manifest, block.root.start, block.root.end, "content_digest");
-            if (digestAssign) {
-                edits.push({ start: digestAssign.valueStart, end: digestAssign.valueEnd, text: quoteString(digest) });
-            } else {
-                const insertAt = lastContentEnd(manifest, block.root.start, block.root.end);
-                const needsNewline = insertAt > 0 && manifest[insertAt - 1] !== "\n";
-                edits.push({
-                    start: insertAt,
-                    end: insertAt,
-                    text: `${needsNewline ? "\n" : ""}content_digest = ${quoteString(digest)}\n`,
-                });
-            }
-        }
-
-        const filesAssign = findAssignment(manifest, block.root.start, block.root.end, "component_files");
-        if (filesAssign && manifest[filesAssign.valueStart] === "{") {
-            for (const entry of scanEntries(manifest, filesAssign.valueStart + 1, filesAssign.valueEnd - 1)) {
-                const key = unquoteString(manifest.slice(entry.keyStart, entry.keyEnd));
-                if (key.startsWith("oci://")) continue;
-                const fileDigest = ownedSourceDigest(fs, `${dir}/${key}`);
-                if (fileDigest === null) continue;
-                edits.push({ start: entry.valueStart, end: entry.valueEnd, text: quoteString(fileDigest) });
-            }
-        }
-
+        if (!locationAssign) continue;
+        const location = unquoteString(manifest.slice(locationAssign.valueStart, locationAssign.valueEnd));
+        if (location.startsWith("oci://")) continue;
+        const digest = ownedSourceDigest(fs, `${dir}/${location}`);
+        if (digest === null) continue;
+        const insertAt = lastContentEnd(manifest, block.root.start, block.root.end);
+        const needsNewline = insertAt > 0 && manifest[insertAt - 1] !== "\n";
+        edits.push({ start: insertAt, end: insertAt, text: `${needsNewline ? "\n" : ""}content_digest = ${quoteString(digest)}\n` });
     }
     return applyEdits(manifest, edits);
 }
@@ -1274,43 +2008,6 @@ function normalizeDeploymentPath(path) {
     return parts.join("/");
 }
 
-// Every deployment-owned source location a submit tracks: each component's
-// `location`, `component_files` keys, and (only when written in the
-// EXPANDED `{ path = ..., content_digest = ... }` form - a plain simplified
-// path string is not recognized here, matching the Rust port's
-// `Item::as_table_like` check) `backtrace.sources` paths. `oci://` refs
-// skipped, deduped first-wins.
-export function ownedSourceLocations(manifest) {
-    const blocks = groupBlocks(findRegions(manifest));
-    const seen = new Set();
-    const locations = [];
-    const add = (loc) => {
-        if (!loc.startsWith("oci://") && !seen.has(loc)) {
-            seen.add(loc);
-            locations.push(loc);
-        }
-    };
-    for (const block of blocks) {
-        const locationAssign = findAssignment(manifest, block.root.start, block.root.end, "location");
-        if (locationAssign) add(unquoteString(manifest.slice(locationAssign.valueStart, locationAssign.valueEnd)));
-
-        const filesAssign = findAssignment(manifest, block.root.start, block.root.end, "component_files");
-        if (filesAssign && manifest[filesAssign.valueStart] === "{") {
-            for (const entry of scanEntries(manifest, filesAssign.valueStart + 1, filesAssign.valueEnd - 1)) {
-                add(unquoteString(manifest.slice(entry.keyStart, entry.keyEnd)));
-            }
-        }
-
-        for (const entry of backtraceEntries(manifest, block)) {
-            const valueText = manifest.slice(entry.valueStart, entry.valueEnd).trim();
-            if (!valueText.startsWith("{")) continue;
-            const path = extractInlineField(manifest, entry.valueStart, entry.valueEnd, "path");
-            if (path !== null) add(path);
-        }
-    }
-    return locations;
-}
-
 // The `content_digest` for a deployment-owned source at submit time: an
 // unchanged file is still a lazy `pending` VFS entry and keeps its CAS
 // digest; a changed or newly created file is re-hashed from the same
@@ -1323,7 +2020,7 @@ export function ownedSourceLocations(manifest) {
 // `content_digest`. An eager file's hash is computed at most once per
 // unchanged path: `fs`'s content-digest cache (invalidated on write) covers
 // both a path appearing more than once in one manifest pass (e.g. as both a
-// `location` and a `component_files` entry) and repeat submit/check/verify
+// `location` and a `component_files` entry) and repeat submits
 // calls within the same session.
 function ownedSourceDigest(fs, path) {
     const lazy = fs.lazyFileRef(path);

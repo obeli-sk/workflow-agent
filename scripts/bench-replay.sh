@@ -9,13 +9,9 @@ OUTPUT_DIR="$(realpath -m "${1:-/tmp/workflow-agent-replay-benchmark}")"
 mkdir -p "$OUTPUT_DIR"
 e2e_init replay-benchmark "${BENCH_API_PORT:-15005}" "${BENCH_EXTERNAL_PORT:-19090}" replay-benchmark
 export OBELISK_API_URL="$E2E_API_URL"
-export AGENT_MODELS='[]' DOCS_URLS_JSON='[]' MCP_SERVERS_JSON='[]' PROGRAMS_JSON='[]'
+export AGENT_MODELS='[]' DOCS_URLS_JSON='[]' PROGRAMS_JSON='[]'
 export OBELISK_JS_RUNTIME=v8
-unset MCP_SERVER_TOKEN
-e2e_select_backend js
-JS_DEPLOY="$ROOT/.replay-benchmark-js.toml"
-e2e_patch_workflow_manifest "$JS_DEPLOY"
-e2e_start_server "$JS_DEPLOY"
+e2e_start_server
 SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" \
     obelisk-agent:workflow/workflow.run-cancellable '["", null, null, null, null]'
@@ -103,23 +99,16 @@ measure() {
 measure v8 "$OUTPUT_DIR/v8-corrected.jsonl"
 stop_server
 export OBELISK_JS_RUNTIME=boa-wasm
-e2e_start_server "$JS_DEPLOY"
+e2e_start_server
 measure boa-wasm "$OUTPUT_DIR/boa-corrected.jsonl"
-stop_server
-export OBELISK_JS_RUNTIME=v8
-e2e_select_backend rs
-RS_DEPLOY="$ROOT/.replay-benchmark-rs.toml"
-e2e_swap_workflow_manifest "$JS_DEPLOY" "$RS_DEPLOY"
-e2e_start_server "$RS_DEPLOY"
-measure rust-wasm "$OUTPUT_DIR/rust-corrected.jsonl"
 jq -s -e 'map([.execution_id,.replayed_event_count,.replay_version]) | unique | length==1' \
-    "$OUTPUT_DIR/v8-corrected.jsonl" "$OUTPUT_DIR/boa-corrected.jsonl" "$OUTPUT_DIR/rust-corrected.jsonl" >/dev/null
+    "$OUTPUT_DIR/v8-corrected.jsonl" "$OUTPUT_DIR/boa-corrected.jsonl" >/dev/null
 jq -n --arg execution_id "$SESSION_ID" --arg revision "$(git rev-parse HEAD)" \
-    --arg sqlite "$E2E_TMP/obelisk-sqlite" --arg workflow_sha256 "$(sha256sum "$ROOT/$E2E_REL_WASM" | cut -d ' ' -f 1)" \
+    --arg sqlite "$E2E_TMP/obelisk-sqlite" \
     --arg obelisk_version "$("$OBELISK" --version)" --argjson turns "${BENCH_TURNS:-24}" \
     --argjson replay "$(head -1 "$OUTPUT_DIR/v8-corrected.jsonl")" \
     '{execution_id:$execution_id,workflow_revision:$revision,sqlite_directory:$sqlite,
-      rust_workflow_sha256:$workflow_sha256,obelisk_version:$obelisk_version,turns:$turns,
+      obelisk_version:$obelisk_version,turns:$turns,
       replayed_event_count:$replay.replayed_event_count,replay_version:$replay.replay_version,
       workload:"Local Bash/VFS shell turns: 2000 JSON rows, awk, jq summation, grep/sort/uniq, nested bash, persistent history; no LLM or external tool calls"}' \
     > "$OUTPUT_DIR/corrected-metadata.json"

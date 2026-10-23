@@ -180,10 +180,10 @@ export const core = {
         return ok(out.map(String).join("\n") + (out.length ? "\n" : ""));
     },
 
-    // PORT: just-bash-rs's commands/misc.rs `which` - resolves each name
+    // `which` resolves each name
     // against a simulated PATH (default "/usr/bin:/bin" when unset) instead
     // of just echoing the bare name back, so registered/custom commands
-    // print a real-looking "/usr/bin/<name>" path like Rust's does.
+    // print a real-looking "/usr/bin/<name>" path.
     which(interp, args) {
         let showAll = false;
         let silent = false;

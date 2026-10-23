@@ -216,11 +216,6 @@ switch (command) {
         process.exit(hit ? 0 : 1);
         break;
     }
-    case "redeploy-params": {
-        const manifest = fs.readFileSync(process.argv[3], "utf8");
-        process.stdout.write(JSON.stringify([manifest, [], "e2e no-op redeploy", false, ""]));
-        break;
-    }
     // --- chat suite -----------------------------------------------------------
     case "program-stdout": {
         // Print the stdout of a direct chat-program invocation ({ok: {stdout,
@@ -324,13 +319,6 @@ switch (command) {
         const text = process.argv[3];
         const hit = json()?.transcript?.user_messages?.some((message) => message.text === text);
         process.exit(hit ? 0 : 1);
-        break;
-    }
-    case "deployment-id": {
-        const result = json();
-        // deployment-submit's ok side is the deployment id string.
-        const ok = result.ok;
-        process.stdout.write(typeof ok === "string" ? ok : (ok?.deployment_id ?? ""));
         break;
     }
     default:

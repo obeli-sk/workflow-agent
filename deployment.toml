@@ -18,8 +18,6 @@ exec.lock_expiry.seconds = 30
 env_vars = [
   { key = "DOCS_URLS_JSON", value = "${DOCS_URLS_JSON:-[\"https://obeli.sk/docs/${OBELISK_VERSION:-latest}/llms.txt/\"]}" },
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
-  { key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" },
-  { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
 ]
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
@@ -29,12 +27,6 @@ methods = ["GET"]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
 methods = ["GET"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
-replace_in = ["headers"]
-# Otherwise describes the single-app cloud backed by the target.
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
 # --- Shell programs ----------------------------------------------------------
@@ -62,12 +54,11 @@ ${PROGRAMS_JSON:-[
   {"name":"chat","ffqn":"obelisk-agent:programs/program.chat","description":"discover, read, message, and create peer agent sessions on this instance"}
 ]}
 ''' },
-  { key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' },
   # Each entry mounts a lazily-listed GitHub repo tree at /workspace/apps/<name>
   # (obelisk_web/obelisk-web.js -> the mount_apps activity below). `owner`
   # defaults to "obeli-sk" and `ref` to "main" when omitted; `description` is
   # a terse "Lang: phrase" surfaced verbatim as a bullet in the system
-  # prompt (session.rs's render_app_help / session-logic.js's renderAppHelp) -
+  # prompt (session-logic.js's renderAppHelp) -
   # keep it short, the repo's own README.md is the place for detail. The
   # default list covers the active example apps. Override the whole list to
   # mount a different set of repos, private forks, or pinned refs.
@@ -81,10 +72,9 @@ ${APPS_JSON:-[
   {"name":"demo-stargazers","repo":"demo-stargazers","description":"Rust: a full webhook -> workflow -> external-API pattern (GitHub star notifications with persistent side effects); a reference before writing a similar workflow in JS"},
   {"name":"demo-tutorial","repo":"demo-tutorial","description":"JS: a small serial/parallel durable workflow tutorial; the fastest way to see the obelisk.* host API used correctly"},
   {"name":"obelisk-version-monitor","repo":"obelisk-version-monitor","description":"JS: a complete dashboard app (webhook + workflow + UI); reference it when building another operator-facing dashboard"},
-  {"name":"workflow-agent","repo":"workflow-agent","description":"Rust + JS: this agent's own source (session loop, just-bash interpreter, activity/pack examples); the reference for extending or debugging yourself"}
+  {"name":"workflow-agent","repo":"workflow-agent","description":"JS: this agent's own source (session loop, just-bash interpreter, activity/pack examples); the reference for extending or debugging yourself"}
 ]}
 ''' },
-  { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
   # The obelisk repo ref `obelisk generate new` fetches its starter app from.
   { key = "OBELISK_VERSION", value = "${OBELISK_VERSION:-latest}" },
 ]
@@ -133,11 +123,6 @@ exec.lock_expiry.seconds = 30
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
-# The target's webhook listener, so the shell can smoke-test deployed webhook
-# endpoints directly; the same URL is printed by `mount`.
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}"
-methods = ["GET"]
 
 # Hosted app webhook URLs are discovered with `obelisk cloud app endpoint webhook`.
 [[activity_js.allowed_host]]
@@ -145,7 +130,7 @@ pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["GET"]
 
 # Peer sessions: discover, inspect, message, and create other workflow-agent
-# sessions on THIS instance (OBELISK_API_URL, not the target one).
+# sessions on THIS instance (OBELISK_API_URL).
 [[activity_js]]
 name = "program_chat"
 ffqn = "obelisk-agent:programs/program.chat"
@@ -194,8 +179,7 @@ replace_in = ["headers"]
 # One activity backs every lazily-listed VFS repo tree the session mounts to
 # browse example apps while authoring deployments (APPS_JSON above picks which
 # repos and where; owner/repo/ref travel in params-json, not fixed env vars, so
-# this single block serves them all). GITHUB_MOUNT_OWNER scopes the allowed_host
-# boundary to one GitHub org/user; GITHUB_MOUNT_TOKEN is optional but raises the
+# this single block serves them all). GITHUB_MOUNT_TOKEN is optional but raises the
 # GitHub API rate limit from the shared 60 req/h anonymous IP pool to 5000 req/h,
 # which matters once multiple sessions share an egress IP. The workflow calls
 # (method, params-json) on first `ls`/`cat` under each mount.
@@ -208,9 +192,9 @@ location = "activity/github-contents.js"
 exec.lock_expiry.seconds = 30
 env_vars = [{ key = "GITHUB_API_URL", value = "${GITHUB_API_URL:-https://api.github.com}" }]
 [[activity_js.allowed_host]]
-url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_MOUNT_OWNER:-obeli-sk}"
+url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos"
 methods = ["GET"]
-url_regex_suffix = "/[^/]+/(contents|commits/)"
+url_regex_suffix = "/[^/]+/[^/]+/(contents|commits/)"
 secrets = [{ name = "GITHUB_MOUNT_TOKEN", optional = true }]
 replace_in = ["headers"]
 
@@ -260,275 +244,7 @@ url_regex_suffix = "(/[^/]+)*/v1/(messages|chat/completions|responses)$"
 secrets = [{ name = "LLM_API_KEY", optional = true }]
 replace_in = ["headers"]
 
-# --- LLM-facing tools ---------------------------------------------------------
-
-[[activity_js]]
-name = "tool_list_functions"
-ffqn = "obelisk-agent:tools/webapi.list-functions"
-wit = "wit"
-location = "packs/obelisk-control/tools/list-functions.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/(components|functions/wit)"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-# Dynamic call against the target: `obelisk call` reaches the target over HTTP
-# through this activity (a workflow can't fetch). It submits once, then
-# follows the accepted execution by ID, so it needs a long lock; max_retries = 0
-# because retrying the auto-ID POST could double-submit.
-[[activity_js]]
-name = "tool_call_target"
-ffqn = "obelisk-agent:tools/webapi.call-target"
-wit = "wit"
-exec.lock_expiry.minutes = 10
-max_retries = 0
-location = "packs/obelisk-control/tools/call-target.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "POST"]
-url_regex_suffix = "/v1/executions"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_get_function_wit"
-ffqn = "obelisk-agent:tools/webapi.get-function-wit"
-wit = "wit"
-location = "packs/obelisk-control/tools/get-function-wit.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/functions/wit"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_list_executions"
-ffqn = "obelisk-agent:tools/webapi.list-executions"
-wit = "wit"
-location = "packs/obelisk-control/tools/list-executions.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/executions"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_get_execution"
-ffqn = "obelisk-agent:tools/webapi.get-execution"
-wit = "wit"
-location = "packs/obelisk-control/tools/get-execution.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/executions/"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_get_execution_record"
-ffqn = "obelisk-agent:tools/webapi.get-execution-record"
-wit = "wit"
-location = "packs/obelisk-control/tools/get-execution-record.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/executions/"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_get_events"
-ffqn = "obelisk-agent:tools/webapi.get-events"
-wit = "wit"
-location = "packs/obelisk-control/tools/get-events.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/executions/"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_get_responses"
-ffqn = "obelisk-agent:tools/webapi.get-responses"
-wit = "wit"
-location = "packs/obelisk-control/tools/get-responses.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/executions/"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_get_logs"
-ffqn = "obelisk-agent:tools/webapi.get-logs"
-wit = "wit"
-location = "packs/obelisk-control/tools/get-logs.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/executions/"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_get_result"
-ffqn = "obelisk-agent:tools/webapi.get-result-json"
-wit = "wit"
-location = "packs/obelisk-control/tools/get-result.js"
-exec.lock_expiry.minutes = 10
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/executions/"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_list_deployments"
-ffqn = "obelisk-agent:tools/webapi.list-deployments"
-wit = "wit"
-location = "packs/obelisk-control/tools/list-deployments.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/deployments"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_get_deployment"
-ffqn = "obelisk-agent:tools/webapi.get-deployment"
-wit = "wit"
-location = "packs/obelisk-control/tools/get-deployment.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/deployments/"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_get_component_source"
-ffqn = "obelisk-agent:tools/webapi.get-component-source"
-wit = "wit"
-location = "packs/obelisk-control/tools/get-component-source.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/deployments/|/v1/files/"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_current_deployment"
-ffqn = "obelisk-agent:tools/webapi.current-deployment-id"
-wit = "wit"
-location = "packs/obelisk-control/tools/current-deployment.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/deployment-id$"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_get_app_config"
-ffqn = "obelisk-agent:tools/webapi.get-app-config"
-wit = "wit"
-location = "packs/obelisk-control/tools/get-app-config.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/app-policy$"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-# --- Deployment editing: checkout -> edit one component -> submit -------------
-# The workflow holds the checked-out deployment.toml in memory, split into
-# per-component blocks, and edits one component at a time (see
-# workflow/agent-loop.js). These activities are the durable I/O boundary: fetch
-# the manifest, read owned file blobs from the CAS, and submit the manifest as a
-# new inactive deployment (digests filled, CAS-efficient preflight + multipart
-# retry). A hot redeploy goes through tool_apply_deployment.
-
-[[activity_js]]
-name = "tool_deployment_checkout"
-ffqn = "obelisk-agent:tools/webapi.deployment-checkout"
-wit = "wit"
-location = "packs/obelisk-control/tools/deployment-checkout.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/deployments/"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_deployment_read_blob"
-ffqn = "obelisk-agent:tools/webapi.deployment-read-blob"
-wit = "wit"
-location = "packs/obelisk-control/tools/deployment-read-blob.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-url_regex_suffix = "/v1/files/"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_deployment_submit"
-ffqn = "obelisk-agent:tools/webapi.deployment-submit"
-wit = "wit"
-# Submit verifies the whole deployment (compile + link every component) before
-# persisting, which can exceed the 30s default lock.
-exec.lock_expiry.minutes = 5
-max_retries = 0
-location = "packs/obelisk-control/tools/deployment-submit.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["PUT"]
-url_regex_suffix = "/v1/deployments/Dep_[^/]+$"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-[[activity_js]]
-name = "tool_deployment_switch"
-ffqn = "obelisk-agent:tools/webapi.deployment-switch"
-wit = "wit"
-# A cold switch re-verifies (compile + link) before enqueuing.
-exec.lock_expiry.minutes = 5
-location = "packs/obelisk-control/tools/deployment-switch.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["PUT"]
-url_regex_suffix = "/v1/deployments/Dep_[^/]+/switch$"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
+# --- Execution controls on this instance, used by the UI ----------------------
 
 [[activity_js]]
 name = "tool_pause_execution"
@@ -642,19 +358,8 @@ name = "session_interrupt"
 ffqn = "obelisk-agent:stub/stub.interrupt"
 wit = "wit"
 
-# --- Workflow (implementation-specific; see scripts/check-deployment-toml-parity.sh) ---
-# JS alternative workflow backend (workflow/workflow-js): a hand-written,
-# dependency-free `just-bash` interpreter and session loop with full feature
-# parity with the Rust workflow (see docs/js-backend-migration.md). It exports
-# the same canonical `obelisk-agent:workflow/workflow.run-cancellable` FFQN as
-# `deployment.rs.toml`'s `[[workflow_wasm]]` block. Only one of the two files is
-# ever the active deployment at a time. Both use Obelisk's default `auto`
-# locking strategy, so a runnable in-flight session is replayed and upgraded
-# when switching between them. Cross-backend replay compatibility is also
-# verified non-destructively by e2e-lib.sh's e2e_verify_replay_parity.
-# Everything outside this workflow block must stay
-# identical between the two files, enforced by
-# `scripts/check-deployment-toml-parity.sh`.
+# Session workflow (workflow/workflow-js): a dependency-free `just-bash`
+# interpreter and the session loop.
 
 [[workflow_js]]
 name = "workflow_agent_js"
@@ -668,13 +373,10 @@ params = [
   { name = "name",            type = "option<string>" },
 ]
 return_type = "result<_, string>"
-# The JS interpreter replays and runs the whole just-bash session (including
-# uninterruptible synchronous steps like a full-app `deployment submit`
-# preflight) much slower than the native Rust workflow, so it needs a wider
-# epoch/lock budget than the 30s the Rust variant uses to avoid a lock-expiry
-# livelock on a heavy in-JS step.
+# Replaying a long session and running uninterruptible synchronous steps (like
+# a full-app `deployment submit` preflight) can be slow, so a wider lock budget
+# avoids a lock-expiry livelock on a heavy step.
 exec.lock_expiry.minutes = 2
-# --- End workflow -----------------------------------------------------------
 
 [[webhook_endpoint_js]]
 name = "ui-api"
@@ -717,26 +419,10 @@ url_regex_suffix = "(/[^/]+)*/v1/models$"
 secrets = [{ name = "LLM_API_KEY", optional = true }]
 replace_in = ["headers"]
 
-[[activity_js]]
-name = "tool_apply_deployment"
-ffqn = "obelisk-agent:tools/webapi.apply-deployment"
-wit = "wit"
-# A hot redeploy re-verifies (compile + link) before swapping executors.
-exec.lock_expiry.minutes = 5
-location = "packs/obelisk-control/tools/apply-deployment.js"
-env_vars = [{ key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["PUT"]
-url_regex_suffix = "/v1/deployments/Dep_[^/]+/switch$"
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
 # --- Cloud apps (`obelisk cloud`) ---------------------------------------------
 # Back the shell's `obelisk cloud ...`. OBELISK_CLOUD_API_TOKEN authenticates both
 # the ObeliskNet provisioner (OBELISK_CLOUD_API_URL) and each app's own API, which
-# lives under OBELISK_CLOUD_APPS_DOMAIN. Without it, the target
-# (TARGET_OBELISK_*) is the only app of a cloud that cannot provision.
+# lives under OBELISK_CLOUD_APPS_DOMAIN.
 # max_retries = 0: commands are not idempotent across a retry (fresh
 # Idempotency-Key, auto-ID submissions).
 
@@ -748,19 +434,17 @@ max_retries = 0
 location = "packs/obelisk-control/cloud/cli.js"
 env_vars = [
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
-  { key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" },
-  { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
+  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
 methods = ["GET", "POST", "PUT", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
-# The single-app cloud: the target's own API.
 [[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
+pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["GET"]
-secrets = ["TARGET_OBELISK_TOKEN"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -768,114 +452,67 @@ name = "cloud_prepare_deploy"
 ffqn = "obelisk-agent:tools/cloud.prepare-deploy"
 wit = "wit"
 max_retries = 0
-# Creating or restarting an app VM waits for it to come up.
+# Creating an app waits for its VM to come up.
 exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/deploy.js"
 env_vars = [
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
-  { key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" },
-  { key = "TARGET_OBELISK_WEBHOOK_URL", value = "${TARGET_OBELISK_WEBHOOK_URL:-http://127.0.0.1:9290}" },
+  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
 methods = ["GET", "POST", "PUT"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
-# The single-app cloud: the target's own API.
+
+[[activity_js]]
+name = "cloud_finish_deploy"
+ffqn = "obelisk-agent:tools/cloud.finish-deploy"
+wit = "wit"
+max_retries = 0
+# Applying waits for the app VM to come up.
+exec.lock_expiry.minutes = 10
+location = "packs/obelisk-control/cloud/finish-deploy.js"
+env_vars = [
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
+]
 [[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-secrets = ["TARGET_OBELISK_TOKEN"]
+url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
+methods = ["GET", "POST", "PUT"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
+# A request that changes the app: deployment submits and switches, execution
+# controls, admin maintenance.
 [[activity_js]]
 name = "cloud_tenant"
 ffqn = "obelisk-agent:tools/cloud.tenant"
 wit = "wit"
 max_retries = 0
-# call-target follows the execution; apply re-verifies the deployment.
-exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/tenant.js"
 env_vars = [
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
-  { key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
 [[activity_js.allowed_host]]
-url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
-methods = ["GET"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
-replace_in = ["headers"]
-[[activity_js.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
-methods = ["GET", "POST", "PUT"]
+methods = ["POST", "PUT", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
-replace_in = ["headers"]
-# The single-app cloud: the target's own API.
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "POST", "PUT"]
-secrets = ["TARGET_OBELISK_TOKEN"]
 replace_in = ["headers"]
 
-# Read-only app API operations, retried on transient errors.
+# Read-only app API requests, retried on transient errors.
 [[activity_js]]
 name = "cloud_tenant_read"
 ffqn = "obelisk-agent:tools/cloud.tenant-read"
 wit = "wit"
+# `execution status|result --follow` holds the response until the execution finishes.
+exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/tenant-read.js"
 env_vars = [
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
-  { key = "TARGET_OBELISK_API_URL", value = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
-[[activity_js.allowed_host]]
-url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
-methods = ["GET"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
-replace_in = ["headers"]
 [[activity_js.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["GET"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
-replace_in = ["headers"]
-# The single-app cloud: the target's own API.
-[[activity_js.allowed_host]]
-url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET"]
-secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-# --- MCP servers (stateless) --------------------------------------------------
-# Each configured MCP server is one transport activity block plus one
-# outbound-host grant, mirroring the single-LLM-endpoint precedent. The function
-# name after `obelisk-agent:mcp/server.` is the server name. The workflow learns
-# which servers to wire up from the session config activity, so
-# adding a server means editing this manifest alone (no workflow rebuild): add
-# its transport block here and append `{ name, ffqn }` to the discovery
-# activity's MCP_SERVERS_JSON. The workflow then registers a shell command
-# (`<server> tools|call|prompts|prompt|info`), lists it in the global `mcp`
-# registry command, and mounts its resources lazily under `/workspace/mcp/<server>`.
-# A single activity/mcp.js is reused by every server: each block sets the fixed
-# env var MCP_SERVER_URL (the full endpoint the activity POSTs to) and, for an
-# authenticated server, exposes the fixed secret MCP_SERVER_TOKEN (a placeholder
-# bearer the runtime swaps for the real secret in the outbound header). Every
-# activity instance has its own env, so URLs differ per block freely; one
-# app.toml can name only one MCP_SERVER_TOKEN, so >1 authenticated server is a
-# v1 limitation. Copy the transport block below, rename the server, point
-# MCP_SERVER_URL at it, add the matching app.toml grant, and register it in
-# MCP_SERVERS_JSON. See docs/mcp.md.
-
-[[activity_js]]
-name = "mcp_obelisk_local"
-ffqn = "obelisk-agent:mcp/server.obelisk-local"
-params = [
-  { name = "method",      type = "string" },
-  { name = "params-json", type = "string" },
-]
-return_type = "result<string, string>"
-location = "activity/mcp.js"
-env_vars = [{ key = "MCP_SERVER_URL", value = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071/mcp}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071/mcp}"
-methods = ["POST"]
-secrets = [{ name = "MCP_SERVER_TOKEN", optional = true }]   # optional bearer; leave MCP_SERVER_TOKEN unset for a keyless server
 replace_in = ["headers"]

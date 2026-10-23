@@ -1,29 +1,26 @@
-// obelisk-agent:workflow/workflow.run-cancellable (deployment.js.toml's JS
-// variant of the same canonical FFQN deployment.rs.toml's Rust workflow exports)
+// obelisk-agent:workflow/workflow.run-cancellable
 //   func(prompt: string, model: option<string>, descriptor-ffqn: option<string>,
 //        effort: option<string>, name: option<string>) -> result<_, string>
 //
-// PORT: workflow/workflow-rs/src/{agent,session}.rs. One persistent Bash
+// One persistent Bash
 // instance, a "session-events" notification join set (the workflow self-stubs
 // each event so it lands as a durably readable response), and one
 // "user-{turn}" join set per conversational turn racing each LLM completion
 // against an always-outstanding user-injection offer. Also wires in
-// programs/MCP/mounts (obelisk-pack.js/obelisk-program.js/
-// obelisk-mcp.js/obelisk-web.js), per-script interrupt/timeout (script-watch.js),
-// session rename, ask-user, and chat peer sessions (chat.js) — see
-// docs/js-backend-migration.md for phase-by-phase status and fidelity notes.
+// programs and mounts (obelisk-pack.js/obelisk-program.js/
+// obelisk-web.js), per-script interrupt/timeout (script-watch.js),
+// session rename, ask-user, and chat peer sessions (chat.js).
 //
 // WIT record/variant field and case names cross into JS as snake_case (not
 // camelCase — only function/interface names get kebab-to-camelCase); this was
 // confirmed against activity/config-discover.js, an already-deployed activity
-// returning `max_steps`/`mcp_servers`/`webhook_url` for the kebab-case WIT
-// record `{max-steps, mcp-servers, webhook-url}`. Pure helpers (no `obelisk`
+// returning `max_steps`/`obelisk_version` for the kebab-case WIT
+// record `{max-steps, obelisk-version}`. Pure helpers (no `obelisk`
 // global, no WIT imports) live in session-logic.js so they can be unit
 // tested; this file is the host-facing orchestration only.
 
 import { discover, inputAcceptedAt } from "obelisk-agent:config/config";
 import { request as appsRequest } from "obelisk-agent:mounts/apps";
-import * as webapi from "obelisk-agent:tools/webapi";
 import * as cloudTools from "obelisk-agent:tools/cloud";
 import * as obelisk from "obelisk:workflow@1.0.0";
 import * as dynamic from "obelisk:workflow-dynamic@1.0.0";
@@ -40,9 +37,8 @@ import { recordOutputStub, sessionRenamedStub } from "obelisk-agent:stub-obelisk
 import { Bash } from "../../../vendor/just-bash/src/bash.js";
 import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
 import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
-import * as obeliskMcp from "../../../vendor/just-bash/src/obelisk-mcp.js";
 import * as obeliskWeb from "../../../vendor/just-bash/src/obelisk-web.js";
-import { childErrorMessage, createCloud, createControlPlane, createHost } from "./host.js";
+import { childErrorMessage, createCloud, createHost } from "./host.js";
 import { arm as armScriptWatch } from "./script-watch.js";
 import * as chat from "./chat.js";
 import {
@@ -83,15 +79,14 @@ function githubContents(method, paramsJson) {
 
 const DEFAULT_DESCRIPTOR_FFQN = "obelisk-control:agent/pack.describe";
 const SESSION_EVENTS_JOIN_SET = "session-events";
-// PORT: session.rs's idle_timeout/SESSION_IDLE_ERROR. Raced against every wait for the user.
+// Raced against every wait for the user.
 const IDLE_TIMEOUT = { days: 7 };
 const SESSION_IDLE_ERROR = "session idle timeout: no interaction for 7 days";
 // Renames publish here instead, so a reader fetches the current name with one
 // bounded request instead of racing the mixed session-events stream.
 const SESSION_NAME_JOIN_SET = "session-name";
 // The operator-configured program whose registration gets wrapped with
-// chat.js's caller-aware subcommands (current/rename/create/watch). PORT:
-// chat.rs's CHAT_PROGRAM_FFQN.
+// chat.js's caller-aware subcommands (current/rename/create/watch).
 const CHAT_PROGRAM_FFQN = "obelisk-agent:programs/program.chat";
 
 export default function runCancellable(prompt, model, descriptorFfqn, effort, name) {
@@ -130,14 +125,8 @@ function errorMessage(e) {
 
 class Notifications {
     constructor() {
-        // Lazily created on first notify/rename, matching Rust's
-        // Notifications::notify (join_set_create_named on first use per
-        // name). Rust creates its session-events join set only after
-        // discover_session_config runs; creating it eagerly here instead
-        // would record it one call earlier than Rust's replay history and
-        // fail cross-backend replay with a NonDeterminismError (see
-        // scripts/test-e2e-replay-parity.sh) - lazy on both sides removes
-        // the ordering dependency entirely instead of just matching it once.
+        // Lazily created on first notify/rename. Creating it eagerly would
+        // change the replay history of existing sessions.
         this.joinSet = null;
         this.nameJoinSet = null;
         this.turnIndex = 0;
@@ -170,21 +159,11 @@ class Notifications {
         this.pending = [];
         const execId = recordOutputSubmit(this.joinSet);
         recordOutputStub(execId, { ok: events });
-        // Semantically the right call (PORT: session.rs's session_ext::
-        // record_output_await_next; this join set is homogeneous, always
-        // `stub.record-output`, matching Rust's use of the typed await
-        // there), but currently indistinguishable in practice from the
-        // generic `joinSet.joinNext()`: Obelisk's JS workflow runtime proxies
-        // every `*-await-next` extension import to the same generic
-        // `join-next` host call and never records `requested_ffqn`
-        // (`create_ext_await_next_proxy` in obelisk's workflow-js-runtime),
-        // unlike Rust's wit-bindgen-generated bindings, which make a
-        // genuinely distinct typed call the executor's replay matcher
-        // compares `requested_ffqn` against (event_history.rs). A session
-        // that has run at least one turn under Rust therefore cannot yet
-        // replay under this JS backend (see
-        // scripts/test-e2e-replay-parity.sh, expected-red pending an
-        // Obelisk-side fix - not something this repo can close on its own).
+        // Semantically the right call (this join set is homogeneous, always
+        // `stub.record-output`), but currently indistinguishable in practice
+        // from the generic `joinSet.joinNext()`: Obelisk's JS workflow
+        // runtime proxies every `*-await-next` extension import to the same
+        // generic `join-next` host call.
         recordOutputAwaitNext(this.joinSet);
         if (this.joinSet.lastId !== execId) {
             throw `unexpected session event response: ${this.joinSet.lastId}`;
@@ -199,15 +178,14 @@ class Notifications {
         this.notify({ human_input_resolved: { execution_id: executionId, turn_index: this.turnIndex } });
     }
 
-    // PORT: session.rs's Notifications::session_renamed. A dedicated join set
+    // A dedicated join set
     // (not session-events) so a reader can fetch the current name with one
     // bounded request instead of racing the mixed event stream.
     sessionRenamed(name) {
         if (!this.nameJoinSet) this.nameJoinSet = obelisk.createJoinSet({ name: SESSION_NAME_JOIN_SET });
         const execId = sessionRenamedSubmit(this.nameJoinSet, name);
         sessionRenamedStub(execId, { ok: { name } });
-        // Semantically the right call, matching session.rs's session_ext::
-        // session_renamed_await_next - see notify()'s comment above for why
+        // Semantically the right call - see notify()'s comment above for why
         // this is currently a no-op difference from joinNext() in practice.
         const published = sessionRenamedAwaitNext(this.nameJoinSet);
         if (this.nameJoinSet.lastId !== execId || published?.name !== name) {
@@ -215,10 +193,7 @@ class Notifications {
         }
     }
 
-    // PORT: Rust's implicit `Drop` of `Notifications`' `join_sets` map when
-    // `agent_loop` unwinds (return or `?`-propagated error/cancellation) --
-    // JS has no destructor, so `agentLoop`'s `finally` calls this explicitly
-    // on every exit path instead.
+    // `agentLoop`'s `finally` calls this on every exit path.
     close() {
         try { this.flush(); } catch (_) { /* best-effort during cleanup */ }
         if (this.joinSet) this.joinSet.close();
@@ -226,27 +201,24 @@ class Notifications {
     }
 }
 
-// PORT: host.rs's RealHost::ask_user. Answers `obelisk call
-// obelisk-agent:stub/stub.ask-user [...]` with a real join-set-based
-// question/answer exchange instead of webapi.call-target's HTTP bridge to the
-// target instance, which has no such function. Returns the answer's JSON text,
-// like a target call.
-function askUser(paramsJson, notifications) {
-    let params;
-    try {
-        params = JSON.parse(paramsJson);
-    } catch (error) {
-        throw `ask-user params_json must be valid JSON: ${error.message}`;
+// The `ask-user QUESTION` shell command: a real join-set-based
+// question/answer exchange that prints the answer.
+function askUserCommand(args, notifications) {
+    if (args.length !== 1 || !args[0]) {
+        return { stdout: "", stderr: "Usage: ask-user QUESTION\n", exitCode: 2 };
     }
-    const question = Array.isArray(params) ? params[0] : undefined;
-    if (typeof question !== "string" || !question) throw "ask-user requires a question";
+    try {
+        return { stdout: `${askUser(args[0], notifications)}\n`, stderr: "", exitCode: 0 };
+    } catch (error) {
+        return { stdout: "", stderr: `ask-user: ${errorMessage(error)}\n`, exitCode: 1 };
+    }
+}
 
-    // Anonymous, matching Rust's `workflow_support::join_set_create()` in
-    // host.rs's RealHost::ask_user - see script-watch.js's arm() for why a
-    // named join set here would fail cross-backend replay.
+function askUser(question, notifications) {
+    // Anonymous - see script-watch.js's arm().
     if (notifications.idle) throw SESSION_IDLE_ERROR;
     const joinSet = obelisk.createJoinSet();
-    // Closed on every return, like the Rust JoinSet drop, so the losing request is cancelled at the same point.
+    // Closed on every return, so the losing request is cancelled.
     try {
         const executionId = askUserSubmit(joinSet, question);
         const idleDelayId = joinSet.submitDelay(IDLE_TIMEOUT);
@@ -264,7 +236,7 @@ function askUser(paramsJson, notifications) {
         }
         if (joinSet.lastId !== executionId) throw `unexpected ask-user response: ${joinSet.lastId}`;
         notifications.humanInputResolved(executionId);
-        return JSON.stringify(answer);
+        return typeof answer === "string" ? answer : JSON.stringify(answer);
     } finally {
         joinSet.close();
     }
@@ -279,8 +251,7 @@ function hostSleepMs(ms) {
     try {
         obelisk.sleep({ milliseconds: ms });
     } catch {
-        // Cancelled durable sleep: the `sleep` builtin just returns, matching
-        // session.rs's host_sleep_ms (which drops the cancellation error too).
+        // Cancelled durable sleep: the `sleep` builtin just returns.
     }
 }
 
@@ -289,30 +260,25 @@ function loadSessionConfig(executionId, backend, effort, name) {
     return {
         maxSteps: config.max_steps,
         programs: config.programs ?? [],
-        mcpServers: config.mcp_servers ?? [],
         // Each app's `ref` (usually a branch) is resolved to a commit SHA
         // lazily, by obeliskWeb.mount, on the app's first `ls`/`cat` (see
         // mountPacks) - not here, so a session that never touches a mount
         // never pays for the resolve-ref round trip.
         apps: config.apps ?? [],
-        webhookUrl: config.webhook_url ?? "",
         obeliskVersion: config.obelisk_version,
         promptTail: config.prompt_tail,
     };
 }
 
-// ----- programs / MCP servers / mounts (PORT: session.rs's agent_loop setup) -----
+// ----- programs / mounts -----
 
 // Registers one shell command per operator-configured program
-// (PROGRAMS_JSON), plus the `mcp` registry command and one command per
-// configured MCP server (MCP_SERVERS_JSON) and the `mount` listing command.
-// Each handler owns its own host (matching session.rs's `host()` closure
-// pattern: one RealHost-equivalent per registration, not shared mutable
-// state) since `createHost()` is stateless and cheap. The program whose ffqn
+// (PROGRAMS_JSON), plus the `mount` listing command.
+// Each handler owns its own host, since `createHost()` is stateless and
+// cheap. The program whose ffqn
 // is CHAT_PROGRAM_FFQN is wrapped so caller-aware subcommands
-// (current/rename/create/watch) are answered by this session itself (PORT:
-// session.rs's per-program loop).
-function registerProgramsAndMcp(bash, config, ownSession, notifications) {
+// (current/rename/create/watch) are answered by this session itself.
+function registerPrograms(bash, config, ownSession, notifications) {
     for (const program of config.programs) {
         const plainHandler = obeliskProgram.commandHandler(program.name, program.ffqn, createHost(dynamic, obelisk));
         const handler = program.ffqn === CHAT_PROGRAM_FFQN
@@ -321,40 +287,13 @@ function registerProgramsAndMcp(bash, config, ownSession, notifications) {
         bash.registerCommand(program.name, handler);
     }
 
-    const mcpRegistry = config.mcpServers.map(({ name, ffqn }) => ({ name, ffqn }));
-    bash.registerCommand("mcp", obeliskMcp.registryCommandHandler(mcpRegistry, createHost(dynamic, obelisk)));
-    for (const { name, ffqn } of config.mcpServers) {
-        bash.registerCommand(name, obeliskMcp.serverCommandHandler(name, ffqn, createHost(dynamic, obelisk)));
-    }
-
-    bash.registerCommand("mount", mountCommandHandler(config.apps, config.mcpServers, config.webhookUrl));
+    bash.registerCommand("mount", (_interp, _args, _stdin) => ({
+        stdout: renderMount(config.apps), stderr: "", exitCode: 0,
+    }));
 }
 
-// The `mount` shell command: list the session's network-backed mount points
-// and live-probe each MCP server's reachability (PORT: session.rs's
-// `mount_command`/`render_mount`).
-function mountCommandHandler(apps, mcpServers, webhookUrl) {
-    return (_interp, _args, _stdin) => ({
-        stdout: renderMountOutput(apps, mcpServers, webhookUrl), stderr: "", exitCode: 0,
-    });
-}
-
-function renderMountOutput(apps, mcpServers, webhookUrl) {
-    const host = createHost(dynamic, obelisk);
-    const probe = (ffqn) => {
-        try {
-            host.callJson(ffqn, '["tools/list","{}"]');
-            return null;
-        } catch (e) {
-            return typeof e === "string" ? e : String(e?.message ?? e);
-        }
-    };
-    return renderMount(apps, mcpServers, webhookUrl, probe);
-}
-
-// Registers each APPS_JSON-configured read-only repo
-// reference tree, and each MCP server's resources as lazy VFS mounts (PORT:
-// session.rs's pack_mounted block). None of this makes a host call by itself -
+// Registers each APPS_JSON-configured read-only repo reference tree as a lazy
+// VFS mount. None of this makes a host call by itself -
 // a bash-only session that never references a mounted path never touches the
 // network - so it is safe to run unconditionally, once, right after the
 // input offer opens.
@@ -363,12 +302,9 @@ function mountPacks(bash, config) {
     for (const app of config.apps) {
         // Pass the live app object (not a copy) so `obelisk-web.js` writing
         // `resolvedRef` onto it, once the mount is first used, is visible to
-        // `renderMountOutput`/`mountCommandHandler` below, which share this
+        // the `mount` command, which shares this
         // same `config.apps` array.
         obeliskWeb.mount(fs, githubContents, `/workspace/apps/${app.name}`, app);
-    }
-    for (const { name, ffqn } of config.mcpServers) {
-        obeliskMcp.registerDeferredMount(fs, createHost(dynamic, obelisk), createHost(dynamic, obelisk), ffqn, `/workspace/mcp/${name}`);
     }
 }
 
@@ -377,8 +313,8 @@ function mountPacks(bash, config) {
 // Run one script under its own per-script watch: a fresh join set holding
 // the interrupt offer (plus a watchdog when `timeoutMs` is given), announced
 // via a `shell-started` event before the script runs so the UI and peer
-// sessions (`chat interrupt`, Phase 5) can arm it while the script is still
-// going. PORT: session.rs's `exec_shell`, shared by both the direct-shell
+// sessions (`chat interrupt`) can arm it while the script is still
+// going. Shared by both the direct-shell
 // input path and the model tool dispatch (`dispatchBash`) - `timeoutMs` is
 // only ever non-null from the latter (a direct-shell turn from the composer
 // has no timeout argument to parse).
@@ -590,24 +526,21 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const bash = new Bash({ cwd: "/workspace", nowMs: hostNowMs, sleepMs: hostSleepMs });
 
     // A session created with a slug label (`chat create --name`) starts
-    // already renamed; anything else arrives unnamed. PORT: session.rs's
-    // own_session construction (chat::ChatSelf::new).
+    // already renamed; anything else arrives unnamed.
     const executionId = obelisk.executionIdCurrent();
     const initialName = name || null;
     const config = loadSessionConfig(executionId, model, effort, initialName);
     const maxSteps = config.maxSteps;
-    // Always registered, independent of operator config (mirrors session.rs).
-    const askUserHere = (paramsJson) => askUser(paramsJson, notifications);
-    const controlPlane = createControlPlane(webapi, obelisk, askUserHere);
-    const cloud = createCloud(cloudTools, obelisk, askUserHere);
-    bash.registerCommand("obelisk", obeliskPack.commandHandler(controlPlane, {
+    // Always registered, independent of operator config.
+    bash.registerCommand("ask-user", (_interp, args) => askUserCommand(args.slice(1), notifications));
+    bash.registerCommand("obelisk", obeliskPack.commandHandler({
         obeliskVersion: config.obeliskVersion,
         githubContents,
-    }, cloud));
+    }, createCloud(cloudTools, obelisk)));
     const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
-    registerProgramsAndMcp(bash, config, ownSession, notifications);
+    registerPrograms(bash, config, ownSession, notifications);
 
-    const startupMount = renderMountOutput(config.apps, config.mcpServers, config.webhookUrl);
+    const startupMount = renderMount(config.apps);
     const system = renderSystemPrompt(systemPrompt, config.programs, config.apps, startupMount, config.promptTail);
 
     let pendingShell = openingShellScript(prompt);
@@ -616,7 +549,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     notifications.notify({
         session_started: { protocol_version: 11, prompt, backend: model, effort, system_prompt: system },
     });
-    // A session created with a slug label (`chat create --name`, Phase 5)
+    // A session created with a slug label (`chat create --name`)
     // starts already renamed; anything else arrives unnamed.
     if (name) notifications.sessionRenamed(name);
 
@@ -631,7 +564,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const historyIds = [];
     let agentSteps = 0;
     const session = openSession(turnIndex, notifications);
-    // Deployment/components/MCP-resource trees mount lazily: registering them
+    // App reference trees mount lazily: registering them
     // makes no host call itself, so this runs once the input offer is already
     // open (a live session is visible immediately) without delaying startup.
     mountPacks(bash, config);

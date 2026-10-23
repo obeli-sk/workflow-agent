@@ -1,8 +1,4 @@
-// PORT (partial): vendor/just-bash-rs/src/commands/awk.rs
-//
-// A practical subset of awk, matching the scope the Rust port itself already
-// deliberately chose (see that file's own top-of-file doc comment): a
-// from-scratch hand-rolled lexer + recursive-descent parser + tree-walking
+// A practical subset of awk: a from-scratch hand-rolled lexer + recursive-descent parser + tree-walking
 // interpreter, not upstream awk fidelity and not a line-by-line port.
 //
 // Supported: BEGIN{...}/END{...}, pattern-action pairs, bare pattern
@@ -21,7 +17,7 @@
 // minimal single-dimension arrays (arr[key], only so split() and hand-rolled
 // counters are useful); CLI flags -F/-v/--help.
 //
-// Explicitly out of scope (skipped, not started, matching the Rust port):
+// Explicitly out of scope:
 // user-defined functions (function name(...) {...}), getline, nextfile,
 // `for (k in arr)` / `delete arr[k]` / `(a, b) in arr` / SUBSEP multi-dim
 // keys / the `in` operator, regex RS/multi-char RS, output redirection
@@ -29,9 +25,7 @@
 //
 // Regex flavor: awk regex is ERE, and JS RegExp is already ERE/PCRE-ish, so
 // (unlike sed/grep's BRE mode) there is no translateBre step here — only
-// expandPosixBracketClasses, since JS RegExp has no native [:class:] support
-// (mirrors how awk.rs hands the pattern straight to the `regex` crate, which
-// *does* support POSIX classes internally; we only need to bridge that gap).
+// expandPosixBracketClasses, since JS RegExp has no native [:class:] support.
 
 import { ok, fail } from "./core.js";
 import { expandPosixBracketClasses } from "../regex-bre.js";
@@ -685,7 +679,7 @@ function parseLeadingNumber(s) {
 }
 
 // Not exactly POSIX's default %.6g (OFMT) — a reasonable, simpler
-// approximation, matching the Rust port's own stated compromise.
+// approximation.
 function formatAwkNumber(f) {
     if (Number.isNaN(f)) return "nan";
     if (!Number.isFinite(f)) return f > 0 ? "inf" : "-inf";

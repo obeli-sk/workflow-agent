@@ -1,34 +1,12 @@
 set positional-arguments
 
-serve-rs: build-rs
-  obelisk server run -d deployment.rs.toml --server-config server.toml --app-config app.toml
+serve:
+  obelisk server run -d deployment.toml --server-config server.toml --app-config app.toml
 
-serve-js:
-  obelisk server run -d deployment.js.toml --server-config server.toml --app-config app.toml
+verify:
+  obelisk server verify --skip-db --deployment deployment.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
 
-clean-target:
-  rm -rf sqlite-target/
-
-serve-target *args:
-  #!/usr/bin/env bash
-  export OBELISK_API_TOKEN=${TARGET_OBELISK_TOKEN}
-  obelisk server run --server-config server-target.toml --app-config app-target.toml "$@"
-
-sample-mcp-server:
-  node examples/stateless-mcp-server.mjs
-
-build-rs:
-  cd workflow/workflow-rs && env -u CARGO_TARGET_DIR cargo build --release
-
-verify: build-rs
-  obelisk server verify --skip-db --deployment deployment.rs.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
-  obelisk server verify --skip-db --deployment deployment.js.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
-  ./scripts/check-deployment-toml-parity.sh
-
-test: test-rs test-js test-e2e
-
-test-rs:
-  cargo nextest run -p just-bash-rs -p workflow-agent-rs
+test: test-js test-e2e
 
 test-js:
   node --test webhook/ui/shell.test.js
@@ -38,15 +16,12 @@ test-js:
   node --test activity/config-discover.test.js
   node --test activity/input-accepted-at.test.js
   node --test activity/llm-history.test.js
-  node --test packs/obelisk-control/tools/call-target.test.mjs
   node --test packs/obelisk-control/cloud/cloud.test.mjs
   node --test shared/session-state.test.js
   node --test shared/model-catalog.test.js
   node --test $(find vendor/just-bash/src -name '*.test.js')
   node --test $(find workflow/workflow-js/src -name '*.test.js')
 
-
-# Every suite, and each suite's rs/js pair, runs concurrently: each backend
-# uses its own offset port range (scripts/e2e-lib.sh's e2e_backend_port_offset).
+# Every suite runs concurrently, each on its own port range.
 test-e2e:
   node --test scripts/e2e/*.test.mjs
