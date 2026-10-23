@@ -133,8 +133,10 @@ export APPS_JSON='[{"name":"demo-playwright","repo":"demo-playwright","ref":"mai
 
 Each entry is `{name, repo}` plus optional `owner` (default `obeli-sk`), `ref`
 (default `main`) and a short `description`. Set `GITHUB_MOUNT_TOKEN` (e.g.
-`gh auth token`) to avoid GitHub's anonymous rate limit, and `GITHUB_MOUNT_OWNER`
-when mounting repos outside `obeli-sk`.
+`gh auth token`) to avoid GitHub's anonymous rate limit when accessing GitHub
+directly. On ObeliskNet, set `GITHUB_API_URL=http://127.0.0.1:9192` and leave
+`GITHUB_MOUNT_TOKEN` unset to use the app owner's GitHub credentials through the
+integrations proxy. GitHub enforces repository permissions.
 
 ## The shell
 

@@ -22,10 +22,7 @@
 // directories); `list` and `read` then follow links until they reach a real
 // tree or blob.
 //
-// The deployment's allowed_host grants GET on the GitHub contents API scoped
-// to one operator-configured owner (GITHUB_MOUNT_OWNER in deployment.rs.toml's
-// request_url_regex); GITHUB_MOUNT_TOKEN is an optional secret the runtime swaps
-// into the Authorization header for a private repo or a higher rate limit.
+// GITHUB_MOUNT_TOKEN optionally authenticates direct GitHub requests.
 // Any HTTP or transport failure becomes the err arm (a throw).
 // GITHUB_API_URL overrides the API origin (the e2e suites point it at a local mock).
 

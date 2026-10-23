@@ -194,8 +194,7 @@ replace_in = ["headers"]
 # One activity backs every lazily-listed VFS repo tree the session mounts to
 # browse example apps while authoring deployments (APPS_JSON above picks which
 # repos and where; owner/repo/ref travel in params-json, not fixed env vars, so
-# this single block serves them all). GITHUB_MOUNT_OWNER scopes the allowed_host
-# boundary to one GitHub org/user; GITHUB_MOUNT_TOKEN is optional but raises the
+# this single block serves them all). GITHUB_MOUNT_TOKEN is optional but raises the
 # GitHub API rate limit from the shared 60 req/h anonymous IP pool to 5000 req/h,
 # which matters once multiple sessions share an egress IP. The workflow calls
 # (method, params-json) on first `ls`/`cat` under each mount.
@@ -208,9 +207,9 @@ location = "activity/github-contents.js"
 exec.lock_expiry.seconds = 30
 env_vars = [{ key = "GITHUB_API_URL", value = "${GITHUB_API_URL:-https://api.github.com}" }]
 [[activity_js.allowed_host]]
-url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_MOUNT_OWNER:-obeli-sk}"
+url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos/"
 methods = ["GET"]
-url_regex_suffix = "/[^/]+/(contents|commits/)"
+url_regex_suffix = "[^/]+/[^/]+/(contents|commits/)"
 secrets = [{ name = "GITHUB_MOUNT_TOKEN", optional = true }]
 replace_in = ["headers"]
 

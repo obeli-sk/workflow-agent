@@ -26,7 +26,6 @@ APPS_JSON = { optional = true }
 TARGET_OBELISK_WEBHOOK_URL = { optional = true }
 OBELISK_API_URL = { type = "internal", source = "api-url" }
 AGENT_MODELS = { optional = true }
-GITHUB_MOUNT_OWNER = { optional = true }
 GITHUB_API_URL = { optional = true }
 LLM_BASE_URL = { optional = true }
 TARGET_OBELISK_API_URL = { optional = true }
@@ -169,11 +168,9 @@ methods = ["GET"]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["GET"]
 
-# GitHub contents API for mount points. Read only PAT for public repos is enough.
+# GitHub repository reads for mount points.
 [[outbound_http.allowed_host]]
-url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_MOUNT_OWNER:-obeli-sk}"
-# The prefix is a plain string prefix; require `/` so it cannot match another owner.
-url_regex_suffix = "/"
+url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos/"
 methods = ["GET"]
 secrets = ["GITHUB_MOUNT_TOKEN"]
 replace_in = ["headers"]
