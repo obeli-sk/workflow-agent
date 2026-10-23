@@ -62,7 +62,6 @@ ${PROGRAMS_JSON:-[
   {"name":"chat","ffqn":"obelisk-agent:programs/program.chat","description":"discover, read, message, and create peer agent sessions on this instance"}
 ]}
 ''' },
-  { key = "MCP_SERVERS_JSON", value = '${MCP_SERVERS_JSON:-[{"name":"obelisk-local","ffqn":"obelisk-agent:mcp/server.obelisk-local"}]}' },
   # Each entry mounts a lazily-listed GitHub repo tree at /workspace/apps/<name>
   # (obelisk_web/obelisk-web.js -> the mount_apps activity below). `owner`
   # defaults to "obeli-sk" and `ref` to "main" when omitted; `description` is
@@ -827,40 +826,4 @@ replace_in = ["headers"]
 url_prefix = "${TARGET_OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 secrets = ["TARGET_OBELISK_TOKEN"]
-replace_in = ["headers"]
-
-# --- MCP servers (stateless) --------------------------------------------------
-# Each configured MCP server is one transport activity block plus one
-# outbound-host grant, mirroring the single-LLM-endpoint precedent. The function
-# name after `obelisk-agent:mcp/server.` is the server name. The workflow learns
-# which servers to wire up from the session config activity, so
-# adding a server means editing this manifest alone (no workflow rebuild): add
-# its transport block here and append `{ name, ffqn }` to the discovery
-# activity's MCP_SERVERS_JSON. The workflow then registers a shell command
-# (`<server> tools|call|prompts|prompt|info`), lists it in the global `mcp`
-# registry command, and mounts its resources lazily under `/workspace/mcp/<server>`.
-# A single activity/mcp.js is reused by every server: each block sets the fixed
-# env var MCP_SERVER_URL (the full endpoint the activity POSTs to) and, for an
-# authenticated server, exposes the fixed secret MCP_SERVER_TOKEN (a placeholder
-# bearer the runtime swaps for the real secret in the outbound header). Every
-# activity instance has its own env, so URLs differ per block freely; one
-# app.toml can name only one MCP_SERVER_TOKEN, so >1 authenticated server is a
-# v1 limitation. Copy the transport block below, rename the server, point
-# MCP_SERVER_URL at it, add the matching app.toml grant, and register it in
-# MCP_SERVERS_JSON. See docs/mcp.md.
-
-[[activity_js]]
-name = "mcp_obelisk_local"
-ffqn = "obelisk-agent:mcp/server.obelisk-local"
-params = [
-  { name = "method",      type = "string" },
-  { name = "params-json", type = "string" },
-]
-return_type = "result<string, string>"
-location = "activity/mcp.js"
-env_vars = [{ key = "MCP_SERVER_URL", value = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071/mcp}" }]
-[[activity_js.allowed_host]]
-url_prefix = "${MCP_OBELISK_LOCAL_URL:-http://127.0.0.1:1071/mcp}"
-methods = ["POST"]
-secrets = [{ name = "MCP_SERVER_TOKEN", optional = true }]   # optional bearer; leave MCP_SERVER_TOKEN unset for a keyless server
 replace_in = ["headers"]

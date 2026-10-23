@@ -100,7 +100,7 @@ The destination must be absent or an empty directory. To inspect a newer
 deployment, pull into another directory. Pull errors are reported by the
 command without creating a hidden error file. No automatic cloud deployment
 mount or `deployment refresh` command remains. `mount` lists reference
-repositories and MCP resources, without app endpoint URLs.
+repositories, without app endpoint URLs.
 
 ## The single-app cloud
 

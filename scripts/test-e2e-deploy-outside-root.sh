@@ -33,7 +33,6 @@ API_PORT=28030
 EXTERNAL_PORT=28098
 e2e_init "deploy-outside-root-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-deploy-outside-root-token"
 export OBELISK_API_URL="$E2E_API_URL"
-unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 
 TARGET_API_PORT=28031

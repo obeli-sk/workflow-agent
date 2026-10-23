@@ -92,15 +92,15 @@ test("pending survives a read but is cleared by a write", () => {
 test("mount-specific loader coexists with the default loader", () => {
     const fs = new Vfs();
     const deploymentLoader = countingLoader({ "sha256:deployment": "deployment" });
-    const mcpLoader = countingLoader({ "sha256:mcp": "resource" });
+    const otherLoader = countingLoader({ "sha256:other": "resource" });
     fs.setBlobLoader(deploymentLoader);
     fs.registerLazy("/deployment/file", "sha256:deployment", 10);
-    fs.registerLazyWithLoader("/mcp/file", "sha256:mcp", 8, mcpLoader);
+    fs.registerLazyWithLoader("/other/file", "sha256:other", 8, otherLoader);
 
     assert.equal(fs.readFile("/deployment/file"), "deployment");
-    assert.equal(fs.readFile("/mcp/file"), "resource");
+    assert.equal(fs.readFile("/other/file"), "resource");
     assert.deepEqual(deploymentLoader.loads, ["sha256:deployment"]);
-    assert.deepEqual(mcpLoader.loads, ["sha256:mcp"]);
+    assert.deepEqual(otherLoader.loads, ["sha256:other"]);
 });
 
 test("appendFile materializes a pending file's bytes before appending, then clears pending", () => {

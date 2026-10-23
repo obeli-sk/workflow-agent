@@ -47,7 +47,6 @@ API_PORT=28040
 EXTERNAL_PORT=28100
 e2e_init "github-mount-deploy-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-github-mount-deploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
-unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 # Mounts this checkout at /workspace/apps/workflow-agent, matching the real-world failure.
 e2e_start_github_mock "obeli-sk/workflow-agent=$ROOT"

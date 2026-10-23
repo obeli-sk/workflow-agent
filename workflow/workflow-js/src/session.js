@@ -7,15 +7,15 @@
 // each event so it lands as a durably readable response), and one
 // "user-{turn}" join set per conversational turn racing each LLM completion
 // against an always-outstanding user-injection offer. Also wires in
-// programs/MCP/mounts (obelisk-pack.js/obelisk-program.js/
-// obelisk-mcp.js/obelisk-web.js), per-script interrupt/timeout (script-watch.js),
+// programs and mounts (obelisk-pack.js/obelisk-program.js/
+// obelisk-web.js), per-script interrupt/timeout (script-watch.js),
 // session rename, ask-user, and chat peer sessions (chat.js).
 //
 // WIT record/variant field and case names cross into JS as snake_case (not
 // camelCase — only function/interface names get kebab-to-camelCase); this was
 // confirmed against activity/config-discover.js, an already-deployed activity
-// returning `max_steps`/`mcp_servers`/`webhook_url` for the kebab-case WIT
-// record `{max-steps, mcp-servers, webhook-url}`. Pure helpers (no `obelisk`
+// returning `max_steps`/`webhook_url` for the kebab-case WIT
+// record `{max-steps, webhook-url}`. Pure helpers (no `obelisk`
 // global, no WIT imports) live in session-logic.js so they can be unit
 // tested; this file is the host-facing orchestration only.
 
@@ -38,7 +38,6 @@ import { recordOutputStub, sessionRenamedStub } from "obelisk-agent:stub-obelisk
 import { Bash } from "../../../vendor/just-bash/src/bash.js";
 import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
 import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
-import * as obeliskMcp from "../../../vendor/just-bash/src/obelisk-mcp.js";
 import * as obeliskWeb from "../../../vendor/just-bash/src/obelisk-web.js";
 import { childErrorMessage, createCloud, createControlPlane, createHost } from "./host.js";
 import { arm as armScriptWatch } from "./script-watch.js";
@@ -263,7 +262,6 @@ function loadSessionConfig(executionId, backend, effort, name) {
     return {
         maxSteps: config.max_steps,
         programs: config.programs ?? [],
-        mcpServers: config.mcp_servers ?? [],
         // Each app's `ref` (usually a branch) is resolved to a commit SHA
         // lazily, by obeliskWeb.mount, on the app's first `ls`/`cat` (see
         // mountPacks) - not here, so a session that never touches a mount
@@ -275,16 +273,15 @@ function loadSessionConfig(executionId, backend, effort, name) {
     };
 }
 
-// ----- programs / MCP servers / mounts -----
+// ----- programs / mounts -----
 
 // Registers one shell command per operator-configured program
-// (PROGRAMS_JSON), plus the `mcp` registry command and one command per
-// configured MCP server (MCP_SERVERS_JSON) and the `mount` listing command.
+// (PROGRAMS_JSON), plus the `mount` listing command.
 // Each handler owns its own host, since `createHost()` is stateless and
 // cheap. The program whose ffqn
 // is CHAT_PROGRAM_FFQN is wrapped so caller-aware subcommands
 // (current/rename/create/watch) are answered by this session itself.
-function registerProgramsAndMcp(bash, config, ownSession, notifications) {
+function registerPrograms(bash, config, ownSession, notifications) {
     for (const program of config.programs) {
         const plainHandler = obeliskProgram.commandHandler(program.name, program.ffqn, createHost(dynamic, obelisk));
         const handler = program.ffqn === CHAT_PROGRAM_FFQN
@@ -293,38 +290,13 @@ function registerProgramsAndMcp(bash, config, ownSession, notifications) {
         bash.registerCommand(program.name, handler);
     }
 
-    const mcpRegistry = config.mcpServers.map(({ name, ffqn }) => ({ name, ffqn }));
-    bash.registerCommand("mcp", obeliskMcp.registryCommandHandler(mcpRegistry, createHost(dynamic, obelisk)));
-    for (const { name, ffqn } of config.mcpServers) {
-        bash.registerCommand(name, obeliskMcp.serverCommandHandler(name, ffqn, createHost(dynamic, obelisk)));
-    }
-
-    bash.registerCommand("mount", mountCommandHandler(config.apps, config.mcpServers, config.webhookUrl));
+    bash.registerCommand("mount", (_interp, _args, _stdin) => ({
+        stdout: renderMount(config.apps), stderr: "", exitCode: 0,
+    }));
 }
 
-// The `mount` shell command: list the session's network-backed mount points
-// and live-probe each MCP server's reachability.
-function mountCommandHandler(apps, mcpServers, webhookUrl) {
-    return (_interp, _args, _stdin) => ({
-        stdout: renderMountOutput(apps, mcpServers, webhookUrl), stderr: "", exitCode: 0,
-    });
-}
-
-function renderMountOutput(apps, mcpServers, webhookUrl) {
-    const host = createHost(dynamic, obelisk);
-    const probe = (ffqn) => {
-        try {
-            host.callJson(ffqn, '["tools/list","{}"]');
-            return null;
-        } catch (e) {
-            return typeof e === "string" ? e : String(e?.message ?? e);
-        }
-    };
-    return renderMount(apps, mcpServers, webhookUrl, probe);
-}
-
-// Registers each APPS_JSON-configured read-only repo
-// reference tree, and each MCP server's resources as lazy VFS mounts. None of this makes a host call by itself -
+// Registers each APPS_JSON-configured read-only repo reference tree as a lazy
+// VFS mount. None of this makes a host call by itself -
 // a bash-only session that never references a mounted path never touches the
 // network - so it is safe to run unconditionally, once, right after the
 // input offer opens.
@@ -333,12 +305,9 @@ function mountPacks(bash, config) {
     for (const app of config.apps) {
         // Pass the live app object (not a copy) so `obelisk-web.js` writing
         // `resolvedRef` onto it, once the mount is first used, is visible to
-        // `renderMountOutput`/`mountCommandHandler` below, which share this
+        // the `mount` command, which shares this
         // same `config.apps` array.
         obeliskWeb.mount(fs, githubContents, `/workspace/apps/${app.name}`, app);
-    }
-    for (const { name, ffqn } of config.mcpServers) {
-        obeliskMcp.registerDeferredMount(fs, createHost(dynamic, obelisk), createHost(dynamic, obelisk), ffqn, `/workspace/mcp/${name}`);
     }
 }
 
@@ -574,9 +543,9 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
         githubContents,
     }, cloud));
     const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
-    registerProgramsAndMcp(bash, config, ownSession, notifications);
+    registerPrograms(bash, config, ownSession, notifications);
 
-    const startupMount = renderMountOutput(config.apps, config.mcpServers, config.webhookUrl);
+    const startupMount = renderMount(config.apps);
     const system = renderSystemPrompt(systemPrompt, config.programs, config.apps, startupMount, config.promptTail);
 
     let pendingShell = openingShellScript(prompt);
@@ -600,7 +569,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const historyIds = [];
     let agentSteps = 0;
     const session = openSession(turnIndex, notifications);
-    // Deployment/components/MCP-resource trees mount lazily: registering them
+    // App reference trees mount lazily: registering them
     // makes no host call itself, so this runs once the input offer is already
     // open (a live session is visible immediately) without delaying startup.
     mountPacks(bash, config);

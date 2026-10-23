@@ -126,33 +126,17 @@ const MOUNT_HEADER =
 const MOUNT_FOOTER =
     "Avoid tree, find, and recursive grep (grep -r / fgrep -r) across these mounts; use targeted ls and cat.\n";
 
-// `probe(ffqn)` returns
-// `null` when the server responds, or an error message string when it
-// doesn't (session.js supplies a real `host.callJson` probe; tests supply a
-// fake) - kept a plain function argument rather than a `host` object so this
-// stays a pure, host-agnostic renderer like every other helper in this file.
 // Each app shows `resolvedRef` (the commit its mount pinned to on first
 // `ls`/`cat`, set by obelisk-web.js's `mount`) once present, falling back to
 // the still-unresolved requested `ref` otherwise.
-export function renderMount(apps, mcpServers, _webhookUrl, probe) {
+export function renderMount(apps) {
     let text = MOUNT_HEADER;
     for (const { name, owner, repo, ref, resolvedRef } of apps) {
         const gitRef = resolvedRef ?? ref;
         text += `  /workspace/apps/${name}          example app, read-only (${owner}/${repo}@${gitRef})\n`;
     }
-    for (const { name, ffqn } of mcpServers) {
-        const error = probe(ffqn);
-        const status = error === null ? "responding" : `not responding: ${mountProbeReason(error)}`;
-        text += `  /workspace/mcp/${name}  MCP server, read-only (${status})\n`;
-    }
     text += MOUNT_FOOTER;
     return text;
-}
-
-// PORT: `mount_probe_reason` - a transport failure is often multi-line/verbose;
-// reduce it to a short single-line reason for the `mount` listing.
-function mountProbeReason(error) {
-    return String(error).split("\n")[0].slice(0, 80);
 }
 
 export function stepLimitError(turnIndex, maxSteps) {

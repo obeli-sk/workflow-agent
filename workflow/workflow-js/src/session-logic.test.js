@@ -164,33 +164,21 @@ test("renderSystemPrompt composes the base prompt, shell help, apps, and the pro
     );
 });
 
-test("renderMount lists reference apps and MCP resources without cloud endpoints", () => {
+test("renderMount lists reference apps", () => {
     const apps = [{ name: "components", owner: "obeli-sk", repo: "components", ref: "main" }];
-    const servers = [
-        { name: "up", ffqn: "obelisk-agent:mcp/server.up" },
-        { name: "down", ffqn: "obelisk-agent:mcp/server.down" },
-    ];
-    const probe = (ffqn) => (ffqn.endsWith(".down") ? "connection refused\nextra detail" : null);
-
-    const withWebhook = renderMount(apps, servers, "http://target:8080", probe);
-    assert.ok(withWebhook.includes("/workspace/apps/components  "));
-    assert.ok(withWebhook.includes("(obeli-sk/components@main)"));
-    assert.ok(!withWebhook.includes("http://target:8080"));
-    assert.ok(!withWebhook.includes("/workspace/cloud"));
-    assert.ok(withWebhook.includes("/workspace/mcp/up  MCP server, read-only (responding)"));
-    assert.ok(withWebhook.includes("/workspace/mcp/down  MCP server, read-only (not responding: connection refused)"));
-
-    const withoutWebhook = renderMount([], [], "", probe);
-    assert.ok(!withoutWebhook.includes("cloud app webhooks"));
+    const out = renderMount(apps);
+    assert.ok(out.includes("/workspace/apps/components  "));
+    assert.ok(out.includes("(obeli-sk/components@main)"));
+    assert.ok(!out.includes("/workspace/cloud"));
 });
 
 test("renderMount shows the pinned commit once an app's mount has resolved one", () => {
     const apps = [{ name: "components", owner: "obeli-sk", repo: "components", ref: "main" }];
-    const out = renderMount(apps, [], "", () => null);
+    const out = renderMount(apps);
     assert.ok(out.includes("(obeli-sk/components@main)"), out);
 
     apps[0].resolvedRef = "0123456789abcdef0123456789abcdef01234567";
-    const pinned = renderMount(apps, [], "", () => null);
+    const pinned = renderMount(apps);
     assert.ok(pinned.includes("(obeli-sk/components@0123456789abcdef0123456789abcdef01234567)"), pinned);
 });
 

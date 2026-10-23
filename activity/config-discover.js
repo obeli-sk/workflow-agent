@@ -3,7 +3,6 @@
 //     -> result<record {
 //     max-steps: u32,
 //     programs: list<record { name: string, ffqn: string, description: string }>,
-//     mcp-servers: list<record { name: string, ffqn: string }>,
 //     apps: list<record { name: string, owner: string, repo: string, ref: string, description: string }>,
 //     webhook-url: string,
 //     obelisk-version: string,
@@ -47,8 +46,8 @@ const PACK_SYSTEM_PROMPT =
     "- Read-only reference repos for authoring are mounted at /workspace/apps/<name> (see \"Example apps\" above).\n" +
     "\n" +
     "# Mounts and network access\n\n" +
-    "Run `mount` to see every mounted app, the network-backed mount points, and whether each MCP server is responding.\n\n" +
-    "- `/workspace/apps/*` and `/workspace/mcp` are lazy: a directory lists and a file's bytes fetch over the network on first access.\n" +
+    "Run `mount` to see every mounted app and its network-backed mount point.\n\n" +
+    "- `/workspace/apps/*` are lazy: a directory lists and a file's bytes fetch over the network on first access.\n" +
     "- Each `/workspace/apps/<name>` tree costs one request per directory listed - avoid `tree`, `find`, or a recursive grep across them, and use targeted `ls`/`cat` or read a known path directly instead.\n" +
     "- The shell's HTTP access goes through an operator allowlist: `curl` (GET only) works only for explicitly granted hosts; anything else is a policy-denied result, not a bug.\n" +
     "- Discover an app's webhook URL with `obelisk cloud app --app NAME endpoint webhook` and smoke-test its routes with `curl`. Verify executions through the app's API (`obelisk cloud app --app NAME executions list` / `logs`).\n";
@@ -100,7 +99,6 @@ export default async function discover(executionId, backend, effort, name) {
     return {
         max_steps: parseMaxSteps(process.env["MAX_STEPS"]),
         programs: parseRegistry("PROGRAMS_JSON", parseProgram),
-        mcp_servers: parseRegistry("MCP_SERVERS_JSON", parseMcpServer),
         apps: parseRegistry("APPS_JSON", parseApp),
         webhook_url: (process.env["TARGET_OBELISK_WEBHOOK_URL"] ?? "").trim(),
         obelisk_version: (process.env["OBELISK_VERSION"] ?? "").trim() || "latest",
@@ -141,14 +139,6 @@ function parseProgram(entry, index, envName) {
     if (typeof ffqn !== "string" || !ffqn) throw `${envName}[${index}] has no ffqn`;
     if (typeof description !== "string") throw `${envName}[${index}] description must be a string`;
     return { name, ffqn, description };
-}
-
-function parseMcpServer(entry, index, envName) {
-    const name = entry?.name;
-    const ffqn = entry?.ffqn;
-    if (typeof name !== "string" || !name) throw `${envName}[${index}] has no name`;
-    if (typeof ffqn !== "string" || !ffqn) throw `${envName}[${index}] has no ffqn`;
-    return { name, ffqn };
 }
 
 // An APPS_JSON entry: a lazily-mounted GitHub repo tree, browsed at

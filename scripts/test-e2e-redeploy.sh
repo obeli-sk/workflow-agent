@@ -9,7 +9,6 @@ API_PORT=28017
 EXTERNAL_PORT=28092
 e2e_init "redeploy-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-redeploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
-unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 
 e2e_start_server

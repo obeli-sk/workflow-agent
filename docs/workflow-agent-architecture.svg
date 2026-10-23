@@ -36,7 +36,7 @@
     <text x="647" y="221" font-weight="700">Model endpoint</text>
     <text x="647" y="247">OpenAI / Anthropic / …</text>
     <text x="135" y="421" font-weight="700">Tool activities</text>
-    <text x="135" y="446">HTTP, MCP, target Obelisk</text>
+    <text x="135" y="446">HTTP, target Obelisk</text>
     <text x="135" y="469">Calls and results persisted</text>
     <text x="435" y="420" font-weight="700">Database</text>
     <text x="435" y="445">Session execution logs</text>

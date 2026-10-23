@@ -14,7 +14,6 @@ API_PORT=28016
 EXTERNAL_PORT=28091
 e2e_init "agent-workflow-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-agent-workflow-token"
 export OBELISK_API_URL="$E2E_API_URL"
-unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 export LLM_BASE_URL="http://127.0.0.1:${EXTERNAL_PORT}"
 
@@ -178,7 +177,7 @@ echo ">>> obelisk/mount E2E PASS"
 echo ">>> checking replay-stable ls formatting and collation"
 run_shell_turn "shell-e2e-ls" "touch b A a B && ls -la"
 LS_ORDER="$(printf '%s\n' "$SHELL_STDOUT" | sed -n 's/^[-d][^ ]* 1 user user [ ]*[0-9][0-9]* Jan  1 00:00 //p' | paste -sd ' ' -)"
-if [[ "$LS_ORDER" != ". .. a A apps b B mcp" ]]; then
+if [[ "$LS_ORDER" != ". .. a A apps b B" ]]; then
     echo "ls -la output did not use the replay-stable format/order: $SHELL_STDOUT" >&2
     exit 1
 fi

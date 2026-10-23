@@ -15,7 +15,6 @@ API_PORT=28020
 EXTERNAL_PORT=28096
 e2e_init "target-deploy-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-target-deploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
-unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 
 TARGET_API_PORT=28021

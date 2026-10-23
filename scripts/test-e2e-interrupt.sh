@@ -23,7 +23,6 @@ EXTERNAL_PORT=28094
 LLM_PORT=28095
 e2e_init "interrupt-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-interrupt-token"
 export OBELISK_API_URL="$E2E_API_URL"
-unset MCP_SERVER_TOKEN
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"},{"id":"fake-loop","label":"Fake Loop","api_type":"openai-chat-completions"}]'
 export LLM_BASE_URL="http://127.0.0.1:${LLM_PORT}"
 

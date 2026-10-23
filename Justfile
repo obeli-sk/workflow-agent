@@ -11,9 +11,6 @@ serve-target *args:
   export OBELISK_API_TOKEN=${TARGET_OBELISK_TOKEN}
   obelisk server run --server-config server-target.toml --app-config app-target.toml "$@"
 
-sample-mcp-server:
-  node examples/stateless-mcp-server.mjs
-
 verify:
   obelisk server verify --skip-db --deployment deployment.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
 

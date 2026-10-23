@@ -46,7 +46,7 @@ export const MAX_LAZY_FETCH_BYTES = 1024 * 1024;
 
 // True if `digest` is namespaced in our own CAS scheme (`sha256:...`). A
 // `lazyFileRef().digest` is only trustworthy as a `content_digest` when this
-// holds: deployment mounts and MCP resources are always CAS-addressed this
+// holds: deployment mounts are always CAS-addressed this
 // way, but a git/web mount's digest is the remote's own foreign hash (e.g. a
 // GitHub blob's 40-hex git SHA-1, no `sha256:` prefix at all) and must not be
 // reused as one. Deliberately a prefix check, not a strict-shape one: plenty
@@ -206,7 +206,7 @@ export class Vfs {
         return this.executable.has(this.resolve(path));
     }
 
-    // Register a deployment-owned (or MCP-resource-owned) file by digest and
+    // Register a deployment-owned file by digest and
     // size. The path lists immediately but holds no bytes yet; a read fetches
     // the body lazily, once, only when it is within MAX_LAZY_FETCH_BYTES.
     // Overwrites any node already at `path`, including a previously

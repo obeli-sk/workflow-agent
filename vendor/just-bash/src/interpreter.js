@@ -291,8 +291,8 @@ export class Interpreter {
         }
         const words = cmd.words.flatMap(braceExpandWord);
         const args = words.flatMap((w) => expandWordToFields(w, ctx));
-        // Fire a deferred mount (the deployment tree, an MCP server's
-        // resources, ...) if this command references a path under its root,
+        // Fire a deferred mount (the deployment tree, an app
+        // reference repo, ...) if this command references a path under its root,
         // so a session that never touches a given mount never fetches it.
         // Checks cwd (for `cd .../current; cat foo`) and each expanded
         // argument (absolute or relative references); runs after glob

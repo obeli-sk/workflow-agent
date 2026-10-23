@@ -10,7 +10,6 @@ EXTERNAL_PORT=28093
 e2e_init "chat-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-chat-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions","wire_model":"fake"}]'
-unset MCP_SERVER_TOKEN
 
 e2e_start_server
 

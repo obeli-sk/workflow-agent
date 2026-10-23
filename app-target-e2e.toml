@@ -10,7 +10,6 @@ DOCS_URLS_JSON = { optional = true }
 OBELISK_VERSION = { optional = true }
 MAX_STEPS = { optional = true }
 PROGRAMS_JSON = { optional = true }
-MCP_SERVERS_JSON = { optional = true }
 APPS_JSON = { optional = true }
 TARGET_OBELISK_WEBHOOK_URL = { optional = true }
 OBELISK_API_URL = { type = "internal", source = "api-url" }
@@ -18,7 +17,6 @@ AGENT_MODELS = {}
 GITHUB_API_URL = { optional = true }
 LLM_BASE_URL = { optional = true }
 TARGET_OBELISK_API_URL = { optional = true }
-MCP_OBELISK_LOCAL_URL = { optional = true }
 OBELISK_UI_URL = { type = "internal", source = "webui-url" }
 
 # Throwaway, --no-auth test target: the suites submit workflow-agent's full

@@ -144,7 +144,6 @@ Besides those, the shell provides:
   of the active deployment; source files load when first read.
 - `obelisk cloud ...`: the apps in the cloud (see above).
 - `curl`: GET-only, limited to the Obelisk docs and the apps' webhooks.
-- `mcp` and `/workspace/mcp`: configured MCP servers.
 - `chat`: other sessions (see below).
 - `mount`: what is mounted where.
 
@@ -173,20 +172,6 @@ chat rename my-session               # rename this session
 Child sessions start with an empty history, so put everything they need in
 the prompt. They are cancelled together with their parent and are listed under
 it in the sidebar.
-
-## MCP servers
-
-A sample MCP server is preconfigured. Start it with `just sample-mcp-server`,
-then in a new session:
-
-```sh
-mcp list
-obelisk-local tools add --a 2 --b 3
-obelisk-local prompt greeting --name world
-find /workspace/mcp/obelisk-local -type f
-```
-
-See [`docs/mcp.md`](docs/mcp.md) for adding your own.
 
 ## Development
 

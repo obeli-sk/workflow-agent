@@ -1,5 +1,5 @@
 // `createHost` bridges the generic `callJson(ffqn, paramsJson) -> string|null`
-// seam (obelisk-program.js/obelisk-mcp.js, for functions chosen at runtime)
+// seam (obelisk-program.js, for functions chosen at runtime)
 // onto `dynamic.call`, re-encoding the decoded value as JSON text.
 //
 // `createControlPlane` backs obelisk-pack.js's control plane with the
