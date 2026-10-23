@@ -154,3 +154,18 @@ export function validateAppName(name) {
         throw `invalid app name \`${name}\`: expected a DNS label (4-25 lowercase ASCII letters, digits, or interior hyphens)`;
     }
 }
+
+// PORT: cloud.rs's `validate_cloud_app_name`.
+export function validateCloudAppName(name) {
+    validateAppName(name);
+    if (name.length > 20 || name.includes("--")) {
+        throw "Cloud app names must contain 4-20 lowercase letters, digits or single interior hyphens";
+    }
+}
+
+// PORT: cloud.rs's `config_name`.
+export function configName(name) {
+    if (typeof name !== "string" || name.length === 0 || name.length > 128 || /^\d/.test(name) || !/^[A-Za-z0-9_]+$/.test(name)) {
+        throw `Invalid configuration name: ${name ?? ""}`;
+    }
+}

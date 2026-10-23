@@ -1,41 +1,39 @@
 // obelisk-agent:tools/cloud.prepare-deploy:
-//   func(app: string, app-toml: string) -> result<record { api-url: string, log: string }, string>
+//   func(app: string, app-toml: string, fill-env: option<list<tuple<string, string>>>)
+//     -> result<record { created: bool, log: string }, string>
 //
 // PORT: obelisk's src/command/cloud/deploy.rs up to the deployment enqueue:
-// stage the config of an existing app or create a new one, then hand back its
-// API URL so the shell enqueues the deployment there before `finish-deploy`.
-import { apiOrigin, appRequest, cloudRequest, lookupApp } from "./client.js";
-import { appConfig, validateAppName } from "./policy.js";
-import { requiredValues } from "./fill.js";
+// stage the config of an existing app or create a new one, so the shell can
+// enqueue the deployment on its API before `finish-deploy`.
+import { cloudRequest, lookupApp, appRequest } from "./client.js";
+import { appConfig, validateCloudAppName } from "./policy.js";
+import { initialValues } from "./fill.js";
 
-export default async function prepare_deploy(app, appToml) {
+export default async function prepare_deploy(app, appToml, fillEnv) {
     const lines = [];
     const log = (line) => lines.push(`${line}\n`);
-    if (!appToml) throw "Cannot read policy app.toml: pass -a APP.TOML or write ./app.toml with app_name";
     const config = appConfig(appToml);
     const name = app || config.appName;
-    if (!name) throw "Select an app with --app or app_name in app.toml";
-    validateAppName(name);
+    if (!name) throw "Set app_name in ./app.toml, --app or OBELISK_APP_NAME";
+    validateCloudAppName(name);
     log(`Deploying ${name}`);
     const step = (command) => log(`→ obelisk cloud app ${command}`);
-    const command = { kind: "command" };
     const desired = { policy: config.policy, cloud: config.cloud };
-
-    let row = await lookupApp(name);
-    if (row !== null) {
-        step("stage");
-        row = await appRequest(name, "PUT", ["config"], { ...command, body: desired });
-    } else {
-        // A new app has no values yet, and `--fill` is not available here.
-        const missing = requiredValues(config.policy);
-        if (missing.length > 0) {
-            throw `Missing required configuration: ${missing.join(", ")}. Create the app with \`obelisk cloud app new ${name}\`, set the values with \`env set\` and \`secrets set\`, then retry the deploy`;
+    try {
+        if ((await lookupApp(name)) !== null) {
+            step("stage");
+            await appRequest(name, "PUT", ["config"], { kind: "command", body: desired });
+            return { created: false, log: lines.join("") };
         }
+        if (fillEnv) step("fill");
+        const values = initialValues(config.policy, fillEnv ? Object.fromEntries(fillEnv) : null);
         step("new");
-        row = await cloudRequest("POST", ["v1", "apps"], {
-            ...command,
-            body: { ...desired, app_name: name, env: {}, secrets: {} },
+        await cloudRequest("POST", ["v1", "apps"], {
+            kind: "secret-command",
+            body: { ...desired, app_name: name, env: values.env, secrets: values.secrets },
         });
+        return { created: true, log: lines.join("") };
+    } catch (error) {
+        throw `${lines.join("")}Error: ${error}`;
     }
-    return { api_url: apiOrigin(row?.api_url), log: lines.join("") };
 }

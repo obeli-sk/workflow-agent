@@ -76,7 +76,7 @@ The agent is then told about your apps and can run, for example:
 ```sh
 obelisk cloud apps list
 obelisk cloud app deploy                    # create or update the app from ./app.toml and deploy
-obelisk cloud app --app NAME executions list
+obelisk cloud app --app NAME execution list
 obelisk cloud app --app NAME secrets set API_KEY --stdin
 ```
 
@@ -86,7 +86,7 @@ Hosted API and webhook access defaults to `https://*.obelisk.works` on port
 Find the webhook URL with `obelisk cloud app --app NAME endpoint webhook`.
 
 Interactive and account-level commands (`--fill`, `token new|revoke`) are not
-available from the session. See [`docs/obelisk-cloud.md`](docs/obelisk-cloud.md).
+available from the session; `--fill-non-interactive` reads exported shell variables. See [`docs/obelisk-cloud.md`](docs/obelisk-cloud.md).
 
 ### Docs and example apps
 
@@ -113,16 +113,15 @@ integrations proxy. GitHub enforces repository permissions.
 `help` lists the commands, which cover the usual file, text and search tools.
 Besides those, the shell provides:
 
-- `obelisk cloud app --app NAME deployment pull DIRECTORY`: an editable snapshot
-  of the active deployment; source files load when first read.
+- `obelisk cloud app --app NAME deployment pull ID -o DIRECTORY`: an editable
+  snapshot of a deployment; source files load when first read.
 - `obelisk cloud ...`: the apps in the cloud (see above).
 - `curl`: GET-only, limited to the Obelisk docs and the apps' webhooks.
 - `chat`: other sessions (see below).
 - `mount`: what is mounted where.
 
-To have the agent stop and ask you something mid-task, it runs
-`obelisk call obelisk-agent:stub/stub.ask-user '["Which deployment?"]'`, and the
-question appears in the UI as a form.
+- `ask-user QUESTION`: stops and asks you something mid-task; the question
+  appears in the UI as a form.
 
 Background jobs (`&`, `jobs`, `wait`) are not supported.
 

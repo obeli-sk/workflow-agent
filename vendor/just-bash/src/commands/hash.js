@@ -19,7 +19,7 @@ function base64Encode(bytes) {
     return out;
 }
 
-function base64Decode(text) {
+export function base64Decode(text) {
     const cleaned = [...text].filter((c) => !/\s/.test(c));
     const values = [];
     for (const c of cleaned) {

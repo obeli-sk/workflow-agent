@@ -434,6 +434,7 @@ max_retries = 0
 location = "packs/obelisk-control/cloud/cli.js"
 env_vars = [
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
@@ -456,6 +457,7 @@ exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/deploy.js"
 env_vars = [
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
@@ -473,49 +475,42 @@ exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/finish-deploy.js"
 env_vars = [
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
-methods = ["GET", "POST"]
+methods = ["GET", "POST", "PUT"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
+# A request that changes the app: deployment submits and switches, execution
+# controls, admin maintenance.
 [[activity_js]]
 name = "cloud_tenant"
 ffqn = "obelisk-agent:tools/cloud.tenant"
 wit = "wit"
 max_retries = 0
-# call-target follows the execution; apply re-verifies the deployment.
-exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/tenant.js"
 env_vars = [
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
 [[activity_js.allowed_host]]
-url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
-methods = ["GET"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
-replace_in = ["headers"]
-[[activity_js.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
-methods = ["GET", "POST", "PUT"]
+methods = ["POST", "PUT", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
-# Read-only app API operations, retried on transient errors.
+# Read-only app API requests, retried on transient errors.
 [[activity_js]]
 name = "cloud_tenant_read"
 ffqn = "obelisk-agent:tools/cloud.tenant-read"
 wit = "wit"
+# `execution status|result --follow` holds the response until the execution finishes.
+exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/tenant-read.js"
 env_vars = [
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
-[[activity_js.allowed_host]]
-url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
-methods = ["GET"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
-replace_in = ["headers"]
 [[activity_js.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["GET"]

@@ -88,7 +88,7 @@ ASK_SESSION_ID="$("$OBELISK" generate execution-id)"
     '["", null, null, null, null]'
 
 ASK_OFFER_ID="$(e2e_take_offer "$ASK_SESSION_ID")"
-ASK_SCRIPT="obelisk call obelisk-agent:stub/stub.ask-user '[\"Continue?\"]'"
+ASK_SCRIPT="ask-user 'Continue?'"
 ASK_BODY="$(node scripts/e2e-json.js shell-input "$ASK_OFFER_ID" shell-e2e-ask "$ASK_SCRIPT")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
@@ -151,7 +151,7 @@ echo ">>> running the obelisk/mount custom commands"
 # `mount` time: the first `mount` (before anything touches the tree) shows
 # the requested ref (@main); only the second, after the `cat`, shows the
 # commit it pinned to.
-run_shell_turn "shell-e2e-2" "mount && cat /workspace/apps/components/README.md && mount && echo --- && obelisk cloud app functions list --help"
+run_shell_turn "shell-e2e-2" "mount && cat /workspace/apps/components/README.md && mount && echo --- && obelisk cloud app execution --help"
 if [[ "$SHELL_STDOUT" != *"Network-backed mounts"* ]]; then
     echo "mount command did not print the expected header: $SHELL_STDOUT" >&2
     exit 1
@@ -168,8 +168,8 @@ if [[ "$SHELL_STDOUT" != *"# Obelisk Components"* ]]; then
     echo "GitHub components mount did not read README.md: $SHELL_STDOUT" >&2
     exit 1
 fi
-if [[ "$SHELL_STDOUT" != *"Usage: obelisk cloud app [--app NAME] functions"* ]]; then
-    echo "obelisk cloud app functions --help did not print its usage: $SHELL_STDOUT" >&2
+if [[ "$SHELL_STDOUT" != *"Usage: obelisk cloud app execution <COMMAND>"* ]]; then
+    echo "obelisk cloud app execution --help did not print its usage: $SHELL_STDOUT" >&2
     exit 1
 fi
 echo ">>> obelisk/mount E2E PASS"
@@ -184,7 +184,7 @@ fi
 
 
 run_shell_turn "shell-e2e-submit-help" "obelisk cloud app deployment submit --help"
-if [[ "$SHELL_STDOUT" != *"any filename -- not just"* ]]; then
+if [[ "$SHELL_STDOUT" != *"PATH (default deployment.toml)"* ]]; then
     echo "deployment submit help lacked the expected text: $SHELL_STDOUT" >&2
     exit 1
 fi

@@ -51,7 +51,7 @@ request_url_regex = "^GET https://a\\\\.example\\\\.net/"
     assert.throws(() => appConfig(`[[outbound_http.allowed_host]]\npattern = "https://a.b"\nurl_regex_suffix = "/x"\n`), /requires url_prefix/);
 });
 
-const APP_API = "https://demo.obelisk.works:5005";
+const APP_API = "https://api--demo.obelisk.works";
 
 // A fake provisioner: `routes` maps "METHOD /path" to a response body, or a function of the request.
 function provisioner(routes) {
@@ -89,16 +89,15 @@ function appRow(overrides = {}) {
 
 test("deploy refuses to create an app whose policy requires values", async () => {
     const requests = provisioner({});
-    await assert.rejects(prepareDeploy("", POLICY), /^Missing required configuration: env MODE, secret API_KEY\. Create the app with `obelisk cloud app new demo`/);
+    await assert.rejects(prepareDeploy("", POLICY), /^Deploying demo\nError: Missing required configuration: env MODE, secret API_KEY\. Retry with `--fill`/);
     assert.deepEqual(requests.map((request) => `${request.method} ${request.path}`), ["GET /v1/apps/demo"]);
 });
 
-test("deploy creates a missing app and returns its API origin", async () => {
+test("deploy creates a missing app", async () => {
     const policy = 'app_name = "demo"\n[secrets]\nEXTRA = { optional = true }\n';
     const requests = provisioner({ "POST /v1/apps": appRow() });
     const target = await prepareDeploy("", policy);
-    assert.equal(target.api_url, APP_API);
-    assert.equal(target.log, "Deploying demo\n→ obelisk cloud app new\n");
+    assert.deepEqual(target, { created: true, log: "Deploying demo\n→ obelisk cloud app new\n" });
     const create = requests.find((request) => request.method === "POST");
     assert.equal(create.headers.authorization, "Bearer cloud-token");
     assert.match(create.headers["idempotency-key"], /^E_[0-9A-Z]{26}$/);
@@ -114,8 +113,7 @@ test("deploy stages the config of an existing app", async () => {
         "PUT /v1/apps/demo/config": appRow({ status: "stopped" }),
     });
     const target = await prepareDeploy("demo", POLICY);
-    assert.equal(target.api_url, APP_API);
-    assert.equal(target.log, "Deploying demo\n→ obelisk cloud app stage\n");
+    assert.deepEqual(target, { created: false, log: "Deploying demo\n→ obelisk cloud app stage\n" });
     const stage = requests.find((request) => request.method === "PUT");
     assert.deepEqual(JSON.parse(stage.body), { policy: appConfig(POLICY).policy, cloud: appConfig(POLICY).cloud });
 });
@@ -126,9 +124,9 @@ test("finish-deploy applies the config with the enqueued deployment", async () =
         "GET /v1/apps/demo/secrets": { secrets: [{ name: "API_KEY" }] },
         "POST /v1/apps/demo/apply": appRow({ outcome: { configuration: "applied", vm: "started" } }),
     });
-    const deployed = await finishDeploy("demo", POLICY, "Dep_1");
-    assert.equal(deployed.webhook_url, "https://demo.obelisk.works");
-    assert.match(deployed.log, /^Optional configuration not set: secret EXTRA\n→ obelisk cloud app apply\n/);
+    const deployed = await finishDeploy("demo", POLICY, "Dep_1", false, null);
+    assert.equal(JSON.parse(deployed.app_json).webhook_url, "https://demo.obelisk.works");
+    assert.match(deployed.log, /^Optional configuration not set: secret EXTRA\. Run [^\n]*\n→ obelisk cloud app apply\n/);
     const apply = requests.find((request) => request.method === "POST");
     assert.deepEqual(JSON.parse(apply.body), {
         force: false,
@@ -140,14 +138,14 @@ test("finish-deploy applies the config with the enqueued deployment", async () =
 
 test("finish-deploy stops at unset required configuration and requires a running app", async () => {
     let requests = provisioner({ "GET /v1/apps/demo/env": { env: {} }, "GET /v1/apps/demo/secrets": { secrets: [] } });
-    await assert.rejects(finishDeploy("demo", POLICY, "Dep_1"), /^Missing required configuration: env MODE, secret API_KEY\. /);
+    await assert.rejects(finishDeploy("demo", POLICY, "Dep_1", false, null), /^Error: Missing required configuration: env MODE, secret API_KEY\. /);
     assert.ok(!requests.some((request) => request.method === "POST"));
     provisioner({
         "GET /v1/apps/demo/env": { env: { MODE: "prod" } },
         "GET /v1/apps/demo/secrets": { secrets: [{ name: "API_KEY" }] },
         "POST /v1/apps/demo/apply": appRow({ status: "stopped" }),
     });
-    await assert.rejects(finishDeploy("demo", POLICY, "Dep_1"), /^App is stopped; inspect it with/);
+    await assert.rejects(finishDeploy("demo", POLICY, "Dep_1", false, null), /\nError: App is "stopped"; inspect it with/);
 });
 
 test("app apply sends the staged config with the app API's deployment id", async () => {
@@ -187,21 +185,17 @@ test("app apply refuses a local policy that differs from the staged one unless -
     assert.equal(staged.exit_code, 0, staged.stderr);
 });
 
-test("tenant runs webapi tools against the app API with the cloud token", async () => {
+test("tenant sends a request to the app API with the cloud token and returns any status", async () => {
     const requests = provisioner({
-        "GET /v1/apps/demo": appRow(),
-        [`GET ${APP_API}/v1/executions`]: [{ execution_id: "E_1" }],
-        [`PUT ${APP_API}/v1/deployments/Dep_1`]: () =>
-            new Response(JSON.stringify({ missing_files: [{ path: "a.wasm", digest: "sha256:aa" }] }), { status: 409 }),
+        [`PUT ${APP_API}/v1/deployments/Dep_1`]: () => new Response(JSON.stringify({ missing_files: [] }), { status: 409 }),
     });
-    const listed = JSON.parse(await tenant("demo", "list-executions", JSON.stringify(["", "", false, false, "", "", "", "", false, 5])));
-    assert.ok("ok" in listed);
-    const call = requests.find((request) => request.origin === APP_API);
-    assert.equal(call.headers.authorization, "Bearer cloud-token");
-
-    const submitted = JSON.parse(await tenant("demo", "deployment-submit", JSON.stringify(["[[x]]", [], "", false, "Dep_1"])));
-    assert.deepEqual(submitted, { missing_files: [{ path: "a.wasm", digest: "sha256:aa" }] });
-    await assert.rejects(tenant("demo", "toString", "[]"), /unknown app API operation/);
+    const response = await tenant("demo", "PUT", "/v1/deployments/Dep_1", "application/json", "{}");
+    assert.deepEqual(response, { status: 409, body: '{"missing_files":[]}' });
+    assert.equal(requests[0].url, `${APP_API}/v1/deployments/Dep_1`);
+    assert.deepEqual(requests[0].headers, { accept: "application/json", authorization: "Bearer cloud-token", "content-type": "application/json" });
+    assert.equal(requests[0].body, "{}");
+    await assert.rejects(tenant("demo", "GET", "/v1/deployment-id", null, null), /use cloud.tenant-read/);
+    await assert.rejects(tenant("demo", "PUT", "v1/x", null, null), /invalid app API path/);
 });
 
 test("run reports provisioner errors with the command id and rejects credential flags", async () => {
@@ -210,7 +204,7 @@ test("run reports provisioner errors with the command id and rejects credential 
     });
     const stopped = await run(["app", "--app", "demo", "deactivate", "--command-id", "E_cmd"], "", null);
     assert.equal(stopped.exit_code, 1);
-    assert.equal(stopped.stderr, "obelisk: app is busy (HTTP 409). Command ID: E_cmd\n");
+    assert.equal(stopped.stderr, "Error: app is busy (HTTP 409). Command ID: E_cmd\n");
 
     const flagged = await run(["apps", "list", "--api-token", "x"], "", null);
     assert.equal(flagged.exit_code, 1);
@@ -243,12 +237,8 @@ test("endpoint webhook prints the app's webhook URL", async () => {
     assert.equal(endpoint.stdout, "https://demo.obelisk.works\n");
 });
 
-test("tenant-read runs reads and refuses operations that change the app", async () => {
-    provisioner({
-        "GET /v1/apps/demo": appRow(),
-        [`GET ${APP_API}/v1/deployment-id`]: "Dep_1",
-    });
-    const current = JSON.parse(await tenantRead("demo", "current-deployment-id", "[]"));
-    assert.deepEqual(current, { ok: '"Dep_1"' });
-    await assert.rejects(tenantRead("demo", "apply-deployment", '["Dep_1"]'), /apply-deployment is not a read-only operation/);
+test("tenant-read GETs a path on the app API", async () => {
+    provisioner({ [`GET ${APP_API}/v1/deployment-id`]: "Dep_1" });
+    assert.deepEqual(await tenantRead("demo", "/v1/deployment-id"), { status: 200, body: '"Dep_1"' });
+    assert.equal((await tenantRead("demo", "/v1/missing")).status, 404);
 });

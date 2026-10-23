@@ -201,19 +201,20 @@ class Notifications {
     }
 }
 
-// Answers `obelisk call
-// obelisk-agent:stub/stub.ask-user [...]` with a real join-set-based
-// question/answer exchange. Returns the answer's JSON text, like an app call.
-function askUser(paramsJson, notifications) {
-    let params;
-    try {
-        params = JSON.parse(paramsJson);
-    } catch (error) {
-        throw `ask-user params_json must be valid JSON: ${error.message}`;
+// The `ask-user QUESTION` shell command: a real join-set-based
+// question/answer exchange that prints the answer.
+function askUserCommand(args, notifications) {
+    if (args.length !== 1 || !args[0]) {
+        return { stdout: "", stderr: "Usage: ask-user QUESTION\n", exitCode: 2 };
     }
-    const question = Array.isArray(params) ? params[0] : undefined;
-    if (typeof question !== "string" || !question) throw "ask-user requires a question";
+    try {
+        return { stdout: `${askUser(args[0], notifications)}\n`, stderr: "", exitCode: 0 };
+    } catch (error) {
+        return { stdout: "", stderr: `ask-user: ${errorMessage(error)}\n`, exitCode: 1 };
+    }
+}
 
+function askUser(question, notifications) {
     // Anonymous - see script-watch.js's arm().
     if (notifications.idle) throw SESSION_IDLE_ERROR;
     const joinSet = obelisk.createJoinSet();
@@ -235,7 +236,7 @@ function askUser(paramsJson, notifications) {
         }
         if (joinSet.lastId !== executionId) throw `unexpected ask-user response: ${joinSet.lastId}`;
         notifications.humanInputResolved(executionId);
-        return JSON.stringify(answer);
+        return typeof answer === "string" ? answer : JSON.stringify(answer);
     } finally {
         joinSet.close();
     }
@@ -531,14 +532,11 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const config = loadSessionConfig(executionId, model, effort, initialName);
     const maxSteps = config.maxSteps;
     // Always registered, independent of operator config.
-    const askUserHere = (paramsJson) => askUser(paramsJson, notifications);
-    // Top-level `obelisk call` only reaches ask-user; app commands go through `cloud`.
-    const controlPlane = { callTarget: (_ffqn, paramsJson) => askUserHere(paramsJson) };
-    const cloud = createCloud(cloudTools, obelisk, askUserHere);
-    bash.registerCommand("obelisk", obeliskPack.commandHandler(controlPlane, {
+    bash.registerCommand("ask-user", (_interp, args) => askUserCommand(args.slice(1), notifications));
+    bash.registerCommand("obelisk", obeliskPack.commandHandler({
         obeliskVersion: config.obeliskVersion,
         githubContents,
-    }, cloud));
+    }, createCloud(cloudTools, obelisk)));
     const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
     registerPrograms(bash, config, ownSession, notifications);
 

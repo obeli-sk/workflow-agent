@@ -37,23 +37,32 @@ interface cloud {
   }
 
   record deploy-target {
-    api-url: string,
+    created: bool,
     log: string,
   }
 
   record deployed {
-    webhook-url: option<string>,
+    app-json: string,
     log: string,
   }
 
+  record response {
+    status: u16,
+    body: string,
+  }
+
+  // `fill-env` is the shell's exported variables when `--fill-non-interactive`
+  // (or `fill --non-interactive`) asks for same-named values; none otherwise.
+
   // Provisioner commands (`obelisk cloud apps|token|app ...` minus deploy and app API calls).
-  run: func(args: list<string>, stdin: string, app-toml: option<string>) -> result<command-output, string>;
-  // Stage the app's config from `app-toml` or create the app, return where to enqueue the deployment.
-  prepare-deploy: func(app: string, app-toml: string) -> result<deploy-target, string>;
-  // Apply the config with the enqueued deployment and require the app to be running.
-  finish-deploy: func(app: string, app-toml: string, deployment-id: string) -> result<deployed, string>;
-  // One webapi `operation` with JSON positional params against the app's API; returns JSON.
-  tenant: func(app: string, operation: string, params-json: string) -> result<string, string>;
-  // `tenant` limited to read-only operations, so the runtime may retry it.
-  tenant-read: func(app: string, operation: string, params-json: string) -> result<string, string>;
+  run: func(args: list<string>, stdin: string, app-toml: option<string>, fill-env: option<list<tuple<string, string>>>) -> result<command-output, string>;
+  // Stage the app's config from `app-toml`, or create the app. The err carries the log so far.
+  prepare-deploy: func(app: string, app-toml: string, fill-env: option<list<tuple<string, string>>>) -> result<deploy-target, string>;
+  // Fill an app that was not `created`, apply the config with the enqueued deployment and
+  // require the app to be running; returns the app row. The err carries the log so far.
+  finish-deploy: func(app: string, app-toml: string, deployment-id: string, created: bool, fill-env: option<list<tuple<string, string>>>) -> result<deployed, string>;
+  // GET `path` (with its query) on the app's API; err only when no response arrived.
+  tenant-read: func(app: string, path: string) -> result<response, string>;
+  // Any other request on the app's API, sent once.
+  tenant: func(app: string, method: string, path: string, content-type: option<string>, body: option<string>) -> result<response, string>;
 }

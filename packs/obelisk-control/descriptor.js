@@ -12,18 +12,18 @@ import { cloudRequest } from "./cloud/client.js";
 
 const nl = String.fromCharCode(10);
 
-// Encoding rules for `obelisk cloud app call FFQN PARAMS_JSON`, the one shell command
-// that takes a WIT-typed argument. The rest of the `obelisk` subcommands and
+// Encoding rules for `obelisk cloud app execution submit FFQN PARAMS`, the one shell
+// command that takes WIT-typed arguments. The rest of the `obelisk` subcommands and
 // the deployment edit/submit/apply flow are documented by the shell pack's own
 // system prompt, which the core appends after this prompt.
 const WIT_JSON_MAPPING = [
-    '## Encoding params for `obelisk cloud app call`',
+    '## Encoding params for `obelisk cloud app execution submit`',
     '',
-    '- Run `obelisk cloud app --help` for the subcommands; they use pairs such as `obelisk cloud app --app NAME functions list` and `obelisk cloud app --app NAME executions get ID`. Run `--help` (or `-h`) at any level for usage, e.g. `obelisk cloud app deployment submit --help`.',
-    '- Inspect an app\'s signatures with `obelisk cloud app --app NAME functions list` before calling one when the parameter types are not already known.',
-    '- Call with a JSON array (`obelisk cloud app --app NAME call FFQN \'[1,"text"]\'`) or positional values (`... call FFQN -- 1 text`); positional values parse as JSON when valid and otherwise as strings.',
-    '- A successful call prints only the function\'s return value; a `result` err or execution failure exits nonzero and prints the error to stderr.',
-    '- params-json is a JSON array of positional arguments in WIT parameter order; kebab-case identifiers become snake_case JSON keys and variant/enum values.',
+    '- Run `obelisk cloud app --help` for the subcommands, such as `obelisk cloud app --app NAME component list` and `obelisk cloud app --app NAME execution status ID`. Run `--help` (or `-h`) at any level for usage, e.g. `obelisk cloud app deployment --help`.',
+    '- Inspect an app\'s signatures with `obelisk cloud app --app NAME component list` before submitting when the parameter types are not already known.',
+    '- Submit with one JSON array (`obelisk cloud app --app NAME execution submit FFQN \'[1,"text"]\'`) or, after `--`, one JSON value per argument (`... execution submit FFQN -- 1 \'"text"\'`). It prints the new execution ID; add `--follow` to wait and print the result.',
+    '- With `--follow`, the result goes to stderr as `Execution finished: OK: VALUE`; a `result` err or an execution failure exits 1. `--json` prints JSON to stdout instead.',
+    '- The params are a JSON array of positional arguments in WIT parameter order; kebab-case identifiers become snake_case JSON keys and variant/enum values.',
     '- `bool` maps to JSON `true`/`false`; `char`/`string` map to JSON strings.',
     '- Integers and floats map to JSON numbers; Obelisk rejects lossy numeric conversions instead of rounding.',
     '- `option<T>` maps to the JSON value for T or `null` for none; `list<T>` maps to a JSON array; `tuple<T1, T2>` maps to a JSON array in tuple order.',
@@ -34,7 +34,7 @@ const WIT_JSON_MAPPING = [
 ].join(nl);
 
 const SYSTEM_PROMPT = [
-    'You are the planner inside an Obelisk durable workflow that manages apps in the cloud. Use `obelisk cloud` to discover and manage apps, and `deployment pull DIRECTORY` to edit an existing deployment.',
+    'You are the planner inside an Obelisk durable workflow that manages apps in the cloud. Use `obelisk cloud` to discover and manage apps, and `deployment pull ID -o DIRECTORY` to edit an existing deployment.',
     '',
     '- Investigate, plan, and decide which durable actions are needed. Act through bash: shell commands and `obelisk` for durable, replayable actions that appear in the Obelisk execution log; built-in reasoning for the rest.',
     '- Narrate as you work: a short Markdown note alongside each tool call saying what you are about to run and why. Text and a tool call in one response are both kept, and the turn continues.',
@@ -124,10 +124,10 @@ async function loadDocsIndexes() {
 }
 
 const APP_COMMANDS = [
-    '- `obelisk cloud apps list`; `obelisk cloud app --app NAME status|get|endpoint`. `--app` may be left out inside a directory whose app.toml names the app, or when there is only one app.',
-    '- The app\'s own API: `obelisk cloud app --app NAME functions list|wit FFQN`, `executions list|get ID|logs ID|result ID`, `call FFQN PARAMS`, `deployment active|list|show|pull|check|submit|enqueue|apply`.',
-    '- `obelisk cloud app --app NAME executions list` hides webhook-spawned child executions unless `--show-derived` is passed.',
-    '- Pull an existing deployment with `obelisk cloud app --app NAME deployment pull DIRECTORY`. Edit the pulled files and inspect app.toml for the app policy; a deployment cannot grant itself additional permissions.',
+    '- `obelisk cloud apps list`; `obelisk cloud app --app NAME status|get|endpoint`. `--app` may be left out when OBELISK_APP_NAME is exported or inside a directory whose app.toml names the app.',
+    '- The app\'s own API, as in the real CLI: `component list`, `execution list|status|result|logs|events|responses|submit|cancel|pause|unpause|replay|advance|upgrade`, `deployment active|list|show|pull|submit|enqueue|apply`, `admin ...`. Human output goes to stderr and values or `--json` to stdout.',
+    '- `obelisk cloud app --app NAME execution list` hides webhook-spawned child executions unless `--show-derived` is passed.',
+    '- Pull an existing deployment with `obelisk cloud app --app NAME deployment pull ID -o DIRECTORY` (`deployment active` prints the active ID). Edit the pulled files; the pull has no app.toml, so read the app policy with `obelisk cloud app --app NAME get`. A deployment cannot grant itself additional permissions.',
 ];
 
 const CLOUD_SECTION = [

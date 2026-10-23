@@ -62,7 +62,7 @@ export function renderSummary(summary, value) {
             const machine = text(value, "machine_state", "");
             const up = machine === "started";
             if (["started", "stopped", "suspended"].includes(machine) && ((status === "running" && !up) || (status === "stopped" && up))) {
-                line(`VM is ${machine} although the app is ${status}. Run \`obelisk cloud app --app ${text(value?.app, "app_name", "")} apply\` to reconcile it.`);
+                line(`VM is ${machine} although the app is ${status}. Run \`obelisk cloud app apply\` to reconcile it.`);
             }
             if (Number.isInteger(value?.memory_mb)) line(`Memory: ${value.memory_mb} MB`);
             line(`API: ${value?.api_ready === true ? "ready" : "unavailable"}`);
@@ -94,6 +94,12 @@ export function renderSummary(summary, value) {
             break;
         case "staged":
             line(`${summary.message} Run \`${summary.apply}\` to apply changes.`);
+            break;
+        case "fill":
+            for (const declaration of Array.isArray(value?.declarations) ? value.declarations : []) {
+                line(`${declaration?.kind === "secrets" ? "secret" : "env"} ${text(declaration, "name", "")}: ${text(declaration, "action", "not set")}`);
+            }
+            if (value?.apply_required === true) line(`Run \`${summary.apply}\` to apply changes.`);
             break;
         default:
             throw `unknown summary ${summary.kind}`;

@@ -5,129 +5,22 @@ import { Interpreter, OutputLog } from "./interpreter.js";
 import { Bash } from "./bash.js";
 import { sha256Hex } from "./commands/hash.js";
 import { utf8Encode } from "./utf8.js";
-import * as obelisk from "./obelisk-pack.js";
+import { executeObelisk, commandHandler, manifestWithDigests, manifestWithGeneratedFiles } from "./obelisk-pack.js";
 
 function sha256(text) {
     return `sha256:${sha256Hex(utf8Encode(text))}`;
-}
-
-const { executeObelisk, commandHandler, blobLoader,
-    simplifyManifest, manifestWithDigests, ownedSourceLocations, deploymentSources } = obelisk;
-
-// A fake host backed by an in-memory ffqn -> canned-JSON-response queue, for
-// tests only. A call to an ffqn with no fixture throws, mirroring a call to
-// something nothing implements. Multiple `.with`/`.withErr` calls for one
-// ffqn enqueue successive responses (so a test can model a preflight that
-// reports missing files then a retry that succeeds); the last response
-// repeats once the queue is down to one. Records every call so tests can
-// assert on the exact params sent.
-const APP_CONFIG_FFQN = "obelisk-agent:tools/webapi.get-app-config";
-
-function fakeHost() {
-    const responses = new Map();
-    const calls = [];
-    const host = {
-        calls,
-        with(ffqn, responseJson) {
-            if (!responses.has(ffqn)) responses.set(ffqn, []);
-            responses.get(ffqn).push({ ok: true, value: responseJson });
-            return host;
-        },
-        withErr(ffqn, message) {
-            if (!responses.has(ffqn)) responses.set(ffqn, []);
-            responses.get(ffqn).push({ ok: false, value: message });
-            return host;
-        },
-        callJson(ffqn, paramsJson) {
-            calls.push([ffqn, paramsJson]);
-            const queue = responses.get(ffqn);
-            if (!queue || queue.length === 0) throw `no fixture for ${ffqn}`;
-            const entry = queue.length > 1 ? queue.shift() : queue[0];
-            if (!entry.ok) throw entry.value;
-            return entry.value;
-        },
-        // The pack's control plane over the ffqn-keyed fixtures: each method
-        // sends the same params array its WIT function takes.
-        listFunctions: (prefix, length) => decodeFixture(webapi("list-functions", [prefix, length])),
-        getFunctionWit: (ffqn) => text(webapi("get-function-wit", [ffqn])),
-        listExecutions: (ffqnPrefix, idPrefix, showDerived, hideFinished, length) =>
-            text(webapi("list-executions", [ffqnPrefix, idPrefix, showDerived, hideFinished, "", "", "", "", false, length])),
-        getExecution: (id) => text(webapi("get-execution", [id])),
-        getLogs: (id, length) => text(webapi("get-logs", [id, true, true, true, [], [], "", "", false, length])),
-        getResultJson: (id) => text(webapi("get-result-json", [id])),
-        listDeployments: (length) => text(webapi("list-deployments", ["", false, length])),
-        getDeployment: (id) => text(webapi("get-deployment", [id, null, null, null, null])),
-        currentDeploymentId: () => text(webapi("current-deployment-id", [])),
-        // Unfixtured means no app config, so mount tests need not stub it.
-        getAppConfig: () => (responses.has(APP_CONFIG_FFQN) ? webapi("get-app-config", []) : null),
-        deploymentCheckout: (id) => decodeFixture(webapi("deployment-checkout", [id])),
-        deploymentReadBlob: (digest) => text(webapi("deployment-read-blob", [digest])),
-        deploymentSubmit(manifest, attachments, description, allowMissing, deploymentId) {
-            try {
-                return text(webapi("deployment-submit", [manifest, attachments, description, allowMissing, deploymentId]));
-            } catch (message) {
-                // The fixture error arm is the verbatim `permanent_missing_files` JSON.
-                let missingFiles;
-                try {
-                    missingFiles = JSON.parse(message).permanent_missing_files;
-                } catch {
-                    throw message;
-                }
-                if (!Array.isArray(missingFiles)) throw message;
-                throw { missingFiles };
-            }
-        },
-        deploymentSwitch: (id, allowMissing) => text(webapi("deployment-switch", [id, allowMissing])),
-        applyDeployment: (id) => text(webapi("apply-deployment", [id])),
-        callTarget: (ffqn, paramsJson) => text(call("obelisk-agent:tools/webapi.call-target", [ffqn, paramsJson])),
-    };
-    function call(ffqn, params) {
-        const raw = host.callJson(ffqn, JSON.stringify(params));
-        if (raw === null) return null;
-        try {
-            return JSON.parse(raw);
-        } catch {
-            return raw;
-        }
-    }
-    function webapi(fn, params) {
-        return call(`obelisk-agent:tools/webapi.${fn}`, params);
-    }
-    function text(value) {
-        if (typeof value === "string") return value;
-        return value === null ? "" : JSON.stringify(value);
-    }
-    function decodeFixture(value) {
-        return typeof value === "string" ? JSON.parse(value) : value;
-    }
-    return host;
-}
-
-const APP = "demo";
-
-// A cloud with the one app `demo`, served by `host`.
-function oneAppCloud(host) {
-    return {
-        run: () => ({ stdout: JSON.stringify({ apps: [{ app_name: APP }] }), stderr: "", exitCode: 0 }),
-        prepareDeploy: () => { throw "not deployable"; },
-        controlPlane: () => host,
-    };
-}
-
-// `obelisk cloud app --app demo ARGS` with `host` as the app's control plane.
-function app(i, args, stdin, host) {
-    return executeObelisk(i, ["cloud", "app", "--app", APP, ...args], stdin, null, null, oneAppCloud(host));
 }
 
 function words(s) {
     return s.split(" ").filter((w) => w !== "");
 }
 
-function interp(cwd = "/workspace") {
+// `env` entries are exported, like a process environment.
+function interp(cwd = "/workspace", env = {}) {
     return new Interpreter({
         vfs: new Vfs(),
         cwd,
-        env: {},
+        env,
         now: () => 0,
         sleep: () => {},
         customCommands: new Map(),
@@ -137,372 +30,606 @@ function interp(cwd = "/workspace") {
     });
 }
 
-// A digest-addressed blob loader for the lazy-mount tests, mirroring the CAS.
-function fixtureLoader(entries) {
-    const map = new Map(Object.entries(entries));
-    return (digest) => {
-        if (!map.has(digest)) throw new Error(`no blob for ${digest}`);
-        return map.get(digest);
+// A fake `createCloud`. `routes` maps `"METHOD /path?query"` (`*` matches one
+// path segment) to a response `{ status, body }`, a JSON value (status 200),
+// a function of the request body, or a `seq(...)` of those served in order
+// (the last repeats). Unrouted requests are 404s. Records every call.
+function fakeCloud(routes = {}) {
+    const served = new Map();
+    const respond = (app, method, path, contentType, body) => {
+        cloud.calls.push({ app, method, path, contentType, body });
+        const key = Object.keys(routes).find((pattern) => {
+            const regex = pattern.split("*").map((part) => part.replace(/[.?+^$()[\]{}|\\]/g, "\\$&")).join("[^/?]+");
+            return new RegExp(`^${regex}$`).test(`${method} ${path}`);
+        });
+        if (key === undefined) return { status: 404, body: `no route for ${method} ${path}` };
+        let route = routes[key];
+        if (route instanceof Seq) {
+            const n = served.get(key) ?? 0;
+            served.set(key, n + 1);
+            route = route.responses[Math.min(n, route.responses.length - 1)];
+        }
+        if (typeof route === "function") route = route(body);
+        if (route && typeof route === "object" && "status" in route) {
+            return { status: route.status, body: typeof route.body === "string" ? route.body : JSON.stringify(route.body) };
+        }
+        return { status: 200, body: JSON.stringify(route) };
     };
+    const cloud = {
+        calls: [],
+        runs: [],
+        deploys: [],
+        get: (app, path) => respond(app, "GET", path, null, null),
+        send: (app, method, path, contentType, body) => respond(app, method, path, contentType, body),
+        run(args, stdin, appToml, fillEnv) {
+            cloud.runs.push({ args, stdin, appToml, fillEnv });
+            return { stdout: "ok\n", stderr: "", exitCode: 0 };
+        },
+        prepareDeploy(app, appToml, fillEnv) {
+            cloud.deploys.push({ app, appToml, fillEnv });
+            return { created: true, log: "→ prepare\n" };
+        },
+        finishDeploy(app, appToml, deploymentId, created, fillEnv) {
+            cloud.deploys.push({ app, deploymentId, created, fillEnv });
+            return { app: { name: app, webhook_url: "https://demo.test/hook", outcome: "applied" }, log: "→ finish\n" };
+        },
+    };
+    return cloud;
 }
 
-// -- subcommand routing / argument parsing (direct calls, bypassing the
-// shell so test args don't have to survive quoting/splitting) --
+class Seq {
+    constructor(responses) {
+        this.responses = responses;
+    }
+}
 
-test("bare obelisk prints command list", () => {
-    const host = fakeHost();
-    const out = executeObelisk(interp(), [], "", host);
-    assert.equal(out.exitCode, 0);
-    assert.match(out.stdout, /^Usage: obelisk <command>/);
+function seq(...responses) {
+    return new Seq(responses);
+}
+
+function run(i, args, cloud, stdin = "") {
+    return executeObelisk(i, typeof args === "string" ? words(args) : args, stdin, null, cloud);
+}
+
+// `obelisk cloud app --app demo ...`
+function api(i, args, cloud, stdin = "") {
+    return run(i, ["cloud", "app", "--app", "demo", ...(typeof args === "string" ? words(args) : args)], cloud, stdin);
+}
+
+// -- dispatch, help, app selection, errors --
+
+test("help is printed at every level", () => {
+    for (const args of ["", "--help", "cloud", "cloud app", "cloud app execution", "cloud app deployment submit --help", "cloud app admin -h"]) {
+        const out = run(interp(), args, fakeCloud());
+        assert.equal(out.exitCode, 0, args);
+        assert.match(out.stdout, /Usage: obelisk/, args);
+    }
+    assert.match(run(interp(), "cloud app execution --help", fakeCloud()).stdout, /persist-backtraces/);
 });
 
-test("help flags print usage at every level", () => {
-    const host = fakeHost();
-    const i = interp();
-    for (const args of [["--help"], ["-h"]]) {
-        const out = executeObelisk(i, args, "", host);
-        assert.equal(out.exitCode, 0);
-        assert.match(out.stdout, /^Usage: obelisk <command>/);
-    }
-    let out = app(i, words("deployment -h"), "", host);
-    assert.equal(out.exitCode, 0);
-    assert.match(out.stdout, /^Usage: obelisk cloud app \[--app NAME\] deployment/);
+test("usage errors exit 2 like clap, other errors print Error: and exit 1", () => {
+    let out = run(interp(), "server run", fakeCloud());
+    assert.equal(out.exitCode, 2);
+    assert.equal(out.stderr, "error: unrecognized subcommand 'server'\n\nFor more information, try '--help'.\n");
 
-    // Help needs no app, so a cloud without one still prints it.
-    const noApps = { run: () => ({ stdout: '{"apps":[]}', stderr: "", exitCode: 0 }), controlPlane: () => host };
-    out = executeObelisk(i, words("cloud app deployment submit --help"), "", null, null, noApps);
-    assert.equal(out.exitCode, 0);
-    assert.equal(out.stdout, [
-        "Usage: obelisk cloud app [--app NAME] deployment submit [OPTIONS] PATH-TO-DEPLOYMENT.TOML",
-        "",
-        "Store the edited deployment as a new inactive deployment and print its ID. PATH",
-        "is the path to the deployment TOML file to submit (any filename -- not just the",
-        'literal "deployment.toml"); it must be a file, not a directory, matching real',
-        "obelisk. Digests are recomputed from the files, so leave them out.",
-        "",
-        "Options:",
-        "--description TEXT               Human-readable description for the new deployment.",
-        "--allow-missing-runtime-config  Tolerate runtime config unavailable on this server.",
-        "(alias: --allow-unavailable-runtime-config)",
+    out = api(interp(), "execution list --bogus", fakeCloud());
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /^error: unexpected argument '--bogus' found/);
+
+    out = api(interp(), "execution status", fakeCloud());
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /required arguments were not provided:\n {2}<EXECUTION_ID>/);
+
+    out = api(interp(), "execution status E_1", fakeCloud());
+    assert.equal(out.exitCode, 1);
+    assert.equal(out.stderr, "Error: server returned 404 Not Found: no route for GET /v1/executions/E_1/status\n");
+});
+
+test("the app comes from --app anywhere, then exported OBELISK_APP_NAME, then ./app.toml", () => {
+    const cloud = fakeCloud({ "GET /v1/deployment-id": "Dep_1" });
+    assert.equal(run(interp(), "cloud app deployment active --app flag", cloud).exitCode, 0);
+    assert.equal(run(interp("/workspace", { OBELISK_APP_NAME: "env" }), "cloud app deployment active", cloud).exitCode, 0);
+    const i = interp();
+    i.vfs.writeFile("/workspace/app.toml", 'app_name = "file"\n');
+    i.setVar("OBELISK_APP_NAME", "not-exported");
+    assert.equal(run(i, "cloud app deployment active", cloud).exitCode, 0);
+    assert.deepEqual(cloud.calls.map((call) => call.app), ["flag", "env", "file"]);
+
+    const out = run(interp(), "cloud app deployment active", cloud);
+    assert.equal(out.exitCode, 1);
+    assert.match(out.stderr, /^Error: Select an app with --app, OBELISK_APP_NAME or app_name in \.\/app\.toml/);
+});
+
+test("--json is global and active prints the ID as a value", () => {
+    const cloud = fakeCloud({ "GET /v1/deployment-id": "Dep_1" });
+    assert.equal(api(interp(), "deployment active", cloud).stdout, "Dep_1\n");
+    assert.equal(run(interp(), "cloud --json app --app demo deployment active", cloud).stdout, '"Dep_1"\n');
+});
+
+test("commandHandler strips the command name and runs inside the shell", () => {
+    const bash = new Bash({ cwd: "/workspace" });
+    bash.registerCommand("obelisk", commandHandler(null, fakeCloud({ "GET /v1/deployment-id": "Dep_1" })));
+    const out = bash.exec("obelisk cloud app --app demo deployment active | tr D d");
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stdout, "dep_1\n");
+});
+
+// -- provisioner commands and deploy --
+
+test("provisioner commands forward args, policy, OBELISK_APP_NAME and --from-env", () => {
+    const i = interp("/workspace", { OBELISK_APP_NAME: "demo", API_KEY: "s3cret" });
+    i.vfs.writeFile("/workspace/app.toml", 'app_name = "demo"\n');
+    const cloud = fakeCloud();
+    let out = run(i, "cloud app secrets set API_KEY --from-env API_KEY", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.deepEqual(cloud.runs[0], {
+        args: words("app secrets set API_KEY --stdin --app demo"), stdin: "s3cret", appToml: 'app_name = "demo"\n', fillEnv: null,
+    });
+
+    out = run(i, "cloud app fill --non-interactive", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.deepEqual(new Map(cloud.runs[1].fillEnv).get("API_KEY"), "s3cret");
+
+    out = run(i, "cloud app secrets set X --from-env MISSING", cloud);
+    assert.equal(out.stderr, "Error: environment variable MISSING is not set\n");
+});
+
+test("cloud app deploy prepares the app, enqueues the deployment, then finishes with its id", () => {
+    const i = interp("/workspace/app");
+    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
+    i.vfs.writeFile("/workspace/app/deployment.toml", '[[activity_js]]\nlocation = "a.js"\n');
+    i.vfs.writeFile("/workspace/app/a.js", "a");
+    const cloud = fakeCloud({
+        "PUT /v1/deployments/*": { status: 201, body: "" },
+        "PUT /v1/deployments/*/switch": { ok: "restart_required" },
+    });
+    const out = run(i, "cloud app deploy", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    const id = cloud.deploys[1].deploymentId;
+    assert.match(id, /^Dep_[0-9A-Z]{26}$/);
+    assert.deepEqual(cloud.deploys, [
+        { app: "demo", appToml: 'app_name = "demo"\n', fillEnv: null },
+        { app: "demo", deploymentId: id, created: true, fillEnv: null },
+    ]);
+    const submit = cloud.calls.find((call) => call.path === `/v1/deployments/${id}`);
+    assert.deepEqual(JSON.parse(submit.body), {
+        deployment_toml: `[[activity_js]]\nlocation = "a.js"\ncontent_digest = "${sha256("a")}"\n`,
+        description: null,
+        allow_unavailable_runtime_config: true,
+    });
+    assert.equal(out.stdout, "https://demo.test/hook\n");
+    assert.equal(out.stderr, `→ prepare\n→ obelisk cloud app deployment enqueue\nSubmitted as ${id}\nDeployment staged for cloud app apply.\n→ finish\nDeployed demo\n`);
+
+    const json = run(i, "cloud app deploy --json", cloud);
+    assert.deepEqual(JSON.parse(json.stdout).outcomes, ["applied"]);
+});
+
+test("cloud app deploy stops before finishing when the enqueue fails", () => {
+    const i = interp("/workspace/app");
+    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
+    i.vfs.writeFile("/workspace/app/deployment.toml", "");
+    const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 400, body: "invalid deployment" } });
+    const out = run(i, "cloud app deploy", cloud);
+    assert.equal(out.exitCode, 1);
+    assert.match(out.stderr, /Error: Deployment staging failed; inspect `obelisk cloud app --app demo status` and retry deploy\n\nCaused by:\n {4}server returned 400 Bad Request: invalid deployment\n$/);
+    assert.equal(cloud.deploys.length, 1);
+});
+
+// -- execution --
+
+const LOCKED = { status: "locked", locked_by: { executor_id: "Exr_1", run_id: "Run_1" }, lock_expires_at: "2026-01-01T00:00:00Z" };
+const FINISHED = { status: "finished", version: 3, finished_at: "2026-01-01T00:00:01Z", result_kind: "ok" };
+
+test("execution list forwards filters and prints a compact or verbose line per execution", () => {
+    const executions = [
+        { execution_id: "E_1", ffqn: "a:b/c.d", pending_state: LOCKED, first_scheduled_at: "2026-01-01T00:00:00Z" },
+        { execution_id: "E_2", ffqn: "a:b/c.e", pending_state: FINISHED, first_scheduled_at: "2026-01-01T00:00:00Z" },
+    ];
+    const cloud = fakeCloud({ "GET /v1/executions?*": executions });
+    let out = api(interp(), "execution list --ffqn a:b -e E_ --hide-finished --limit 5", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(cloud.calls[0].path, "/v1/executions?length=5&ffqn_prefix=a%3Ab&execution_id_prefix=E_&hide_finished=true");
+    assert.equal(out.stderr, "E_1 `Running` a:b/c.d\nE_2 `Finished: OK` a:b/c.e\n");
+    assert.equal(out.stdout, "");
+
+    out = run(interp(), "cloud --verbose app --app demo execution list", cloud);
+    assert.equal(out.stderr.split("\n")[0], "E_1 `Locked(`2026-01-01 00:00:00 UTC`, Exr_1, Run_1)` a:b/c.d `2026-01-01 00:00:00 UTC`");
+    assert.deepEqual(JSON.parse(api(interp(), "execution list -j", cloud).stdout), executions);
+});
+
+test("execution submit matches a short function name and prints the new ID", () => {
+    const cloud = fakeCloud({
+        "GET /v1/components?exports=true&extensions=false": [{ exports: [{ ffqn: "ns:pkg/ifc@1.0.0.run" }, { ffqn: "ns:pkg/other.run" }] }],
+        "PUT /v1/executions/*": (body) => ({ ok: "E_x", body }),
+    });
+    const out = api(interp(), ["execution", "submit", ".../ifc.run", '["a", 1]', "--paused"], cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stderr, "Matched ns:pkg/ifc@1.0.0.run\n");
+    assert.equal(out.stdout, "E_x\n");
+    assert.match(cloud.calls[1].path, /^\/v1\/executions\/E_[0-9A-Z]{26}$/);
+    assert.deepEqual(JSON.parse(cloud.calls[1].body), { ffqn: "ns:pkg/ifc@1.0.0.run", params: ["a", 1], paused: true });
+});
+
+test("execution submit parameters: none, one array, stdin, @file, and one value per argument after --", () => {
+    const cloud = fakeCloud({ "PUT /v1/executions/*": { ok: "E_x" } });
+    const i = interp();
+    i.vfs.writeFile("/workspace/p.json", "[3]");
+    const params = (args, stdin) => {
+        const out = api(i, ["execution", "submit", ...args], cloud, stdin);
+        assert.equal(out.exitCode, 0, out.stderr);
+        return JSON.parse(cloud.calls.at(-1).body).params;
+    };
+    assert.deepEqual(params(["a:b/c.d"]), []);
+    assert.deepEqual(params(["a:b/c.d", "[1, 2]"]), [1, 2]);
+    assert.deepEqual(params(["a:b/c.d", "-"], "[true]"), [true]);
+    assert.deepEqual(params(["a:b/c.d", "@p.json"]), [3]);
+    assert.deepEqual(params(["a:b/c.d", "--", '"x"', "{}"]), ["x", {}]);
+    assert.deepEqual(params(["a:b/c.d", "--", "[1]"]), [[1]]);
+    assert.deepEqual(params(["-e", "E_given", "a:b/c.d"]), []);
+    assert.equal(cloud.calls.at(-1).path, "/v1/executions/E_given");
+
+    const out = api(i, ["execution", "submit", "a:b/c.d", "{}"], cloud);
+    assert.equal(out.stderr, "Error: Parameter provided as JSON must be a JSON array.\n");
+});
+
+test("execution submit --follow streams the status and reports the result", () => {
+    const sse = `data: ${JSON.stringify({ pending_state: LOCKED })}\n\ndata: ${JSON.stringify({ pending_state: FINISHED })}\n\n`;
+    const cloud = fakeCloud({
+        "PUT /v1/executions/*": { ok: "E_x" },
+        "GET /v1/executions/*/status?follow=true": { status: 200, body: sse },
+        "GET /v1/executions/*?follow=false": { ok: { value: 1 } },
+    });
+    let out = api(interp(), "execution submit -e E_x a:b/c.d -f", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stdout, "E_x\n");
+    assert.equal(out.stderr, 'Locked\nFinished: OK\nExecution finished: OK: {"value":1}\n');
+
+    out = api(interp(), "execution submit -e E_x a:b/c.d -f --json", cloud);
+    assert.equal(out.stdout, '{"ok":"E_x"}\n{"ok":{"value":1}}\n');
+    assert.equal(out.stderr, "");
+});
+
+test("execution result exits 1 on an error or execution failure", () => {
+    let cloud = fakeCloud({ "GET /v1/executions/E_1?follow=false": { err: null } });
+    let out = api(interp(), "execution result E_1", cloud);
+    assert.equal(out.exitCode, 1);
+    assert.equal(out.stderr, "Execution finished: Error: (no return value)\n");
+
+    cloud = fakeCloud({ "GET /v1/executions/E_1?follow=false": { execution_failed: { kind: "timed_out", reason: "slow", detail: "d" } } });
+    out = api(interp(), "execution result E_1", cloud);
+    assert.equal(out.stderr, "Execution finished: Execution failure (TimedOut): `slow`\nd\n");
+});
+
+test("execution status prints the status text, or JSON", () => {
+    const cloud = fakeCloud({ "GET /v1/executions/E_1/status": { ffqn: "a:b/c.d", pending_state: { status: "blocked_by_join_set", join_set_id: "o:1", closing: true } } });
+    assert.equal(api(interp(), "execution get E_1", cloud).stderr, "Blocked by o:1 (closing)\n");
+    assert.equal(JSON.parse(api(interp(), "execution status E_1 --json", cloud).stdout).ffqn, "a:b/c.d");
+});
+
+test("execution logs builds the level and stream query and prints log and stream lines", () => {
+    const items = [
+        { cursor: 1, run_id: "Run_1", execution_id: "E_1", type: "log", created_at: "2026-01-01T00:00:00Z", level: "info", message: "hello" },
+        { cursor: 2, run_id: "Run_1", execution_id: "E_1", type: "stream", created_at: "2026-01-01T00:00:01Z", stream_type: "stdout", payload: "aGkK" },
+    ];
+    const cloud = fakeCloud({ "GET /v1/executions/E_1/logs?*": items });
+    const out = api(interp(), "execution logs E_1 --level warn --stream-type stdout --show-run-id", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(cloud.calls[0].path,
+        "/v1/executions/E_1/logs?length=20&direction=newer&show_logs=true&level=warn&level=error&show_streams=true&stream_type=stdout");
+    assert.equal(out.stdout,
+        "2026-01-01 00:00:00 UTC [info  ] Run_1 hello\n2026-01-01 00:00:01 UTC [stdout] Run_1 hi\n\n");
+
+    const off = api(interp(), "execution logs E_1 --level off --stream-type none", cloud);
+    assert.equal(off.stderr, "Error: either `--level` must not be `off`, or `--stream-type` must not be `none`\n");
+});
+
+test("execution logs --follow polls until the execution has finished and nothing is left", () => {
+    const item = { cursor: 7, run_id: "Run_1", execution_id: "E_1", type: "log", created_at: "2026-01-01T00:00:00Z", level: "info", message: "m" };
+    const cloud = fakeCloud({
+        "GET /v1/executions/E_1/logs?*": seq([], [item], []),
+        "GET /v1/executions/E_1/status": seq({ pending_state: LOCKED }, { pending_state: FINISHED }),
+    });
+    const out = api(interp(), "execution logs E_1 --follow", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stdout, "2026-01-01 00:00:00 UTC [info  ] m\n");
+    assert.match(cloud.calls.at(-2).path, /&cursor=7&including_cursor=false$/);
+});
+
+test("execution events and responses render the event log", () => {
+    const cloud = fakeCloud({
+        "GET /v1/executions/E_1/events?length=20&direction=older": {
+            events: [
+                { version: 0, created_at: "2026-01-01T00:00:00Z", event: { created: { ffqn: "a:b/c.d", scheduled_at: "2026-01-01T00:00:00Z" } } },
+                { version: 1, created_at: "2026-01-01T00:00:00Z", event: { history_event: { event: { type: "join_set_request", join_set_id: "o:1", request: { type: "delay_request", delay_id: "Delay_1", expires_at: "2026-01-01T00:00:00Z", schedule_at: { in: { secs: 5, nanos: 0 } } } } } } },
+                { version: 2, created_at: "2026-01-01T00:00:00Z", event: "paused" },
+            ],
+            max_version: 2,
+        },
+        "GET /v1/executions/E_1/responses?length=3&cursor=0&including_cursor=true": {
+            responses: [{ cursor: 0, event: { created_at: "2026-01-01T00:00:00Z", event: { join_set_id: "o:1", event: { type: "delay_finished", delay_id: "Delay_1", result: { Ok: null } } } } }],
+        },
+    });
+    let out = api(interp(), "execution events E_1", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stderr, [
+        "0 `2026-01-01 00:00:00 UTC` Created(a:b/c.d, `2026-01-01 00:00:00 UTC`)",
+        "1 `2026-01-01 00:00:00 UTC` HistoryEvent(JoinSetRequest(DelayRequest(Delay_1, expires_at: `2026-01-01 00:00:00 UTC`, schedule_at: `In(5s)`)))",
+        "2 `2026-01-01 00:00:00 UTC` Paused",
         "",
     ].join("\n"));
-
-    // `call -h` reaches the call help even though the ffqn sits in the
-    // action slot, but a help flag after `--` is a positional parameter.
-    out = app(i, words("call -h"), "", host);
-    assert.equal(out.exitCode, 0);
-    assert.match(out.stdout, /^Usage: obelisk cloud app \[--app NAME\] call/);
-
-    assert.equal(host.calls.length, 0, "no help path ever hits the host");
+    out = api(interp(), "execution responses E_1 --from 0 --limit 3", cloud);
+    assert.equal(out.stderr, "0 `2026-01-01 00:00:00 UTC` o:1 delay finished: Delay_1\n");
 });
 
-test("command groups with no action fall through to unknown-command", () => {
-    const host = fakeHost();
-    const i = interp();
-    for (const group of ["functions", "executions", "deployment"]) {
-        const out = app(i, [group], "", host);
-        assert.equal(out.exitCode, 2);
-        assert.notEqual(out.stderr, "");
-    }
-    assert.equal(host.calls.length, 0);
+test("execution cancel accepts a 409 outcome and routes delays separately", () => {
+    const cloud = fakeCloud({
+        "PUT /v1/executions/E_1/cancel": { status: 409, body: { err: "already_finished" } },
+        "PUT /v1/delays/Delay_1/cancel": { ok: "cancelled" },
+    });
+    assert.equal(api(interp(), "execution cancel E_1", cloud).stderr, "Already_finished\n");
+    assert.equal(api(interp(), "execution cancel Delay_1 --json", cloud).stdout, '{\n  "ok": "cancelled"\n}\n');
+    assert.equal(api(interp(), "execution cancel X_1", cloud).exitCode, 2);
 });
 
-test("app commands at the top level point at obelisk cloud app", () => {
-    const host = fakeHost();
-    for (const args of [words("functions list"), words("executions get E_1"), words("call some:ffqn []"), words("deployment active")]) {
-        const out = executeObelisk(interp(), args, "", host);
-        assert.equal(out.exitCode, 2);
-        assert.equal(out.stderr, `obelisk: \`obelisk ${args[0]}\` runs against a cloud app: use \`obelisk cloud app [--app NAME] ${args.join(" ")}\` (see \`obelisk cloud apps list\`)\n`);
-    }
-    assert.equal(host.calls.length, 0);
-});
-
-test("ask-user stays a top-level call answered by the session", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.call-target", "42");
-    const out = executeObelisk(interp(), ["call", "obelisk-agent:stub/stub.ask-user", '["ok?"]'], "", host);
+test("execution advance pauses captured delays and children before writing them", () => {
+    const delayAppend = { event: { history_event: { event: { type: "join_set_request", request: { type: "delay_request", delay_id: "Delay_1" } } } } };
+    const cloud = fakeCloud({
+        "PUT /v1/executions/E_1/replay": {
+            type: "advanceable", replayed_event_count: 1, replay_duration_ms: 1, replay_version: 1,
+            captured_writes: [{ type: "append", event: delayAppend }, { type: "append_batch_create_new_execution", events: [], child_requests: [{}] }],
+        },
+        "PUT /v1/executions/E_1/advance": { type: "in_progress", pending_state: { status: "paused", PendingAt: { scheduled_at: "2026-01-01T00:00:00Z", last_lock: null } } },
+    });
+    const out = api(interp(), "execution advance E_1 --pause-all", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
-    assert.equal(out.stdout, "42\n");
-    assert.deepEqual(host.calls, [["obelisk-agent:tools/webapi.call-target", JSON.stringify(["obelisk-agent:stub/stub.ask-user", '["ok?"]'])]]);
+    const writes = JSON.parse(cloud.calls[1].body).captured_writes;
+    assert.equal(writes[0].event.event.history_event.event.request.paused, true);
+    assert.equal(writes[1].child_requests[0].paused, true);
+    assert.equal(out.stderr, "success, current state: Paused(PendingAt(`2026-01-01 00:00:00 UTC`, last_lock=None))\n");
 });
 
-test("the app defaults to the cloud's only app, else asks for --app", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.current-deployment-id", '"Dep_1"');
-    let out = executeObelisk(interp(), words("cloud app deployment active"), "", null, null, oneAppCloud(host));
-    assert.equal(out.exitCode, 0);
-    assert.equal(out.stdout, "Dep_1\n");
-
-    const two = { run: () => ({ stdout: '{"apps":[{"app_name":"a"},{"app_name":"b"}]}', stderr: "", exitCode: 0 }), controlPlane: () => host };
-    out = executeObelisk(interp(), words("cloud app deployment active"), "", null, null, two);
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stderr, "obelisk: Select an app with --app NAME (apps: a, b) or app_name in ./app.toml\n");
-
-    const i = interp();
-    i.vfs.writeFile("/workspace/app.toml", 'app_name = "b"\n');
-    let asked = null;
-    out = executeObelisk(i, words("cloud app deployment active"), "", null, null, { ...two, controlPlane: (name) => { asked = name; return host; } });
-    assert.equal(out.exitCode, 0);
-    assert.equal(asked, "b");
-});
-
-test("unknown command reports help", () => {
-    const host = fakeHost();
-    const out = executeObelisk(interp(), ["nonsense"], "", host);
-    assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /unknown command 'nonsense'/);
-    assert.match(out.stderr, /Usage: obelisk <command>/);
-});
-
-test("functions list forwards prefix and length", () => {
-    const host = fakeHost().with(
-        "obelisk-agent:tools/webapi.list-functions",
-        JSON.stringify([
-            {
-                ffqn: "foo:bar/api.run",
-                parameter_types: [
-                    { name: "input", wit_type: "string" },
-                    { name: "retries", wit_type: "u32" },
-                ],
-                return_type: "result<string, error>",
-                extension: null,
-            },
-            { ffqn: "foo:bar/api.run-submit", parameter_types: [], return_type: "execution-id", extension: "submit" },
-        ]),
-    );
-    const out = app(interp(), words("functions list --prefix foo --length 5"), "", host);
-    assert.equal(out.exitCode, 0);
-    assert.equal(out.stdout, "foo:bar/api.run : func(input: string, retries: u32) -> result<string, error>\n");
-    assert.equal(host.calls[0][1], JSON.stringify(["foo", 5]));
-});
-
-test("functions list --json preserves structured output", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.list-functions", JSON.stringify([{ ffqn: "a", extension: null }]));
-    const out = app(interp(), words("functions list --json"), "", host);
-    assert.equal(out.exitCode, 0);
-    assert.equal(out.stdout, '[\n  {\n    "ffqn": "a",\n    "extension": null\n  }\n]\n');
-});
-
-test("functions list defaults when flags absent", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.list-functions", "[]");
-    app(interp(), words("functions list"), "", host);
-    assert.equal(host.calls[0][1], JSON.stringify(["", 100]));
-});
-
-test("functions wit prints non-JSON text verbatim", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.get-function-wit", JSON.stringify("interface foo { bar: func() }"));
-    const out = app(interp(), words("functions wit a:b/c.d"), "", host);
-    assert.equal(out.exitCode, 0);
-    assert.equal(out.stdout, "interface foo { bar: func() }\n");
-});
-
-test("functions wit requires ffqn", () => {
-    const out = app(interp(), words("functions wit"), "", fakeHost());
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stderr, "obelisk: ffqn is required\n");
-});
-
-test("executions list forwards all flags in order", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.list-executions", "[]");
-    app(interp(), words("executions list --ffqn-prefix pfx --show-derived --length 7"), "", host);
-    assert.equal(host.calls[0][1], JSON.stringify(["pfx", "", true, false, "", "", "", "", false, 7]));
-});
-
-test("executions get requires id", () => {
-    const out = app(interp(), words("executions get"), "", fakeHost());
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stderr, "obelisk: execution id is required\n");
-});
-
-test("executions logs forwards id and length", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.get-logs", JSON.stringify("log"));
-    const out = app(interp(), words("executions logs exec-1 --length 50"), "", host);
-    assert.equal(out.stdout, "log\n");
-    assert.equal(host.calls[0][1], JSON.stringify(["exec-1", true, true, true, [], [], "", "", false, 50]));
-});
-
-test("executions result forwards id", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.get-result-json", JSON.stringify({ ok: 1 }));
-    const out = app(interp(), words("executions result exec-1"), "", host);
-    assert.equal(out.stdout, '{\n  "ok": 1\n}\n');
-});
-
-test("call uses explicit params over stdin", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.call-target", "42");
-    const out = app(interp(), words("call some:ffqn [1]"), "[2]", host);
-    assert.equal(out.stdout, "42\n");
-    assert.equal(host.calls[0][1], JSON.stringify(["some:ffqn", "[1]"]));
-});
-
-test("call prints only the target result", () => {
-    let host = fakeHost().with("obelisk-agent:tools/webapi.call-target", JSON.stringify(JSON.stringify({ answer: 42 })));
-    let out = app(interp(), words("call some:ffqn []"), "", host);
-    assert.equal(out.stdout, '{\n  "answer": 42\n}\n');
-
-    host = fakeHost().with("obelisk-agent:tools/webapi.call-target", JSON.stringify(JSON.stringify("plain result")));
-    out = app(interp(), words("call some:ffqn []"), "", host);
-    assert.equal(out.stdout, "plain result\n");
-});
-
-test("call failure is a command error, not a result", () => {
-    const out = app(interp(), words("call some:ffqn []"), "", fakeHost());
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stdout, "");
-    assert.match(out.stderr, /^obelisk: no fixture for/);
-});
-
-test("call falls back to stdin then to an empty array", () => {
-    let host = fakeHost().with("obelisk-agent:tools/webapi.call-target", "1");
-    app(interp(), words("call some:ffqn"), "[9]", host);
-    assert.equal(host.calls[0][1], JSON.stringify(["some:ffqn", "[9]"]));
-
-    host = fakeHost().with("obelisk-agent:tools/webapi.call-target", "1");
-    app(interp(), words("call some:ffqn"), "", host);
-    assert.equal(host.calls[0][1], JSON.stringify(["some:ffqn", "[]"]));
-});
-
-test("call accepts positional params after --", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.call-target", "1");
-    app(
-        interp(),
-        ["call", "some:ffqn", "--", "1", "true", "null", '{"field":2}', "plain text", '"42"'],
-        "ignored stdin",
-        host,
-    );
-    assert.equal(
-        host.calls[0][1],
-        JSON.stringify(["some:ffqn", JSON.stringify([1, true, null, { field: 2 }, "plain text", "42"])]),
-    );
-});
-
-test("call rejects multiple arguments without --", () => {
-    const host = fakeHost();
-    const out = app(interp(), words("call some:ffqn 1 2"), "", host);
-    assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /expected one params JSON array/);
-    assert.equal(host.calls.length, 0);
-});
-
-test("call rejects an explicitly empty params argument", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.call-target", "1");
-    const out = app(interp(), ["call", "some:ffqn", ""], "", host);
-    assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /params-json argument is empty/);
-    assert.equal(host.calls.length, 0);
-});
-
-test("call requires ffqn", () => {
-    const out = app(interp(), words("call"), "", fakeHost());
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stderr, "obelisk: ffqn is required\n");
-});
-
-test("deployment active calls host", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.current-deployment-id", JSON.stringify("dep-1"));
-    const out = app(interp(), words("deployment active"), "", host);
-    assert.equal(out.stdout, "dep-1\n");
-});
-
-test("deployment active --json quotes the id", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.current-deployment-id", JSON.stringify("dep-1"));
-    const out = app(interp(), words("deployment active --json"), "", host);
-    assert.equal(out.stdout, '"dep-1"\n');
-});
-
-test("deployment enqueue requires id, forwards the flag, and reports the outcome", () => {
-    const i = interp();
-    let out = app(i, words("deployment enqueue"), "", fakeHost());
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stderr, "obelisk: deployment id is required\n");
-
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-switch", JSON.stringify({ ok: "restart_required" }));
-    out = app(i, words("deployment enqueue dep-2 --allow-missing-runtime-config"), "", host);
-    assert.equal(host.calls[0][1], JSON.stringify(["dep-2", true]));
-    assert.equal(out.stdout, "Deployment enqueued. Restart the server to apply.\n");
-});
-
-test("deployment enqueue reports an already-active deployment", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-switch", JSON.stringify({ ok: "switched" }));
-    const out = app(interp(), words("deployment enqueue dep-2"), "", host);
-    assert.equal(out.stdout, "Deployment already active; it will remain active after restart.\n");
-});
-
-test("deployment apply requires id", () => {
-    const out = app(interp(), words("deployment apply"), "", fakeHost());
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stderr, "obelisk: deployment id or PATH-TO-DEPLOYMENT.TOML is required\n");
-});
-
-test("deployment apply reports success", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.apply-deployment", JSON.stringify({ ok: "switched" }));
-    const out = app(interp(), words("deployment apply Dep_2"), "", host);
-    assert.equal(host.calls[0][1], JSON.stringify(["Dep_2"]));
-    assert.equal(out.stdout, "Applied successfully.\n");
-});
-
-test("deployment apply submits a manifest path first, like real obelisk", () => {
-    const i = interp("/workspace/app");
-    i.vfs.writeFile("/workspace/app/deployment.toml", '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n');
-    const host = fakeHost()
-        .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"))
-        .with("obelisk-agent:tools/webapi.apply-deployment", JSON.stringify({ ok: "switched" }));
-    const out = app(i, words("deployment apply deployment.toml"), "", host);
+test("execution upgrade switches to the active deployment's component", () => {
+    const cloud = fakeCloud({
+        "GET /v1/executions/E_1/status": { ffqn: "a:b/c.d", component_digest: "sha256:old" },
+        "GET /v1/components?ffqn=a%3Ab%2Fc.d": [{ component_id: { name: "w", component_digest: "sha256:new" } }],
+        "PUT /v1/executions/E_1/upgrade": { status: 200, body: "" },
+    });
+    const out = api(interp(), "execution upgrade E_1", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
-    assert.equal(out.stdout, "Submitted as Dep_new\nApplied successfully.\n");
-    assert.equal(JSON.parse(host.calls[0][1])[3], false);
-    assert.deepEqual(host.calls[1], ["obelisk-agent:tools/webapi.apply-deployment", JSON.stringify(["Dep_new"])]);
+    assert.equal(out.stderr, "Upgrading from sha256:old to sha256:new\nUpgraded\n");
+    assert.deepEqual(JSON.parse(cloud.calls[2].body), { old: "sha256:old", new: "sha256:new", skip_determinism_check: false });
 });
 
-test("deployment apply fails when only a restart could apply it", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.apply-deployment", JSON.stringify({ ok: "restart_required" }));
-    const out = app(interp(), words("deployment apply Dep_2"), "", host);
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stderr, "obelisk: Could not apply immediately; deployment enqueued. Restart the server to apply.\n");
+// -- component --
+
+test("component list prints each component's exports", () => {
+    const components = [{
+        component_id: { component_type: "workflow", name: "wf", component_digest: "sha256:1" },
+        exports: [{ ffqn: "a:b/c.d", parameter_types: [{ name: "x", wit_type: "u32" }], return_type: "result<string>" }],
+        imports: [],
+    }];
+    const cloud = fakeCloud({ "GET /v1/components?exports=true&imports=true&extensions=false": components });
+    const out = api(interp(), "component list -i", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stderr, "wf\tworkflow\nExports:\n\ta:b/c.d: func(x: u32) -> result<string>\nImports:\n\n");
+    assert.match(api(interp(), "component push x", cloud).stderr, /^Error: `component push` needs an OCI registry/);
 });
 
-test("deployment list renders a table, newest first", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.list-deployments", JSON.stringify([
-        { deployment_id: "Dep_2", description: "second", status: "active", created_at: "2026-09-14T08:22:17.592Z", last_active_at: "2026-09-14T09:00:00.000Z" },
-        { deployment_id: "Dep_1", description: "", status: "inactive", created_at: "2026-09-13T07:00:00.000Z", last_active_at: null },
-    ]));
-    const out = app(interp(), words("deployment list"), "", host);
-    assert.equal(host.calls[0][1], JSON.stringify(["", false, 20]));
-    const lines = out.stdout.split("\n");
-    assert.equal(lines[0], "ID                                STATUS        CREATED_AT           LAST_ACTIVE_AT       DESCRIPTION");
-    assert.equal(lines[1], "Dep_2                             Active        2026-09-14 08:22:17  2026-09-14 09:00:00  second");
-    assert.equal(lines[2], "Dep_1                             Inactive      2026-09-13 07:00:00                       ");
+// -- deployment --
+
+test("deployment submit preflights, then attaches only the missing files", () => {
+    const i = interp();
+    i.vfs.writeFile("/workspace/deployment.toml", '[[activity_js]]\nlocation = "a.js"\n');
+    i.vfs.writeFile("/workspace/a.js", "a");
+    const digest = sha256("a");
+    const cloud = fakeCloud({
+        "PUT /v1/deployments/Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV": seq(
+            { status: 409, body: { missing_files: [{ field_path: "activity_js[0].location", path: "a.js", digest }] } },
+            { status: 201, body: "" },
+        ),
+    });
+    const out = api(i, "deployment submit --deployment-id Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV --description first", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stdout, "Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV\n");
+    assert.equal(out.stderr, "Submitted as Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV\n");
+    const [preflight, retry] = cloud.calls;
+    assert.equal(JSON.parse(preflight.body).description, "first");
+    const boundary = retry.contentType.match(/^multipart\/form-data; boundary=(.+)$/)[1];
+    assert.ok(retry.body.includes(`name="${digest}"; filename="a.js"\r\nContent-Type: application/octet-stream\r\n\r\na\r\n`), retry.body);
+    assert.ok(retry.body.includes('name="allow_unavailable_runtime_config"\r\n\r\nfalse\r\n'));
+    assert.ok(retry.body.endsWith(`--${boundary}--\r\n`));
 });
 
-test("deployment list reports an empty catalog", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.list-deployments", JSON.stringify([]));
-    const out = app(interp(), words("deployment list"), "", host);
-    assert.equal(out.stdout, "No deployments found.\n");
+test("deployment submit reuses the active deployment when nothing changed", () => {
+    const i = interp();
+    i.vfs.writeFile("/workspace/deployment.toml", "# comment\n[[activity_js]]\nlocation = 'a.js'\n");
+    i.vfs.writeFile("/workspace/a.js", "a");
+    const cloud = fakeCloud({
+        "GET /v1/deployment-id": "Dep_1",
+        "GET /v1/deployments/Dep_1": { deployment_toml: `[[activity_js]]\ncontent_digest = "${sha256("a")}"\nlocation = "a.js"\n`, description: null },
+    });
+    const out = api(i, "deployment apply", cloud);
+    assert.equal(out.exitCode, 1);
+    assert.equal(out.stderr, "Deployment content unchanged; using Dep_1\nError: server returned 404 Not Found: no route for PUT /v1/deployments/Dep_1/switch\n");
 });
 
-test("deployment show prints the stored manifest", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.get-deployment", JSON.stringify({ deployment_toml: "[[activity_js]]\nname = \"x\"\n" }));
-    const out = app(interp(), words("deployment show Dep_1"), "", host);
-    assert.equal(host.calls[0][1], JSON.stringify(["Dep_1", null, null, null, null]));
-    assert.equal(out.stdout, "[[activity_js]]\nname = \"x\"\n");
+test("deployment submit reports server rejections like the real CLI", () => {
+    const i = interp();
+    i.vfs.writeFile("/workspace/deployment.toml", "");
+    let cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 409, body: { unexpected_files: [{ field_path: "x" }], missing_files: [{ field_path: "y", message: "gone" }] } } });
+    assert.equal(api(i, "deployment submit", cloud).stderr, "Error: deployment submit rejected: missing file at y (gone); unexpected file x\n");
+
+    cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 422, body: { error: "missing_runtime_config", secrets: ["TOKEN"] } } });
+    assert.match(api(i, "deployment submit", cloud).stderr, /^Error: deployment rejected by the server: configuration references secret\(s\) `TOKEN` not registered/);
 });
 
-test("deployment show requires id", () => {
-    const out = app(interp(), words("deployment show"), "", fakeHost());
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stderr, "obelisk: deployment id is required\n");
+test("deployment submit rejects generated metadata and an ID with --description", () => {
+    const i = interp();
+    i.vfs.writeFile("/workspace/deployment.toml", '[[activity_js]]\nlocation = "a.js"\ncontent_digest = "sha256:1"\n');
+    assert.equal(api(i, "deployment submit", fakeCloud()).stderr,
+        "Error: activity_js.content_digest is generated submission metadata; remove it from deployment.toml\n");
+    assert.equal(api(i, "deployment enqueue Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV --description x", fakeCloud()).stderr,
+        "Error: --description cannot be used with an existing deployment ID\n");
+    assert.match(api(i, "deployment submit missing.toml", fakeCloud()).stderr, /^Error: cannot read deployment manifest "missing.toml"/);
 });
 
-test("deployment unknown action", () => {
-    const out = app(interp(), words("deployment bogus"), "", fakeHost());
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stderr, "obelisk deployment: unknown action 'bogus'\n");
+test("deployment enqueue and apply switch the deployment and report the outcome", () => {
+    const id = "Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let cloud = fakeCloud({ [`PUT /v1/deployments/${id}/switch`]: { ok: "switched" } });
+    let out = api(interp(), `deployment enqueue ${id} --allow-unavailable-runtime-config`, cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stderr, "Deployment already active; it will remain active after restart.\n");
+    assert.deepEqual(JSON.parse(cloud.calls[0].body), { allow_unavailable_runtime_config: true, apply: false });
+
+    out = api(interp(), `deployment apply ${id}`, cloud);
+    assert.equal(out.stderr, "Applied successfully.\n");
+    assert.deepEqual(JSON.parse(cloud.calls[1].body), { allow_unavailable_runtime_config: false, apply: true });
+
+    cloud = fakeCloud({ [`PUT /v1/deployments/${id}/switch`]: { ok: "restart_required" } });
+    out = api(interp(), `deployment apply ${id}`, cloud);
+    assert.equal(out.stderr, "Error: Could not apply immediately; deployment enqueued. Restart the server to apply.\n");
+    assert.equal(api(interp(), `deployment apply ${id} --allow-unavailable-runtime-config`, cloud).exitCode, 2);
 });
+
+test("deployment list prints a table", () => {
+    const cloud = fakeCloud({
+        "GET /v1/deployments": [{ deployment_id: "Dep_1", status: "active", description: "first", created_at: "2026-01-01T00:00:00.123Z", last_active_at: null }],
+    });
+    assert.equal(api(interp(), "deployment list", cloud).stderr,
+        `${"ID".padEnd(32)}  ${"STATUS".padEnd(12)}  DESCRIPTION\n${"Dep_1".padEnd(32)}  ${"Active".padEnd(12)}  first\n`);
+    assert.match(run(interp(), "cloud app --app demo --verbose deployment list", cloud).stderr, /2026-01-01 00:00:00 {2}/);
+    assert.equal(api(interp(), "deployment list", fakeCloud({ "GET /v1/deployments": [] })).stderr, "No deployments found.\n");
+});
+
+test("deployment show prints the manifest, one file, or JSON", () => {
+    const cloud = fakeCloud({
+        "GET /v1/deployments/Dep_1?include_generated_metadata=true": { deployment_toml: 'a = "b"\n', files: [{ path: "src/a.js", digest: "sha256:1", size: 1 }] },
+        "GET /v1/files/sha256:1": { status: 200, body: "x" },
+    });
+    assert.equal(api(interp(), "deployment show Dep_1", cloud).stdout, 'a = "b"\n');
+    assert.equal(api(interp(), "deployment show Dep_1 ./src/a.js", cloud).stdout, "x");
+    assert.equal(api(interp(), "deployment show Dep_1 --json", cloud).stdout, '{\n  "a": "b"\n}\n');
+    assert.equal(api(interp(), "deployment show Dep_1 b.js", cloud).stderr, "Error: deployment Dep_1 has no deployment-owned source file `b.js`\n");
+});
+
+test("deployment pull writes the manifest, loads sources on demand, and refuses to overwrite", () => {
+    const cloud = fakeCloud({
+        "GET /v1/deployments/Dep_1?include_generated_metadata=false": {
+            deployment_toml: '[[activity_js]]\nlocation = "src/run.js"\n', files: [{ path: "src/run.js", digest: "sha256:old", size: 3 }],
+        },
+        "GET /v1/files/sha256:old": { status: 200, body: "old" },
+    });
+    const i = interp();
+    let out = api(i, "deployment pull Dep_1 -o checkout", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stderr, 'Wrote checkout/deployment.toml (1 source file) for deployment Dep_1\n');
+    assert.equal(cloud.calls.length, 1);
+    assert.equal(i.vfs.readFile("/workspace/checkout/src/run.js"), "old");
+    assert.equal(cloud.calls.at(-1).path, "/v1/files/sha256:old");
+
+    out = api(i, "deployment pull Dep_1 -o checkout", cloud);
+    assert.equal(out.exitCode, 1);
+    assert.match(out.stderr, /^Error: cannot open "checkout\/deployment.toml" for writing, try using `--force`/);
+    assert.equal(api(i, "deployment pull Dep_1 -o checkout --force", cloud).exitCode, 0);
+});
+
+test("a pulled, edited deployment resubmits with only the edited file", () => {
+    const cloud = fakeCloud({
+        "GET /v1/deployments/Dep_1?include_generated_metadata=false": {
+            deployment_toml: '[[activity_wasm]]\nlocation = "run.wasm"\n[[activity_wasm]]\nlocation = "other.wasm"\n',
+            files: [{ path: "run.wasm", digest: sha256("old"), size: 3 }, { path: "other.wasm", digest: sha256("other"), size: 5 }],
+        },
+        "PUT /v1/deployments/*": { status: 201, body: "" },
+    });
+    const i = interp();
+    assert.equal(api(i, "deployment pull Dep_1", cloud).exitCode, 0);
+    i.vfs.writeFile("/workspace/run.wasm", "new");
+    const out = api(i, "deployment submit", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    const toml = JSON.parse(cloud.calls.at(-1).body).deployment_toml;
+    assert.ok(toml.includes(`content_digest = "${sha256("new")}"`), toml);
+    assert.ok(toml.includes(`content_digest = "${sha256("other")}"`), toml);
+    assert.ok(!cloud.calls.some((call) => call.path.startsWith("/v1/files/")));
+});
+
+test("deployment submit rehashes a pending file with a foreign digest", () => {
+    // A file copied unmodified from a git mount keeps the remote's SHA-1, which is not a CAS digest.
+    const gitSha = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3";
+    const i = interp();
+    i.vfs.setBlobLoader((digest) => (digest === gitSha ? "test" : null));
+    i.vfs.writeFile("/workspace/deployment.toml", '[[workflow_js]]\nlocation = "a.js"\n');
+    i.vfs.registerLazy("/workspace/a.js", gitSha, 4);
+    const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
+    assert.equal(api(i, "deployment submit", cloud).exitCode, 0);
+    assert.ok(JSON.parse(cloud.calls.at(-1).body).deployment_toml.includes(sha256("test")));
+});
+
+test("deployment submit generates WIT and JS module component files", () => {
+    const i = interp();
+    i.vfs.writeFile("/workspace/deployment.toml", '[[activity_js]]\nname = "multi"\nffqn = "test:pkg/api.run"\nwit = "wit"\nlocation = "src/index.js"\n');
+    i.vfs.writeFile("/workspace/src/index.js", 'import { value } from "./lib.js"; export default () => value;');
+    i.vfs.writeFile("/workspace/src/lib.js", "export const value = 1;");
+    i.vfs.writeFile("/workspace/wit/world.wit", "package test:pkg; world api { export run: func(); }");
+    i.vfs.writeFile("/workspace/wit/deps/dep/dep.wit", "package test:dep; interface unused {}");
+    const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
+    const out = api(i, "deployment submit", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    const toml = JSON.parse(cloud.calls.at(-1).body).deployment_toml;
+    for (const path of ["src/index.js", "src/lib.js", "wit/world.wit", "wit/deps/dep/dep.wit"]) {
+        assert.ok(toml.includes(`"${path}" = "sha256:`), toml);
+    }
+});
+
+test("deployment submit does not mistake a later comment for an export...from clause", () => {
+    const i = interp();
+    i.vfs.writeFile("/workspace/deployment.toml", '[[activity_js]]\nname = "chat"\nlocation = "src/index.js"\n');
+    i.vfs.writeFile("/workspace/src/index.js", [
+        "export default async function chat(stdin, args) {",
+        "    return stdin;",
+        "}",
+        "// Empty when it is still working, so callers can tell apart",
+        '// from "it finished with an empty message".',
+    ].join("\n"));
+    const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
+    const out = api(i, "deployment submit", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+});
+
+// -- admin --
+
+test("admin retention parses the age and reports the counts", () => {
+    const cloud = fakeCloud({
+        "POST /v1/admin/executions/retain": { deleted_execution_trees: 2, blocked_non_terminal: 1, has_more: false },
+    });
+    const out = api(interp(), "admin executions retain --max-age 2d --dry-run", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stderr, "2 execution tree(s) would delete; 1 blocked; has_more=false\n");
+    assert.deepEqual(JSON.parse(cloud.calls[0].body), {
+        retain_count: null, max_age_seconds: 172800, batch_size: 100, force_non_terminal: false, dry_run: true,
+    });
+    assert.match(api(interp(), "admin executions retain --max-age 2", cloud).stderr, /duration must have a unit: s, m, h, or d/);
+    assert.equal(api(interp(), "admin executions retain", cloud).exitCode, 2);
+});
+
+test("admin deployments delete and node-run-id", () => {
+    const cloud = fakeCloud({
+        "DELETE /v1/admin/deployments/Dep_1?delete_executions=true&force_non_terminal=false": { deleted: true, deleted_execution_trees: 3 },
+        "GET /v1/info": { node_run_id: "Run_1" },
+    });
+    const out = api(interp(), "admin deployments delete Dep_1 --delete-executions", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stderr, "Deleting deployment Dep_1\nDep_1: deleted (3 execution tree(s) deleted)\n");
+    assert.equal(api(interp(), "admin node-run-id", cloud).stdout, "Run_1\n");
+    assert.equal(api(interp(), "admin node-run-id --json", cloud).stdout, '"Run_1"\n');
+});
+
+// -- generate --
 
 test("generate deployment prints the embedded template", () => {
-    const host = fakeHost();
-    const out = executeObelisk(interp(), words("generate deployment"), "", host);
+    const out = run(interp(), "generate deployment", null);
     assert.equal(out.exitCode, 0);
     assert.match(out.stdout, /\[\[activity_wasm\]\]/);
     assert.ok(out.stdout.endsWith("\n"));
-    assert.equal(host.calls.length, 0);
 });
 
 // A fake `obelisk-agent:mounts/apps.request` serving a two-level template tree at `ref`.
@@ -532,11 +659,14 @@ function templateSource(obeliskVersion = "v0.42.0", ref = obeliskVersion) {
     return { calls, generate: { obeliskVersion, githubContents } };
 }
 
+function generate(i, args, source = templateSource()) {
+    return executeObelisk(i, typeof args === "string" ? words(args) : args, "", source.generate, null);
+}
+
 test("generate new fetches the chosen template at OBELISK_VERSION", () => {
     const i = interp("/workspace/My Cool_App");
-    const host = fakeHost();
-    let source = templateSource();
-    let out = executeObelisk(i, words("generate new --template minimal"), "", host, source.generate);
+    const source = templateSource();
+    let out = generate(i, "generate new --template minimal", source);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(
         out.stdout,
@@ -549,212 +679,72 @@ test("generate new fetches the chosen template at OBELISK_VERSION", () => {
         "read",
         '{"owner":"obeli-sk","repo":"obelisk","ref":"v0.42.0","path":"examples/templates/minimal/workflow/run.js"}',
     ]);
-    assert.deepEqual(host.calls, []);
 
     // A second run must not overwrite anything.
-    out = executeObelisk(i, words("generate new --template minimal"), "", host, templateSource().generate);
-    assert.equal(out.exitCode, 2);
+    out = generate(i, "generate new --template minimal");
+    assert.equal(out.exitCode, 1);
     assert.match(out.stderr, /already exists/);
 
-    out = executeObelisk(i, words("generate new --template minimal chosen-app"), "", host, templateSource().generate);
+    out = generate(i, "generate new --template minimal chosen-app");
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(i.vfs.isFile("/workspace/My Cool_App/chosen-app/workflow/run.js"), true);
 
-    out = executeObelisk(i, ["generate", "new", "--template", "minimal", "Bad Name"], "", host, templateSource().generate);
-    assert.equal(out.exitCode, 2);
+    out = generate(i, ["generate", "new", "--template", "minimal", "Bad Name"]);
+    assert.equal(out.exitCode, 1);
     assert.match(out.stderr, /invalid app name/);
 });
 
 test("generate new requires --template and lists the available ones", () => {
-    const out = executeObelisk(interp("/workspace/app"), words("generate new"), "", fakeHost(), templateSource().generate);
-    assert.equal(out.exitCode, 2);
+    const out = generate(interp("/workspace/app"), "generate new");
+    assert.equal(out.exitCode, 1);
     assert.match(out.stderr, /--template is required; templates at obeli-sk\/obelisk@v0\.42\.0: minimal, url-health-dashboard/);
 });
 
 test("generate new falls back to main when OBELISK_VERSION has no such template", () => {
     for (const version of ["v0.43.0-rc.6", "latest"]) {
         const i = interp("/workspace/app");
-        const source = templateSource(version, "main");
-        const out = executeObelisk(i, words("generate new --template minimal"), "", fakeHost(), source.generate);
+        const out = generate(i, "generate new --template minimal", templateSource(version, "main"));
         assert.equal(out.exitCode, 0, out.stderr);
         assert.equal(i.vfs.readFile("/workspace/app/workflow/run.js"), "42\n");
     }
-    const out = executeObelisk(interp("/workspace/app"), words("generate new --template bogus"), "", fakeHost(), templateSource().generate);
-    assert.equal(out.exitCode, 2);
+    const out = generate(interp("/workspace/app"), "generate new --template bogus");
+    assert.equal(out.exitCode, 1);
     assert.match(out.stderr, /@v0\.42\.0:examples\/templates\/bogus: 404 Not Found.*@main:examples\/templates\/bogus: 404/);
 });
 
 test("generate requires a known subcommand", () => {
-    let out = executeObelisk(interp(), words("generate"), "", fakeHost());
+    assert.match(generate(interp(), "generate").stdout, /Usage: obelisk generate/);
+    const out = generate(interp(), "generate bogus");
     assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /a subcommand is required/);
-
-    out = executeObelisk(interp(), words("generate bogus"), "", fakeHost());
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stderr, "obelisk generate: unknown action 'bogus'\n");
+    assert.match(out.stderr, /unrecognized subcommand 'bogus'/);
 });
 
-test("a host error propagates with the obelisk: prefix", () => {
-    const out = app(interp(), words("functions list"), "", fakeHost());
-    assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /^obelisk: no fixture for/);
-});
+// -- TOML editor --
 
-test("commandHandler strips the command name before dispatch", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.list-functions", "[]");
-    const bash = new Bash({ cwd: "/workspace" });
-    bash.registerCommand("obelisk", commandHandler(null, null, oneAppCloud(host)));
-    const out = bash.exec("obelisk cloud app functions list | cat");
-    assert.equal(out.exitCode, 0);
-    assert.equal(out.stdout, "");
-});
-
-// -- ownedSourceLocations, over raw manifest text --
-
-test("ownedSourceLocations scans top-level tables, skips oci:// and non-top-level nesting", () => {
-    const toml = [
-        "[[activity_wasm]]",
-        'location = "a.wasm"',
-        'content_digest = "sha256:1"',
-        "",
-        "[[activity_wasm]]",
-        'location = "oci://example/img"',
-        'content_digest = "sha256:2"',
-        "",
-        "[[webhook_endpoint.other]]",
-        'location = "nested.wasm"',
-        'content_digest = "sha256:3"',
-        "",
-    ].join("\n");
-    assert.deepEqual(ownedSourceLocations(toml), ["a.wasm"]);
-});
-
-test("ownedSourceLocations reads both the nested-table and inline backtrace forms", () => {
-    const nested = [
-        "[[workflow_wasm]]",
-        'name = "wf"',
-        'location = "w.wasm"',
-        'content_digest = "sha256:9"',
-        "",
-        "[workflow_wasm.backtrace.sources]",
-        '".../src/lib.rs" = { path = "src/lib.rs", content_digest = "sha256:1" }',
-        '".../src/util.rs" = { path = "src/util.rs", content_digest = "sha256:2" }',
-        "",
-    ].join("\n");
-    assert.deepEqual(ownedSourceLocations(nested), ["w.wasm", "src/lib.rs", "src/util.rs"]);
-
-    const inline = [
-        "[[workflow_wasm]]",
-        'name = "wf"',
-        'location = "w.wasm"',
-        'content_digest = "sha256:9"',
-        'backtrace.sources = { ".../src/lib.rs" = { path = "src/lib.rs", content_digest = "sha256:1" } }',
-        "",
-    ].join("\n");
-    assert.deepEqual(ownedSourceLocations(inline), ["w.wasm", "src/lib.rs"]);
-});
-
-test("ownedSourceLocations groups interleaved arrays like a TOML document", () => {
-    const manifest = `
-[[activity_js]]
-location = "first.js"
-
-[[workflow_js]]
-location = "workflow.js"
-
-[[activity_js]]
-location = "second.js"
-`;
-    assert.deepEqual(ownedSourceLocations(manifest), ["first.js", "second.js", "workflow.js"]);
-});
-
-// -- the TOML editor: simplify / expand --
-
-test("simplifyManifest tolerates a reformatted multi-line component_files", () => {
-    const stored = [
-        "[[webhook_endpoint]]",
-        'location = "webhook/ui-api.js"',
-        'content_digest = "sha256:aa"',
-        "component_files = {",
-        '  "webhook/ui-api.js" = "sha256:aa",',
-        '  "webhook/ui/shell.js" = "sha256:bb",',
-        "}",
-        "",
-    ].join("\n");
-    const simplified = simplifyManifest(stored);
-    assert.ok(!simplified.includes("sha256:aa"), simplified);
-    assert.ok(!simplified.includes("sha256:bb"), simplified);
-    assert.ok(!simplified.includes("content_digest"), simplified);
-    assert.equal((simplified.match(/"auto"/g) || []).length, 2, simplified);
-});
-
-test("simplifyManifest collapses every digest shape", () => {
-    const stored = [
-        "[[webhook_endpoint]]",
-        'location = "webhook/ui-api.js"',
-        'content_digest = "sha256:aa"',
-        'component_files = { "webhook/ui-api.js" = "sha256:aa", "webhook/ui/shell.js" = "sha256:bb" }',
-        "[webhook_endpoint.backtrace.sources]",
-        '"/abs/src/lib.rs" = { path = "src/lib.rs", content_digest = "sha256:cc" }',
-        "",
-    ].join("\n");
-    const expected = [
-        "[[webhook_endpoint]]",
-        'location = "webhook/ui-api.js"',
-        'component_files = { "webhook/ui-api.js" = "auto", "webhook/ui/shell.js" = "auto" }',
-        "[webhook_endpoint.backtrace.sources]",
-        '"/abs/src/lib.rs" = "src/lib.rs"',
-        "",
-    ].join("\n");
-    assert.equal(simplifyManifest(stored), expected);
-});
-
-test("manifestWithDigests expands component_files, pinning digests from file bytes, and leaves backtrace.sources as paths", () => {
-    // backtrace.sources stays untouched here: its digest is tracked via
-    // component_files (added by manifestWithGeneratedFiles, which always runs
-    // first in `submit`), not as an inline `{ path, content_digest }` table -
-    // the server rejects that shape.
-    const collapsed = [
-        "[[webhook_endpoint]]",
-        'location = "webhook/ui-api.js"',
-        'component_files = { "webhook/ui-api.js" = "auto", "webhook/ui/shell.js" = "auto" }',
-        "[webhook_endpoint.backtrace.sources]",
-        '"/abs/src/lib.rs" = "src/lib.rs"',
-        "",
-    ].join("\n");
+test("manifestWithDigests pins each owned location and skips oci:// and missing files", () => {
     const i = interp();
-    const dir = "/workspace/checkout";
-    i.vfs.writeFile(`${dir}/webhook/ui-api.js`, "api");
-    i.vfs.writeFile(`${dir}/webhook/ui/shell.js`, "shell");
-
-    const api = sha256("api");
-    const shell = sha256("shell");
-    const expected = [
-        "[[webhook_endpoint]]",
-        'location = "webhook/ui-api.js"',
-        `component_files = { "webhook/ui-api.js" = "${api}", "webhook/ui/shell.js" = "${shell}" }`,
-        `content_digest = "${api}"`,
-        "[webhook_endpoint.backtrace.sources]",
-        '"/abs/src/lib.rs" = "src/lib.rs"',
+    i.vfs.writeFile("/workspace/w.js", "w");
+    const manifest = [
+        "[[workflow_js]]",
+        'location = "w.js"',
+        "[workflow_js.backtrace.sources]",
+        '"/abs/w.js" = "w.js"',
+        "[[activity_wasm]]",
+        'location = "oci://example/a:1"',
+        "[[activity_js]]",
+        'location = "missing.js"',
         "",
     ].join("\n");
-    assert.equal(manifestWithDigests(i.vfs, dir, collapsed), expected);
+    assert.equal(manifestWithDigests(i.vfs, "/workspace", manifest), manifest.replace('location = "w.js"\n', `location = "w.js"\ncontent_digest = "${sha256("w")}"\n`));
 });
 
-test("TOML editor preserves every unrelated byte across a realistic multi-component fixture", () => {
-    // A multi-block fixture combining the real shapes seen in this repo's own
-    // deployment.toml: comments, blank lines, a nested `[[x.allowed_host]]`
-    // array-of-tables, env_vars, name/description keys, a component_files
-    // inline table, and a backtrace.sources nested table - none of which
-    // `simplifyManifest` should touch except the digest-bearing fields.
+test("the TOML editor preserves every unrelated byte", () => {
     const fixture = [
         "## Top-of-file comment block, must survive untouched.",
-        "# blank lines and comments interleaved below too.",
         "",
         "[[activity_js]]",
         'name = "program_curl"',
         'location = "activity/curl.js"',
-        'content_digest = "sha256:curl1"',
         "# a per-component comment",
         'env_vars = ["ENV1", {key = "ENV2", value = "literal"}]',
         "",
@@ -762,540 +752,22 @@ test("TOML editor preserves every unrelated byte across a realistic multi-compon
         'pattern = "api.github.com"',
         'methods = "*"',
         "",
-        "[[workflow_wasm]]",
-        'name = "wf"',
-        'location = "target/wasm32-wasip2/release/workflow.wasm"',
-        'content_digest = "sha256:wfdigest"',
-        "",
-        "[workflow_wasm.backtrace.sources]",
-        '"/abs/src/lib.rs" = { path = "src/lib.rs", content_digest = "sha256:1" }',
-        '"/abs/src/util.rs" = { path = "src/util.rs", content_digest = "sha256:2" }',
-        "",
-        "[[webhook_endpoint]]",
+        "[[webhook_endpoint_js]]",
         'name = "ui"',
         'location = "webhook/ui-api.js"',
-        'content_digest = "sha256:uiapi"',
-        'component_files = { "webhook/ui-api.js" = "sha256:uiapi", "webhook/ui/shell.js" = "sha256:uishell" }',
+        "[webhook_endpoint_js.backtrace.sources]",
+        '"/abs/ui.js" = "webhook/ui.js"',
         "",
         "## Trailing file comment.",
         "",
     ].join("\n");
-
-    const simplified = simplifyManifest(fixture);
-
-    // Untouched regions survive byte-for-byte: comments, the allowed_host
-    // block, env_vars, names/locations, and the trailing comment.
-    for (const untouched of [
-        "## Top-of-file comment block, must survive untouched.",
-        "# blank lines and comments interleaved below too.",
-        '[[activity_js]]\nname = "program_curl"\nlocation = "activity/curl.js"',
-        "# a per-component comment",
-        'env_vars = ["ENV1", {key = "ENV2", value = "literal"}]',
-        '[[activity_js.allowed_host]]\npattern = "api.github.com"\nmethods = "*"',
-        '[[workflow_wasm]]\nname = "wf"\nlocation = "target/wasm32-wasip2/release/workflow.wasm"',
-        '[[webhook_endpoint]]\nname = "ui"\nlocation = "webhook/ui-api.js"',
-        "## Trailing file comment.",
-    ]) {
-        assert.ok(simplified.includes(untouched), `expected untouched text present:\n${untouched}\n---\n${simplified}`);
-    }
-
-    // Every digest-bearing field is rewritten.
-    assert.ok(!simplified.includes("sha256:curl1"), simplified);
-    assert.ok(!simplified.includes("sha256:wfdigest"), simplified);
-    assert.ok(!simplified.includes("sha256:uiapi"), simplified);
-    assert.ok(!simplified.includes("sha256:uishell"), simplified);
-    assert.ok(!simplified.includes("sha256:1"), simplified);
-    assert.ok(!simplified.includes("sha256:2"), simplified);
-    assert.equal((simplified.match(/"auto"/g) || []).length, 2);
-    assert.equal(simplified, simplified.replace(/content_digest = "[^"]*"\n/g, ""));
-    assert.ok(simplified.includes('"/abs/src/lib.rs" = "src/lib.rs"'));
-    assert.ok(simplified.includes('"/abs/src/util.rs" = "src/util.rs"'));
-
-    // The line count differs by exactly the number of removed content_digest
-    // lines (3: activity_js, workflow_wasm, webhook_endpoint); every other
-    // line is preserved 1:1 and in order.
-    const originalLines = fixture.split("\n").filter((l) => !/^content_digest = /.test(l));
-    const simplifiedLines = simplified.split("\n");
-    assert.equal(simplifiedLines.length, originalLines.length);
-});
-
-test("deployment pull pins a snapshot, loads blobs on demand, and submits edits as a new deployment", () => {
-    const host = fakeHost()
-        .with("obelisk-agent:tools/webapi.current-deployment-id", JSON.stringify(JSON.stringify("Dep_1")))
-        .with("obelisk-agent:tools/webapi.deployment-checkout", JSON.stringify({
-            deployment_toml: '[[activity_js]]\nlocation = "src/run.js"\ncontent_digest = "sha256:old"\n',
-            files: [{ path: "src/run.js", digest: "sha256:old", size: 3 }],
-        }))
-        .with(APP_CONFIG_FFQN, JSON.stringify('app_name = "demo"\n'))
-        .with("obelisk-agent:tools/webapi.deployment-read-blob", JSON.stringify("old"));
     const i = interp();
-    const out = app(i, words("deployment pull ./checkout"), "", host);
-    assert.equal(out.exitCode, 0, out.stderr);
-    assert.deepEqual(JSON.parse(out.stdout), { deployment_id: "Dep_1", directory: "/workspace/checkout", files: 2 });
-    assert.equal(i.vfs.readFile("/workspace/checkout/app.toml"), 'app_name = "demo"\n');
-    assert.equal(host.calls.filter(([name]) => name.endsWith("deployment-read-blob")).length, 0);
-    assert.ok(!i.vfs.exists("/workspace/cloud"));
-    host.with("obelisk-agent:tools/webapi.current-deployment-id", JSON.stringify("Dep_2"));
-    assert.equal(i.vfs.readFile("/workspace/checkout/src/run.js"), "old");
-    assert.deepEqual(host.calls.at(-1), ["obelisk-agent:tools/webapi.deployment-read-blob", '["sha256:old"]']);
-    i.vfs.writeFile("/workspace/checkout/src/run.js", "new");
-    host.with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"));
-    const submitted = app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(submitted.exitCode, 0, submitted.stderr);
-    const params = JSON.parse(host.calls.at(-1)[1]);
-    assert.equal(params[4], "");
-    assert.ok(params[0].includes(sha256("new")));
-});
-
-test("deployment pull protects existing files and reports lookup errors directly", () => {
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/keep.txt", "edited");
-    const host = fakeHost();
-    let out = app(i, words("deployment pull checkout"), "", host);
-    assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /empty directory/);
-    assert.equal(i.vfs.readFile("/workspace/checkout/keep.txt"), "edited");
-    assert.equal(host.calls.length, 0);
-    out = app(i, words("deployment pull fresh"), "", host);
-    assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /no fixture/);
-    assert.ok(!i.vfs.exists("/workspace/.mount-error"));
-    assert.ok(!i.vfs.exists("/workspace/fresh"));
-    host.with("obelisk-agent:tools/webapi.current-deployment-id", JSON.stringify(""));
-    out = app(i, words("deployment pull empty"), "", host);
-    assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /no active deployment/);
-    for (const args of ["deployment pull", "deployment pull a b", "deployment pull --force"]) {
-        assert.equal(app(i, words(args), "", host).exitCode, 2);
-    }
-});
-
-test("deployment pull keeps empty destinations unchanged when policy lookup fails", () => {
-    const host = fakeHost()
-        .with("obelisk-agent:tools/webapi.current-deployment-id", JSON.stringify("Dep_1"))
-        .with("obelisk-agent:tools/webapi.deployment-checkout", JSON.stringify({ deployment_toml: "", files: [] }))
-        .withErr(APP_CONFIG_FFQN, "denied");
-    const i = interp();
-    i.vfs.mkdirp("/workspace/checkout");
-    const out = app(i, words("deployment pull checkout"), "", host);
-    assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /denied/);
-    assert.deepEqual(i.vfs.readdir("/workspace/checkout"), []);
-});
-
-test("app API reads do not create deployment mounts", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.current-deployment-id", JSON.stringify("Dep_1"));
-    const i = interp();
-    assert.equal(app(i, words("deployment active"), "", host).exitCode, 0);
-    assert.ok(!i.vfs.exists("/workspace/cloud"));
-    assert.equal(host.calls.length, 1);
-});
-
-test("blobLoader decodes a plain string body via the read-blob ffqn", () => {
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-read-blob", JSON.stringify("bytes"));
-    const loader = blobLoader(host);
-    assert.equal(loader("sha256:1"), "bytes");
-    assert.equal(host.calls[0][1], JSON.stringify(["sha256:1"]));
-});
-
-// -- deployment CLI actions that touch the mount --
-
-test("deployment check reports the manifest size and owned sources", () => {
-    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    i.vfs.writeFile("/workspace/checkout/a.wasm", "bytes");
-    const out = app(i, words("deployment check /workspace/checkout/deployment.toml"), "", fakeHost());
-    assert.equal(out.exitCode, 0, out.stderr);
-    const parsed = JSON.parse(out.stdout);
-    assert.equal(parsed.directory, "/workspace/checkout");
-    assert.deepEqual(parsed.owned_sources, ["a.wasm"]);
-});
-
-test("deployment check defaults its directory to cwd", () => {
-    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
-    const i = interp("/workspace/checkout");
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    const out = app(i, words("deployment check"), "", fakeHost());
-    assert.equal(out.exitCode, 0, out.stderr);
-    assert.equal(JSON.parse(out.stdout).directory, "/workspace/checkout");
-});
-
-test("deployment submit preflights, then attaches the missing blob", () => {
-    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    i.vfs.writeFile("/workspace/checkout/a.wasm", "bytes");
-    const digest = sha256("bytes");
-    const host = fakeHost()
-        .withErr("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify({ permanent_missing_files: [{ path: "a.wasm", digest }] }))
-        .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"));
-    const out = app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(out.exitCode, 0, out.stderr);
-    assert.match(out.stdout, /Dep_new/);
-
-    const preflight = JSON.parse(host.calls[0][1]);
-    assert.equal(preflight[0], `[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "${digest}"\n`);
-    assert.deepEqual(preflight[1], []);
-    assert.equal(preflight[2], "Submitted from workflow-agent VFS");
-    assert.equal(preflight[3], false);
-    assert.equal(preflight[4], "");
-
-    const retry = JSON.parse(host.calls[1][1]);
-    assert.deepEqual(retry[1], [{ path: "a.wasm", digest, content: "bytes" }]);
-});
-
-test("deployment submit requests a fresh deployment id", () => {
-    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(JSON.parse(host.calls[0][1])[4], "");
-});
-
-test("deployment submit options do not shadow the path", () => {
-    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = app(i, words("deployment submit --description wh /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(out.exitCode, 0, out.stderr);
-    const params = JSON.parse(host.calls[0][1]);
-    assert.equal(params[2], "wh");
-    assert.equal(params[4], "");
-});
-
-test("deployment submit without a PATH is a clear error, not a silent default", () => {
-    // Real obelisk's `submit` requires an explicit file path; unlike `check`
-    // (an agent-only convenience with no real-CLI counterpart), it does not
-    // default to ./deployment.toml.
-    const i = interp("/workspace/checkout");
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", "[[activity_wasm]]\n");
-    const out = app(i, words("deployment submit"), "", fakeHost());
-    assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /PATH-TO-DEPLOYMENT\.TOML is required/);
-});
-
-test("deployment submit rejects a directory, matching real obelisk", () => {
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", "[[activity_wasm]]\n");
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = app(i, words("deployment submit /workspace/checkout"), "", host);
-    assert.equal(out.exitCode, 2);
-    // Path-first, matching just-bash's grep/cat.
-    assert.equal(out.stderr, "obelisk: /workspace/checkout: Is a directory\n");
-});
-
-test("deployment submit accepts a path to the toml file itself", () => {
-    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"));
-    const out = app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(out.exitCode, 0, out.stderr);
-    assert.equal(JSON.parse(host.calls[0][1])[4], "");
-});
-
-test("deployment submit accepts a manifest not literally named deployment.toml", () => {
-    // Regression: PATH resolution used to string-match the basename against
-    // the literal "deployment.toml", so any other manifest name was
-    // treated as a directory and `<dir>/deployment.toml` didn't exist
-    // there, failing with a misleading "No such file or directory" instead
-    // of reading the file that was actually passed.
-    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
-    const i = interp("/workspace/workflow-agent");
-    i.vfs.writeFile("/workspace/workflow-agent/deployment.toml", manifest);
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"));
-    const out = app(i, words("deployment submit deployment.toml"), "", host);
-    assert.equal(out.exitCode, 0, out.stderr);
-});
-
-test("deployment submit outside the deployment root sends an empty deployment id", () => {
-    // Regression: the deployment_id was always the manifest's parent
-    // directory's basename (unless literally "current"), a convention that
-    // only holds for DEPLOYMENT_ROOT/<id> checkouts. Submitting straight
-    // from a source-repo checkout like
-    // /workspace/workflow-agent/deployment.toml sent "workflow-agent" as
-    // the deployment_id, which the server rejects with "invalid
-    // deployment_id: wrong prefix in `workflow-agent`, expected prefix
-    // `Dep_`" instead of letting it assign a fresh one.
-    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
-    const i = interp("/workspace/workflow-agent");
-    i.vfs.writeFile("/workspace/workflow-agent/deployment.toml", manifest);
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"));
-    const out = app(i, words("deployment submit deployment.toml"), "", host);
-    assert.equal(out.exitCode, 0, out.stderr);
-    assert.equal(JSON.parse(host.calls[0][1])[4], "");
-});
-
-test("deployment submit skips unmodified lazy sources", () => {
-    const manifest = [
-        "[[workflow_wasm]]",
-        'location = "w.wasm"',
-        'content_digest = "sha256:1"',
-        'component_files = { "src/lib.rs" = "sha256:2" }',
-        "[workflow_wasm.backtrace.sources]",
-        '"w.wasm" = { path = "src/lib.rs", content_digest = "sha256:2" }',
-    ].join("\n") + "\n";
-    const i = interp();
-    i.vfs.setBlobLoader(fixtureLoader({ "sha256:1": "wasm-bytes", "sha256:2": "rust source" }));
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    i.vfs.registerLazy("/workspace/checkout/w.wasm", "sha256:1", 10);
-    i.vfs.registerLazy("/workspace/checkout/src/lib.rs", "sha256:2", 11);
-
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(out.exitCode, 0, out.stderr);
-    // Preflight only: unchanged lazy sources keep their CAS digest, so the
-    // manifest round-trips unchanged and nothing is attached.
-    assert.equal(host.calls.length, 1);
-    const params = JSON.parse(host.calls[0][1]);
-    assert.equal(params[0], manifest);
-    assert.deepEqual(params[1], []);
-});
-
-test("deployment submit sends only locally modified sources", () => {
-    const manifest = [
-        "[[workflow_js]]",
-        'location = "a.js"',
-        'content_digest = "sha256:a"',
-        "[[workflow_js]]",
-        'location = "b.js"',
-        'content_digest = "sha256:b"',
-    ].join("\n") + "\n";
-    const i = interp();
-    i.vfs.setBlobLoader(fixtureLoader({ "sha256:a": "old-a", "sha256:b": "old-b" }));
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    i.vfs.registerLazy("/workspace/checkout/a.js", "sha256:a", 5);
-    i.vfs.registerLazy("/workspace/checkout/b.js", "sha256:b", 5);
-    i.vfs.writeFile("/workspace/checkout/a.js", "new-a"); // edit a.js only
-
-    const aDigest = sha256("new-a");
-    const host = fakeHost()
-        .withErr("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify({ permanent_missing_files: [{ path: "a.js", digest: aDigest }] }))
-        .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(host.calls.length, 2);
-    assert.deepEqual(JSON.parse(host.calls[0][1])[1], []);
-    assert.deepEqual(JSON.parse(host.calls[1][1])[1], [{ path: "a.js", digest: aDigest, content: "new-a" }]);
-});
-
-test("deployment submit rehashes and uploads a pending file with a foreign digest", () => {
-    // Simulates a file copied in unmodified from a git/web mount: it is still
-    // `pending` (never locally edited), but its digest is the remote's own
-    // foreign hash (here a 40-hex git blob SHA-1), not this server's CAS
-    // sha256. Submit must not reuse that foreign digest as `content_digest`,
-    // nor skip the file as "already uploaded" - it must be fetched, rehashed,
-    // and sent like any other new/modified source.
-    const manifest = ["[[workflow_js]]", 'location = "a.js"', 'content_digest = "sha256:a"'].join("\n") + "\n";
-    const gitSha = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3";
-    const i = interp();
-    i.vfs.setBlobLoader(fixtureLoader({ [gitSha]: "test" }));
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    i.vfs.registerLazy("/workspace/checkout/a.js", gitSha, 4);
-
-    const realDigest = sha256("test");
-    const host = fakeHost()
-        .withErr("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify({ permanent_missing_files: [{ path: "a.js", digest: realDigest }] }))
-        .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(out.exitCode, 0, out.stderr);
-    assert.equal(host.calls.length, 2);
-    const preflight = JSON.parse(host.calls[0][1]);
-    assert.equal(preflight[0], `[[workflow_js]]\nlocation = "a.js"\ncontent_digest = "${realDigest}"\n`);
-    const retry = JSON.parse(host.calls[1][1]);
-    assert.deepEqual(retry[1], [{ path: "a.js", digest: realDigest, content: "test" }]);
-});
-
-test("deployment submit pins a digest for a new component with no content_digest line", () => {
-    const manifest = ['[[activity_js]]', 'name = "program_http"', 'location = "activity/http.js"'].join("\n") + "\n";
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    i.vfs.writeFile("/workspace/checkout/activity/http.js", "export default 1");
-
-    const digest = sha256("export default 1");
-    const host = fakeHost()
-        .withErr("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify({ permanent_missing_files: [{ path: "activity/http.js", digest }] }))
-        .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(out.exitCode, 0, out.stderr);
-    const preflight = JSON.parse(host.calls[0][1]);
-    assert.equal(
-        preflight[0],
-        `[[activity_js]]\nname = "program_http"\nlocation = "activity/http.js"\ncontent_digest = "${digest}"\n`,
-    );
-    const retry = JSON.parse(host.calls[1][1]);
-    assert.deepEqual(retry[1], [{ path: "activity/http.js", digest, content: "export default 1" }]);
-});
-
-test("deployment submit generates WIT and JS module component files", () => {
-    const manifest = [
-        "[[activity_js]]",
-        'name = "multi"',
-        'ffqn = "test:pkg/api.run"',
-        'wit = "wit"',
-        'location = "src/index.js"',
-    ].join("\n") + "\n";
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    i.vfs.writeFile("/workspace/checkout/src/index.js", 'import { value } from "./lib.js"; export default () => value;');
-    i.vfs.writeFile("/workspace/checkout/src/lib.js", "export const value = 1;");
-    i.vfs.writeFile("/workspace/checkout/wit/world.wit", "package test:pkg; world api { export run: func(); }");
-    i.vfs.writeFile("/workspace/checkout/wit/deps/dep/dep.wit", "package test:dep; interface unused {}");
-
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(out.exitCode, 0, out.stderr);
-    const prepared = JSON.parse(host.calls[0][1])[0];
-    for (const path of ["src/index.js", "src/lib.js", "wit/world.wit", "wit/deps/dep/dep.wit"]) {
-        assert.ok(prepared.includes(`"${path}" = "sha256:`), prepared);
-    }
-});
-
-test("deployment submit does not mistake a later comment for an export...from clause", () => {
-    // Regression: the `from` scanner used to lazily skip across an entire
-    // function body (including comments) looking for the next `from "..."`
-    // anywhere in the file, so `export default async function` paired with
-    // an unrelated later comment containing `from "..."` was misread as a
-    // bare module specifier.
-    const manifest = [
-        "[[activity_js]]",
-        'name = "chat"',
-        'ffqn = "test:pkg/api.run"',
-        'wit = "wit"',
-        'location = "src/index.js"',
-    ].join("\n") + "\n";
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    i.vfs.writeFile(
-        "/workspace/checkout/src/index.js",
-        [
-            "export default async function chat(stdin, args) {",
-            "    return stdin;",
-            "}",
-            "",
-            "// Empty when it is still working, so callers can tell apart",
-            '// from "it finished with an empty message".',
-        ].join("\n"),
-    );
-    i.vfs.writeFile("/workspace/checkout/wit/world.wit", "package test:pkg; world api { export run: func(); }");
-
-    const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
-    const out = app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(out.exitCode, 0, out.stderr);
-});
-
-test("deployment submit propagates a terminal (non-missing-files) error", () => {
-    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    const host = fakeHost().withErr("obelisk-agent:tools/webapi.deployment-submit", "deployment cannot be submitted: unexpected files: x");
-    const out = app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /unexpected files/);
-    assert.equal(host.calls.length, 1);
-});
-
-test("deployment submit stops instead of looping forever when a blob stays missing", () => {
-    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
-    const i = interp();
-    i.vfs.writeFile("/workspace/checkout/deployment.toml", manifest);
-    i.vfs.writeFile("/workspace/checkout/a.wasm", "bytes");
-    const missing = JSON.stringify({ permanent_missing_files: [{ path: "a.wasm", digest: "sha256:zz" }] });
-    const host = fakeHost()
-        .withErr("obelisk-agent:tools/webapi.deployment-submit", missing)
-        .withErr("obelisk-agent:tools/webapi.deployment-submit", missing);
-    const out = app(i, words("deployment submit /workspace/checkout/deployment.toml"), "", host);
-    assert.equal(out.exitCode, 2);
-    assert.match(out.stderr, /still missing/);
-    assert.equal(host.calls.length, 2);
-});
-
-test("deploymentSources reports only files present under the deployment dir", () => {
-    const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\n[[activity_wasm]]\nlocation = "b.wasm"\n';
-    const fs = new Vfs();
-    fs.writeFile("/workspace/checkout/a.wasm", "x");
-    // b.wasm is not present at all -> excluded from the report.
-    assert.deepEqual(deploymentSources(fs, "/workspace/checkout", manifest), ["a.wasm"]);
-});
-
-// -- obelisk cloud --
-
-// A fake `obelisk-agent:tools/cloud`: records provisioner runs and hands out `apps[name]` control planes.
-function fakeCloud(apps = {}) {
-    const cloud = {
-        runs: [],
-        deploys: [],
-        run(args, stdin, appToml) {
-            cloud.runs.push({ args, stdin, appToml });
-            return { stdout: "ok\n", stderr: "", exitCode: 0 };
-        },
-        prepareDeploy(app, appToml) {
-            cloud.deploys.push({ app, appToml });
-            return { apiUrl: "https://demo.test", log: "→ prepare\n" };
-        },
-        finishDeploy(app, appToml, deploymentId) {
-            cloud.deploys.push({ app, appToml, deploymentId });
-            return { webhookUrl: "https://demo.test/hook", log: "→ finish\n" };
-        },
-        controlPlane(app) {
-            if (!apps[app]) throw `no app ${app}`;
-            return apps[app];
-        },
-    };
-    return cloud;
-}
-
-test("cloud app deploy prepares the app, enqueues the deployment there, then finishes with its id", () => {
-    const i = interp("/workspace/app");
-    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
-    i.vfs.writeFile("/workspace/app/deployment.toml", '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n');
-    const app = fakeHost()
-        .with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"))
-        .with("obelisk-agent:tools/webapi.deployment-switch", JSON.stringify({ ok: "restart_required" }));
-    const local = fakeHost();
-    const cloud = fakeCloud({ demo: app });
-    const out = executeObelisk(i, words("cloud app deploy"), "", local, null, cloud);
-    assert.equal(out.exitCode, 0, out.stderr);
-    const policy = 'app_name = "demo"\n';
-    assert.deepEqual(cloud.deploys, [{ app: "demo", appToml: policy }, { app: "demo", appToml: policy, deploymentId: "Dep_new" }]);
-    assert.deepEqual(app.calls.at(-1), ["obelisk-agent:tools/webapi.deployment-switch", JSON.stringify(["Dep_new", true])]);
-    assert.equal(out.stdout, "https://demo.test/hook\n");
-    assert.equal(out.stderr, "→ prepare\n→ obelisk cloud app deployment enqueue\n→ finish\nDeployed demo\n");
-    assert.equal(local.calls.length, 0);
-});
-
-test("cloud app deploy stops before applying when the enqueue fails", () => {
-    const i = interp("/workspace/app");
-    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
-    i.vfs.writeFile("/workspace/app/deployment.toml", '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n');
-    const app = fakeHost().withErr("obelisk-agent:tools/webapi.deployment-submit", "invalid deployment");
-    const cloud = fakeCloud({ demo: app });
-    const out = executeObelisk(i, words("cloud app deploy"), "", fakeHost(), null, cloud);
-    assert.notEqual(out.exitCode, 0);
-    assert.match(out.stderr, /Deployment staging failed; inspect `obelisk cloud app --app demo status` and retry deploy: .*invalid deployment/);
-    assert.equal(cloud.deploys.length, 1);
-});
-
-test("cloud app API subcommands run against the selected app's control plane", () => {
-    const app = fakeHost().with("obelisk-agent:tools/webapi.get-execution", JSON.stringify({ execution_id: "E_1" }));
-    const out = executeObelisk(interp(), words("cloud app --app demo executions get E_1"), "", fakeHost(), null, fakeCloud({ demo: app }));
-    assert.equal(out.exitCode, 0, out.stderr);
-    assert.deepEqual(app.calls, [["obelisk-agent:tools/webapi.get-execution", JSON.stringify(["E_1"])]]);
-});
-
-test("cloud secrets set --from-env sends the variable as stdin", () => {
-    const i = interp();
-    i.setVar("API_KEY", "s3cret");
-    const cloud = fakeCloud();
-    const out = executeObelisk(i, words("cloud app --app demo secrets set API_KEY --from-env API_KEY"), "", fakeHost(), null, cloud);
-    assert.equal(out.exitCode, 0, out.stderr);
-    assert.deepEqual(cloud.runs, [{ args: words("app --app demo secrets set API_KEY --stdin"), stdin: "s3cret", appToml: null }]);
-});
-
-test("cloud without the cloud tools is an error", () => {
-    const out = executeObelisk(interp(), words("cloud apps list"), "", fakeHost());
-    assert.equal(out.exitCode !== 0, true);
-    assert.match(out.stderr, /not available/);
+    i.vfs.writeFile("/workspace/activity/curl.js", "curl");
+    i.vfs.writeFile("/workspace/webhook/ui-api.js", 'import "./ui.js";');
+    i.vfs.writeFile("/workspace/webhook/ui.js", "ui");
+    const prepared = manifestWithDigests(i.vfs, "/workspace", manifestWithGeneratedFiles(i.vfs, "/workspace", fixture));
+    const files = `component_files = { "webhook/ui-api.js" = "${sha256('import "./ui.js";')}", "webhook/ui.js" = "${sha256("ui")}" }`;
+    assert.equal(prepared, fixture
+        .replace('env_vars = ["ENV1", {key = "ENV2", value = "literal"}]\n', `$&content_digest = "${sha256("curl")}"\n`)
+        .replace('location = "webhook/ui-api.js"\n', `$&${files}\ncontent_digest = "${sha256('import "./ui.js";')}"\n`));
 });
