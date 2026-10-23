@@ -75,12 +75,10 @@ jobs:
 
   verify:
     runs-on: ubuntu-24.04
-    # Placeholders for app.toml's required public variable and env-backed
-    # secret, so verification runs without --allow-unavailable-runtime-config,
+    # A placeholder so verification runs without --allow-unavailable-runtime-config,
     # which would also skip checks such as exec digests.
     env:
       AGENT_MODELS: "[]"
-      TARGET_OBELISK_TOKEN: ci-placeholder
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:

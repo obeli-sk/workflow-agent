@@ -48,17 +48,12 @@ e2e_init() {
     E2E_TMP="$(mktemp -d -t "${suite}-XXXXXX")"
     E2E_API_URL="http://127.0.0.1:${api_port}"
     E2E_SERVER_PID=""
-    E2E_TARGET_SERVER_PID=""
     E2E_GITHUB_PID=""
     E2E_DEPLOYMENTS=()
 
     export OBELISK_API_TOKEN="$token"
-    # No provisioner: the target is the single app of the cloud.
+    # No provisioner, so `obelisk cloud` stays out of the prompt.
     unset OBELISK_CLOUD_API_TOKEN
-    # Control/deploy tools + the deployment mount target this same isolated
-    # instance (self-host default; matches OBELISK_API_URL below).
-    export TARGET_OBELISK_TOKEN="$token"
-    export TARGET_OBELISK_API_URL="$E2E_API_URL"
     export OBELISK__API__LISTENING_ADDR="127.0.0.1:${api_port}"
     export OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}"
     # OBELISK_UI_URL is a required internal webui-url source, so the Web UI must listen.
@@ -107,19 +102,6 @@ e2e_cleanup() {
             ((waited += 1)) || true
         done
     fi
-    if [[ -n "$E2E_TARGET_SERVER_PID" ]]; then
-        echo ">>> stopping isolated target obelisk server (pid $E2E_TARGET_SERVER_PID)"
-        kill -SIGINT "$E2E_TARGET_SERVER_PID" 2>/dev/null || true
-        local waited=0
-        while kill -0 "$E2E_TARGET_SERVER_PID" 2>/dev/null; do
-            if [[ $waited -ge 5 ]]; then
-                kill -SIGKILL "$E2E_TARGET_SERVER_PID" 2>/dev/null || true
-                break
-            fi
-            sleep 1
-            ((waited += 1)) || true
-        done
-    fi
     if ((${#E2E_DEPLOYMENTS[@]})); then
         rm -f -- "${E2E_DEPLOYMENTS[@]}"
     fi
@@ -146,39 +128,6 @@ e2e_start_server() {
     if ! e2e_wait_until e2e_server_settled "$E2E_API_URL" "$E2E_SERVER_PID" || ! kill -0 "$E2E_SERVER_PID" 2>/dev/null; then
         echo "server did not become ready; log:" >&2
         sed -n '1,300p' "$E2E_TMP/server.log" >&2
-        return 1
-    fi
-}
-
-# Starts a second, genuinely separate obelisk instance for suites that need
-# to prove a redeploy against a real *target* rather than self-hosting (see
-# scripts/test-e2e-target-deploy.sh): `--empty --no-auth`, using the target app
-# policy (app-target-e2e.toml) so submitted full-app deployments have their
-# public variables declared.
-# Sets E2E_TARGET_API_URL; caller wires
-# TARGET_OBELISK_* env vars to point the source session's `obelisk` command
-# and deployment mount at it before starting the source server.
-e2e_start_target_server() {
-    local api_port="$1"
-    local external_port="$2"
-
-    E2E_TARGET_API_URL="http://127.0.0.1:${api_port}"
-    echo ">>> starting ISOLATED EMPTY target obelisk server on ${E2E_TARGET_API_URL} (sqlite: ${E2E_TMP}/target-obelisk-sqlite)"
-    # --no-auth refuses to start if a token is set; unset the source
-    # server's exported token for this one subprocess only.
-    env -u OBELISK_API_TOKEN \
-    OBELISK__API__LISTENING_ADDR="127.0.0.1:${api_port}" \
-    OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}" \
-    OBELISK__WEBUI__LISTENING_ADDR="127.0.0.1:$((api_port + 200))" \
-    OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/target-obelisk-sqlite" \
-        "$OBELISK" server run --empty --no-auth --app-config "$ROOT/app-target-e2e.toml" \
-        > "$E2E_TMP/target-server.log" 2>&1 &
-    E2E_TARGET_SERVER_PID=$!
-
-    echo ">>> waiting for the target server to become ready"
-    if ! e2e_wait_until e2e_server_settled "$E2E_TARGET_API_URL" "$E2E_TARGET_SERVER_PID" || ! kill -0 "$E2E_TARGET_SERVER_PID" 2>/dev/null; then
-        echo "target server did not become ready; log:" >&2
-        sed -n '1,300p' "$E2E_TMP/target-server.log" >&2
         return 1
     fi
 }

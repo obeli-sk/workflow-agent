@@ -3,7 +3,7 @@
 //
 // Runs one webapi tool (`operation` is its WIT name, `params-json` its
 // positional arguments) against the ObeliskNet app's own API, authenticated by
-// the cloud token (the single-app cloud uses TARGET_OBELISK_*). Returns `{"ok": value}`, or `{"missing_files": [...]}` when
+// the cloud token. Returns `{"ok": value}`, or `{"missing_files": [...]}` when
 // deployment-submit needs attachments.
 import { apiOrigin, appRequest, cloudToken } from "./client.js";
 import { setTarget } from "../tools/target.js";
@@ -28,7 +28,6 @@ import listDeployments from "../tools/list-deployments.js";
 import listExecutions from "../tools/list-executions.js";
 import listFunctions from "../tools/list-functions.js";
 import { validateAppName } from "./policy.js";
-import { requireSingleApp, singleApp } from "./single-app.js";
 
 const OPERATIONS = {
     "apply-deployment": applyDeployment,
@@ -67,14 +66,9 @@ export default async function tenant(app, operation, paramsJson) {
     }
     if (!Array.isArray(params)) throw "params-json must be a JSON array";
     validateAppName(app);
-    // Drop an override left by an earlier call, so the single app reads the target.
     setTarget(null);
-    if (singleApp()) {
-        await requireSingleApp(app);
-    } else {
-        const row = await appRequest(app, "GET", []);
-        setTarget({ base: apiOrigin(row?.api_url), token: cloudToken() });
-    }
+    const row = await appRequest(app, "GET", []);
+    setTarget({ base: apiOrigin(row?.api_url), token: cloudToken() });
     try {
         const value = await tool(...params);
         return JSON.stringify({ ok: value === undefined ? null : value });

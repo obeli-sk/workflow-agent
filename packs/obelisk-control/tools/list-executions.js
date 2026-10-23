@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.list-executions:
+// cloud.tenant operation list-executions:
 //   func(ffqn-prefix: string, execution-id-prefix: string, show-derived: bool,
 //        hide-finished: bool, component-digest: string, deployment-id: string,
 //        cursor: string, direction: string, including-cursor: bool, length: u32)
@@ -18,7 +18,6 @@ export default async function list_executions(
     length,
 ) {
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     // The activity JS runtime has no URLSearchParams; build the query manually.
     const params = [];
     if (ffqnPrefix) params.push(`ffqn_prefix=${encodeURIComponent(ffqnPrefix)}`);

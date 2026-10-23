@@ -4,7 +4,7 @@ import discover from "./config-discover.js";
 
 // Isolate each test from whatever the real environment (or a prior test)
 // left behind; config-discover.js reads these lazily on every call.
-const ENV_KEYS = ["MAX_STEPS", "PROGRAMS_JSON", "APPS_JSON", "TARGET_OBELISK_WEBHOOK_URL"];
+const ENV_KEYS = ["MAX_STEPS", "PROGRAMS_JSON", "APPS_JSON"];
 
 function withEnv(overrides, fn) {
     const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -25,7 +25,6 @@ test("discover defaults MAX_STEPS and the built-in registries when unset", async
     assert.equal(config.max_steps, 10);
     assert.deepEqual(config.programs, []);
     assert.deepEqual(config.apps, []);
-    assert.equal(config.webhook_url, "");
 });
 
 test("discover parses PROGRAMS_JSON/APPS_JSON", async () => {

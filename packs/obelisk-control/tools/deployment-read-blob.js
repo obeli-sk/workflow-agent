@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.deployment-read-blob:
+// cloud.tenant operation deployment-read-blob:
 //   func(digest: string) -> result<string, string>
 //
 // Read a deployment file blob from the content-addressed store by its
@@ -10,7 +10,6 @@ import { targetBase, targetToken } from "./target.js";
 export default async function deployment_read_blob(digest) {
     if (typeof digest !== "string" || !digest.trim()) throw "digest is required";
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(`${base}/v1/files/${encodeURIComponent(digest.trim())}`, {
         headers: { authorization: `Bearer ${targetToken()}` },
     });

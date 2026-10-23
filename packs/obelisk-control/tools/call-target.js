@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.call-target:
+// cloud.tenant operation call-target:
 //   func(ffqn: string, params-json: string) -> result<string, tool-error>
 //
 // Submits `ffqn` to the target Obelisk, then follows the accepted execution by
@@ -20,7 +20,6 @@ async function call_target_impl(ffqn, paramsJson) {
     if (!Array.isArray(params)) throw "params_json must be a JSON array of positional parameters";
 
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const token = targetToken();
     const headers = {
         accept: "application/json",

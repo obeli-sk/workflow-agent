@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.list-functions:
+// cloud.tenant operation list-functions:
 //   func(ffqn-prefix: string, length: u32)
 //     -> result<list<record { ffqn: string,
 //          parameter-types: list<record { name: string, wit-type: string }>,
@@ -17,7 +17,6 @@ export default async function list_functions(ffqnPrefix, length) {
 
 async function list_functions_impl(ffqnPrefix, length) {
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(`${base}/v1/components?exports=true&submittable=true&extensions=true`, {
         headers: { accept: "application/json", authorization: `Bearer ${targetToken()}` },
     });

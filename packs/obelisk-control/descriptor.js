@@ -9,7 +9,6 @@
 // field from the former model-facing catalog and is always empty.
 
 import { cloudRequest } from "./cloud/client.js";
-import { singleApp, singleAppRow } from "./cloud/single-app.js";
 
 const nl = String.fromCharCode(10);
 
@@ -142,17 +141,12 @@ const CLOUD_SECTION = [
     '- Destructive commands (`delete`, `deactivate`) need the user\'s confirmation first.',
 ].join(nl);
 
-// The cloud section: ObeliskNet with OBELISK_CLOUD_API_TOKEN, else the single-app cloud.
 async function cloudSection() {
+    if (!process.env["OBELISK_CLOUD_API_TOKEN"]) {
+        return { section: null, warnings: ["No cloud is configured; `obelisk cloud` is left out of the prompt"] };
+    }
     try {
-        let listed;
-        if (singleApp()) {
-            listed = { apps: [await singleAppRow()] };
-        } else if (process.env["OBELISK_CLOUD_API_TOKEN"]) {
-            listed = await cloudRequest("GET", ["v1", "apps"]);
-        } else {
-            return { section: null, warnings: ["No cloud is configured; `obelisk cloud` is left out of the prompt"] };
-        }
+        const listed = await cloudRequest("GET", ["v1", "apps"]);
         const apps = (Array.isArray(listed?.apps) ? listed.apps : [])
             .map((app) => `- ${app?.app_name}: ${app?.status ?? "unknown"}`);
         const existing = apps.length ? `Existing apps:${nl}${nl}${apps.join(nl)}` : 'No apps exist yet.';

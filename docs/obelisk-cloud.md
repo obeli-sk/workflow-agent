@@ -10,7 +10,7 @@ and logs of a hosted app.
 - `OBELISK_CLOUD_API_URL` (public env) points at the provisioner. Its default,
   `http://127.0.0.1:9090`, does nothing unless something listens there.
 - `OBELISK_CLOUD_API_TOKEN` (optional secret) is the account token. When it is
-  unset, the cloud is the single-app cloud described below.
+  unset, `obelisk cloud` is left out of the system prompt.
 - `OBELISK_CLOUD_APPS_DOMAIN` (optional public env) is the hosted apps' domain,
   the same variable the real CLI reads for `--apps-domain`. It defaults to
   `obelisk.works`. The app policy and both deployment manifests derive the
@@ -24,9 +24,7 @@ domains. Apply the app configuration and redeploy after changing the domain.
 
 Discover any app's webhook with
 `obelisk cloud app --app NAME endpoint webhook`, then fetch its route with
-`curl`. The fixed target's endpoint is configured by
-`TARGET_OBELISK_WEBHOOK_URL`, defaulting to `http://127.0.0.1:9290`.
-The shell uses the same endpoint command for every app.
+`curl`.
 
 `packs/obelisk-control/descriptor.js` adds a "Cloud apps" section to the
 system prompt along with the cloud's current apps. If the provisioner rejects the token or can't be reached, the section is
@@ -48,8 +46,8 @@ The `obelisk-agent:tools/cloud` interface has three activities
   3. It applies the config and starts the app when needed.
   4. It returns the app's API origin and webhook URL.
 - `tenant` (`tenant.js`) runs one webapi tool (`packs/obelisk-control/tools/*.js`)
-  against an app's API, authenticated with the cloud token. The tools read
-  their target from `tools/target.js`, which `tenant` points at the app.
+  against an app's API, authenticated with the cloud token. `tenant` points
+  `tools/target.js` at the app before running the tool.
 
 In the shell (`vendor/just-bash/src/obelisk-pack.js`), each `obelisk cloud` command goes
 to one of three places:
@@ -101,25 +99,3 @@ deployment, pull into another directory. Pull errors are reported by the
 command without creating a hidden error file. No automatic cloud deployment
 mount or `deployment refresh` command remains. `mount` lists reference
 repositories, without app endpoint URLs.
-
-## The single-app cloud
-
-Without `OBELISK_CLOUD_API_TOKEN` and with `TARGET_OBELISK_API_URL` set
-(`packs/obelisk-control/cloud/single-app.js`), the `TARGET_OBELISK_*` server is
-a cloud holding one app that cannot be provisioned. Its name is the
-`app_name` reported by the target's `/v1/info`, or `target` when it reports
-none.
-
-This adapter is an implementation detail. The LLM receives the same cloud
-instructions for every backend; restrictions are reported as command permission
-errors. Deployment pull, lazy file loading, submission and endpoint discovery
-use the same commands.
-
-- `apps list`, `app get|status` and `app endpoint` are answered from the
-  `TARGET_OBELISK_*` URLs and whether `/v1/info` answers.
-- `app new|delete|reactivate|deactivate|stage|apply`, `env ...`, `secrets ...` and
-  `token ...` are refused, asking the user to change the app.
-- `app deploy` skips provisioning: it checks the app is running and then runs
-  `deployment apply`. The target's own policy still applies, so a deployment
-  cannot widen it.
-- `--app` other than the single app's name is an error naming the one app.

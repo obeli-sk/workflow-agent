@@ -2,9 +2,9 @@
 // seam (obelisk-program.js, for functions chosen at runtime)
 // onto `dynamic.call`, re-encoding the decoded value as JSON text.
 //
-// `createControlPlane` backs obelisk-pack.js's control plane with the
-// statically imported tools, turning child errors into plain messages.
-// `createCloud` backs `obelisk cloud`, reusing it against an app's API.
+// `createControlPlane` backs obelisk-pack.js's control plane with webapi
+// operations, turning child errors into plain messages.
+// `createCloud` backs `obelisk cloud`, running them against an app's API.
 
 export function createHost(dynamic, obelisk) {
     return {
@@ -26,8 +26,7 @@ export function createHost(dynamic, obelisk) {
     };
 }
 
-// `webapi` is the
-// `obelisk-agent:tools/webapi` namespace import and `askUser(paramsJson)`
+// `webapi` runs the webapi operations against a cloud app and `askUser(paramsJson)`
 // answers `obelisk call obelisk-agent:stub/stub.ask-user` on this instance.
 export function createControlPlane(webapi, obelisk, askUser) {
     const plain = (fn) => (...args) => {

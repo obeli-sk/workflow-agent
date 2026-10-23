@@ -183,11 +183,6 @@ if [[ "$LS_ORDER" != ". .. a A apps b B" ]]; then
 fi
 
 
-run_shell_turn "shell-e2e-submit-error" "obelisk cloud app deployment pull /workspace/replay-check && cd /workspace/replay-check && sed 's/GITHUB_MOUNT_TOKEN/REPLAY_MISSING_SECRET/g' deployment.toml > replay-invalid.toml && obelisk cloud app deployment submit replay-invalid.toml"
-if [[ "$SHELL_STDERR" != *"REPLAY_MISSING_SECRET"* ]]; then
-    echo "deployment submit did not surface its typed server error: $SHELL_STDERR" >&2
-    exit 1
-fi
 run_shell_turn "shell-e2e-submit-help" "obelisk cloud app deployment submit --help"
 if [[ "$SHELL_STDOUT" != *"any filename -- not just"* ]]; then
     echo "deployment submit help lacked the expected text: $SHELL_STDOUT" >&2

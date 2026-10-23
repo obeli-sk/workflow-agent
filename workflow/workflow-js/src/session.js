@@ -14,14 +14,13 @@
 // WIT record/variant field and case names cross into JS as snake_case (not
 // camelCase — only function/interface names get kebab-to-camelCase); this was
 // confirmed against activity/config-discover.js, an already-deployed activity
-// returning `max_steps`/`webhook_url` for the kebab-case WIT
-// record `{max-steps, webhook-url}`. Pure helpers (no `obelisk`
+// returning `max_steps`/`obelisk_version` for the kebab-case WIT
+// record `{max-steps, obelisk-version}`. Pure helpers (no `obelisk`
 // global, no WIT imports) live in session-logic.js so they can be unit
 // tested; this file is the host-facing orchestration only.
 
 import { discover, inputAcceptedAt } from "obelisk-agent:config/config";
 import { request as appsRequest } from "obelisk-agent:mounts/apps";
-import * as webapi from "obelisk-agent:tools/webapi";
 import * as cloudTools from "obelisk-agent:tools/cloud";
 import * as obelisk from "obelisk:workflow@1.0.0";
 import * as dynamic from "obelisk:workflow-dynamic@1.0.0";
@@ -39,7 +38,7 @@ import { Bash } from "../../../vendor/just-bash/src/bash.js";
 import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
 import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
 import * as obeliskWeb from "../../../vendor/just-bash/src/obelisk-web.js";
-import { childErrorMessage, createCloud, createControlPlane, createHost } from "./host.js";
+import { childErrorMessage, createCloud, createHost } from "./host.js";
 import { arm as armScriptWatch } from "./script-watch.js";
 import * as chat from "./chat.js";
 import {
@@ -204,9 +203,7 @@ class Notifications {
 
 // Answers `obelisk call
 // obelisk-agent:stub/stub.ask-user [...]` with a real join-set-based
-// question/answer exchange instead of webapi.call-target's HTTP bridge to the
-// target instance, which has no such function. Returns the answer's JSON text,
-// like a target call.
+// question/answer exchange. Returns the answer's JSON text, like an app call.
 function askUser(paramsJson, notifications) {
     let params;
     try {
@@ -267,7 +264,6 @@ function loadSessionConfig(executionId, backend, effort, name) {
         // mountPacks) - not here, so a session that never touches a mount
         // never pays for the resolve-ref round trip.
         apps: config.apps ?? [],
-        webhookUrl: config.webhook_url ?? "",
         obeliskVersion: config.obelisk_version,
         promptTail: config.prompt_tail,
     };
@@ -536,7 +532,8 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const maxSteps = config.maxSteps;
     // Always registered, independent of operator config.
     const askUserHere = (paramsJson) => askUser(paramsJson, notifications);
-    const controlPlane = createControlPlane(webapi, obelisk, askUserHere);
+    // Top-level `obelisk call` only reaches ask-user; app commands go through `cloud`.
+    const controlPlane = { callTarget: (_ffqn, paramsJson) => askUserHere(paramsJson) };
     const cloud = createCloud(cloudTools, obelisk, askUserHere);
     bash.registerCommand("obelisk", obeliskPack.commandHandler(controlPlane, {
         obeliskVersion: config.obeliskVersion,

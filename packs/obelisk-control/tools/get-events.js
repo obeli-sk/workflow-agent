@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.get-events:
+// cloud.tenant operation get-events:
 //   func(execution-id: string, cursor-kind: string, cursor: u32,
 //        including-cursor: bool, length: u32) -> result<string, string>
 import { targetBase, targetToken } from "./target.js";
@@ -20,7 +20,6 @@ export default async function get_events(
         `length=${encodeURIComponent(String(pageLength))}`,
     ];
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/events?${params.join("&")}`,
         { headers: { accept: "application/json", authorization: `Bearer ${targetToken()}` } },

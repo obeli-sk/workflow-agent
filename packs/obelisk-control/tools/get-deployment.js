@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.get-deployment:
+// cloud.tenant operation get-deployment:
 //   func(deployment-id: string, component-type: option<string>,
 //        offset: option<u32>, length: option<u32>,
 //        max-bytes: option<u32>) -> result<string, string>
@@ -17,7 +17,6 @@ const MAX_RESULT_BYTES = 96 * 1024;
 export default async function get_deployment(deploymentId, componentType, offset, length, maxBytes) {
     if (!deploymentId) throw "deployment-id is required";
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}`,
         { headers: { accept: "application/json", authorization: `Bearer ${targetToken()}` } },

@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.deployment-switch:
+// cloud.tenant operation deployment-switch:
 //   func(deployment-id: string, allow-missing-runtime-config: bool)
 //        -> result<string, string>
 //
@@ -15,7 +15,6 @@ import { targetBase, targetToken } from "./target.js";
 export default async function deployment_switch(deploymentId, allowMissing) {
     if (!deploymentId) throw "deployment-id is required";
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}/switch`,
         {

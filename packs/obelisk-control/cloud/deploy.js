@@ -8,12 +8,10 @@
 import { apiOrigin, appRequest, cloudRequest, lookupApp } from "./client.js";
 import { appConfig, validateAppName } from "./policy.js";
 import { lifecycleOutcome } from "./output.js";
-import { requireSingleApp, singleApp, singleAppRow } from "./single-app.js";
 
 export default async function prepare_deploy(app, appToml) {
     const lines = [];
     const log = (line) => lines.push(`${line}\n`);
-    if (singleApp()) return singleAppTarget(app, log, lines);
     if (!appToml) throw "Cannot read policy app.toml: pass -a APP.TOML or write ./app.toml with app_name";
     const config = appConfig(appToml);
     const name = app || config.appName;
@@ -53,15 +51,6 @@ export default async function prepare_deploy(app, appToml) {
     }
     const webhook = typeof row.webhook_url === "string" ? row.webhook_url : null;
     return { api_url: apiOrigin(row.api_url), webhook_url: webhook, log: lines.join("") };
-}
-
-// Nothing to provision: the app's policy is fixed, so the deployment must fit it.
-async function singleAppTarget(app, log, lines) {
-    const name = await requireSingleApp(app);
-    const row = await singleAppRow();
-    if (row.status !== "running") throw `App ${name} is ${row.status}; ask the user to check its server`;
-    log(`App ${name} has a fixed policy; skipping provisioning.`);
-    return { api_url: row.api_url, webhook_url: row.webhook_url, log: lines.join("") };
 }
 
 async function checkFill(name, policy, log) {

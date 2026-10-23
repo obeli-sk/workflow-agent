@@ -3,14 +3,6 @@ set positional-arguments
 serve:
   obelisk server run -d deployment.toml --server-config server.toml --app-config app.toml
 
-clean-target:
-  rm -rf sqlite-target/
-
-serve-target *args:
-  #!/usr/bin/env bash
-  export OBELISK_API_TOKEN=${TARGET_OBELISK_TOKEN}
-  obelisk server run --server-config server-target.toml --app-config app-target.toml "$@"
-
 verify:
   obelisk server verify --skip-db --deployment deployment.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
 

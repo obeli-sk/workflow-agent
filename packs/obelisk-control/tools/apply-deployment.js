@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.apply-deployment:
+// cloud.tenant operation apply-deployment:
 //   func(deployment-id: string) -> result<string, string>
 //
 // Trigger a hot redeploy by PUT-ing /v1/deployments/{id}/switch with apply=true.
@@ -7,7 +7,6 @@ import { targetBase, targetToken } from "./target.js";
 export default async function apply_deployment(deploymentId) {
     if (!deploymentId) throw "deployment-id is required";
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}/switch`,
         {

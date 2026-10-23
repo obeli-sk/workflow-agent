@@ -284,7 +284,6 @@ function cloudDeploy(interp, flags, args, cloud) {
         else if (arg === "--fill") throw "`--fill` is interactive; set values with `obelisk cloud app --app NAME env set` and `secrets set`, then retry";
         else throw `cloud app deploy: unexpected argument '${arg}'`;
     }
-    // The policy is optional so a fixed app (single-app cloud) deploys without one.
     const policy = readAppPolicy(interp, appConfig ?? APP_POLICY_FILE, appConfig !== undefined);
     const app = cloudAppName(interp, { app: flags.app, appConfig }, cloud);
     let target;

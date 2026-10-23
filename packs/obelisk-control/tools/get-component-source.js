@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.get-component-source:
+// cloud.tenant operation get-component-source:
 //   func(deployment-id: string, component: string,
 //        offset: u32, length: u32)
 //     -> result<record { section: string, ffqn: option<string>,
@@ -28,7 +28,6 @@ async function get_component_source_impl(deploymentId, component, offset, length
     if (!component) throw "component is required";
 
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/deployments/${encodeURIComponent(deploymentId)}`,
         { headers: { accept: "application/json", authorization: `Bearer ${targetToken()}` } },

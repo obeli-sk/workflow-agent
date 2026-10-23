@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.deployment-checkout:
+// cloud.tenant operation deployment-checkout:
 //   func(deployment-id: string)
 //     -> result<record { deployment-toml: string,
 //          files: list<record { path: string, digest: string, size: u64 }> },
@@ -25,7 +25,6 @@ export default async function deployment_checkout(deploymentId) {
 
 async function deployment_checkout_impl(deploymentId) {
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const wanted = (typeof deploymentId === "string" && deploymentId.trim()) ? deploymentId.trim() : "";
     if (!wanted) throw "deployment-checkout requires a deployment-id";
     const record = await getJson(`${base}/v1/deployments/${encodeURIComponent(wanted)}`);

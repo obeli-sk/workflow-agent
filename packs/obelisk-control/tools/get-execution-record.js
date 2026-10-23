@@ -1,11 +1,10 @@
-// obelisk-agent:tools/webapi.get-execution-record:
+// cloud.tenant operation get-execution-record:
 //   func(execution-id: string) -> result<string, string>
 import { targetBase, targetToken } from "./target.js";
 
 export default async function get_execution_record(executionId) {
     if (!executionId) throw "execution-id is required";
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}`,
         { headers: { accept: "application/json", authorization: `Bearer ${targetToken()}` } },

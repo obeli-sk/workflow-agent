@@ -62,39 +62,12 @@ for other endpoints, used as `AGENT_MODELS="$(cat models.openrouter.json)"`:
 
 ### Apps in the cloud
 
-The agent controls apps in a cloud through `obelisk cloud ...`. Without an
-ObeliskNet token (below), the cloud holds a single app: the *target* Obelisk
-instance, named by the `app_name` its `/v1/info` reports. That app is fixed:
-the agent can inspect and redeploy it, but cannot create, reconfigure, start,
-stop or delete apps. By default the target is the instance the agent itself runs on.
-
-| Variable | Purpose |
-| --- | --- |
-| `TARGET_OBELISK_API_URL` | Target API, e.g. `http://127.0.0.1:5205`. |
-| `TARGET_OBELISK_TOKEN` | API token for the target (required). |
-| `TARGET_OBELISK_WEBHOOK_URL` | Target's webhook listener, reachable by the shell's `curl`. Default `http://127.0.0.1:9290`. |
-
-To run a separate local target:
+The agent controls apps through `obelisk cloud ...`, which talks to a cloud
+provisioner with the same API as ObeliskNet. Without a token, `obelisk cloud`
+is left out of the system prompt.
 
 ```sh
-export TARGET_OBELISK_API_URL=http://127.0.0.1:5205
-export TARGET_OBELISK_TOKEN=$(obelisk generate token)
-just serve-target
-```
-
-> [!WARNING]
-> Letting the agent deploy to its own instance is fine for experiments, but a bad
-> deployment can remove the agent itself. Use a separate target for real work.
-> To target the agent's own instance, set `OBELISK_API_TOKEN` to the same value
-> as `TARGET_OBELISK_TOKEN`.
-
-### ObeliskNet
-
-With an ObeliskNet account token, the cloud is ObeliskNet instead, and the agent
-can manage hosted apps the same way the `obelisk cloud` CLI does:
-
-```sh
-export OBELISK_CLOUD_API_URL=https://...   # the ObeliskNet API
+export OBELISK_CLOUD_API_URL=https://...   # the provisioner API
 export OBELISK_CLOUD_API_TOKEN=...
 ```
 

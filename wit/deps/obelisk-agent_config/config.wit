@@ -27,7 +27,6 @@ interface config {
     max-steps: u32,
     programs: list<program>,
     apps: list<app>,
-    webhook-url: string,
     // The obelisk repo ref (`vX.Y.Z` or `latest`) that `obelisk generate new` fetches the starter from.
     obelisk-version: string,
     // The whole tail of the system prompt after "# Example apps": user-input

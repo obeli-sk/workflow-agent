@@ -1,11 +1,10 @@
-// obelisk-agent:tools/webapi.list-deployments:
+// cloud.tenant operation list-deployments:
 //   func(cursor-from: string, including-cursor: bool, length: u32)
 //     -> result<string, string>
 import { targetBase, targetToken } from "./target.js";
 
 export default async function list_deployments(cursorFrom, includingCursor, length) {
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const params = [];
     if (cursorFrom) params.push(`cursor_from=${encodeURIComponent(cursorFrom)}`);
     if (includingCursor) params.push("including_cursor=true");

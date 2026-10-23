@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.get-responses:
+// cloud.tenant operation get-responses:
 //   func(execution-id: string, cursor: u32, including-cursor: bool,
 //        length: u32) -> result<string, string>
 import { targetBase, targetToken } from "./target.js";
@@ -13,7 +13,6 @@ export default async function get_responses(executionId, cursor, includingCursor
         `length=${encodeURIComponent(String(pageLength))}`,
     ];
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/responses?${params.join("&")}`,
         { headers: { accept: "application/json", authorization: `Bearer ${targetToken()}` } },

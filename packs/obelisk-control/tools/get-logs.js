@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.get-logs:
+// cloud.tenant operation get-logs:
 //   func(execution-id: string, show-derived: bool, show-logs: bool,
 //        show-streams: bool, levels: list<string>, stream-types: list<string>,
 //        cursor: string, direction: string, including-cursor: bool, length: u32)
@@ -19,7 +19,6 @@ export default async function get_logs(
 ) {
     if (!executionId) throw "execution-id is required";
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const params = [
         `show_derived=${showDerived ? "true" : "false"}`,
         `show_logs=${showLogs ? "true" : "false"}`,

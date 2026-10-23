@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const { default: callTarget } = await import("./call-target.js");
+const { setTarget } = await import("./target.js");
 
 test("call-target submits first and follows the accepted execution by id", async () => {
-    process.env.TARGET_OBELISK_API_URL = "http://target.test";
-    process.env.TARGET_OBELISK_TOKEN = "secret";
+    setTarget({ base: "http://target.test", token: "secret" });
     const requests = [];
     globalThis.fetch = async (url, init) => {
         requests.push({ url, init });
@@ -29,7 +29,7 @@ test("call-target submits first and follows the accepted execution by id", async
 });
 
 test("call-target reports an HTTP submission rejection without following", async () => {
-    process.env.TARGET_OBELISK_API_URL = "http://target.test";
+    setTarget({ base: "http://target.test", token: "secret" });
     const requests = [];
     globalThis.fetch = async (url, init) => {
         requests.push({ url, init });

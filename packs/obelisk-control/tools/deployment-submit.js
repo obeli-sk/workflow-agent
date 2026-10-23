@@ -1,4 +1,4 @@
-// obelisk-agent:tools/webapi.deployment-submit:
+// cloud.tenant operation deployment-submit:
 //   func(deployment-toml: string, attachments: list<record { path: string, digest: string, content: string }>,
 //        description: string, allow-missing-runtime-config: bool, deployment-id: string)
 //        -> result<string /* deployment-id */,
@@ -37,7 +37,6 @@ async function deployment_submit_impl(
         throw "deployment-toml is required";
     }
     const base = targetBase();
-    if (!base) throw "TARGET_OBELISK_API_URL is not configured";
     const token = targetToken();
     const wantedId = (typeof deploymentId === "string" && deploymentId.trim())
         ? deploymentId.trim() : generateDeploymentId();
