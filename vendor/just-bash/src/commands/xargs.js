@@ -1,4 +1,3 @@
-// PORT: vendor/just-bash-rs/src/commands/xargs.rs
 // xargs [-I REPLACE] [-d DELIM] [-n NUM] [-0] [-t] [-r] [COMMAND [ARGS...]]
 
 import { fail } from "./core.js";

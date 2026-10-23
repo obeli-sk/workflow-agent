@@ -12,7 +12,7 @@
 # (test-e2e-target-deploy.sh, test-e2e-deploy-outside-root.sh: APPS_JSON=[])
 # and never touch the GitHub web-mount overlay at all; the ensure_expanded
 # regression itself is unit-tested with a fake DirProvider in
-# fs.test.js/fs.rs (hermetic, no network - see 26faa0b). This suite is the
+# fs.test.js (hermetic, no network - see 26faa0b). This suite is the
 # one place that proves the fix through the real
 # obelisk-agent:mounts/apps.request activity and its HTTP round trips,
 # submitting this app's OWN unmodified deployment.js.toml to the target,
@@ -36,7 +36,6 @@
 # The GitHub contents API is served by scripts/e2e-github-server.mjs from this
 # checkout's working tree, so the run is hermetic and needs no token or push.
 #
-# Usage: test-e2e-github-mount-deploy.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -44,11 +43,9 @@ ROOT="$PWD"
 
 source "$ROOT/scripts/e2e-lib.sh"
 
-BACKEND="${1:-rs}"
-PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
-API_PORT=$((28040 + PORT_OFFSET))
-EXTERNAL_PORT=$((28100 + PORT_OFFSET))
-e2e_init "github-mount-deploy-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-github-mount-deploy-token"
+API_PORT=28040
+EXTERNAL_PORT=28100
+e2e_init "github-mount-deploy-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-github-mount-deploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
@@ -56,8 +53,8 @@ export AGENT_MODELS="[]"
 e2e_start_github_mock "obeli-sk/workflow-agent=$ROOT"
 export APPS_JSON='[{"name":"workflow-agent","repo":"workflow-agent"}]'
 
-TARGET_API_PORT=$((28041 + PORT_OFFSET))
-TARGET_EXTERNAL_PORT=$((28101 + PORT_OFFSET))
+TARGET_API_PORT=28041
+TARGET_EXTERNAL_PORT=28101
 # Point the source session's `obelisk` command + deployment mount at the
 # separate target server started below (not the self-host default e2e_init
 # set up), keyless since the target runs with --no-auth.
@@ -66,10 +63,7 @@ export TARGET_OBELISK_API_URL="http://127.0.0.1:${TARGET_API_PORT}"
 
 e2e_start_target_server "$TARGET_API_PORT" "$TARGET_EXTERNAL_PORT"
 
-e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-github-mount-deploy-deployment-$BACKEND.toml"
-e2e_patch_workflow_manifest "$DEPLOY"
-e2e_start_server "$DEPLOY"
+e2e_start_server
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
@@ -88,7 +82,7 @@ AUTHOR_SCRIPT="$(printf '%s\n' \
     "echo SUBMITTED:\$NEW_ID")"
 
 # A `$`-prefixed opening prompt runs immediately as a direct shell script,
-# recorded as shell event id "shell-opened-0" (session.rs/session.js).
+# recorded as shell event id "shell-opened-0" (session.js).
 SESSION_ID="$("$OBELISK" generate execution-id)"
 PARAMS="$(node -e 'process.stdout.write(JSON.stringify(["$" + process.argv[1], null, null, null, null]))' "$AUTHOR_SCRIPT")"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" "$PARAMS"
@@ -110,7 +104,6 @@ TARGET_LIST="$("$OBELISK" deployment list --json -a "$E2E_TARGET_API_URL")"
 }
 echo ">>> target E2E PASS: the target genuinely stored the GitHub-mounted deployment (${AUTHORED_ID})"
 
-e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
-echo ">>> E2E PASS: the agent (${BACKEND}) submitted this app's own real deployment.js.toml, fetched cold through the GitHub apps mount, and the target has a working stored deployment"
+echo ">>> E2E PASS: the agent submitted this app's own real deployment.js.toml, fetched cold through the GitHub apps mount, and the target has a working stored deployment"

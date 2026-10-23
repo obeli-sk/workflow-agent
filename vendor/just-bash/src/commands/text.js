@@ -1,5 +1,3 @@
-// PORT: vendor/just-bash-rs/src/commands/text.rs (cut, tr slice)
-
 import { ok, fail, unknownOption } from "./core.js";
 
 function revLine(line) {

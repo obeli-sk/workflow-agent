@@ -52,64 +52,8 @@ jobs:
               exit 1
           fi
 
-  check-wit-deps:
-    name: Check generated wit/deps
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
-        with:
-          ref: ${{ github.event.inputs.ref }} # Use the ref if provided, otherwise defaults to the current branch/commit
-
-      - uses: nixbuild/nix-quick-install-action@v34
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          nix_conf: |
-            extra-substituters = https://obeli-sk.cachix.org
-            extra-trusted-public-keys = obeli-sk.cachix.org-1:31iM9GWSEhAXvvuTWQ7CvAcwvgRzsuJ9yJghywSd3Jw=
-
-      - name: Populate the nix store
-        run: nix develop --command echo
-
-      - name: Regenerate wit/deps
-        run: nix develop --command ./scripts/generate-wit-deps.sh
-
-      - name: Check wit/deps
-        run: |
-          if ! git diff --quiet -- workflow/workflow-rs/wit/deps; then
-              echo "workflow/workflow-rs/wit/deps is stale, run ./scripts/generate-wit-deps.sh:"
-              git diff -- workflow/workflow-rs/wit/deps
-              exit 1
-          fi
-
-  rust:
-    name: Rust workflow
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
-        with:
-          ref: ${{ github.event.inputs.ref }} # Use the ref if provided, otherwise defaults to the current branch/commit
-
-      - uses: nixbuild/nix-quick-install-action@v34
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          nix_conf: |
-            extra-substituters = https://obeli-sk.cachix.org
-            extra-trusted-public-keys = obeli-sk.cachix.org-1:31iM9GWSEhAXvvuTWQ7CvAcwvgRzsuJ9yJghywSd3Jw=
-
-      - name: Populate the nix store
-        run: nix develop --command echo
-
-      - name: Format
-        run: nix develop --command cargo fmt --all --check
-
-      - name: Clippy
-        run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Unit tests (just-bash-rs)
-        run: nix develop --command just test-rs
-
   js:
-    name: JS workflow backend
+    name: Unit tests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
@@ -126,7 +70,7 @@ jobs:
       - name: Populate the nix store
         run: nix develop --command echo
 
-      - name: Unit tests (webhook/activity/shared/vendor/just-bash/workflow-js)
+      - name: Unit tests
         run: nix develop --command just test-js
 
   verify:
@@ -152,48 +96,12 @@ jobs:
       - name: Populate the nix store
         run: nix develop --command echo
 
-      # deployment.rs.toml's [[workflow_wasm]] points at the release artifact, so
-      # build it before verifying.
-      - name: Build the workflow component
-        run: nix develop --command just build-rs
-
-      - name: deployment.rs.toml/deployment.js.toml parity
-        run: nix develop --command ./scripts/check-deployment-toml-parity.sh
-
-      - name: obelisk server verify (rs)
-        run: nix develop --command obelisk server verify --skip-db -d deployment.rs.toml -s server.toml -a app.toml
-
-      - name: obelisk server verify (js)
+      - name: obelisk server verify
         run: nix develop --command obelisk server verify --skip-db -d deployment.js.toml -s server.toml -a app.toml
 
-  e2e-common:
-    name: End-to-end tests (backend-agnostic)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
-        with:
-          ref: ${{ github.event.inputs.ref }} # Use the ref if provided, otherwise defaults to the current branch/commit
-
-      - uses: nixbuild/nix-quick-install-action@v34
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          nix_conf: |
-            extra-substituters = https://obeli-sk.cachix.org
-            extra-trusted-public-keys = obeli-sk.cachix.org-1:31iM9GWSEhAXvvuTWQ7CvAcwvgRzsuJ9yJghywSd3Jw=
-
-      - name: Populate the nix store
-        run: nix develop --command echo
-
-      - name: bash workflow e2e
-        run: nix develop --command ./scripts/test-e2e-bash-workflow.sh
-
   e2e:
-    name: End-to-end tests (${{ matrix.backend }} backend)
+    name: End-to-end tests
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        backend: [rs, js]
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
@@ -209,5 +117,5 @@ jobs:
       - name: Populate the nix store
         run: nix develop --command echo
 
-      - name: e2e suites (${{ matrix.backend }})
-        run: nix develop --command node --test --test-name-pattern "^${{ matrix.backend }}$" scripts/e2e/*.test.mjs
+      - name: e2e suites
+        run: nix develop --command node --test scripts/e2e/*.test.mjs

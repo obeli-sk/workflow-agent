@@ -1,10 +1,7 @@
 // Captured verbatim from the devshell's `obelisk generate deployment` output
-// (Obelisk 0.42.0-rc.12): the same fully-commented starter deployment.toml the Rust
-// port embeds at build time via vendor/just-bash-rs/build.rs's
-// include_str!(...) of that command's stdout. This JS port has no build-time
-// hook to run the real `obelisk` binary at deploy time (a deployed component
-// has no obelisk process to shell out to), so the captured text is committed
-// here as a plain escaped JS string constant instead - the same convention
+// (Obelisk 0.42.0-rc.12). A deployed component has no obelisk process to
+// shell out to, so the captured text is committed here as a plain escaped JS
+// string constant - the same convention
 // packs/obelisk-control/descriptor.js uses for embedding a large static text
 // block (an array of strings there; one escaped literal here, since this text
 // is TOML full of backticks and \${...} examples that a template literal would

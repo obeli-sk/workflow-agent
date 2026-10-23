@@ -1,6 +1,5 @@
 // Pathname glob matching: *, ?, [...] character classes. No brace expansion
-// here (see brace.js, applied earlier in word expansion) and no ** (not part
-// of the just-bash-rs parity target).
+// here (see brace.js, applied earlier in word expansion) and no **.
 
 export function hasGlobChars(text) {
     return /[*?[]/.test(text);

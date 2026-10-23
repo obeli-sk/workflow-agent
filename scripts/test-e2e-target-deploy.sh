@@ -5,37 +5,21 @@
 # independently (against the target's own API, not the agent's report) that
 # the new component is really serving there - all without ever touching the
 # agent's own driving deployment.
-#
-# This replaces the former same-instance rs<->js replay-parity design: that
-# test hot-swapped a *running* session's own component between two different
-# language implementations of itself via `deployment apply` on its own
-# server, then kept driving it live - risky by construction, and not how
-# workflow-agent is meant to operate: it always redeploys a separate
-# TARGET_OBELISK instance, never itself (see README.md's "Apps in the cloud"
-# section and this repo's TARGET_OBELISK_* env vars). Cross-language replay
-# compatibility of the driving session is still checked below through the
-# non-destructive `PUT /v1/executions/{id}/replay` RPC.
-#
-# Runs for both rs and js SOURCE backends (the agent side); the target is
-# backend-agnostic, a plain generated JS activity.
-# Usage: test-e2e-target-deploy.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
-BACKEND="${1:-rs}"
-PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
-API_PORT=$((28020 + PORT_OFFSET))
-EXTERNAL_PORT=$((28096 + PORT_OFFSET))
-e2e_init "target-deploy-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-target-deploy-token"
+API_PORT=28020
+EXTERNAL_PORT=28096
+e2e_init "target-deploy-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-target-deploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 
-TARGET_API_PORT=$((28021 + PORT_OFFSET))
-TARGET_EXTERNAL_PORT=$((28097 + PORT_OFFSET))
+TARGET_API_PORT=28021
+TARGET_EXTERNAL_PORT=28097
 # Point the source session's `obelisk` command + deployment mount at the
 # separate target server started below (not the self-host default e2e_init
 # set up), keyless since the target runs with --no-auth.
@@ -44,16 +28,13 @@ export TARGET_OBELISK_API_URL="http://127.0.0.1:${TARGET_API_PORT}"
 
 e2e_start_target_server "$TARGET_API_PORT" "$TARGET_EXTERNAL_PORT"
 
-e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-target-deploy-deployment-$BACKEND.toml"
-e2e_patch_workflow_manifest "$DEPLOY"
-e2e_start_server "$DEPLOY"
+e2e_start_server
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
 
 ORIG_ID="$("$OBELISK" deployment active -a "$E2E_API_URL")"
-echo ">>> source (${BACKEND}) active deployment: ${ORIG_ID}"
+echo ">>> source active deployment: ${ORIG_ID}"
 TARGET_ORIG_ID="$("$OBELISK" deployment active -a "$E2E_TARGET_API_URL")"
 echo ">>> target starts empty: ${TARGET_ORIG_ID}"
 
@@ -76,7 +57,7 @@ AUTHOR_SCRIPT="$(printf '%s\n' \
     'printf "APPLIED:%s\n" "$NEW_ID"')"
 
 # A `$`-prefixed opening prompt runs immediately as a direct shell script,
-# recorded as shell event id "shell-opened-0" (session.rs/session.js).
+# recorded as shell event id "shell-opened-0" (session.js).
 SESSION_ID="$("$OBELISK" generate execution-id)"
 PARAMS="$(node -e 'process.stdout.write(JSON.stringify(["$" + process.argv[1], null, null, null, null]))' "$AUTHOR_SCRIPT")"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" "$PARAMS"
@@ -112,11 +93,9 @@ SOURCE_NOW_ID="$("$OBELISK" deployment active -a "$E2E_API_URL")"
     echo "source's own active deployment changed from ${ORIG_ID} to ${SOURCE_NOW_ID} - it should never redeploy itself" >&2
     exit 1
 }
-echo ">>> source E2E PASS: the agent's own (${BACKEND}) deployment was never touched"
+echo ">>> source E2E PASS: the agent's own deployment was never touched"
 
 # KNOWN-RED: an Obelisk-core replay-finalize gap, not a workflow-agent bug -
-# see the KNOWN-RED note on e2e_verify_replay_parity in e2e-lib.sh.
-e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
-echo ">>> E2E PASS: the agent (${BACKEND}) safely redeployed a separate target instance"
+echo ">>> E2E PASS: the agent safely redeployed a separate target instance"

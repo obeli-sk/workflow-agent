@@ -1,9 +1,6 @@
 set positional-arguments
 
-serve-rs: build-rs
-  obelisk server run -d deployment.rs.toml --server-config server.toml --app-config app.toml
-
-serve-js:
+serve:
   obelisk server run -d deployment.js.toml --server-config server.toml --app-config app.toml
 
 clean-target:
@@ -17,18 +14,10 @@ serve-target *args:
 sample-mcp-server:
   node examples/stateless-mcp-server.mjs
 
-build-rs:
-  cd workflow/workflow-rs && env -u CARGO_TARGET_DIR cargo build --release
-
-verify: build-rs
-  obelisk server verify --skip-db --deployment deployment.rs.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
+verify:
   obelisk server verify --skip-db --deployment deployment.js.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
-  ./scripts/check-deployment-toml-parity.sh
 
-test: test-rs test-js test-e2e
-
-test-rs:
-  cargo nextest run -p just-bash-rs -p workflow-agent-rs
+test: test-js test-e2e
 
 test-js:
   node --test webhook/ui/shell.test.js
@@ -45,8 +34,6 @@ test-js:
   node --test $(find vendor/just-bash/src -name '*.test.js')
   node --test $(find workflow/workflow-js/src -name '*.test.js')
 
-
-# Every suite, and each suite's rs/js pair, runs concurrently: each backend
-# uses its own offset port range (scripts/e2e-lib.sh's e2e_backend_port_offset).
+# Every suite runs concurrently, each on its own port range.
 test-e2e:
   node --test scripts/e2e/*.test.mjs

@@ -51,14 +51,12 @@ The `obelisk-agent:tools/cloud` interface has three activities
   against an app's API, authenticated with the cloud token. The tools read
   their target from `tools/target.js`, which `tenant` points at the app.
 
-In the shell (`vendor/just-bash/src/obelisk-pack.js`, ported to
-`vendor/just-bash-rs/src/obelisk_pack.rs`), each `obelisk cloud` command goes
+In the shell (`vendor/just-bash/src/obelisk-pack.js`), each `obelisk cloud` command goes
 to one of three places:
 
 - `cloud app [--app NAME] functions|executions|call|deployment ...` reuses the
   local command implementations with a control plane routed through `tenant`
-  (`createCloud` in `workflow-js/src/host.js` and `CloudHost` in
-  `workflow-rs/src/host.rs`). This way the output and flags stay identical to
+  (`createCloud` in `workflow-js/src/host.js`). This way the output and flags stay identical to
   the real CLI's app commands.
 - `cloud app deploy [-a app.toml] [-d deployment.toml]` calls `prepare-deploy`
   and then `deployment apply` against the app. It uploads the files the server

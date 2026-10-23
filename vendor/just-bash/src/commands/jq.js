@@ -1,7 +1,4 @@
-// PORT (partial): vendor/just-bash-rs/src/commands/jq.rs
-//
-// A practical subset of jq, matching the Rust port's own scope (see that
-// file's top-of-file doc comment): not full upstream jq fidelity. Hand-
+// A practical subset of jq, not full upstream jq fidelity. Hand-
 // rolled scanner/recursive-descent parser producing a plain-object Filter
 // AST, evaluated directly over parsed JSON values (JS null/boolean/number/
 // string/Array/plain-object).
@@ -30,7 +27,7 @@
 // lookup into the fixed external-argument map threaded through evaluate(),
 // never a pattern target.
 //
-// Explicitly out of scope (matches the Rust port's scope): reduce/foreach,
+// Explicitly out of scope: reduce/foreach,
 // custom def, try/catch (bare `?` is supported, full try is not),
 // path()/paths, "... as $x |" binding, @base64/@csv-style format strings
 // other than @tsv, module imports, input/inputs streaming, regex builtins
@@ -39,8 +36,7 @@
 // Value representation note: jq objects are represented as plain JS
 // objects, so a key that looks like an array index (e.g. "0", "1") will be
 // reordered by the JS engine's own property-enumeration rules instead of
-// preserving insertion order, unlike the Rust port's IndexMap-backed
-// serde_json::Map. This is a narrow, known divergence, not expected to
+// preserving insertion order. This is a narrow, known divergence, not expected to
 // matter for realistic agent-shell JSON (config, counts, ids), so it is
 // left as-is rather than reimplementing jq objects atop a Map to sidestep
 // it (which would also lose the JSON.stringify-based formatter below).
@@ -535,8 +531,7 @@ function asF64(v) {
     return typeof v === "number" ? v : 0;
 }
 
-/// Never store a non-finite result (matches the Rust port's
-/// `Number::from_f64(f).unwrap_or_else(|| Number::from(0))`).
+/// Never store a non-finite result.
 function num(f) {
     return Number.isFinite(f) ? f : 0;
 }

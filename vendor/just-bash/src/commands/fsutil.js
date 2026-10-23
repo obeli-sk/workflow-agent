@@ -210,7 +210,6 @@ export const fsutil = {
         return ok(`  File: ${t}\n  Size: ${size}\n  Type: ${isDir ? "directory" : "regular file"}\n`);
     },
 
-    // PORT (simplified): vendor/just-bash-rs/src/commands/fsutil.rs's chmod.
     // Our VFS (fs.js) has no permission bits at all (not even an execute
     // flag), so this is a pure argument-validating no-op: mode syntax and
     // target existence are checked and a verbose message is printed as if
@@ -260,7 +259,6 @@ export const fsutil = {
         return { stdout, stderr, exitCode: anyError ? 1 : 0 };
     },
 
-    // PORT (simplified): vendor/just-bash-rs/src/commands/fsutil.rs's readlink.
     // Our VFS has no symlinks, so no operand is ever a symbolic link. Without
     // -f, real readlink fails on a non-symlink with no message (exit 1 only)
     // -- reproduced verbatim below. With -f, real readlink canonicalizes the
@@ -293,7 +291,6 @@ export const fsutil = {
         return { stdout, stderr: "", exitCode: anyError ? 1 : 0 };
     },
 
-    // PORT (simplified): vendor/just-bash-rs/src/commands/fsutil.rs's ln.
     // Our VFS has no symlinks or inode aliasing. -s is argument-validated
     // then rejected (no real symlink can be created); a plain hard link is
     // approximated by copying the target's content under the new name
@@ -332,7 +329,7 @@ export const fsutil = {
                 try {
                     interp.vfs.remove(linkPath, { recursive: false });
                 } catch {
-                    // best-effort, matches the Rust port's `let _ = ...remove(...)`
+                    // best-effort
                 }
             } else {
                 const kind = symbolic ? "symbolic " : "";
@@ -356,7 +353,6 @@ export const fsutil = {
         return ok(verbose ? `'${linkName}' -> '${target}'\n` : "");
     },
 
-    // PORT (simplified): vendor/just-bash-rs/src/commands/fsutil.rs's file.
     // Simplified type detection (partial subset): upstream uses the
     // `file-type` npm package's full magic-byte signature database. This
     // port recognizes a handful of common binary signatures plus the
@@ -408,8 +404,7 @@ export const fsutil = {
         return { stdout, stderr: "", exitCode };
     },
 
-    // PORT: vendor/just-bash-rs/src/commands/fsutil.rs's du. Recursive
-    // traversal over the VFS directly (same style as find.js's walk()).
+    // du: recursive traversal over the VFS directly (same style as find.js's walk()).
     du(interp, args) {
         const real = args.slice(1);
         let allFiles = false;
@@ -461,7 +456,6 @@ export const fsutil = {
         return { stdout: outLines.join(""), stderr, exitCode: stderr ? 1 : 0 };
     },
 
-    // PORT: vendor/just-bash-rs/src/commands/fsutil.rs's tree.
     tree(interp, args) {
         const real = args.slice(1);
         let showHidden = false;

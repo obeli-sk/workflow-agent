@@ -42,9 +42,7 @@
         "nixpkgs": [
           "nixpkgs"
         ],
-        "rust-overlay": [
-          "rust-overlay"
-        ]
+        "rust-overlay": "rust-overlay"
       },
       "locked": {
         "lastModified": 1792673477,
@@ -65,13 +63,13 @@
       "inputs": {
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
-        "obelisk": "obelisk",
-        "rust-overlay": "rust-overlay"
+        "obelisk": "obelisk"
       }
     },
     "rust-overlay": {
       "inputs": {
         "nixpkgs": [
+          "obelisk",
           "nixpkgs"
         ]
       },

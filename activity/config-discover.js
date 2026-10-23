@@ -12,19 +12,12 @@
 //
 // prompt-tail is the whole system prompt after "# Example apps": user-input
 // guidance, subagent delegation, deployment authoring, and the per-session
-// "# This session" text - not operator config. It lives here (one JS
-// activity both workflow backends already call at session start) so
-// session.rs and session-logic.js don't each hand-carry their own copy of
-// this prose, "# This session" included: execution-id/backend/effort/name
-// are cheap to pass in (no network round trip either way), so there is no
-// cost to fully centralizing it here too.
+// "# This session" text - not operator config.
 
 const DEFAULT_MAX_STEPS = 10;
 const DEFAULT_APP_OWNER = "obeli-sk";
 const DEFAULT_APP_REF = "main";
 
-// PORT-OF-RECORD: session.rs's inline "# User input" text and
-// session-logic.js's (now-deleted) USER_INPUT_SECTION constant.
 const USER_INPUT_SECTION =
     "# User input\n\n" +
     "When you need a user answer before you can continue the current task, run " +
@@ -32,8 +25,6 @@ const USER_INPUT_SECTION =
     "to the UI, blocks, and returns the answer so you can continue in the same turn. Use it only when " +
     "the answer is required to proceed; to end the turn, reply in Markdown without a command.";
 
-// PORT-OF-RECORD: session.rs's inline "# Subagents" text and
-// session-logic.js's (now-deleted) SUBAGENTS_SECTION constant.
 const SUBAGENTS_SECTION =
     "# Subagents\n\n" +
     "Delegate self-contained work with `chat create [--name slug] PROMPT`.\n\n" +
@@ -43,11 +34,6 @@ const SUBAGENTS_SECTION =
     "- Never poll a child with sleep loops.\n" +
     "- A child parked in step-limit resumes where it left off when you send it `chat send ID continue`; its budget resets for the new turn.";
 
-// PORT-OF-RECORD: vendor/just-bash-rs/src/obelisk_pack.rs's (now-deleted)
-// SYSTEM_PROMPT constant and vendor/just-bash/src/obelisk-pack.js's matching
-// (now-deleted) export - the "obelisk" shell command's own logic stays
-// vendored/ported per backend, but this descriptive text has no per-backend
-// behavior to port, so it belongs in exactly one place.
 const PACK_SYSTEM_PROMPT =
     "# Deployment authoring\n\n" +
     "You are on a persistent virtual machine with a filesystem rooted at /workspace. Pull an app's " +
@@ -72,10 +58,9 @@ const PACK_SYSTEM_PROMPT =
 // "# This session" text (built by renderSelfSection) follows this.
 const STATIC_SECTIONS = [USER_INPUT_SECTION, SUBAGENTS_SECTION, PACK_SYSTEM_PROMPT].join("\n\n");
 
-// PORT-OF-RECORD: session.rs's chat::self_section / (now-deleted)
-// chat-logic.js's selfSection - the "# This session" paragraph: the
-// session's own identity (exactly what `chat current` prints), its parent
-// for context gathering, and when to rename itself.
+// The "# This session" paragraph: the session's own identity (exactly what
+// `chat current` prints), its parent for context gathering, and when to rename
+// itself.
 function renderSelfSection(executionId, backend, effort, name) {
     const payload = JSON.stringify({
         execution_id: executionId,
@@ -104,8 +89,7 @@ function renderSelfSection(executionId, backend, effort, name) {
     return text;
 }
 
-// PORT-OF-RECORD: chat.rs's parent_of / chat-logic.js's parentOf. The
-// session that created an execution, derived from the derived-execution id
+// The session that created an execution, derived from the derived-execution id
 // shape (`<parent-id>.<join-set-ref>`); null for top-level executions.
 function parentOf(executionId) {
     const dot = executionId.lastIndexOf(".");

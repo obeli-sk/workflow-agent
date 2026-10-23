@@ -25,9 +25,6 @@ import {
     sessionEventValue,
 } from "../shared/session-state.js";
 
-// Both the Rust and JS workflow backends export this same FFQN (see
-// docs/js-backend-migration.md); which implementation runs it is a
-// deployment choice, not something this file picks per request.
 const RUN_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 200;
@@ -69,7 +66,7 @@ async function dispatch(stdin, args) {
         case "send": return cmdSend(stdin, rest);
         case "interrupt": return cmdInterrupt(rest);
         case "create": return cmdCreate(stdin, rest);
-        // Answered by the session workflow wrapper (see session.rs); reaching
+        // Answered by the session workflow wrapper (see workflow/workflow-js/src/chat.js); reaching
         // this activity means there is no wrapping session to report, rename,
         // or durably block for.
         case "current":

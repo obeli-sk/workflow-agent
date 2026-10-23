@@ -1,4 +1,3 @@
-// PORT (simplified): vendor/just-bash-rs/src/commands/find.rs
 // find [PATH...] [-name PAT] [-iname PAT] [-path PAT] [-ipath PAT]
 // [-type f|d] [-maxdepth N] [-mindepth N] [-empty] [!]/[-not] [-print] [-print0]
 

@@ -1,6 +1,5 @@
-// PORT (simplified): vendor/just-bash-rs/src/commands/textutil2.rs
 // comm, join, nl, od, fold, expand, unexpand, column, paste, strings, split.
-// `rev` from the same Rust file already lives in `text.js` (see there).
+// `rev` lives in `text.js`.
 // od/strings need byte-level data from a string-backed Vfs, so both go
 // through utf8Encode/utf8Decode the same way hash.js does for md5sum/sha256sum.
 
@@ -1078,7 +1077,7 @@ export function stringsCommand(interp, args, stdin) {
 // split
 // ---------------------------------------------------------------------
 //
-// Simplified like the Rust port: upstream's split.ts stages every output
+// Simplified: upstream's split.ts stages every output
 // file under a temp name and rolls the batch back on failure, guarding
 // against real filesystem aliasing/rename races. This Vfs is in-memory,
 // single-threaded, with no aliasing, so this port writes each file directly.

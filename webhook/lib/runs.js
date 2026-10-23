@@ -16,8 +16,6 @@ import {
 } from "./responses.js";
 import { SESSION_STATE_LABELS, emptyMarkers, projectSessionState } from "../../shared/session-state.js";
 
-// Both the Rust and JS workflow backends export this same FFQN (see
-// docs/js-backend-migration.md); which one is active is a deployment choice.
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run-cancellable";
 function pickRunState(workflowStatus) {
     const ps = workflowStatus?.pending_state || null;

@@ -1,5 +1,3 @@
-// PORT: vendor/just-bash-rs/src/obelisk_web.rs
-//
 // Lazily-mounted remote directory tree (e.g. a GitHub repo browsed over the
 // network), surfaced as an ordinary VFS folder via `fs.registerWebMount`
 // (vendor/just-bash/src/fs.js). One deployed activity backs every mount

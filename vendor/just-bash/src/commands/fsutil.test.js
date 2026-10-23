@@ -2,8 +2,7 @@
 // etc. builtins: chmod/readlink/ln/file/du/tree, plus a few cp cases (that
 // group otherwise has no dedicated test file). See fsutil.js's doc comments
 // for exactly how each is simplified against a VFS with no permission bits,
-// no symlinks, and no mtime. Cases mirror
-// vendor/just-bash-rs/src/commands/fsutil.rs's own `#[cfg(test)] mod tests`.
+// no symlinks, and no mtime.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -13,7 +12,7 @@ function fresh() {
     return new Bash({ cwd: "/workspace" });
 }
 
-test("ls -la matches the Rust shell's replay-stable format", () => {
+test("ls -la uses a replay-stable format", () => {
     const bash = fresh();
     bash.vfs.mkdirp("/workspace/apps");
     bash.vfs.writeFile("/workspace/note", "hé");

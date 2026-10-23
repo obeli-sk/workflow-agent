@@ -68,7 +68,7 @@ test("lists and reads through the transport, lazily, pinning the ref on first us
 test("an unknown entry type fails the listing silently, like any other list() error", () => {
     // fs.js's _ensureExpanded swallows a throwing provider.list() (marks the
     // directory expanded with no children, never retries) rather than
-    // propagating - matching fs.rs's `if let Ok(entries) = entries`. The
+    // propagating. The
     // directory lists empty rather than raising through readdir.
     const github = fakeGithub({
         [resolveArgs()]: RESOLVED_SHA,

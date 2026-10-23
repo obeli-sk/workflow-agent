@@ -1,9 +1,6 @@
-// PORT: workflow/workflow-rs/src/host.rs.
-//
 // `createHost` bridges the generic `callJson(ffqn, paramsJson) -> string|null`
 // seam (obelisk-program.js/obelisk-mcp.js, for functions chosen at runtime)
-// onto `dynamic.call`, re-encoding the decoded value as JSON text so the
-// consumers' decoding ports unchanged from the Rust source.
+// onto `dynamic.call`, re-encoding the decoded value as JSON text.
 //
 // `createControlPlane` backs obelisk-pack.js's control plane with the
 // statically imported tools, turning child errors into plain messages.
@@ -29,7 +26,7 @@ export function createHost(dynamic, obelisk) {
     };
 }
 
-// PORT: host.rs's `ControlPlane for RealHost`. `webapi` is the
+// `webapi` is the
 // `obelisk-agent:tools/webapi` namespace import and `askUser(paramsJson)`
 // answers `obelisk call obelisk-agent:stub/stub.ask-user` on this instance.
 export function createControlPlane(webapi, obelisk, askUser) {
@@ -72,7 +69,7 @@ export function createControlPlane(webapi, obelisk, askUser) {
     };
 }
 
-// PORT: host.rs's `CloudHost`. `cloud` is the `obelisk-agent:tools/cloud`
+// `cloud` is the `obelisk-agent:tools/cloud`
 // namespace import; obelisk-pack.js's `obelisk cloud` calls this.
 export function createCloud(cloud, obelisk, askUser) {
     const plain = (fn) => {
@@ -129,7 +126,7 @@ function tenantWebapi(cloud, app) {
 
 const ASK_USER_FFQN = "obelisk-agent:stub/stub.ask-user";
 
-// PORT: host.rs's `call_target`. Unwraps the webapi.call-target response like
+// Unwraps the webapi.call-target response like
 // `obelisk.call`: returns the ok value's JSON text, throws a message otherwise.
 function callTarget(webapi, ffqn, paramsJson, errorMessage) {
     if (typeof ffqn !== "string" || !ffqn) throw "ffqn is required";
@@ -183,7 +180,6 @@ function isChildError(error, obelisk) {
     return typeof obelisk?.ChildError === "function" && error instanceof obelisk.ChildError;
 }
 
-// PORT: support.rs's `child_error_message`.
 export function childErrorMessage(error, obelisk) {
     if (isChildError(error, obelisk)) {
         if (error.value !== undefined) {

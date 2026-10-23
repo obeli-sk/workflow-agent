@@ -13,10 +13,10 @@ appending to persistent virtual files. It checks every turn's output. It
 uses no LLM calls, GitHub mounts, external shell programs, or HTTP tools.
 
 After pausing the session through the public API, it measures one warmup and
-nine full replays under JavaScript on V8, JavaScript on Boa in WASM, and the
-separate Rust workflow in WASM. All three must replay the same execution,
-event count, and log version. Results and metadata go to the output directory;
-the isolated database is preserved at the path printed on exit.
+nine full replays under JavaScript on V8 and JavaScript on Boa in WASM. Both
+must replay the same execution, event count, and log version. Results and
+metadata go to the output directory; the isolated database is preserved at the
+path printed on exit.
 
 `BENCH_TURNS`, `BENCH_API_PORT`, and `BENCH_EXTERNAL_PORT` override the defaults
 of 24, 15005, and 19090. `REPLAY_SAMPLER` optionally selects an external replay

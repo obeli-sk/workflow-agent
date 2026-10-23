@@ -40,7 +40,7 @@ pattern = "https://obeli.sk"
 methods = ["GET"]
 
 # Agent's own instance. These mirror the components' declarations in
-# deployment.{js,rs}.toml one-for-one rather than being consolidated into one
+# deployment.js.toml one-for-one rather than being consolidated into one
 # broader grant; both this and the component's url_regex_suffix apply to
 # every request.
 

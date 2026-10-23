@@ -1,24 +1,18 @@
 #!/usr/bin/env bash
-# Usage: test-e2e-redeploy.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
-BACKEND="${1:-rs}"
-PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
-API_PORT=$((28017 + PORT_OFFSET))
-EXTERNAL_PORT=$((28092 + PORT_OFFSET))
-e2e_init "redeploy-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-redeploy-token"
+API_PORT=28017
+EXTERNAL_PORT=28092
+e2e_init "redeploy-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-redeploy-token"
 export OBELISK_API_URL="$E2E_API_URL"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 
-e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-redeploy-deployment-$BACKEND.toml"
-e2e_patch_workflow_manifest "$DEPLOY"
-e2e_start_server "$DEPLOY"
+e2e_start_server
 
 ORIG_ID="$("$OBELISK" deployment active -a "$E2E_API_URL")"
 echo ">>> active deployment: ${ORIG_ID}"
@@ -72,7 +66,6 @@ AUTHORED_MANIFEST="$("$OBELISK" deployment show -a "$E2E_API_URL" "$AUTHORED_ID"
 [[ "$AUTHORED_MANIFEST" == *'test:generated'* ]] \
     || { echo "authored deployment was not stored: $AUTHORED_MANIFEST" >&2; exit 1; }
 
-e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 echo ">>> E2E PASS: the session submitted an authored WIT plus a multi-file JS graph"

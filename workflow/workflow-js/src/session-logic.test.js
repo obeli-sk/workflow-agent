@@ -46,7 +46,7 @@ test("containsBackgroundStatement is false on a parse error, not a crash", () =>
     assert.equal(containsBackgroundStatement("if true; then"), false);
 });
 
-test("stepWarningThreshold matches session.rs's 75%-rounded-down rule", () => {
+test("stepWarningThreshold is 75% rounded down", () => {
     assert.equal(stepWarningThreshold(20), 15);
     assert.equal(stepWarningThreshold(4), 3);
     assert.equal(stepWarningThreshold(3), 0);
@@ -59,7 +59,7 @@ test("toolOk truncates oversized results", () => {
     assert.match(result.message, /result too large/);
 });
 
-test("toolOk counts UTF-8 bytes like the Rust workflow", () => {
+test("toolOk counts UTF-8 bytes", () => {
     const result = (count) => ({ output: [{ stdout: "😀".repeat(count) }], exit_code: 0, interrupted: null });
     assert.equal(toolOk("id1", result(20_000)).ok, true);
     assert.deepEqual(toolOk("id1", result(30_000)), {

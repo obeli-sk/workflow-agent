@@ -1,6 +1,5 @@
-// PORT: vendor/just-bash-rs/src/commands/sort_uniq.rs
 // sort -r -n -u -f -c -k -t; uniq -c -d -u -i.
-// Not ported (matches the Rust port's scope): -b/-h/-M/-V/-d/-s/-o.
+// Not ported: -b/-h/-M/-V/-d/-s/-o.
 
 import { fail } from "./core.js";
 

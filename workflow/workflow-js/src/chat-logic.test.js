@@ -17,7 +17,6 @@ import {
     usage,
 } from "./chat-logic.js";
 
-// PORT: chat.rs's `parent_of_derives_from_derived_execution_ids`.
 test("parentOf derives from derived execution ids", () => {
     assert.equal(parentOf("E_01ABC.n:research_2"), "E_01ABC");
     // A grandchild's parent is the intermediate session, not the root.
@@ -69,7 +68,6 @@ test("usage and failure prefix and shape CommandOutput consistently", () => {
     assert.equal(f.exitCode, 1);
 });
 
-// PORT: chat.rs's `parse_create_args_reads_flags_and_prompt_words`.
 test("parseCreateArgs reads flags and prompt words", () => {
     const parsed = parseCreateArgs(["--model", "fake", "check", "--effort=low", "the deploy"]);
     assert.equal(parsed.prompt, "check the deploy");
@@ -94,7 +92,6 @@ test("parseCreateArgs reads --watch", () => {
     assert.equal(parseCreateArgs(["--watch=anything"]).watch, true);
 });
 
-// PORT: chat.rs's `parse_create_args_rejects_bad_input`.
 test("parseCreateArgs rejects bad input", () => {
     assert.throws(() => parseCreateArgs(["--effort", "maximum"]));
     assert.throws(() => parseCreateArgs(["--wat"]));
@@ -117,7 +114,6 @@ test("DEFAULT_PEERS_JOIN_SET is 'peers'", () => {
     assert.equal(DEFAULT_PEERS_JOIN_SET, "peers");
 });
 
-// PORT: chat.rs's `parse_watch_args_reads_flags_and_id`.
 test("parseWatchArgs reads flags and id", () => {
     const parsed = parseWatchArgs(["--timeout=30s", "E_child", "--interval", "500ms"]);
     assert.equal(parsed.id, "E_child");
@@ -134,7 +130,6 @@ test("parseWatchArgs reads flags and id", () => {
     assert.throws(() => parseWatchArgs(["--timeout", "E_x"]), "missing option value");
 });
 
-// PORT: chat.rs's `watch_wake_states_cover_progress_stops_and_terminals`.
 test("WATCH_WAKE_STATES covers progress stops and terminals", () => {
     for (const state of ["final-response", "step-limit", "awaiting-answer", "shell-only", "finished-ok", "cancelled", "failed"]) {
         assert.ok(WATCH_WAKE_STATES.includes(state), `${state} should wake`);
@@ -144,7 +139,6 @@ test("WATCH_WAKE_STATES covers progress stops and terminals", () => {
     }
 });
 
-// PORT: chat.rs's `stamp_watch_fields_adds_timeout_and_waited`.
 test("stampWatchFields adds timeout and waited", () => {
     let payload = JSON.parse('{"id":"E_x","state":"thinking"}');
     payload = stampWatchFields(payload, false, 1234);

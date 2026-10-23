@@ -2,31 +2,25 @@
 # Exercises the session-workflow protocol (ask-user lifecycle, a direct shell
 # turn, the obelisk/mount custom commands, at-creation rename, a
 # self-referential `chat create` child submit, and a prompt-driven turn
-# reaching the LLM endpoint) against whichever implementation backs
+# reaching the LLM endpoint) through
 # obelisk-agent:workflow/workflow.run-cancellable.
-# Usage: test-e2e-agent-workflow.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
-BACKEND="${1:-rs}"
-PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
-API_PORT=$((28016 + PORT_OFFSET))
-EXTERNAL_PORT=$((28091 + PORT_OFFSET))
-e2e_init "agent-workflow-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-agent-workflow-token"
+API_PORT=28016
+EXTERNAL_PORT=28091
+e2e_init "agent-workflow-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-agent-workflow-token"
 export OBELISK_API_URL="$E2E_API_URL"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 export LLM_BASE_URL="http://127.0.0.1:${EXTERNAL_PORT}"
 
-e2e_select_backend "$BACKEND"
 export APPS_JSON='[{"name":"components","repo":"components","description":"E2E GitHub mount"}]'
 e2e_start_github_mock "obeli-sk/components=$ROOT/scripts/e2e-fixtures/components"
-DEPLOY="$ROOT/.e2e-agent-deployment-$BACKEND.toml"
-e2e_patch_workflow_manifest "$DEPLOY"
-e2e_start_server "$DEPLOY"
+e2e_start_server
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 run_detail() {
@@ -189,38 +183,6 @@ if [[ "$LS_ORDER" != ". .. a A apps b B mcp" ]]; then
     exit 1
 fi
 
-echo ">>> live-swapping the blocked session to the other workflow backend"
-# Let the workflow finish advancing past the ls turn and settle on its new
-# join set before swapping - see wait_for_input_offer's comment.
-wait_for_input_offer
-case "$BACKEND" in
-    rs) SWAP_BACKEND="js" ;;
-    js) SWAP_BACKEND="rs" ;;
-esac
-e2e_select_backend "$SWAP_BACKEND"
-SWAP_DEPLOY="$ROOT/.e2e-agent-live-swap-${SWAP_BACKEND}.toml"
-e2e_swap_workflow_manifest "$DEPLOY" "$SWAP_DEPLOY"
-"$OBELISK" deployment apply "$SWAP_DEPLOY" -a "$E2E_API_URL" >/dev/null
-run_shell_turn "shell-e2e-after-swap" "echo auto-upgrade-ran"
-if [[ "$SHELL_STDOUT" != "auto-upgrade-ran" ]]; then
-    echo "the swapped backend did not resume the session: $SHELL_STDOUT" >&2
-    exit 1
-fi
-UPGRADE_EVENTS="$("$OBELISK" execution events -j -a "$E2E_API_URL" --from 0 --limit 500 "$SESSION_ID")"
-if ! node -e '
-    const events = JSON.parse(require("fs").readFileSync(0, "utf8")).events || [];
-    const upgraded = events.some(({ event }) => {
-        const outcome = event?.component_upgrade_finished?.outcome;
-        return outcome?.type === "success" && outcome?.reason?.type === "auto";
-    });
-    process.exit(upgraded ? 0 : 1);
-' <<<"$UPGRADE_EVENTS"; then
-    echo "the live swap resumed without recording a successful auto-upgrade: $UPGRADE_EVENTS" >&2
-    exit 1
-fi
-"$OBELISK" deployment apply "$DEPLOY" -a "$E2E_API_URL" >/dev/null
-e2e_select_backend "$BACKEND"
-echo ">>> live-swap auto-upgrade E2E PASS"
 
 run_shell_turn "shell-e2e-submit-error" "obelisk cloud app deployment pull /workspace/replay-check && cd /workspace/replay-check && sed 's/GITHUB_MOUNT_TOKEN/REPLAY_MISSING_SECRET/g' deployment.toml > replay-invalid.toml && obelisk cloud app deployment submit replay-invalid.toml"
 if [[ "$SHELL_STDERR" != *"REPLAY_MISSING_SECRET"* ]]; then
@@ -229,11 +191,10 @@ if [[ "$SHELL_STDERR" != *"REPLAY_MISSING_SECRET"* ]]; then
 fi
 run_shell_turn "shell-e2e-submit-help" "obelisk cloud app deployment submit --help"
 if [[ "$SHELL_STDOUT" != *"any filename -- not just"* ]]; then
-    echo "deployment submit help did not match the Rust backend: $SHELL_STDOUT" >&2
+    echo "deployment submit help lacked the expected text: $SHELL_STDOUT" >&2
     exit 1
 fi
-e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
-echo ">>> ls replay-parity E2E PASS"
+echo ">>> ls E2E PASS"
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 
 echo ">>> creating a session with an initial name"
@@ -274,7 +235,6 @@ e2e_wait_until projection_check "$EXEC_ID" check-agent-error "$EXPECT" \
     || { echo "agent error was not projected or the session did not recover: $PROJECTION" >&2; exit 1; }
 echo ">>> E2E PASS: the session surfaced the LLM configuration error and returned to idle"
 
-e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$EXEC_ID"
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$EXEC_ID" >/dev/null || true
 

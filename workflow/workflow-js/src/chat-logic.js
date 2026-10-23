@@ -1,15 +1,12 @@
-// Pure helpers for chat.js (PORT: workflow/workflow-rs/src/chat.rs), kept free
+// Pure helpers for chat.js, kept free
 // of any `obelisk` global or WIT-module import so it is unit-testable under
 // plain `node --test` (see chat-logic.test.js) -- mirrors session.js's split
 // from session-logic.js. `chat.js` is the thin host-facing wrapper that
 // dispatches `chat` subcommands, submits child sessions, and durably sleeps
 // between `chat watch` polls; nothing else needs to touch `obelisk.*`.
 //
-// `parseDurationMs`/`validateSlug` are PORTs of this same Rust module's own
-// `parse_duration_ms`/`validate_slug`, but they were pulled forward into
-// session-logic.js in an earlier phase (session.js's rename-at-creation path
-// needed them before this module existed) -- imported from there, not
-// reimplemented here.
+// `parseDurationMs`/`validateSlug` live in session-logic.js, which session.js's
+// rename-at-creation path also uses.
 
 import { parseDurationMs, validateSlug } from "./session-logic.js";
 
@@ -31,7 +28,7 @@ export const WATCH_WAKE_STATES = [
 export const WATCH_DEFAULT_INTERVAL_MS = 2_000;
 export const WATCH_DEFAULT_TIMEOUT_MS = 15 * 60_000;
 
-// PORT: chat.rs's `parent_of`. The session that created an execution, derived
+// The session that created an execution, derived
 // from the derived-execution id shape (`<parent-id>.<join-set-ref>`); `null`
 // for top-level executions.
 export function parentOf(executionId) {
@@ -39,7 +36,7 @@ export function parentOf(executionId) {
     return dot === -1 ? null : executionId.slice(0, dot);
 }
 
-// PORT: chat.rs's `current_payload`. `own` is duck-typed: `{executionId,
+// `own` is duck-typed: `{executionId,
 // backend, effort, name}` (a plain object or a `ChatSelf` instance).
 export function currentPayload(own) {
     return {
@@ -51,27 +48,23 @@ export function currentPayload(own) {
     };
 }
 
-// PORT: chat.rs's `current_output`.
 export function currentOutput(own) {
     return { stdout: `${JSON.stringify(currentPayload(own))}\n`, stderr: "", exitCode: 0 };
 }
 
-// PORT: chat.rs's `has_help_flag`.
 export function hasHelpFlag(args) {
     return args.some((arg) => arg === "--help" || arg === "-h");
 }
 
-// PORT: chat.rs's `usage`.
 export function usage(detail) {
     return { stdout: "", stderr: `chat: ${detail}\nTry 'chat --help' for more information.\n`, exitCode: 2 };
 }
 
-// PORT: chat.rs's `failure`.
 export function failure(message) {
     return { stdout: "", stderr: `chat: ${message}\n`, exitCode: 1 };
 }
 
-// PORT: chat.rs's `parse_create_args`. Mirrors the activity-side create
+// Mirrors the activity-side create
 // parser for the flags that matter to child scheduling; `--top-level` never
 // reaches here (commandHandler routes it straight to `delegate`). Throws a
 // string message on invalid input, matching this module's other parsers.
@@ -121,11 +114,10 @@ export function parseCreateArgs(args) {
     return { prompt: positional.join(" "), model, effort, name, watch };
 }
 
-// PORT: chat.rs's `stamp_watch_fields`. Adds `timed_out`/`waited_ms` to
+// Adds `timed_out`/`waited_ms` to
 // `payload`, coercing a non-object payload to `{}` first. Returns the
-// (possibly new) object rather than mutating a non-object in place -- JS has
-// no by-reference primitives/`null`, unlike Rust's `&mut Value`, so callers
-// must take the return value: `payload = stampWatchFields(payload, ...)`.
+// (possibly new) object rather than mutating a non-object in place, so
+// callers must take the return value: `payload = stampWatchFields(payload, ...)`.
 export function stampWatchFields(payload, timedOut, waitedMs) {
     const object = payload !== null && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
     object.timed_out = timedOut;
@@ -133,7 +125,7 @@ export function stampWatchFields(payload, timedOut, waitedMs) {
     return object;
 }
 
-// PORT: chat.rs's `parse_watch_args`. `--timeout DURATION`/`--interval
+// `--timeout DURATION`/`--interval
 // DURATION` (via `parseDurationMs`) plus exactly one positional session id;
 // `--flag=value` inline form supported too. Throws a string message on
 // invalid input.

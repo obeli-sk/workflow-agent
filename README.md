@@ -18,7 +18,7 @@ nothing but a database row, and it resumes exactly where it left off.
 ```sh
 nix develop                                # pinned Obelisk and toolchain
 export LLM_BASE_URL=http://127.0.0.1:9190  # any OpenAI- or Anthropic-compatible endpoint
-just serve-js # or just serve-rs
+just serve
 ```
 
 Open http://localhost:9090. Then:
@@ -29,9 +29,6 @@ Open http://localhost:9090. Then:
 You can send messages while the agent is working. A message is queued for the
 agent's next step, and a `$ ` command runs right away. A session with no input
 for 7 days ends on its own.
-
-`serve-js` and `serve-rs` run the same agent, implemented in JavaScript or Rust.
-Sessions carry over when you switch between them.
 
 ## Configuration
 
@@ -195,7 +192,6 @@ See [`docs/mcp.md`](docs/mcp.md) for adding your own.
 
 ```sh
 just test-js
-just test-rs
 just test        # including end-to-end tests
 ```
 
@@ -204,4 +200,4 @@ Design notes live in [`docs/`](docs/).
 ## License
 
 Apache-2.0. The vendored just-bash port keeps its own LICENSE/NOTICE under
-`vendor/just-bash-rs`.
+`vendor/just-bash`.

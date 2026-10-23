@@ -1,18 +1,14 @@
-// PORT: vendor/just-bash-rs/src/obelisk_program.rs
-//
 // Command adapter for Obelisk-backed shell programs with this contract:
 // func(stdin: string, args: list<string>) -> result<record {
 //     stdout: string, stderr: string, exit-code: u32
 // }, string>
 //
 // `host` is duck-typed as `{ callJson(ffqn, paramsJson) -> string|null }`
-// (throws on error), matching workflow-rs's `ObeliskHost` trait so this
-// module is host-implementation-agnostic and testable with a plain fake (see
+// (throws on error), so this module is host-implementation-agnostic and testable with a plain fake (see
 // obelisk-program.test.js) - no `obelisk` global required here.
 
 // Custom-command handlers receive the full argv including argv[0] (see
-// interpreter.js's `invoke`), unlike workflow-rs's `CustomCommandHandler`
-// (argv[0] already stripped) - `args.slice(1)` below accounts for that.
+// interpreter.js's `invoke`).
 export function commandHandler(commandName, ffqn, host) {
     return (_interp, args, stdin) => executeProgram(commandName, ffqn, args.slice(1), stdin, host);
 }

@@ -1,11 +1,8 @@
-// PORT: vendor/just-bash-rs/src/obelisk_pack.rs
-//
 // The obelisk-control pack: one custom command, `obelisk`, whose `cloud`
 // subcommand manages apps in the cloud and whose `generate` subcommand writes
 // starter files. `obelisk cloud app [--app NAME] functions|executions|call|
 // deployment ...` run against one app's API through a control plane: an
-// object with the same methods as obelisk_pack.rs's `ControlPlane` trait (see
-// workflow/workflow-js/src/host.js's `createControlPlane`; tests pass a fake).
+// object built by workflow/workflow-js/src/host.js's `createControlPlane`; tests pass a fake).
 // Methods return the decoded ok value and throw a plain message on error,
 // except `deploymentSubmit`, which throws `{ missingFiles }` for the
 // recoverable missing-files arm. The session's own `controlPlane` only
@@ -17,9 +14,8 @@
 // app's own API (see host.js's `createCloud`).
 //
 // Custom-command handlers receive the full argv including argv[0] (see
-// interpreter.js's `invoke`), unlike workflow-rs's `CustomCommandHandler`
-// (argv[0] already stripped) - `commandHandler`'s `args.slice(1)` accounts
-// for that, same as obelisk-program.js.
+// interpreter.js's `invoke`); `commandHandler` strips it with
+// `args.slice(1)`, same as obelisk-program.js.
 
 import { sha256Hex } from "./commands/hash.js";
 import { utf8Encode } from "./utf8.js";
@@ -51,9 +47,7 @@ const AUTO_DIGEST = "auto";
 
 // Build the `obelisk` custom-command handler. Register it with
 // `commands.set("obelisk", obelisk.commandHandler(controlPlane, generate))`. The handler owns
-// `controlPlane` for the life of the session (a plain closure capture, not an
-// Rc<RefCell<_>> as in the Rust port, since JS closures already close over a
-// shared mutable reference). `generate` is `{ obeliskVersion, githubContents }`: the
+// `controlPlane` for the life of the session. `generate` is `{ obeliskVersion, githubContents }`: the
 // obelisk repo ref and the statically imported `obelisk-agent:mounts/apps.request`
 // that `generate new` fetches the starter app with.
 export function commandHandler(controlPlane, generate, cloud = null) {
@@ -93,9 +87,7 @@ export function blobLoader(controlPlane) {
 // CLI dispatch
 // ---------------------------------------------------------------------------
 
-// Directly callable by tests, mirroring the Rust test module's
-// `execute_obelisk(&mut interp, &words(...), stdin, &mut generate, &mut host)` -
-// `args` here does NOT include the command name itself (see `commandHandler`).
+// Directly callable by tests; `args` here does NOT include the command name itself (see `commandHandler`).
 export function executeObelisk(interp, args, stdin, controlPlane, generate, cloud = null) {
     try {
         if (args[0] === "cloud") return executeCloud(interp, args.slice(1), stdin, generate, cloud);
@@ -703,8 +695,7 @@ export function deploymentSources(fs, dir, manifest) {
 // PATH is always a path to the manifest file itself, matching real obelisk
 // (its `submit`/`enqueue`/`apply`/`verify` all take a literal file path, no
 // directory fallback) - but any filename, not just the literal
-// "deployment.toml" (this repo's own deployment.js.toml/deployment.rs.toml
-// are exactly this case). Callers that allow PATH to be omitted must supply
+// "deployment.toml". Callers that allow PATH to be omitted must supply
 // their own default value before calling; `required()` rejects an absent one.
 function resolveDeploymentManifest(interp, value) {
     const resolved = interp.resolvePath(required(value, "PATH-TO-DEPLOYMENT.TOML"));
@@ -743,7 +734,7 @@ function flagRuntimeConfig(args) {
 function readManifest(fs, dir, file) {
     const path = `${dir}/${file}`;
     // A directory reads as a path-first I/O error (matching just-bash's own
-    // grep/cat and the Rust port's read_manifest), not fs.readFile's
+    // grep/cat), not fs.readFile's
     // description-first FsError.
     if (fs.isDir(path)) throw `${path}: Is a directory`;
     if (!fs.exists(path)) throw `${path}: No such file or directory`;
@@ -905,11 +896,6 @@ function actionHelp(group, action) {
     return groupHelp(group);
 }
 
-// PORT: obelisk_pack.rs's `help()` - Rust's multi-line string literals with a
-// trailing `\` continuation strip ALL leading whitespace on the next source
-// line (a language quirk, not a formatting choice), so the visually-indented
-// subcommand names in the .rs source actually compile to unindented lines.
-// These JS literals must match that stripped (unindented) output exactly.
 const helpText =
     "Usage: obelisk <command> [args]\n\nManage apps in the cloud, and write starter files.\n\nCommands:\ncloud        Manage cloud apps; each app's functions, executions, calls, and deployments\nare under `obelisk cloud app [--app NAME]`.\ngenerate     Print a starter configuration file, or create a new app.\ncall obelisk-agent:stub/stub.ask-user '[\"QUESTION\"]'\nAsk the user a question and print the answer.\n\nPull an app deployment into a working directory with `deployment pull DIRECTORY`.\nRun `obelisk <command> --help` (or `-h`) for a command's subcommands and options.\n";
 
@@ -958,12 +944,11 @@ const generateDeploymentHelp =
 // A hand-written, purpose-built editor scoped to exactly what
 // `simplifyManifest`/`manifestWithDigests`/`ownedSourceLocations` need - not
 // a general TOML parser (no bare npm dependency resolves in the deployed
-// component, so a real TOML library is not an option; see
-// docs/js-backend-migration.md). It works by locating byte ranges ("edits")
+// component, so a real TOML library is not an option). It works by locating byte ranges ("edits")
 // to rewrite and applying them over the original text verbatim, so every
 // other byte (comments, blank lines, unrelated keys, formatting, key
 // ordering) survives untouched - a surgical value-level rewrite rather than
-// a parse/mutate/re-serialize round trip like the Rust port's `toml_edit`.
+// a parse/mutate/re-serialize round trip.
 //
 // The scanner recognizes each top-level `[[array-of-tables]]` header
 // generically (no fixed list of table names) and tracks, per block
@@ -1094,7 +1079,7 @@ export function simplifyManifest(manifest) {
 // `component_files` value from the file's current bytes (a missing file is
 // left as-is). `backtrace.sources` stays a plain path map: its digest lives in
 // `component_files` (added by `manifestWithGeneratedFiles`, which always runs
-// first), matching the server's plain-string schema (matches the Rust port).
+// first), matching the server's plain-string schema.
 export function manifestWithDigests(fs, dir, manifest) {
     const blocks = groupBlocks(findRegions(manifest));
     const edits = [];
@@ -1277,8 +1262,7 @@ function normalizeDeploymentPath(path) {
 // Every deployment-owned source location a submit tracks: each component's
 // `location`, `component_files` keys, and (only when written in the
 // EXPANDED `{ path = ..., content_digest = ... }` form - a plain simplified
-// path string is not recognized here, matching the Rust port's
-// `Item::as_table_like` check) `backtrace.sources` paths. `oci://` refs
+// path string is not recognized here) `backtrace.sources` paths. `oci://` refs
 // skipped, deduped first-wins.
 export function ownedSourceLocations(manifest) {
     const blocks = groupBlocks(findRegions(manifest));

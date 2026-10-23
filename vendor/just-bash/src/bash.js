@@ -1,5 +1,4 @@
-// Public API: a persistent shell instance, matching just-bash-rs's `Bash`
-// struct (see vendor/just-bash-rs/src/bash.rs). One `Bash` per session; `cwd`
+// Public API: a persistent shell instance. One `Bash` per session; `cwd`
 // and `env` persist across `exec` calls, matching the durable session loop's
 // expectation of a single long-lived interpreter.
 
@@ -42,7 +41,7 @@ export class Bash {
     // Install the abort watcher (watch.js's duck-typed ScriptWatch) observed
     // at durable boundaries (after custom commands and inside `sleep`). The
     // session loop swaps it in before one script and takes it back out
-    // afterward (PORT: just-bash-rs's `Bash::set_script_watch`).
+    // afterward.
     setScriptWatch(watcher) {
         this.watcher = watcher;
     }
@@ -110,8 +109,7 @@ export class Bash {
         // An interrupt overrides whatever status the last statement left,
         // whether or not it was actually observed as a thrown WatchInterrupt
         // (e.g. the triggering custom command was the script's very last
-        // statement, so no later boundary check ever ran) -- PORT: bash.rs's
-        // `exec`'s exit-code override.
+        // statement, so no later boundary check ever ran).
         const interrupted = interp.interrupted;
         if (interrupted !== null) exitCode = exitCodeForInterrupt(interrupted);
         this.cwd = interp.cwd;

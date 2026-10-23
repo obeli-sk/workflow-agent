@@ -8,7 +8,7 @@ function run(script, opts) {
     return bash.exec(script, opts);
 }
 
-test("help matches the Rust command catalog and topic diagnostics", () => {
+test("help lists the command catalog and topic diagnostics", () => {
     const result = run("help");
     assert.ok(result.stdout.startsWith("just-bash shell builtins\n"));
     const names = result.stdout.split("\n")[1].split(" ");
@@ -247,8 +247,7 @@ test("parse error is reported, not thrown", () => {
     assert.match(r.stderr, /syntax error/);
 });
 
-// The script-watch contract from the session loop's perspective (PORT:
-// vendor/just-bash-rs/src/bash.rs's `mod script_watch`): signals land only
+// The script-watch contract from the session loop's perspective: signals land only
 // at durable boundaries, output already produced stays recorded, and the
 // final status is the interrupt kind's exit code.
 

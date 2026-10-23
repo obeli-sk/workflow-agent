@@ -1,4 +1,4 @@
-// Hand-written recursive-descent parser for the just-bash-rs grammar subset:
+// Hand-written recursive-descent parser for the just-bash grammar subset:
 // statements joined by &&/||/;, pipelines, simple commands with prefix
 // assignments and redirections, if/for/c-style-for/while/until/case/group/
 // subshell compound commands, and words built from literal/quoted/variable/

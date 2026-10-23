@@ -23,27 +23,21 @@
 # manifest under a plain scratch directory instead of
 # /workspace/cloud/<app>/deployment/<id>, with a filename that isn't literally
 # "deployment.toml" either, so both bugs are exercised at once.
-#
-# Runs for both rs and js SOURCE backends (the agent side); the target is
-# backend-agnostic, a plain generated JS activity.
-# Usage: test-e2e-deploy-outside-root.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
-BACKEND="${1:-rs}"
-PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
-API_PORT=$((28030 + PORT_OFFSET))
-EXTERNAL_PORT=$((28098 + PORT_OFFSET))
-e2e_init "deploy-outside-root-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-deploy-outside-root-token"
+API_PORT=28030
+EXTERNAL_PORT=28098
+e2e_init "deploy-outside-root-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-deploy-outside-root-token"
 export OBELISK_API_URL="$E2E_API_URL"
 unset MCP_SERVER_TOKEN
 export AGENT_MODELS="[]"
 
-TARGET_API_PORT=$((28031 + PORT_OFFSET))
-TARGET_EXTERNAL_PORT=$((28099 + PORT_OFFSET))
+TARGET_API_PORT=28031
+TARGET_EXTERNAL_PORT=28099
 # Point the source session's `obelisk` command + deployment mount at the
 # separate target server started below (not the self-host default e2e_init
 # set up), keyless since the target runs with --no-auth.
@@ -52,10 +46,7 @@ export TARGET_OBELISK_API_URL="http://127.0.0.1:${TARGET_API_PORT}"
 
 e2e_start_target_server "$TARGET_API_PORT" "$TARGET_EXTERNAL_PORT"
 
-e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-deploy-outside-root-deployment-$BACKEND.toml"
-e2e_patch_workflow_manifest "$DEPLOY"
-e2e_start_server "$DEPLOY"
+e2e_start_server
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
@@ -80,7 +71,7 @@ AUTHOR_SCRIPT="$(printf '%s\n' \
     "echo APPLIED:\$NEW_ID")"
 
 # A `$`-prefixed opening prompt runs immediately as a direct shell script,
-# recorded as shell event id "shell-opened-0" (session.rs/session.js).
+# recorded as shell event id "shell-opened-0" (session.js).
 SESSION_ID="$("$OBELISK" generate execution-id)"
 PARAMS="$(node -e 'process.stdout.write(JSON.stringify(["$" + process.argv[1], null, null, null, null]))' "$AUTHOR_SCRIPT")"
 "$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" "$PARAMS"
@@ -109,8 +100,6 @@ RESULT="$("$OBELISK" execution result --follow -j -a "$E2E_TARGET_API_URL" "$CHE
 echo ">>> target E2E PASS: the target now serves the authored function (${RESULT})"
 
 # KNOWN-RED: an Obelisk-core replay-finalize gap, not a workflow-agent bug -
-# see the KNOWN-RED note on e2e_verify_replay_parity in e2e-lib.sh.
-e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
-echo ">>> E2E PASS: the agent (${BACKEND}) submitted+applied a manifest from outside the app deployment mount and the target ended up with a working deployment"
+echo ">>> E2E PASS: the agent submitted+applied a manifest from outside the app deployment mount and the target ended up with a working deployment"

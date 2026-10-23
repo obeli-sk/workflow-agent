@@ -2,7 +2,7 @@
 //   func(method: string, params-json: string) -> result<string, string>
 //
 // The transport behind every lazily-mounted GitHub repo tree in the session
-// VFS (see vendor/just-bash-rs/src/obelisk_web.rs). One activity invocation
+// VFS (see vendor/just-bash/src/obelisk-web.js). One activity invocation
 // issues one or more GitHub contents-API requests against the repo named in
 // params. Two methods:
 //

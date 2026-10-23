@@ -1,4 +1,4 @@
-name: sync-flake-lock-and-rust-toolchain
+name: sync-flake-lock
 
 on:
   workflow_dispatch:
@@ -23,14 +23,9 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync flake.lock and rust-toolchain.toml from upstream
+      - name: Sync flake.lock from upstream
         run: |
           curl https://raw.githubusercontent.com/obeli-sk/obelisk/refs/heads/latest-rc/flake.lock -o flake.lock
-          if [ -f "rust-toolchain.toml" ]; then
-            UPSTREAM=https://raw.githubusercontent.com/obeli-sk/obelisk/refs/heads/latest-rc/rust-toolchain.toml
-            CHANNEL=$(curl -fsSL "$UPSTREAM" | grep '^channel =')
-            sed -i "s/^channel =.*/$CHANNEL/" rust-toolchain.toml
-          fi
 
       - uses: nixbuild/nix-quick-install-action@v34
         with:

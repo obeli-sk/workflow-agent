@@ -1,4 +1,3 @@
-// PORT (simplified): vendor/just-bash-rs/src/commands/diff.rs
 // diff [-u] [-q] [-s] [-i] FILE1 FILE2 — hand-rolled O(n*m) LCS diff emitting
 // GNU-diff-style unified hunks with 3 lines of context.
 

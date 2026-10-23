@@ -1,7 +1,5 @@
 // Tests for fs.js's mount surface: symlinks, lazy/pending files, deferred
-// mounts, and web mounts. Mirrors the contracts exercised by
-// vendor/just-bash-rs/src/fs.rs's own `#[cfg(test)] mod tests`, adapted to
-// this port's string-content, exception-throwing conventions. The plain
+// mounts, and web mounts. The plain
 // read/write/readdir/remove/rename/copyFile behavior already has coverage
 // via bash.test.js and commands/fsutil.test.js; these cases focus on the
 // non-obvious parts of the new surface (fetched exactly once, pending

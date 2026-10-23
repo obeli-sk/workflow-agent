@@ -6,8 +6,7 @@
 # Required status checks are derived from every .github/workflows/*.yml file
 # that triggers on `pull_request`, rather than hardcoded here — add/rename/
 # remove a job in one of those workflows and the required checks follow
-# automatically. Matrix jobs are expanded (e.g. `strategy.matrix.backend:
-# [rs, js]` turns one job into one context per matrix value).
+# automatically. Matrix jobs are expanded into one context per matrix value.
 #
 # Usage: ./scripts/sync-branch-protection.sh [branch]
 # Requires: gh (authenticated with repo admin rights), yq, jq

@@ -983,8 +983,7 @@ test("deployment submit rejects a directory, matching real obelisk", () => {
     const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_x"));
     const out = app(i, words("deployment submit /workspace/checkout"), "", host);
     assert.equal(out.exitCode, 2);
-    // Path-first, byte-identical to just-bash-rs (a description-first
-    // "Is a directory: <path>" broke cross-backend replay).
+    // Path-first, matching just-bash's grep/cat.
     assert.equal(out.stderr, "obelisk: /workspace/checkout: Is a directory\n");
 });
 
@@ -1000,8 +999,7 @@ test("deployment submit accepts a path to the toml file itself", () => {
 
 test("deployment submit accepts a manifest not literally named deployment.toml", () => {
     // Regression: PATH resolution used to string-match the basename against
-    // the literal "deployment.toml", so any other manifest name (this
-    // repo's own deployment.js.toml/deployment.rs.toml convention) was
+    // the literal "deployment.toml", so any other manifest name was
     // treated as a directory and `<dir>/deployment.toml` didn't exist
     // there, failing with a misleading "No such file or directory" instead
     // of reading the file that was actually passed.

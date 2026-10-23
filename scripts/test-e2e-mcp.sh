@@ -7,24 +7,21 @@
 # turn, asserting the rendered output.
 #
 # Requires node, provided by the dev shell.
-# Usage: test-e2e-mcp.sh [rs|js]  (default rs)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-BACKEND="${1:-rs}"
 
 source "$ROOT/scripts/e2e-lib.sh"
 
-PORT_OFFSET=$(e2e_backend_port_offset "$BACKEND")
-API_PORT=$((28116 + PORT_OFFSET))
-EXTERNAL_PORT=$((28191 + PORT_OFFSET))
-MCP_PORT="${MCP_PORT:-$((1071 + PORT_OFFSET))}"
+API_PORT=28116
+EXTERNAL_PORT=28191
+MCP_PORT="${MCP_PORT:-1071}"
 MCP_PID=""
 MCP_URL="http://127.0.0.1:${MCP_PORT}/mcp"
 SERVER_NAME="obelisk-e2e"
 
-e2e_init "mcp-e2e-$BACKEND" "$API_PORT" "$EXTERNAL_PORT" "e2e-mcp-token"
+e2e_init "mcp-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-mcp-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export AGENT_MODELS="[]"
 # The workflow discovers MCP servers from MCP_SERVERS_JSON (the config_discover
@@ -61,9 +58,9 @@ if ! e2e_wait_until http_ok "http://127.0.0.1:${MCP_PORT}/" 2>/dev/null; then
 fi
 
 # --- deployment: real manifest + one MCP block, keyless -----------------------
-e2e_select_backend "$BACKEND"
-DEPLOY="$ROOT/.e2e-mcp-deployment-$BACKEND.toml"
-e2e_patch_workflow_manifest "$DEPLOY"
+DEPLOY="$ROOT/.e2e-mcp-deployment.toml"
+E2E_DEPLOYMENTS+=("$DEPLOY")
+cp "$ROOT/deployment.js.toml" "$DEPLOY"
 cat >> "$DEPLOY" <<EOF
 
 # Injected by scripts/test-e2e-mcp.sh: one keyless stateless MCP server.
@@ -83,7 +80,7 @@ methods = ["POST"]
 EOF
 
 # app.toml needs the matching outbound-host grant (keyless).
-APP_CFG="$ROOT/.e2e-mcp-app-$BACKEND.toml"
+APP_CFG="$ROOT/.e2e-mcp-app.toml"
 E2E_DEPLOYMENTS+=("$APP_CFG")
 cp "$ROOT/app.toml" "$APP_CFG"
 cat >> "$APP_CFG" <<EOF
@@ -167,7 +164,6 @@ shell_recorded() {
 e2e_wait_until shell_recorded \
     || { echo "shell turn did not record output: $SESSION_EXECUTIONS" >&2; exit 1; }
 
-e2e_verify_replay_parity "$BACKEND" "$DEPLOY" "$SESSION_ID"
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null 2>&1 || true
 

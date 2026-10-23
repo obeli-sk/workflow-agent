@@ -1,5 +1,3 @@
-// PORT: vendor/just-bash-rs/src/obelisk_mcp.rs
-//
 // Command adapters for stateless MCP servers.
 //
 // Each configured MCP server is one deployed activity with the uniform
