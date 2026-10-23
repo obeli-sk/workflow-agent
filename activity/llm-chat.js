@@ -50,11 +50,11 @@ export default async function completion(system, deltaJson, toolsJson, model, ef
 
 // AGENT_MODELS is a JSON array of { id, label, api_type, path?, wire_model,
 // max_tokens? }. The requested model id selects one entry; an empty id selects
-// the first. The endpoint origin is shared across the whole catalog and comes
-// from LLM_BASE_URL plus LLM_API_PREFIX; each model's optional `path` is a provider prefix appended
+// the first. The endpoint base URL is shared across the whole catalog and comes
+// from LLM_BASE_URL; each model's optional `path` is a provider prefix appended
 // to it (e.g. "/gateway/llm/anthropic"), and each adapter appends its own route
 // (/v1/messages, /v1/chat/completions, /v1/responses).
-// The endpoint origin, shared by every model in the catalog. A single catalog
+// The endpoint base URL, shared by every model in the catalog. A single catalog
 // targets a single endpoint (gateway, OpenRouter, or the local backend); switch
 // endpoints by switching both AGENT_MODELS and LLM_BASE_URL together.
 function endpointBase() {

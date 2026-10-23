@@ -139,7 +139,7 @@ const CLOUD_SECTION = [
     ...APP_COMMANDS,
     '- Create and deploy from the working directory: write `app.toml` (with `app_name`) and `deployment.toml`, then `obelisk cloud app deploy -a app.toml -d deployment.toml`. It creates or restages the app, applies and starts it, uploads the deployment and prints the webhook URL.',
     '- Config: `obelisk cloud app --app NAME env list|set NAME VALUE|unset NAME` and `secrets list|set NAME --stdin|set NAME --from-env VAR|unset NAME`; then `obelisk cloud app --app NAME apply`.',
-    '- Destructive commands (`delete`, `stop`) need the user\'s confirmation first.',
+    '- Destructive commands (`delete`, `deactivate`) need the user\'s confirmation first.',
 ].join(nl);
 
 // The cloud section: ObeliskNet with OBELISK_CLOUD_API_TOKEN, else the single-app cloud.

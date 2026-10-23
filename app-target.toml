@@ -21,8 +21,8 @@ replace_in = ["headers"]
 
 # LLM server
 [[outbound_http.allowed_host]]
-pattern = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+url_prefix = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
 methods = ["POST"]
-request_url_regex = "^POST http[s]?://[^/]+(/[^/]+)*/v1/(messages|chat/completions|responses)$"
+url_regex_suffix = "(/[^/]+)*/v1/(messages|chat/completions|responses)$"
 secrets = ["LLM_API_KEY"]
 replace_in = ["headers"]
