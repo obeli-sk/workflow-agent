@@ -132,7 +132,7 @@ e2e_server_settled() {
 }
 
 e2e_start_server() {
-    local deployment="${1:-$ROOT/deployment.js.toml}"
+    local deployment="${1:-$ROOT/deployment.toml}"
 
     echo ">>> starting ISOLATED obelisk server on ${E2E_API_URL} (sqlite: ${E2E_TMP}/obelisk-sqlite)"
     "$OBELISK" server run \

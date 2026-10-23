@@ -97,7 +97,7 @@ jobs:
         run: nix develop --command echo
 
       - name: obelisk server verify
-        run: nix develop --command obelisk server verify --skip-db -d deployment.js.toml -s server.toml -a app.toml
+        run: nix develop --command obelisk server verify --skip-db -d deployment.toml -s server.toml -a app.toml
 
   e2e:
     name: End-to-end tests

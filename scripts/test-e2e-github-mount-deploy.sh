@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Proves the actual real-world regression end to end: `obelisk cloud app deployment
-# submit` on this app's own deployment.js.toml, fetched cold through the
+# submit` on this app's own deployment.toml, fetched cold through the
 # GitHub-backed apps/<name> mount (obelisk-agent:mounts/apps.request),
 # with zero prior ls/readdir anywhere in the tree - exactly reproducing
 # E_01M1MFSEK7GXAJWFN4N3GGAZRN / E_01M1MG45ERCAGDE47WQX2GTAEY, where a
@@ -15,11 +15,11 @@
 # fs.test.js (hermetic, no network - see 26faa0b). This suite is the
 # one place that proves the fix through the real
 # obelisk-agent:mounts/apps.request activity and its HTTP round trips,
-# submitting this app's OWN unmodified deployment.js.toml to the target,
+# submitting this app's OWN unmodified deployment.toml to the target,
 # fetched entirely through the mount.
 #
 # Unlike the other two suites, this one deliberately stops at *submit*, not
-# apply/activate. The real app's deployment.js.toml has real runtime
+# apply/activate. The real app's deployment.toml has real runtime
 # requirements (5 secrets, 31 outbound_http destinations - LLM, GitHub, the
 # target's own control-plane calls, etc.); hot-*activating* it against a
 # bare `--empty --no-auth` target with no app policy grants does not work
@@ -69,12 +69,12 @@ RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
 
 # Cold: no ls/readdir anywhere first, exactly like the real failure.
-# Submits this app's own real deployment.js.toml, fetched entirely through
+# Submits this app's own real deployment.toml, fetched entirely through
 # the GitHub mount. --allow-missing-runtime-config tolerates the target
 # having none of the real app's outbound_http/secrets configured (storage
 # still fully re-verifies and type-checks every component).
 AUTHOR_SCRIPT="$(printf '%s\n' \
-    "SUBMIT_OUT=\$(obelisk cloud app deployment submit --allow-missing-runtime-config /workspace/apps/workflow-agent/deployment.js.toml)" \
+    "SUBMIT_OUT=\$(obelisk cloud app deployment submit --allow-missing-runtime-config /workspace/apps/workflow-agent/deployment.toml)" \
     "SUBMIT_CODE=\$?" \
     "echo SUBMIT_OUTPUT:\$SUBMIT_OUT" \
     "if [ \$SUBMIT_CODE -ne 0 ]; then echo SUBMIT_FAILED; exit 1; fi" \
@@ -92,7 +92,7 @@ e2e_wait_until e2e_opened_shell_done "$UI_BASE" "$SESSION_ID" \
 OUTPUT="$(node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION")"
 AUTHORED_ID="$(printf '%s' "$OUTPUT" | sed -n 's/^SUBMITTED://p' | tr -d '[:space:]')"
 [[ -n "$AUTHORED_ID" ]] || { echo "did not capture a server-assigned deployment id: $PROJECTION" >&2; echo "shell output: $OUTPUT" >&2; exit 1; }
-echo ">>> agent session E2E PASS: cold GitHub-mounted submit of the real deployment.js.toml (id: ${AUTHORED_ID})"
+echo ">>> agent session E2E PASS: cold GitHub-mounted submit of the real deployment.toml (id: ${AUTHORED_ID})"
 
 # Verify independently against the target's own API - not the agent's
 # report - that the deployment was really stored there: `deployment list`
@@ -106,4 +106,4 @@ echo ">>> target E2E PASS: the target genuinely stored the GitHub-mounted deploy
 
 
 "$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
-echo ">>> E2E PASS: the agent submitted this app's own real deployment.js.toml, fetched cold through the GitHub apps mount, and the target has a working stored deployment"
+echo ">>> E2E PASS: the agent submitted this app's own real deployment.toml, fetched cold through the GitHub apps mount, and the target has a working stored deployment"

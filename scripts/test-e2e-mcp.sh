@@ -60,7 +60,7 @@ fi
 # --- deployment: real manifest + one MCP block, keyless -----------------------
 DEPLOY="$ROOT/.e2e-mcp-deployment.toml"
 E2E_DEPLOYMENTS+=("$DEPLOY")
-cp "$ROOT/deployment.js.toml" "$DEPLOY"
+cp "$ROOT/deployment.toml" "$DEPLOY"
 cat >> "$DEPLOY" <<EOF
 
 # Injected by scripts/test-e2e-mcp.sh: one keyless stateless MCP server.

@@ -1,7 +1,7 @@
 set positional-arguments
 
 serve:
-  obelisk server run -d deployment.js.toml --server-config server.toml --app-config app.toml
+  obelisk server run -d deployment.toml --server-config server.toml --app-config app.toml
 
 clean-target:
   rm -rf sqlite-target/
@@ -15,7 +15,7 @@ sample-mcp-server:
   node examples/stateless-mcp-server.mjs
 
 verify:
-  obelisk server verify --skip-db --deployment deployment.js.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
+  obelisk server verify --skip-db --deployment deployment.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
 
 test: test-js test-e2e
 

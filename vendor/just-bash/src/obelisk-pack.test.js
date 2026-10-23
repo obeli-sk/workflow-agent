@@ -1005,9 +1005,9 @@ test("deployment submit accepts a manifest not literally named deployment.toml",
     // of reading the file that was actually passed.
     const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
     const i = interp("/workspace/workflow-agent");
-    i.vfs.writeFile("/workspace/workflow-agent/deployment.js.toml", manifest);
+    i.vfs.writeFile("/workspace/workflow-agent/deployment.toml", manifest);
     const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"));
-    const out = app(i, words("deployment submit deployment.js.toml"), "", host);
+    const out = app(i, words("deployment submit deployment.toml"), "", host);
     assert.equal(out.exitCode, 0, out.stderr);
 });
 
@@ -1016,15 +1016,15 @@ test("deployment submit outside the deployment root sends an empty deployment id
     // directory's basename (unless literally "current"), a convention that
     // only holds for DEPLOYMENT_ROOT/<id> checkouts. Submitting straight
     // from a source-repo checkout like
-    // /workspace/workflow-agent/deployment.js.toml sent "workflow-agent" as
+    // /workspace/workflow-agent/deployment.toml sent "workflow-agent" as
     // the deployment_id, which the server rejects with "invalid
     // deployment_id: wrong prefix in `workflow-agent`, expected prefix
     // `Dep_`" instead of letting it assign a fresh one.
     const manifest = '[[activity_wasm]]\nlocation = "a.wasm"\ncontent_digest = "sha256:1"\n';
     const i = interp("/workspace/workflow-agent");
-    i.vfs.writeFile("/workspace/workflow-agent/deployment.js.toml", manifest);
+    i.vfs.writeFile("/workspace/workflow-agent/deployment.toml", manifest);
     const host = fakeHost().with("obelisk-agent:tools/webapi.deployment-submit", JSON.stringify("Dep_new"));
-    const out = app(i, words("deployment submit deployment.js.toml"), "", host);
+    const out = app(i, words("deployment submit deployment.toml"), "", host);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(JSON.parse(host.calls[0][1])[4], "");
 });
