@@ -1,5 +1,8 @@
 app_name = "workflow-agent"
 
+[cloud.integrations]
+llm = { type = "llm", env = "LLM_BASE_URL" }
+
 [secrets]
 LLM_API_KEY = { optional = true }
 # The agent's own Obelisk server, accessed e.g. by the UI to get execution state.
@@ -20,7 +23,7 @@ APPS_JSON = { optional = true }
 OBELISK_API_URL = { type = "internal", source = "api-url" }
 AGENT_MODELS = { optional = true }
 GITHUB_API_URL = { optional = true }
-LLM_BASE_URL = { optional = true }
+LLM_BASE_URL = {}
 OBELISK_UI_URL = { type = "internal", source = "webui-url" }
 OBELISK_CLOUD_API_URL = { optional = true }
 OBELISK_CLOUD_APPS_DOMAIN = { optional = true }
@@ -156,13 +159,13 @@ replace_in = ["headers"]
 
 # LLM server
 [[outbound_http.allowed_host]]
-url_prefix = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+url_prefix = "${LLM_BASE_URL}"
 methods = ["GET"]
 url_regex_suffix = "(/[^/]+)*/v1/models$"
 secrets = ["LLM_API_KEY"]
 replace_in = ["headers"]
 [[outbound_http.allowed_host]]
-url_prefix = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+url_prefix = "${LLM_BASE_URL}"
 methods = ["POST"]
 url_regex_suffix = "(/[^/]+)*/v1/(messages|chat/completions|responses)$"
 secrets = ["LLM_API_KEY"]
