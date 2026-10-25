@@ -67,10 +67,10 @@ function fakeCloud(routes = {}) {
         },
         prepareDeploy(app, appToml, fillEnv) {
             cloud.deploys.push({ app, appToml, fillEnv });
-            return { created: true, log: "→ prepare\n" };
+            return { created: true, revision: 1, log: "→ prepare\n" };
         },
-        finishDeploy(app, appToml, deploymentId, created, fillEnv) {
-            cloud.deploys.push({ app, deploymentId, created, fillEnv });
+        finishDeploy(app, appToml, deploymentId, revision, created, fillEnv) {
+            cloud.deploys.push({ app, deploymentId, revision, created, fillEnv });
             return { app: { name: app, webhook_url: "https://demo.test/hook", outcome: "applied" }, log: "→ finish\n" };
         },
     };
@@ -189,7 +189,7 @@ test("cloud app deploy prepares the app, enqueues the deployment, then finishes 
     assert.match(id, /^Dep_[0-9A-Z]{26}$/);
     assert.deepEqual(cloud.deploys, [
         { app: "demo", appToml: 'app_name = "demo"\n', fillEnv: null },
-        { app: "demo", deploymentId: id, created: true, fillEnv: null },
+        { app: "demo", deploymentId: id, revision: 1, created: true, fillEnv: null },
     ]);
     const submit = cloud.calls.find((call) => call.path === `/v1/deployments/${id}`);
     assert.deepEqual(JSON.parse(submit.body), {

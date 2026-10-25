@@ -1,4 +1,4 @@
-// PORT: obelisk's cloud.rs `fill_values` and `initial_values` (non-interactive) and `config_differs`.
+// PORT: obelisk's cloud.rs `fill_values` and `initial_values` (non-interactive).
 import { appRequest } from "./client.js";
 import { configName } from "./policy.js";
 
@@ -100,23 +100,4 @@ export function unsetOptional(filled) {
 
 function hasOwn(object, key) {
     return Object.prototype.hasOwnProperty.call(object, key);
-}
-
-// Whether the provisioner already holds this policy and cloud config.
-export function sameConfig(row, config) {
-    return canonical(row?.policy) === canonical(config.policy) && canonical(row?.cloud ?? {}) === canonical(config.cloud);
-}
-
-function canonical(value) {
-    return JSON.stringify(normalize(value));
-}
-
-function normalize(value) {
-    if (Array.isArray(value)) return value.map(normalize);
-    if (value === null || typeof value !== "object") return value;
-    const out = {};
-    for (const key of Object.keys(value).sort()) {
-        if (value[key] !== null && value[key] !== undefined) out[key] = normalize(value[key]);
-    }
-    return out;
 }

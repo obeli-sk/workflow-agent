@@ -10,8 +10,8 @@
 // `fill-env` the shell's exported variables for `--fill-non-interactive`.
 // Like the CLI, JSON goes to stdout and human output to stderr; errors exit 1,
 // usage errors 2.
-import { appApiGet, appEndpoints, appRequest, cloudRequest } from "./client.js";
-import { fillValues, initialValues, sameConfig, userSuppliedPolicy } from "./fill.js";
+import { appApiGet, appEndpoints, appRequest, cloudRequest, stagedRevision } from "./client.js";
+import { fillValues, initialValues, userSuppliedPolicy } from "./fill.js";
 import { appConfig, configName, validateCloudAppName } from "./policy.js";
 import { humanOutput, renderSummary } from "./output.js";
 
@@ -119,7 +119,9 @@ const POLICY_COMMANDS = ["new", "stage", "apply", "fill"];
 async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, options, print) {
     const path = flags["-a"] ?? "app.toml";
     if (["stage"].includes(action) && appToml === null) throw `Cannot read policy ${path}: No such file or directory`;
-    const config = appToml === null || (!POLICY_COMMANDS.includes(action) && flags["-a"]) ? null : appConfig(appToml, path);
+    const config = appToml === null || (!POLICY_COMMANDS.includes(action) && flags["-a"]) ? null
+        // Status only reports a readable ./app.toml.
+        : action === "status" ? readableConfig(appToml, path) : appConfig(appToml, path);
     const command = { ...options, kind: "command" };
     const terminal = (flag) => `\`${flag}\` requires a terminal; use \`--fill-non-interactive\` to read same-named environment variables`;
     if (action === "new") {
@@ -139,15 +141,28 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     // A discovered ./app.toml naming another app is not this app's configuration.
     const local = config && (action === "stage" || flags["-a"] || !config.appName || config.appName === name) ? config : null;
     const apply = flags["--app"] === undefined ? "obelisk cloud app apply" : `obelisk cloud app --app ${flags["--app"]} apply`;
-    if (action === "get" || action === "status") {
+    if (action === "get") {
         allow(flags, []);
         arity(rest, 0);
-        return print(await appRequest(name, "GET", action === "get" ? [] : ["status"], options), { kind: action === "get" ? "app" : "status" });
+        return print(await appRequest(name, "GET", [], options), { kind: "app" });
+    }
+    if (action === "status") {
+        allow(flags, []);
+        arity(rest, 0);
+        const value = await appRequest(name, "GET", ["status"], options);
+        if (local) {
+            let comparison = null;
+            let error = null;
+            try { comparison = await compareConfig(name, desiredConfig(local), options); }
+            catch (e) { error = typeof e === "string" ? e : String(e?.message ?? e); }
+            value.local_config = { path, comparison, error };
+        }
+        return print(value, { kind: "status" });
     }
     if (action === "stage") {
         allow(flags, ["-a", "--command-id"]);
         arity(rest, 0);
-        const body = { policy: local.policy, cloud: local.cloud };
+        const body = desiredConfig(local);
         return print(await appRequest(name, "PUT", ["config"], { ...command, body }), { kind: "staged", message: "Configuration staged.", apply });
     }
     if (action === "apply") {
@@ -156,11 +171,11 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         if (flags["--staged"] && flags["-a"]) throw new UsageError("the argument '--staged' cannot be used with '--app-config <APP_CONFIG>'");
         if (flags["--fill"] && flags["--fill-non-interactive"]) throw new UsageError("the argument '--fill' cannot be used with '--fill-non-interactive'");
         const current = await appRequest(name, "GET", [], options);
-        const desired = stagedOrLocal(current, flags["--staged"] ? null : local, name, path);
+        const { desired, revision } = await stagedOrLocal(current, flags["--staged"] ? null : local, name, path, options);
         if (flags["--fill"]) throw terminal("--fill");
         await fillValues(name, userSuppliedPolicy(desired), flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
         const deploymentId = await appApiGet(current?.api_url, ["v1", "deployment-id"]);
-        const body = { force: flags["--force"] === true, config: desired, deployment_id: deploymentId };
+        const body = { force: flags["--force"] === true, revision, deployment_id: deploymentId };
         return print(await appRequest(name, "POST", ["apply"], { ...command, body }), { kind: "lifecycle" });
     }
     if (action === "reactivate" || action === "deactivate") {
@@ -178,7 +193,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         arity(rest, 0);
         if (flags["--staged"] && flags["-a"]) throw new UsageError("the argument '--staged' cannot be used with '--app-config <APP_CONFIG>'");
         const current = await appRequest(name, "GET", [], options);
-        const desired = stagedOrLocal(current, flags["--staged"] ? null : local, name, path);
+        const { desired } = await stagedOrLocal(current, flags["--staged"] ? null : local, name, path, options);
         if (!flags["--non-interactive"]) {
             throw "`fill` requires a terminal; use `fill --non-interactive` to read same-named environment variables";
         }
@@ -267,12 +282,26 @@ function appName(name, config) {
     return name;
 }
 
-// PORT: cloud.rs's `staged_or_local` without the prompt.
-function stagedOrLocal(current, local, name, path) {
+function readableConfig(appToml, path) {
+    try { return appConfig(appToml, path); } catch { return null; }
+}
+
+function desiredConfig(config) {
+    return { policy: config.policy, cloud: config.cloud };
+}
+
+// PORT: cloud.rs's `compare_config`: the provisioner diffs `desired` against staging.
+function compareConfig(name, desired, options) {
+    return appRequest(name, "POST", ["config", "compare"], { ...options, body: desired });
+}
+
+// PORT: cloud.rs's `staged_or_local` without the prompt: the staged config and its revision.
+async function stagedOrLocal(current, local, name, path, options) {
     const staged = { policy: current?.policy, cloud: current?.cloud };
-    if (!local || sameConfig(current, local)) return staged;
-    const policy = !sameConfig({ policy: current?.policy, cloud: local.cloud }, local);
-    const cloud = !sameConfig({ policy: local.policy, cloud: current?.cloud }, local);
-    const differs = policy && cloud ? "policy and cloud settings" : cloud ? "cloud settings" : "policy";
-    throw `${path} differs from the staged configuration (${differs}).\nRun \`obelisk cloud app --app ${name} stage -a ${path}\`, or pass \`--staged\` to use the staged configuration`;
+    if (!local) return { desired: staged, revision: stagedRevision(current) };
+    const comparison = await compareConfig(name, desiredConfig(local), options);
+    const revision = stagedRevision(comparison);
+    const changes = Array.isArray(comparison?.changes) ? comparison.changes.filter((change) => typeof change === "string") : [];
+    if (changes.length === 0) return { desired: staged, revision };
+    throw `${path} differs from staged configuration revision ${revision}: ${changes.join(", ")}\nRun \`obelisk cloud app --app ${name} stage -a ${path}\`, or pass \`--staged\` to use the staged configuration`;
 }

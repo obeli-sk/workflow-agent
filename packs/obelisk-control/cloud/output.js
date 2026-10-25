@@ -64,6 +64,7 @@ export function renderSummary(summary, value) {
             if (["started", "stopped", "suspended"].includes(machine) && ((status === "running" && !up) || (status === "stopped" && up))) {
                 line(`VM is ${machine} although the app is ${status}. Run \`obelisk cloud app apply\` to reconcile it.`);
             }
+            out += configRevisions(value);
             if (Number.isInteger(value?.memory_mb)) line(`Memory: ${value.memory_mb} MB`);
             line(`API: ${value?.api_ready === true ? "ready" : "unavailable"}`);
             break;
@@ -93,7 +94,10 @@ export function renderSummary(summary, value) {
             line(summary.message);
             break;
         case "staged":
-            line(`${summary.message} Run \`${summary.apply}\` to apply changes.`);
+            if (value?.changed === false) line(`Configuration unchanged at staged revision ${JSON.stringify(value?.revision ?? null)}.`);
+            else if (Number.isInteger(value?.revision) && value?.changed !== undefined) {
+                line(`Configuration staged as revision ${value.revision}. Run \`${summary.apply}\` to apply changes.`);
+            } else line(`${summary.message} Run \`${summary.apply}\` to apply changes.`);
             break;
         case "fill":
             for (const declaration of Array.isArray(value?.declarations) ? value.declarations : []) {
@@ -120,6 +124,28 @@ export function lifecycleOutcome(value) {
         remained_running: "App remains running.",
     }[value?.outcome?.vm] ?? "Cloud operation completed.";
     return `${configuration}${vm}`;
+}
+
+// PORT: output.rs's `config_revisions`.
+function configRevisions(value) {
+    let out = "";
+    const app = value?.app;
+    if (Number.isInteger(app?.revision)) {
+        const applied = app?.applied_revision;
+        const state = !Number.isInteger(applied) ? "not applied yet"
+            : applied === app.revision ? `applied revision ${applied}` : `applied revision ${applied} (apply pending)`;
+        out += `Configuration: staged revision ${app.revision}, ${state}\n`;
+    }
+    const local = value?.local_config;
+    const path = text(local, "path", "app.toml");
+    if (typeof local?.error === "string") out += `${path}: cannot compare (${local.error})\n`;
+    else if (Array.isArray(local?.comparison?.changes)) {
+        const changes = local.comparison.changes.filter((change) => typeof change === "string");
+        out += changes.length === 0
+            ? `${path}: matches the staged configuration\n`
+            : `${path}: differs from the staged configuration: ${changes.join(", ")}. Run \`obelisk cloud app --app ${text(app, "app_name", "")} stage\` to stage it.\n`;
+    }
+    return out;
 }
 
 function app(value) {
