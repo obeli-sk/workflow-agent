@@ -75,10 +75,11 @@ jobs:
 
   verify:
     runs-on: ubuntu-24.04
-    # A placeholder so verification runs without --allow-unavailable-runtime-config,
+    # Placeholders so verification runs without --allow-unavailable-runtime-config,
     # which would also skip checks such as exec digests.
     env:
       AGENT_MODELS: "[]"
+      LLM_BASE_URL: "http://127.0.0.1:9190"
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
