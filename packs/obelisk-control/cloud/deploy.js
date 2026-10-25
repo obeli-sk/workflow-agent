@@ -7,7 +7,7 @@
 // enqueue the deployment on its API before `finish-deploy`.
 import { cloudRequest, lookupApp, appRequest } from "./client.js";
 import { appConfig, validateCloudAppName } from "./policy.js";
-import { initialValues } from "./fill.js";
+import { initialValues, userSuppliedPolicy } from "./fill.js";
 
 export default async function prepare_deploy(app, appToml, fillEnv) {
     const lines = [];
@@ -26,7 +26,7 @@ export default async function prepare_deploy(app, appToml, fillEnv) {
             return { created: false, log: lines.join("") };
         }
         if (fillEnv) step("fill");
-        const values = initialValues(config.policy, fillEnv ? Object.fromEntries(fillEnv) : null);
+        const values = initialValues(userSuppliedPolicy(config), fillEnv ? Object.fromEntries(fillEnv) : null);
         step("new");
         await cloudRequest("POST", ["v1", "apps"], {
             kind: "secret-command",

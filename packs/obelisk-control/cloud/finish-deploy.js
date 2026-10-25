@@ -7,7 +7,7 @@
 // fill an existing app's values, then apply the config with the enqueued deployment.
 import { appRequest } from "./client.js";
 import { appConfig } from "./policy.js";
-import { fillValues, unsetOptional } from "./fill.js";
+import { fillValues, unsetOptional, userSuppliedPolicy } from "./fill.js";
 import { lifecycleOutcome } from "./output.js";
 
 export default async function finish_deploy(app, appToml, deploymentId, created, fillEnv) {
@@ -19,7 +19,7 @@ export default async function finish_deploy(app, appToml, deploymentId, created,
     try {
         if (!created) {
             if (fillEnv) log("→ obelisk cloud app fill");
-            const filled = await fillValues(name, config.policy, fillEnv ? Object.fromEntries(fillEnv) : null);
+            const filled = await fillValues(name, userSuppliedPolicy(config), fillEnv ? Object.fromEntries(fillEnv) : null);
             const unset = unsetOptional(filled);
             if (unset.length > 0) {
                 log(`Optional configuration not set: ${unset.join(", ")}. Run \`obelisk cloud app --app ${name} fill\` or \`deploy --fill\` to set it.`);
