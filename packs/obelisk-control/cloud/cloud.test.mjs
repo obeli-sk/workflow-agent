@@ -107,6 +107,17 @@ test("deploy creates a missing app", async () => {
     assert.deepEqual([body.env, body.secrets], [{}, {}]);
 });
 
+test("deploy sends cloud integrations and does not require the env they supply", async () => {
+    const policy = 'app_name = "demo"\n[cloud.integrations]\nllm = { type = "llm", env = "LLM_BASE_URL" }\n[public_env]\nLLM_BASE_URL = {}\n';
+    const requests = provisioner({ "POST /v1/apps": appRow() });
+    await prepareDeploy("", policy);
+    const body = JSON.parse(requests.find((request) => request.method === "POST").body);
+    assert.deepEqual(body.cloud, { integrations: { llm: { type: "llm", env: "LLM_BASE_URL" } } });
+    assert.deepEqual(body.policy.public_env, ["LLM_BASE_URL"]);
+    assert.deepEqual(body.env, {});
+    assert.throws(() => appConfig('[cloud.integrations]\nllm = { type = "llm", env = "MISSING" }\n'), /environment-backed/);
+});
+
 test("deploy stages the config of an existing app", async () => {
     const requests = provisioner({
         "GET /v1/apps/demo": appRow({ status: "stopped" }),

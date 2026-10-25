@@ -13,6 +13,13 @@ function declarations(policy) {
     return { env, secrets };
 }
 
+// PORT: cloud.rs's `user_supplied_policy`: the policy minus env vars that cloud integrations supply.
+export function userSuppliedPolicy(config) {
+    const supplied = new Set(Object.values(config.cloud?.integrations ?? {}).map((integration) => integration.env));
+    const publicEnv = (config.policy?.public_env ?? []).filter((entry) => !supplied.has(typeof entry === "string" ? entry : entry.name));
+    return { ...config.policy, public_env: publicEnv };
+}
+
 // PORT: cloud.rs's `collect_values` without the prompt. `fillEnv` is the
 // shell's exported variables for `--fill-non-interactive`, else null (only
 // check that required values are set).

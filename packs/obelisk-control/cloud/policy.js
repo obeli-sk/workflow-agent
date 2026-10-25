@@ -22,9 +22,15 @@ export function appConfig(text, path = "app.toml") {
 
     const cloud = {};
     for (const [key, value] of Object.entries(table(toml.cloud, "cloud", fail))) {
-        if (key !== "memory_mb") fail(`unknown field \`cloud.${key}\``);
-        if (!Number.isInteger(value) || value <= 0) fail("cloud.memory_mb must be a positive integer");
-        cloud.memory_mb = value;
+        if (key === "memory_mb") {
+            if (!Number.isInteger(value) || value <= 0) fail("cloud.memory_mb must be a positive integer");
+            cloud.memory_mb = value;
+        } else if (key === "integrations") {
+            const integrations = cloudIntegrations(value, fail);
+            if (Object.keys(integrations).length > 0) cloud.integrations = integrations;
+        } else {
+            fail(`unknown field \`cloud.${key}\``);
+        }
     }
 
     const secrets = {};
@@ -62,6 +68,8 @@ export function appConfig(text, path = "app.toml") {
         })
         .sort((a, b) => compare(entryName(a), entryName(b)));
 
+    validateCloudIntegrations(cloud.integrations ?? {}, toml.public_env ?? {}, toml.secrets ?? {});
+
     const outbound = table(toml.outbound_http, "outbound_http", fail);
     for (const key of Object.keys(outbound)) {
         if (key !== "allowed_host") fail(`unknown field \`outbound_http.${key}\``);
@@ -81,6 +89,37 @@ export function appConfig(text, path = "app.toml") {
         },
         cloud,
     };
+}
+
+// `{ name = { type, env } }`, sorted by name.
+function cloudIntegrations(value, fail) {
+    const out = {};
+    for (const name of Object.keys(table(value, "cloud.integrations", fail)).sort()) {
+        const label = `cloud.integrations.${name}`;
+        const integration = table(value[name], label, fail);
+        for (const key of Object.keys(integration)) {
+            if (!["type", "env"].includes(key)) fail(`unknown field \`${label}.${key}\``);
+        }
+        if (typeof integration.type !== "string") fail(`${label}.type must be a string`);
+        if (typeof integration.env !== "string") fail(`${label}.env must be a string`);
+        out[name] = { type: integration.type, env: integration.env };
+    }
+    return out;
+}
+
+// PORT: `AppConfigToml::validate_cloud_integrations`.
+function validateCloudIntegrations(integrations, publicEnv, secrets) {
+    const supplied = new Set();
+    for (const [name, integration] of Object.entries(integrations)) {
+        if (name === "" || integration.type === "") throw "Cloud integration name and type must not be empty";
+        const declaration = Object.prototype.hasOwnProperty.call(publicEnv, integration.env) ? publicEnv[integration.env] : undefined;
+        if (declaration === undefined || declaration.type === "internal") {
+            throw `Cloud integration \`${name}\` env \`${integration.env}\` must reference an environment-backed [public_env] declaration`;
+        }
+        if (Object.prototype.hasOwnProperty.call(secrets, integration.env)) throw `Cloud integration \`${name}\` env must not reference a secret`;
+        if (supplied.has(integration.env)) throw `Multiple cloud integrations supply \`${integration.env}\``;
+        supplied.add(integration.env);
+    }
 }
 
 function allowedHost(host, label, fail) {
@@ -158,8 +197,8 @@ export function validateAppName(name) {
 // PORT: cloud.rs's `validate_cloud_app_name`.
 export function validateCloudAppName(name) {
     validateAppName(name);
-    if (name.length > 20 || name.includes("--")) {
-        throw "Cloud app names must contain 4-20 lowercase letters, digits or single interior hyphens";
+    if (name.length > 20 || name.includes("--") || name.startsWith("system-") || name.startsWith("integrations-")) {
+        throw "Cloud app names must contain 4-20 lowercase letters, digits or single interior hyphens; system- and integrations- are reserved";
     }
 }
 

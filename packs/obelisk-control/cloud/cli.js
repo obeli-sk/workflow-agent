@@ -11,7 +11,7 @@
 // Like the CLI, JSON goes to stdout and human output to stderr; errors exit 1,
 // usage errors 2.
 import { appApiGet, appEndpoints, appRequest, cloudRequest } from "./client.js";
-import { fillValues, initialValues, sameConfig } from "./fill.js";
+import { fillValues, initialValues, sameConfig, userSuppliedPolicy } from "./fill.js";
 import { appConfig, configName, validateCloudAppName } from "./policy.js";
 import { humanOutput, renderSummary } from "./output.js";
 
@@ -130,7 +130,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         const body = { app_name: name };
         if (config) {
             if (flags["--fill"] && !flags["--fill-non-interactive"]) throw terminal("--fill");
-            const values = initialValues(config.policy, flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
+            const values = initialValues(userSuppliedPolicy(config), flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
             Object.assign(body, { policy: config.policy, cloud: config.cloud, env: values.env, secrets: values.secrets });
         }
         return print(await cloudRequest("POST", ["v1", "apps"], { ...options, kind: "secret-command", body }), { kind: "app", message: "App created." });
@@ -158,7 +158,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         const current = await appRequest(name, "GET", [], options);
         const desired = stagedOrLocal(current, flags["--staged"] ? null : local, name, path);
         if (flags["--fill"]) throw terminal("--fill");
-        await fillValues(name, desired.policy, flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
+        await fillValues(name, userSuppliedPolicy(desired), flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
         const deploymentId = await appApiGet(current?.api_url, ["v1", "deployment-id"]);
         const body = { force: flags["--force"] === true, config: desired, deployment_id: deploymentId };
         return print(await appRequest(name, "POST", ["apply"], { ...command, body }), { kind: "lifecycle" });
@@ -182,7 +182,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         if (!flags["--non-interactive"]) {
             throw "`fill` requires a terminal; use `fill --non-interactive` to read same-named environment variables";
         }
-        return print(await fillValues(name, desired.policy, fillEnv ?? {}), { kind: "fill", apply });
+        return print(await fillValues(name, userSuppliedPolicy(desired), fillEnv ?? {}), { kind: "fill", apply });
     }
     if (action === "env") return envCommand(name, rest, flags, command, options, print, apply);
     if (action === "secrets") return secretsCommand(name, rest, flags, stdin, options, print, apply);
