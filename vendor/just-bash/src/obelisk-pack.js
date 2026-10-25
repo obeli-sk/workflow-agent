@@ -241,7 +241,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     } catch (error) {
         throw withContext(`Deployment staging failed; inspect \`obelisk cloud app --app ${name} status\` and retry deploy`, error);
     }
-    const deployed = activity(() => cloud.finishDeploy(name, policy, id, target.created, fillEnv));
+    const deployed = activity(() => cloud.finishDeploy(name, policy, id, target.revision, target.created, fillEnv));
     out.stderr += deployed.log;
     const row = deployed.app;
     if (globals.json) {

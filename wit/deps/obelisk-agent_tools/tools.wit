@@ -38,6 +38,8 @@ interface cloud {
 
   record deploy-target {
     created: bool,
+    // Staged configuration revision that `finish-deploy` applies.
+    revision: u64,
     log: string,
   }
 
@@ -58,9 +60,9 @@ interface cloud {
   run: func(args: list<string>, stdin: string, app-toml: option<string>, fill-env: option<list<tuple<string, string>>>) -> result<command-output, string>;
   // Stage the app's config from `app-toml`, or create the app. The err carries the log so far.
   prepare-deploy: func(app: string, app-toml: string, fill-env: option<list<tuple<string, string>>>) -> result<deploy-target, string>;
-  // Fill an app that was not `created`, apply the config with the enqueued deployment and
+  // Fill an app that was not `created`, apply the staged `revision` with the enqueued deployment and
   // require the app to be running; returns the app row. The err carries the log so far.
-  finish-deploy: func(app: string, app-toml: string, deployment-id: string, created: bool, fill-env: option<list<tuple<string, string>>>) -> result<deployed, string>;
+  finish-deploy: func(app: string, app-toml: string, deployment-id: string, revision: u64, created: bool, fill-env: option<list<tuple<string, string>>>) -> result<deployed, string>;
   // GET `path` (with its query) on the app's API; err only when no response arrived.
   tenant-read: func(app: string, path: string) -> result<response, string>;
   // Any other request on the app's API, sent once.

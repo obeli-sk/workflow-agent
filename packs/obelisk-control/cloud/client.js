@@ -137,3 +137,8 @@ export async function appApiRequest(app, method, path, contentType, body) {
     }
     return { status: response.status, body: await response.text() };
 }
+
+export function stagedRevision(value) {
+    if (!Number.isInteger(value?.revision)) throw "Cloud response is missing the staged configuration revision";
+    return value.revision;
+}
