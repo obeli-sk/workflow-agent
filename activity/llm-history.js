@@ -1,9 +1,14 @@
+import { withTimeout } from "../shared/with-timeout.js";
+
+const HISTORY_TIMEOUT_MS = 60_000;
+
 // Rebuilds the conversation from accepted LLM executions: each one's Created
 // params carry the delta it was sent, its Finished retval the assistant reply.
 export async function loadMessages(historyIds, deltaJson, fetchJson) {
     const delta = parseMessages(deltaJson, "delta-json");
     if (historyIds.length === 0) return delta;
 
+    console.debug(`Loading history of ${historyIds.length} executions`);
     const response = await fetchJson("/v1/executions/events/batch", { execution_ids: historyIds });
     if (!Array.isArray(response)) throw "Obelisk batch history response must be an array";
     if (response.length !== historyIds.length) throw "Obelisk batch history response has the wrong length";
@@ -41,7 +46,7 @@ function parseMessages(json, label) {
 export function obeliskApi() {
     const base = process.env["OBELISK_API_URL"];
     if (!base) throw "OBELISK_API_URL is not configured";
-    return async (path, body) => {
+    return (path, body) => withTimeout(HISTORY_TIMEOUT_MS, async (signal) => {
         const response = await fetch(`${base.replace(/\/$/, "")}${path}`, {
             method: "POST",
             headers: {
@@ -50,8 +55,9 @@ export function obeliskApi() {
                 "content-type": "application/json",
             },
             body: JSON.stringify(body),
+            signal,
         });
         if (!response.ok) throw `Obelisk history ${path}: HTTP ${response.status}: ${await response.text()}`;
         return response.json();
-    };
+    });
 }

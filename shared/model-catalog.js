@@ -1,3 +1,7 @@
+import { withTimeout } from "./with-timeout.js";
+
+const MODELS_TIMEOUT_MS = 10_000;
+
 export function configuredModels() {
     const raw = process.env.AGENT_MODELS;
     if (!raw || !raw.trim()) throw new Error("AGENT_MODELS is not configured");
@@ -36,9 +40,12 @@ export async function loadModelCatalog() {
         try {
             const headers = { accept: "application/json" };
             if (process.env.LLM_API_KEY) headers.authorization = `Bearer ${process.env.LLM_API_KEY}`;
-            const response = await fetch(`${base}/v1/models`, { headers });
-            if (response.ok) {
-                const payload = JSON.parse(await response.text());
+            console.debug(`Discovering models from ${base}/v1/models`);
+            const payload = await withTimeout(MODELS_TIMEOUT_MS, async (signal) => {
+                const response = await fetch(`${base}/v1/models`, { headers, signal });
+                return response.ok ? JSON.parse(await response.text()) : null;
+            });
+            if (payload) {
                 const discovered = Array.isArray(payload.data)
                     ? payload.data.filter((model) => model && typeof model.id === "string" && model.id)
                     : [];
