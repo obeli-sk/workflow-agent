@@ -79,6 +79,8 @@ function githubContents(method, paramsJson) {
 
 const DEFAULT_DESCRIPTOR_FFQN = "obelisk-control:agent/pack.describe";
 const SESSION_EVENTS_JOIN_SET = "session-events";
+// Uncached network-mount calls shared by all tool calls of one LLM step; user-typed shells are uncapped.
+const MOUNT_FETCH_BUDGET = { lists: 200, reads: 50 };
 // Raced against every wait for the user.
 const IDLE_TIMEOUT = { days: 7 };
 const SESSION_IDLE_ERROR = "session idle timeout: no interaction for 7 days";
@@ -652,6 +654,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
 
                 if (calls.length > 0) {
                     const resultBlocks = [];
+                    bash.fs().setFetchBudget(MOUNT_FETCH_BUDGET);
                     for (const call of calls) {
                         console.debug(`turn=${turnIndex} step=${agentSteps} tool start: ${call.name}(${call.id})`);
                         const startedAt = hostNowMs();
@@ -669,6 +672,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
                         });
                         resultBlocks.push(toolResultMessageValue(block));
                     }
+                    bash.fs().setFetchBudget(null);
                     pendingMessages.unshift({ role: "user", content: resultBlocks });
                     shouldCallLlm = true;
                 } else if (nudgeEmptyReply) {

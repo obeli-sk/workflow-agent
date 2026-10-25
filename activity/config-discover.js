@@ -47,7 +47,7 @@ const PACK_SYSTEM_PROMPT =
     "# Mounts and network access\n\n" +
     "Run `mount` to see every mounted app and its network-backed mount point.\n\n" +
     "- `/workspace/apps/*` are lazy: a directory lists and a file's bytes fetch over the network on first access.\n" +
-    "- Each `/workspace/apps/<name>` tree costs one request per directory listed - avoid `tree`, `find`, or a recursive grep across them, and use targeted `ls`/`cat` or read a known path directly instead.\n" +
+    "- Each `/workspace/apps/<name>` tree costs one request per directory listed - avoid `tree`, `find`, or a recursive grep across them, and use targeted `ls`/`cat` or read a known path directly instead. Each step may fetch at most 50 uncached files and 200 directories from them.\n" +
     "- The shell's HTTP access goes through an operator allowlist: `curl` (GET only) works only for explicitly granted hosts; anything else is a policy-denied result, not a bug.\n" +
     "- Discover an app's webhook URL with `obelisk cloud app --app NAME endpoint webhook` and smoke-test its routes with `curl`. Verify executions through the app's API (`obelisk cloud app --app NAME execution list`, `execution logs ID`).\n";
 

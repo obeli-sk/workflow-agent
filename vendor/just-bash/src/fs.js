@@ -90,6 +90,8 @@ export class Vfs {
         // there are registered in the ordinary lazy-file tree so their
         // content pointers survive snapshots.
         this.web = { expanded: new Set(), dirs: new Set() };
+        // Cap on uncached web-mount calls, or null. See `setFetchBudget`.
+        this.fetchBudget = null;
         // One-shot deferred mounts: [{ root, populate }]. See
         // `registerDeferredMount`/`ensureMountedFor`.
         this.deferred = [];
@@ -295,6 +297,24 @@ export class Vfs {
         this.mounts.push({ root: normRoot, base, provider });
     }
 
+    // Cap uncached web-mount calls from now on to `{ lists, reads }`; null lifts the cap.
+    setFetchBudget(limits) {
+        this.fetchBudget = limits === null ? null : { limits, left: { ...limits } };
+    }
+
+    _spendFetch(kind, path) {
+        if (this.fetchBudget === null) return;
+        if (this.fetchBudget.left[kind] <= 0) {
+            const what = kind === "reads" ? "file reads" : "directory listings";
+            throw new FsError(
+                `${path}: network mount limit reached (${this.fetchBudget.limits[kind]} ${what} per step). ` +
+                    "Narrow the path: ls a directory, then read or grep specific files. Fetched files stay cached.",
+                "FETCH_BUDGET",
+            );
+        }
+        this.fetchBudget.left[kind]--;
+    }
+
     // The mount and remote path for a VFS path inside a web mount, or null.
     _webRemote(path) {
         for (const mount of this.mounts) {
@@ -329,6 +349,7 @@ export class Vfs {
         }
         const remote = this._webRemote(dir);
         if (!remote) return;
+        this._spendFetch("lists", dir);
         let entries = [];
         let ok = true;
         try {
@@ -343,9 +364,10 @@ export class Vfs {
             if (entry.kind === "dir") this.web.dirs.add(child);
             else {
                 const remotePath = this._webRemote(child)?.remote;
-                this.registerLazyWithLoader(child, entry.digest, entry.size, () =>
-                    remote.mount.provider.read(remotePath),
-                );
+                this.registerLazyWithLoader(child, entry.digest, entry.size, () => {
+                    this._spendFetch("reads", child);
+                    return remote.mount.provider.read(remotePath);
+                });
             }
         }
     }
@@ -421,7 +443,8 @@ export class Vfs {
         let content;
         try {
             content = loader(node.pending.digest);
-        } catch {
+        } catch (error) {
+            if (error instanceof FsError && error.code === "FETCH_BUDGET") throw error;
             throw new FsError(`Read unavailable: ${path}`, "READ_UNAVAILABLE");
         }
         if (content.length > MAX_LAZY_FETCH_BYTES) {
