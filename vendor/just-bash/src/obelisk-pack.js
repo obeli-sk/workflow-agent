@@ -14,6 +14,7 @@
 // interpreter.js's `invoke`); `commandHandler` strips it with
 // `args.slice(1)`, same as obelisk-program.js.
 
+import { parseApiResponse, parseServerInfoResponse, parseDeploymentSwitchResponse } from "../../obelisk-api/index.js";
 import { base64Decode, sha256Hex } from "./commands/hash.js";
 import { utf8Decode, utf8Encode } from "./utf8.js";
 import { DEPLOYMENT_TEMPLATE } from "./obelisk-deployment-template.js";
@@ -288,7 +289,7 @@ function parseBody(response) {
 }
 
 function getJson(api, path) {
-    return parseBody(checked(api.get(path)));
+    return parseApiResponse("GET", path, parseBody(checked(api.get(path))));
 }
 
 function sendJson(api, method, path, value) {
@@ -1164,7 +1165,7 @@ function submitPrepared(context, prepared, allow, description, deploymentId) {
     if (deploymentId === null) {
         const response = api.get("/v1/info");
         if (response.status !== 404) {
-            const activeId = parseBody(checked(response)).deployment_id;
+            const activeId = parseServerInfoResponse(parseBody(checked(response))).deployment_id;
             const active = getJson(api, `/v1/deployments/${activeId}`);
             if ((active.description ?? null) === description && sameToml(active.deployment_toml, prepared.toml)) {
                 out.stderr += `Deployment content unchanged; using ${activeId}\n`;
@@ -1271,9 +1272,9 @@ function missingRuntimeConfig(detail) {
 }
 
 function switchDeployment(context, id, allow, command) {
-    const response = parseBody(sendJson(context.api, "PUT", `/v1/deployments/${id}/switch`, {
+    const response = parseDeploymentSwitchResponse(parseBody(sendJson(context.api, "PUT", `/v1/deployments/${id}/switch`, {
         allow_unavailable_runtime_config: allow, apply: command === "apply",
-    }));
+    })));
     const outcome = response.ok;
     if (command === "apply" && outcome === "switched") context.out.stderr += "Applied successfully.\n";
     else if (command === "apply" && outcome === "restart_required") throw "Could not apply immediately; deployment enqueued. Restart the server to apply.";

@@ -154,6 +154,10 @@ just test-js
 just test        # including end-to-end tests
 ```
 
+The Obelisk API client is generated from a separately pinned contract. Refresh it
+with `scripts/update-obelisk-api.sh`; see
+[`assets/schemas/README-obelisk-api.md`](assets/schemas/README-obelisk-api.md).
+
 Design notes live in [`docs/`](docs/).
 
 ## License

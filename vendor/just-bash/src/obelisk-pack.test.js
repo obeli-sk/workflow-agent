@@ -1,3 +1,4 @@
+import { serverInfo } from "../../../shared/obelisk-api-fixtures.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Vfs } from "./fs.js";
@@ -126,7 +127,7 @@ test("usage errors exit 2 like clap, other errors print Error: and exit 1", () =
 });
 
 test("the app comes from --app anywhere, then exported OBELISK_APP_NAME, then ./app.toml", () => {
-    const cloud = fakeCloud({ "GET /v1/info": { deployment_id: "Dep_1" } });
+    const cloud = fakeCloud({ "GET /v1/info": serverInfo({ deployment_id: "Dep_1" }) });
     assert.equal(run(interp(), "cloud app deployment active --app flag", cloud).exitCode, 0);
     assert.equal(run(interp("/workspace", { OBELISK_APP_NAME: "env" }), "cloud app deployment active", cloud).exitCode, 0);
     const i = interp();
@@ -141,14 +142,14 @@ test("the app comes from --app anywhere, then exported OBELISK_APP_NAME, then ./
 });
 
 test("--json is global and active prints the ID as a value", () => {
-    const cloud = fakeCloud({ "GET /v1/info": { deployment_id: "Dep_1" } });
+    const cloud = fakeCloud({ "GET /v1/info": serverInfo({ deployment_id: "Dep_1" }) });
     assert.equal(api(interp(), "deployment active", cloud).stdout, "Dep_1\n");
     assert.equal(run(interp(), "cloud --json app --app demo deployment active", cloud).stdout, '"Dep_1"\n');
 });
 
 test("commandHandler strips the command name and runs inside the shell", () => {
     const bash = new Bash({ cwd: "/workspace" });
-    bash.registerCommand("obelisk", commandHandler(null, fakeCloud({ "GET /v1/info": { deployment_id: "Dep_1" } })));
+    bash.registerCommand("obelisk", commandHandler(null, fakeCloud({ "GET /v1/info": serverInfo({ deployment_id: "Dep_1" }) })));
     const out = bash.exec("obelisk cloud app --app demo deployment active | tr D d");
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(out.stdout, "dep_1\n");
@@ -445,7 +446,7 @@ test("deployment submit reuses the active deployment when nothing changed", () =
     i.vfs.writeFile("/workspace/deployment.toml", "# comment\n[[activity_js]]\nlocation = 'a.js'\n");
     i.vfs.writeFile("/workspace/a.js", "a");
     const cloud = fakeCloud({
-        "GET /v1/info": { deployment_id: "Dep_1" },
+        "GET /v1/info": serverInfo({ deployment_id: "Dep_1" }),
         "GET /v1/deployments/Dep_1": { deployment_toml: `[[activity_js]]\ncontent_digest = "${sha256("a")}"\nlocation = "a.js"\n`, description: null },
     });
     const out = api(i, "deployment apply", cloud);
@@ -489,6 +490,19 @@ test("deployment enqueue and apply switch the deployment and report the outcome"
     out = api(interp(), `deployment apply ${id}`, cloud);
     assert.equal(out.stderr, "Error: Could not apply immediately; deployment enqueued. Restart the server to apply.\n");
     assert.equal(api(interp(), `deployment apply ${id} --allow-unavailable-runtime-config`, cloud).exitCode, 2);
+});
+
+test("deployment commands reject malformed info and switch responses", () => {
+    let out = api(interp(), "deployment active", fakeCloud({ "GET /v1/info": { deployment_id: "Dep_1" } }));
+    assert.equal(out.exitCode, 1);
+    assert.match(out.stderr, /Invalid ServerInfoResponse/);
+    const id = "Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    for (const body of [{}, { ok: "unknown" }, { err: "failed" }]) {
+        out = api(interp(), `deployment apply ${id}`, fakeCloud({ [`PUT /v1/deployments/${id}/switch`]: body }));
+        assert.equal(out.exitCode, 1);
+        assert.match(out.stderr, /Invalid DeploymentSwitchResponse/);
+        assert.ok(!out.stderr.includes("Applied successfully"));
+    }
 });
 
 test("deployment list prints a table", () => {
@@ -614,7 +628,7 @@ test("admin retention parses the age and reports the counts", () => {
 test("admin deployments delete and node-run-id", () => {
     const cloud = fakeCloud({
         "DELETE /v1/admin/deployments/Dep_1?delete_executions=true&force_non_terminal=false": { deleted: true, deleted_execution_trees: 3 },
-        "GET /v1/info": { node_run_id: "Run_1" },
+        "GET /v1/info": serverInfo({ node_run_id: "Run_1" }),
     });
     const out = api(interp(), "admin deployments delete Dep_1 --delete-executions", cloud);
     assert.equal(out.exitCode, 0, out.stderr);

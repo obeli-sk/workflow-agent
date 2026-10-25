@@ -1,3 +1,4 @@
+import { serverInfo } from "../../../shared/obelisk-api-fixtures.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -161,7 +162,7 @@ test("app apply sends the staged revision with the app API's deployment id", asy
         "GET /v1/apps/demo": appRow({ revision: 3 }),
         "GET /v1/apps/demo/env": { env: { MODE: "prod" } },
         "GET /v1/apps/demo/secrets": { secrets: [{ name: "API_KEY" }] },
-        [`GET ${APP_API}/v1/info`]: { deployment_id: "Dep_active" },
+        [`GET ${APP_API}/v1/info`]: serverInfo({ deployment_id: "Dep_active" }),
         "POST /v1/apps/demo/apply": appRow({ outcome: { configuration: "applied" } }),
     });
     const applied = await run(["app", "--app", "demo", "apply", "--force"], "", null);
@@ -169,6 +170,19 @@ test("app apply sends the staged revision with the app API's deployment id", asy
     const apply = requests.find((request) => request.method === "POST");
     assert.deepEqual(JSON.parse(apply.body), { force: true, revision: 3, deployment_id: "Dep_active" });
     assert.equal(requests.find((request) => request.origin === APP_API).headers.authorization, "Bearer cloud-token");
+});
+
+test("app apply stops before mutation when server info is incomplete", async () => {
+    const requests = provisioner({
+        "GET /v1/apps/demo": appRow({ revision: 3 }),
+        "GET /v1/apps/demo/env": { env: { MODE: "prod" } },
+        "GET /v1/apps/demo/secrets": { secrets: [{ name: "API_KEY" }] },
+        [`GET ${APP_API}/v1/info`]: { deployment_id: "Dep_active" },
+    });
+    const result = await run(["app", "--app", "demo", "apply"], "", null);
+    assert.equal(result.exit_code, 1);
+    assert.match(result.stderr, /Invalid ServerInfoResponse/);
+    assert.ok(!requests.some(request => request.method === "POST"));
 });
 
 test("app apply refuses a local policy that the provisioner reports as differing unless --staged", async () => {
@@ -185,7 +199,7 @@ test("app apply refuses a local policy that the provisioner reports as differing
         "GET /v1/apps/demo": appRow(),
         "GET /v1/apps/demo/env": { env: { MODE: "prod" } },
         "GET /v1/apps/demo/secrets": { secrets: [{ name: "API_KEY" }] },
-        [`GET ${APP_API}/v1/info`]: { deployment_id: "Dep_active" },
+        [`GET ${APP_API}/v1/info`]: serverInfo({ deployment_id: "Dep_active" }),
         "POST /v1/apps/demo/apply": appRow(),
     });
     const staged = await run(["app", "apply", "--staged"], "", changed);
@@ -199,7 +213,7 @@ test("app apply with a matching ./app.toml applies the revision the provisioner 
         "POST /v1/apps/demo/config/compare": { policy: "equal", cloud: "equal", changes: [], revision: 5 },
         "GET /v1/apps/demo/env": { env: { MODE: "prod" } },
         "GET /v1/apps/demo/secrets": { secrets: [{ name: "API_KEY" }] },
-        [`GET ${APP_API}/v1/info`]: { deployment_id: "Dep_active" },
+        [`GET ${APP_API}/v1/info`]: serverInfo({ deployment_id: "Dep_active" }),
         "POST /v1/apps/demo/apply": appRow(),
     });
     const applied = await run(["app", "apply"], "", POLICY);
@@ -275,7 +289,7 @@ test("endpoint webhook prints the app's webhook URL", async () => {
 });
 
 test("tenant-read GETs a path on the app API", async () => {
-    provisioner({ [`GET ${APP_API}/v1/info`]: { deployment_id: "Dep_1" } });
-    assert.deepEqual(await tenantRead("demo", "/v1/info"), { status: 200, body: '{"deployment_id":"Dep_1"}' });
+    provisioner({ [`GET ${APP_API}/v1/info`]: serverInfo({ deployment_id: "Dep_1" }) });
+    assert.deepEqual(await tenantRead("demo", "/v1/info"), { status: 200, body: JSON.stringify(serverInfo({ deployment_id: "Dep_1" })) });
     assert.equal((await tenantRead("demo", "/v1/missing")).status, 404);
 });

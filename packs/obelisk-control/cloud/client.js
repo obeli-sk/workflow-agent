@@ -1,3 +1,5 @@
+import { parseApiResponse } from "../../../vendor/obelisk-api/index.js";
+
 // PORT: obelisk's cloud.rs `Client`: provisioner requests authenticated by the cloud token.
 import { errorMessage } from "./output.js";
 import { validateCloudAppName } from "./policy.js";
@@ -101,9 +103,9 @@ export async function appApiGet(apiUrl, segments) {
     const text = await response.text();
     if (response.status < 200 || response.status >= 300) throw `server returned ${response.status}: ${text}`;
     try {
-        return JSON.parse(text);
-    } catch {
-        throw "Cannot read app API response";
+        return parseApiResponse("GET", "/" + segments.join("/"), JSON.parse(text));
+    } catch (error) {
+        throw `Cannot read app API response: ${error}`;
     }
 }
 

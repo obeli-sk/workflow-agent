@@ -70,6 +70,9 @@ jobs:
       - name: Populate the nix store
         run: nix develop --command echo
 
+      - name: Check API client
+        run: nix develop --command scripts/update-obelisk-api.sh --check
+
       - name: Unit tests
         run: nix develop --command just test-js
 
