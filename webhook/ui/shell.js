@@ -310,6 +310,9 @@ const state = {
   // bottom already; false once they scroll up to read something (e.g. the
   // expanded system prompt), so a background poll cannot yank them back down.
   stickToBottom: true,
+  // Consecutive detail polls that brought nothing new; backs off the busy poll.
+  idlePolls: 0,
+  pollBase: null,
 };
 const SIDEBAR_POLL_MS = 10000;
 const DETAIL_POLL_MS = 3000;
@@ -371,6 +374,7 @@ function setSelected(id) {
   state.syspromptOpen = false;
   state.pendingShell = null;
   state.stickToBottom = true;
+  state.idlePolls = 0;
   clearTimeout(detailTimer);
   const u = new URL(window.location.href);
   if (id) u.searchParams.set('run', id); else u.searchParams.delete('run');
@@ -430,9 +434,12 @@ function renderSidebar() {
 function scheduleDetailRefresh() {
   clearTimeout(detailTimer);
   if (document.hidden || !state.selected || runPhase(state.detail?.status) === 'terminal') return;
-  const delay = shellIsWorking(state.detail)
+  const base = shellIsWorking(state.detail)
     ? BUSY_DETAIL_POLL_MS
     : (agentIsWorking(state.detail) ? AGENT_DETAIL_POLL_MS : DETAIL_POLL_MS);
+  if (base !== state.pollBase) state.idlePolls = 0;
+  state.pollBase = base;
+  const delay = Math.min(base * 2 ** Math.min(state.idlePolls, 4), DETAIL_POLL_MS);
   detailTimer = setTimeout(refreshDetail, delay);
 }
 
@@ -471,6 +478,7 @@ function refreshDetail() {
       }
       const detail = await r.json();
       const contentChanged = mergeTranscript(detail.transcript);
+      state.idlePolls = contentChanged ? 0 : state.idlePolls + 1;
       const started = state.transcript?.session_started;
       if (started) {
         detail.prompt = started.prompt || null;

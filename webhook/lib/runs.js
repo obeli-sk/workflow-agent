@@ -100,11 +100,11 @@ function nestChildren(runs) {
 export async function detailRun(id, cursorState) {
     const resetTranscript = cursorState.workflowId !== id;
     const responseCursor = resetTranscript ? 0 : cursorState.responseCursor;
-    const [status, walk, finalResult] = await Promise.all([
+    const [status, walk] = await Promise.all([
         loadStatus(id),
         loadResponses(id, responseCursor),
-        loadFinalResult(id),
     ]);
+    const finalResult = await loadFinalResult(id, status);
     const started = walk.sessionStarted;
     const runState = pickRunState(status);
     // Exact markers from the full event walk (the sidebar scan is bounded).
@@ -169,10 +169,9 @@ async function loadStatus(id) {
     catch (_) { return null; }
 }
 
-async function loadFinalResult(id) {
+async function loadFinalResult(id, status) {
+    if (status?.pending_state?.status !== "finished") return null;
     try {
-        const status = await getExecutionStatus(id);
-        if (status?.pending_state?.status !== "finished") return null;
         return await getExecutionRecord(id);
     } catch (e) { return { error: String(e) }; }
 }
