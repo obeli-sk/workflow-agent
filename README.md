@@ -44,11 +44,13 @@ Web UI addresses are internal public-env sources declared in `app.toml`:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LLM_BASE_URL` | `http://127.0.0.1:9190` | Endpoint URL up to `/v1`, including any gateway prefix, e.g. `https://openrouter.ai/api`. Models are discovered from `GET <LLM_BASE_URL>/v1/models`. |
+| `LLM_BASE_URL` | required locally; supplied by cloud | Endpoint URL up to `/v1`, including any gateway prefix, e.g. `https://openrouter.ai/api`. Models are discovered from `GET <LLM_BASE_URL>/v1/models`. |
 | `LLM_API_KEY` | unset | Bearer token, if the endpoint needs one. |
 | `AGENT_MODELS` | unset | Fallback model catalog (JSON), used when discovery is unavailable. |
 
-The default endpoint is
+For local development, set `LLM_BASE_URL` explicitly. Cloud deployment uses the
+account's `llm` integration declared in `app.toml`, overriding local values.
+A local endpoint option is
 [agent-backed-llm-server](https://github.com/obeli-sk/agent-backed-llm-server),
 which serves Claude and Codex subscriptions locally. Two ready-made catalogs ship
 for other endpoints, used as `AGENT_MODELS="$(cat models.openrouter.json)"`:

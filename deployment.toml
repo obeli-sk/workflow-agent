@@ -147,7 +147,7 @@ exec.lock_expiry.seconds = 30
 env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" },
   { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
-  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
+  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL}" },
 ]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_API_URL}"
@@ -169,7 +169,7 @@ secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
 [[activity_js.allowed_host]]
-url_prefix = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+url_prefix = "${LLM_BASE_URL}"
 methods = ["GET"]
 url_regex_suffix = "(/[^/]+)*/v1/models$"
 secrets = [{ name = "LLM_API_KEY", optional = true }]
@@ -221,7 +221,7 @@ exec.lock_expiry.minutes = 10
 max_retries = 3
 env_vars = [
   { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
-  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
+  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" },
 ]
 # Reconstructs history from prior LLM executions (activity/llm-history.js).
@@ -232,13 +232,13 @@ url_regex_suffix = "/v1/executions/events/batch$"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 [[activity_js.allowed_host]]
-url_prefix = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+url_prefix = "${LLM_BASE_URL}"
 methods = ["GET"]
 url_regex_suffix = "(/[^/]+)*/v1/models$"
 secrets = [{ name = "LLM_API_KEY", optional = true }]
 replace_in = ["headers"]
 [[activity_js.allowed_host]]
-url_prefix = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+url_prefix = "${LLM_BASE_URL}"
 methods = ["POST"]
 url_regex_suffix = "(/[^/]+)*/v1/(messages|chat/completions|responses)$"
 secrets = [{ name = "LLM_API_KEY", optional = true }]
@@ -400,7 +400,7 @@ env_vars = [
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL}" },
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" },
   { key = "AGENT_MODELS", value = "${AGENT_MODELS:-[]}" },
-  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL:-http://127.0.0.1:9190}" },
+  { key = "LLM_BASE_URL", value = "${LLM_BASE_URL}" },
 ]
 # Read-only API access for the polling UI (statuses, responses, events, logs,
 # deployments, files). These run as direct fetches from the webhook instead of
@@ -413,7 +413,7 @@ secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
 [[webhook_endpoint_js.allowed_host]]
-url_prefix = "${LLM_BASE_URL:-http://127.0.0.1:9190}"
+url_prefix = "${LLM_BASE_URL}"
 methods = ["GET"]
 url_regex_suffix = "(/[^/]+)*/v1/models$"
 secrets = [{ name = "LLM_API_KEY", optional = true }]
