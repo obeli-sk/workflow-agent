@@ -7,6 +7,8 @@
 // understood (-f -i -L -s -v -I -H -w --max-time --compressed) so callers can
 // read status codes and timings, but the method is pinned to GET.
 
+import { withTimeout } from "../shared/with-timeout.js";
+
 const MAX_REDIRECTS = 10;
 
 // %{var} names expanded by --write-out; unknown ones are left verbatim.
@@ -35,57 +37,59 @@ export default async function curl(stdin, args) {
     let redirects = 0;
     const trace = [];
     try {
-        while (true) {
-            if (parsed.verbose) {
-                trace.push(`> GET ${url.pathname}${url.search}`);
-            }
-            const response = await fetch(url.href, {
-                method: "GET",
-                headers: parsed.headers,
-                redirect: "manual",
-                signal: timeoutSignal(parsed.maxTimeMs),
-            });
-            if (isRedirect(response.status) && parsed.followRedirects) {
-                if (redirects++ >= MAX_REDIRECTS) {
-                    return fail(47, `curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
+        return await withTimeout(parsed.maxTimeMs, async (signal) => {
+            while (true) {
+                if (parsed.verbose) {
+                    trace.push(`> GET ${url.pathname}${url.search}`);
                 }
-                const location = response.headers.get("location");
-                if (!location) return fail(47, "curl: (47) Redirect response has no Location header\n");
-                if (parsed.verbose) trace.push(`< HTTP ${response.status} (redirect)`, `* Redirecting to ${location}`);
-                void response.body?.cancel();
-                try {
-                    url = parseUrl(new URL(location, url).href);
-                } catch (error) {
-                    return fail(47, `curl: (47) ${message(error)}\n`);
+                const response = await fetch(url.href, {
+                    method: "GET",
+                    headers: parsed.headers,
+                    redirect: "manual",
+                    signal,
+                });
+                if (isRedirect(response.status) && parsed.followRedirects) {
+                    if (redirects++ >= MAX_REDIRECTS) {
+                        return fail(47, `curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
+                    }
+                    const location = response.headers.get("location");
+                    if (!location) return fail(47, "curl: (47) Redirect response has no Location header\n");
+                    if (parsed.verbose) trace.push(`< HTTP ${response.status} (redirect)`, `* Redirecting to ${location}`);
+                    void response.body?.cancel();
+                    try {
+                        url = parseUrl(new URL(location, url).href);
+                    } catch (error) {
+                        return fail(47, `curl: (47) ${message(error)}\n`);
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            const body = await response.text();
-            const vars = {
-                http_code: response.status,
-                size_download: byteLength(body),
-                content_type: response.headers.get("content-type") ?? "",
-                url_effective: url.href,
-                num_redirects: redirects,
-                time_total: ((Date.now() - startedAt) / 1000).toFixed(6),
-            };
-            if (parsed.verbose) {
-                trace.push(`< HTTP ${response.status}`);
-                for (const [name, value] of response.headers.entries()) trace.push(`< ${name}: ${value}`);
-            }
+                const body = await response.text();
+                const vars = {
+                    http_code: response.status,
+                    size_download: byteLength(body),
+                    content_type: response.headers.get("content-type") ?? "",
+                    url_effective: url.href,
+                    num_redirects: redirects,
+                    time_total: ((Date.now() - startedAt) / 1000).toFixed(6),
+                };
+                if (parsed.verbose) {
+                    trace.push(`< HTTP ${response.status}`);
+                    for (const [name, value] of response.headers.entries()) trace.push(`< ${name}: ${value}`);
+                }
 
-            if (parsed.failOnHttpError && response.status >= 400) {
-                const error = fail(22, `curl: (22) The requested URL returned error: ${response.status}\n`);
-                // curl still emits the write-out string for failed transfers.
-                if (parsed.writeOut !== null) error.stdout = formatWriteOut(parsed.writeOut, vars);
-                return withTrace(error, trace, parsed);
+                if (parsed.failOnHttpError && response.status >= 400) {
+                    const error = fail(22, `curl: (22) The requested URL returned error: ${response.status}\n`);
+                    // curl still emits the write-out string for failed transfers.
+                    if (parsed.writeOut !== null) error.stdout = formatWriteOut(parsed.writeOut, vars);
+                    return withTrace(error, trace, parsed);
+                }
+                const headers = parsed.includeHeaders ? formatHeaders(response) : "";
+                let stdout = headers + (parsed.headOnly ? "" : body);
+                if (parsed.writeOut !== null) stdout += formatWriteOut(parsed.writeOut, vars);
+                return withTrace({ stdout, stderr: "", exit_code: 0 }, trace, parsed);
             }
-            const headers = parsed.includeHeaders ? formatHeaders(response) : "";
-            let stdout = headers + (parsed.headOnly ? "" : body);
-            if (parsed.writeOut !== null) stdout += formatWriteOut(parsed.writeOut, vars);
-            return withTrace({ stdout, stderr: "", exit_code: 0 }, trace, parsed);
-        }
+        });
     } catch (error) {
         if (isAbort(error)) {
             return fail(28, `curl: (28) Operation timed out after ${parsed.maxTimeMs} ms\n`);
@@ -227,21 +231,6 @@ function parseMaxTime(value) {
     const seconds = Number(value);
     if (!Number.isFinite(seconds) || seconds <= 0) return null;
     return Math.round(seconds * 1000);
-}
-
-function timeoutSignal(maxTimeMs) {
-    if (maxTimeMs === null) return undefined;
-    try {
-        return AbortSignal.timeout(maxTimeMs);
-    } catch {
-        // Fall through to the manual controller for engines without .timeout.
-    }
-    if (typeof AbortController === "function" && typeof setTimeout === "function") {
-        const controller = new AbortController();
-        setTimeout(() => controller.abort(), maxTimeMs);
-        return controller.signal;
-    }
-    return undefined; // Runtimes without abort support cannot honor --max-time.
 }
 
 function isAbort(error) {

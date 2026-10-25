@@ -269,7 +269,7 @@ const SHELL_HTML = `<!doctype html>
     <div id="detail-body"><p class="empty">Start a new conversation below, or pick a run from the sidebar.</p></div>
   </div>
   <div id="composer">
-    <div id="working" class="working-indicator" hidden><span class="dot"></span><span id="working-label">Agent is working…</span></div>
+    <div id="working" class="working-indicator" hidden><span class="dot"></span><span id="working-label">Thinking…</span></div>
     <form id="composer-form">
       <textarea id="composer-input" placeholder="Message the agent, or type $ ls to run a shell command..." rows="3"></textarea>
       <div class="composer-row">
@@ -1096,6 +1096,11 @@ function composerMode() {
   if (runPhase(d.status) === 'terminal') return 'closed';
   return 'say';
 }
+// Echo the server-projected state chip so the indicator and sidebar agree.
+function workingLabel(d, shellWorking) {
+  const label = d?.cls === 'working' && d.label ? d.label : (shellWorking ? 'working' : 'thinking');
+  return label.charAt(0).toUpperCase() + label.slice(1) + '…';
+}
 function renderComposer() {
   const d = state.detail;
   const mode = composerMode();
@@ -1112,9 +1117,7 @@ function renderComposer() {
   const wasDisabled = input.disabled;
 
   workingEl.hidden = !shellWorking && !agentWorking;
-  document.getElementById('working-label').textContent = shellWorking
-    ? 'Shell command is running…'
-    : 'Agent is working…';
+  document.getElementById('working-label').textContent = workingLabel(d, shellWorking);
   selects.style.display = mode === 'new' ? 'flex' : 'none';
   // The stop control only makes sense mid-turn: it races the composer's own
   // outstanding input offer against the in-flight LLM call, so it needs the
