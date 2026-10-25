@@ -161,7 +161,7 @@ test("app apply sends the staged revision with the app API's deployment id", asy
         "GET /v1/apps/demo": appRow({ revision: 3 }),
         "GET /v1/apps/demo/env": { env: { MODE: "prod" } },
         "GET /v1/apps/demo/secrets": { secrets: [{ name: "API_KEY" }] },
-        [`GET ${APP_API}/v1/deployment-id`]: "Dep_active",
+        [`GET ${APP_API}/v1/info`]: { deployment_id: "Dep_active" },
         "POST /v1/apps/demo/apply": appRow({ outcome: { configuration: "applied" } }),
     });
     const applied = await run(["app", "--app", "demo", "apply", "--force"], "", null);
@@ -185,7 +185,7 @@ test("app apply refuses a local policy that the provisioner reports as differing
         "GET /v1/apps/demo": appRow(),
         "GET /v1/apps/demo/env": { env: { MODE: "prod" } },
         "GET /v1/apps/demo/secrets": { secrets: [{ name: "API_KEY" }] },
-        [`GET ${APP_API}/v1/deployment-id`]: "Dep_active",
+        [`GET ${APP_API}/v1/info`]: { deployment_id: "Dep_active" },
         "POST /v1/apps/demo/apply": appRow(),
     });
     const staged = await run(["app", "apply", "--staged"], "", changed);
@@ -199,7 +199,7 @@ test("app apply with a matching ./app.toml applies the revision the provisioner 
         "POST /v1/apps/demo/config/compare": { policy: "equal", cloud: "equal", changes: [], revision: 5 },
         "GET /v1/apps/demo/env": { env: { MODE: "prod" } },
         "GET /v1/apps/demo/secrets": { secrets: [{ name: "API_KEY" }] },
-        [`GET ${APP_API}/v1/deployment-id`]: "Dep_active",
+        [`GET ${APP_API}/v1/info`]: { deployment_id: "Dep_active" },
         "POST /v1/apps/demo/apply": appRow(),
     });
     const applied = await run(["app", "apply"], "", POLICY);
@@ -231,7 +231,7 @@ test("tenant sends a request to the app API with the cloud token and returns any
     assert.equal(requests[0].url, `${APP_API}/v1/deployments/Dep_1`);
     assert.deepEqual(requests[0].headers, { accept: "application/json", authorization: "Bearer cloud-token", "content-type": "application/json" });
     assert.equal(requests[0].body, "{}");
-    await assert.rejects(tenant("demo", "GET", "/v1/deployment-id", null, null), /use cloud.tenant-read/);
+    await assert.rejects(tenant("demo", "GET", "/v1/info", null, null), /use cloud.tenant-read/);
     await assert.rejects(tenant("demo", "PUT", "v1/x", null, null), /invalid app API path/);
 });
 
@@ -275,7 +275,7 @@ test("endpoint webhook prints the app's webhook URL", async () => {
 });
 
 test("tenant-read GETs a path on the app API", async () => {
-    provisioner({ [`GET ${APP_API}/v1/deployment-id`]: "Dep_1" });
-    assert.deepEqual(await tenantRead("demo", "/v1/deployment-id"), { status: 200, body: '"Dep_1"' });
+    provisioner({ [`GET ${APP_API}/v1/info`]: { deployment_id: "Dep_1" } });
+    assert.deepEqual(await tenantRead("demo", "/v1/info"), { status: 200, body: '{"deployment_id":"Dep_1"}' });
     assert.equal((await tenantRead("demo", "/v1/missing")).status, 404);
 });

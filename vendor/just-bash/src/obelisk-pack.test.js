@@ -126,7 +126,7 @@ test("usage errors exit 2 like clap, other errors print Error: and exit 1", () =
 });
 
 test("the app comes from --app anywhere, then exported OBELISK_APP_NAME, then ./app.toml", () => {
-    const cloud = fakeCloud({ "GET /v1/deployment-id": "Dep_1" });
+    const cloud = fakeCloud({ "GET /v1/info": { deployment_id: "Dep_1" } });
     assert.equal(run(interp(), "cloud app deployment active --app flag", cloud).exitCode, 0);
     assert.equal(run(interp("/workspace", { OBELISK_APP_NAME: "env" }), "cloud app deployment active", cloud).exitCode, 0);
     const i = interp();
@@ -141,14 +141,14 @@ test("the app comes from --app anywhere, then exported OBELISK_APP_NAME, then ./
 });
 
 test("--json is global and active prints the ID as a value", () => {
-    const cloud = fakeCloud({ "GET /v1/deployment-id": "Dep_1" });
+    const cloud = fakeCloud({ "GET /v1/info": { deployment_id: "Dep_1" } });
     assert.equal(api(interp(), "deployment active", cloud).stdout, "Dep_1\n");
     assert.equal(run(interp(), "cloud --json app --app demo deployment active", cloud).stdout, '"Dep_1"\n');
 });
 
 test("commandHandler strips the command name and runs inside the shell", () => {
     const bash = new Bash({ cwd: "/workspace" });
-    bash.registerCommand("obelisk", commandHandler(null, fakeCloud({ "GET /v1/deployment-id": "Dep_1" })));
+    bash.registerCommand("obelisk", commandHandler(null, fakeCloud({ "GET /v1/info": { deployment_id: "Dep_1" } })));
     const out = bash.exec("obelisk cloud app --app demo deployment active | tr D d");
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(out.stdout, "dep_1\n");
@@ -445,7 +445,7 @@ test("deployment submit reuses the active deployment when nothing changed", () =
     i.vfs.writeFile("/workspace/deployment.toml", "# comment\n[[activity_js]]\nlocation = 'a.js'\n");
     i.vfs.writeFile("/workspace/a.js", "a");
     const cloud = fakeCloud({
-        "GET /v1/deployment-id": "Dep_1",
+        "GET /v1/info": { deployment_id: "Dep_1" },
         "GET /v1/deployments/Dep_1": { deployment_toml: `[[activity_js]]\ncontent_digest = "${sha256("a")}"\nlocation = "a.js"\n`, description: null },
     });
     const out = api(i, "deployment apply", cloud);
