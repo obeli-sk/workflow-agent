@@ -174,7 +174,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         const { desired, revision } = await stagedOrLocal(current, flags["--staged"] ? null : local, name, path, options);
         if (flags["--fill"]) throw terminal("--fill");
         await fillValues(name, userSuppliedPolicy(desired), flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
-        const deploymentId = await appApiGet(current?.api_url, ["v1", "deployment-id"]);
+        const { deployment_id: deploymentId } = await appApiGet(current?.api_url, ["v1", "info"]);
         const body = { force: flags["--force"] === true, revision, deployment_id: deploymentId };
         return print(await appRequest(name, "POST", ["apply"], { ...command, body }), { kind: "lifecycle" });
     }

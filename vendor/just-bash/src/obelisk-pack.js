@@ -1038,7 +1038,7 @@ function deploymentCommand(context, [action, ...args]) {
         }
         case "active": {
             const { opts } = parseOptions(args, { "--json": false }, []);
-            return printValue(out, getJson(api, "/v1/deployment-id"), json(opts));
+            return printValue(out, getJson(api, "/v1/info").deployment_id, json(opts));
         }
         case "show": {
             const { opts, positionals } = parseOptions(args, { "--json": false }, ["ID", "FILE"]);
@@ -1162,9 +1162,9 @@ function prepareManifest(interp, path) {
 function submitPrepared(context, prepared, allow, description, deploymentId) {
     const { api, out } = context;
     if (deploymentId === null) {
-        const response = api.get("/v1/deployment-id");
+        const response = api.get("/v1/info");
         if (response.status !== 404) {
-            const activeId = parseBody(checked(response));
+            const activeId = parseBody(checked(response)).deployment_id;
             const active = getJson(api, `/v1/deployments/${activeId}`);
             if ((active.description ?? null) === description && sameToml(active.deployment_toml, prepared.toml)) {
                 out.stderr += `Deployment content unchanged; using ${activeId}\n`;

@@ -103,7 +103,7 @@ export async function getDeployment(id) {
 }
 
 export async function currentDeploymentId() {
-    return apiGetJson("current-deployment-id", "/v1/deployment-id");
+    return (await apiGetJson("current-deployment-id", "/v1/info")).deployment_id;
 }
 
 export async function readBlob(digest) {

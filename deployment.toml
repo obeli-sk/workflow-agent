@@ -408,7 +408,7 @@ env_vars = [
 [[webhook_endpoint_js.allowed_host]]
 url_prefix = "${OBELISK_API_URL}"
 methods = ["GET"]
-url_regex_suffix = "/v1/executions|/v1/deployments|/v1/deployment-id|/v1/files/"
+url_regex_suffix = "/v1/executions|/v1/deployments|/v1/info|/v1/files/"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
