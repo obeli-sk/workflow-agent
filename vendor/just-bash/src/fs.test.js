@@ -389,6 +389,36 @@ test("oversized web file reports TOO_LARGE without ever calling read()", () => {
     assert.equal(provider.reads.length, 0);
 });
 
+test("fetch budget stops uncached web-mount calls but not cached ones", () => {
+    const provider = fakeProvider({
+        listings: {
+            "": [
+                { name: "a", kind: "file", digest: "git:a", size: 1 },
+                { name: "b", kind: "file", digest: "git:b", size: 1 },
+                { name: "sub", kind: "dir" },
+            ],
+            sub: [],
+        },
+        files: { a: "1", b: "2" },
+    });
+    const fs = new Vfs();
+    fs.registerWebMount("/workspace/components", "", provider);
+    fs.setFetchBudget({ lists: 1, reads: 1 });
+    const budgetError = (err) => err instanceof FsError && err.code === "FETCH_BUDGET";
+
+    assert.equal(fs.readFile("/workspace/components/a"), "1");
+    assert.throws(() => fs.readFile("/workspace/components/b"), budgetError);
+    assert.throws(() => fs.readdir("/workspace/components/sub"), budgetError);
+    assert.equal(fs.readFile("/workspace/components/a"), "1", "a cached file costs nothing");
+    assert.deepEqual(provider.reads, ["a"]);
+
+    // A refused listing is not recorded as expanded, so the next step can list it.
+    fs.setFetchBudget({ lists: 1, reads: 1 });
+    assert.equal(fs.readFile("/workspace/components/b"), "2");
+    assert.deepEqual(fs.readdir("/workspace/components/sub"), []);
+    assert.deepEqual(provider.lists, ["", "sub"]);
+});
+
 test("executable bit is resolved through symlinks and follows rename", () => {
     const fs = new Vfs();
     fs.writeFile("/bin/tool", "#!/bin/sh");
