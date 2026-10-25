@@ -11,10 +11,11 @@
 //   POST /api/answer/:childId       body: {answer} -> {ok: true}
 //
 // The SPA polls the run list every 10s and active open runs every 3s, switching
-// to a short poll while a shell command is outstanding. Terminal runs stop
-// polling. Layout is two-pane: sidebar = "new conversation" button + run list;
-// right pane = chat-style transcript with a persistent composer pinned at the
-// bottom and a specific agent/shell activity indicator directly above it.
+// to a short poll (backing off while nothing changes) while a shell command or
+// agent turn is outstanding. Terminal runs stop polling. Layout is two-pane:
+// sidebar = "new conversation" button + run list; right pane = chat-style
+// transcript with a persistent composer pinned at the bottom and a specific
+// agent/shell activity indicator directly above it.
 //
 // This entry is the HTTP router only; the implementation lives in ./lib/* (server
 // logic) and ./ui/shell.js (the served single-page app).
