@@ -36,7 +36,7 @@ The `obelisk-agent:tools/cloud` interface has these activities
 (`packs/obelisk-control/cloud/`); all but `tenant-read` have `max_retries = 0`:
 
 - `run` (`cli.js`) runs the provisioner commands: `apps list`,
-  `token list|get`, `app new|get|status|stage|apply|reactivate|deactivate|delete`,
+  `token list|get`, `app new|get|status|stage|apply|enable|disable|delete`,
   `env ...`, `secrets ...` and `endpoint`. It returns stdout, stderr and an
   exit code, and its errors use the real CLI's wording.
 - `prepare-deploy` (`deploy.js`) and `finish-deploy` (`finish-deploy.js`)
