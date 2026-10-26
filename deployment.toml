@@ -387,6 +387,7 @@ routes = [
   { methods = ["GET"], route = "/api/runs" },
   { methods = ["GET"], route = "/api/runs/:execution-id" },
   { methods = ["GET"], route = "/api/logs/:execution-id" },
+  { methods = ["GET"], route = "/api/watch" },
   { methods = ["POST"], route = "/api/submit" },
   { methods = ["POST"], route = "/api/sessions" },
   { methods = ["POST"], route = "/api/answer/:child-id" },
@@ -409,6 +410,13 @@ env_vars = [
 url_prefix = "${OBELISK_API_URL}"
 methods = ["GET"]
 url_regex_suffix = "/v1/executions|/v1/deployments|/v1/info|/v1/files/"
+secrets = ["OBELISK_API_TOKEN"]
+replace_in = ["headers"]
+# ui-api watch stream: followed statuses of the open and listed runs.
+[[webhook_endpoint_js.allowed_host]]
+url_prefix = "${OBELISK_API_URL}"
+methods = ["POST"]
+url_regex_suffix = "/v1/executions/status/batch$"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 

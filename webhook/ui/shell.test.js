@@ -46,7 +46,7 @@ function sandbox() {
 // Load the served browser script, evaluate it, and expose the transcript
 // renderer's internals (the `state` lexical and the top-level functions).
 // fetchCalls records every URL the evaluated script fetches after load.
-async function loadRenderer() {
+async function loadRenderer(globals = {}) {
     const html = await htmlShell().text();
     const marker = "<script>\nconst OBELISK_UI_URL";
     const start = html.indexOf(marker);
@@ -54,8 +54,8 @@ async function loadRenderer() {
     const open = html.indexOf(">", start) + 1;
     const end = html.indexOf("</script>", open);
     const code = html.slice(open, end)
-        + "\n;globalThis.__render = { state, buildCachedTurns, groupTurns, renderTurnGroup, renderDetail, renderComposer, composerMode, sendComposer, stopAgent, toggleSysprompt, document };";
-    const sandboxObj = sandbox();
+        + "\n;globalThis.__render = { state, buildCachedTurns, groupTurns, renderTurnGroup, renderDetail, renderComposer, composerMode, sendComposer, stopAgent, toggleSysprompt, ensureWatch, document };";
+    const sandboxObj = { ...sandbox(), ...globals };
     const ctx = vm.createContext(sandboxObj);
     vm.runInContext(code, ctx);
     ctx.__render.fetchCalls = [];
@@ -638,4 +638,50 @@ test("the stop control only appears while the agent is iterating, and posts an i
     await renderer.stopAgent(renderer.state.selected);
     assert.equal(renderer.fetchCalls.length, 1);
     assert.match(renderer.fetchCalls[0], /\/api\/input\/E_run$/);
+});
+
+class FakeEventSource {
+    static instances = [];
+    constructor(url) {
+        this.url = url;
+        this.closed = false;
+        this.listeners = {};
+        FakeEventSource.instances.push(this);
+    }
+    addEventListener(name, fn) { this.listeners[name] = fn; }
+    emit(name, data = "{}") { this.listeners[name]?.({ data }); }
+    close() { this.closed = true; }
+}
+
+test("one watch stream per tab drives detail refreshes and closes on end", async () => {
+    FakeEventSource.instances = [];
+    const r = await loadRenderer({ EventSource: FakeEventSource, AbortController });
+    r.state.selected = "E_1";
+    r.state.detail = { status: "locked" };
+    r.state.transcript = { workflow_id: "E_1", response_cursor: 5 };
+    r.state.runs = [
+        { id: "E_1", status: "locked" },
+        { id: "E_2", status: "blocked_by_join_set" },
+        { id: "E_3", status: "finished" },
+    ];
+    r.ensureWatch();
+    r.ensureWatch();
+    assert.equal(FakeEventSource.instances.length, 1);
+    const source = FakeEventSource.instances[0];
+    assert.equal(source.url, "/api/watch?run=E_1&cursor=5&ids=E_2");
+
+    r.fetchCalls.length = 0;
+    source.emit("run");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(r.fetchCalls.some((href) => href.startsWith("/api/runs/E_1")), r.fetchCalls.join(","));
+
+    source.emit("end");
+    assert.equal(source.closed, true);
+    r.ensureWatch();
+    assert.equal(FakeEventSource.instances.length, 1, "an ended stream is not reopened for the same runs");
+
+    r.state.runs.push({ id: "E_4", status: "locked" });
+    r.ensureWatch();
+    assert.equal(FakeEventSource.instances.length, 2);
+    assert.equal(FakeEventSource.instances[1].url, "/api/watch?run=E_1&cursor=5&ids=E_2%2CE_4");
 });

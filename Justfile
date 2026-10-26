@@ -10,6 +10,7 @@ test: test-js test-e2e
 
 test-js:
   node --test webhook/ui/shell.test.js
+  node --test webhook/lib/watch.test.js
   node --test activity/curl.test.js
   node --test activity/chat.test.js
   node --test activity/github-contents.test.js

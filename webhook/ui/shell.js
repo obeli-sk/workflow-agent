@@ -318,12 +318,26 @@ const SIDEBAR_POLL_MS = 10000;
 const DETAIL_POLL_MS = 3000;
 const BUSY_DETAIL_POLL_MS = 200;
 const AGENT_DETAIL_POLL_MS = 500;
+// While the watch stream is live, polling is only a safety net.
+const WATCHED_SIDEBAR_POLL_MS = 60000;
+const WATCHED_DETAIL_POLL_MS = 15000;
+// Minimum gap between change-driven run list reloads (each reads every run).
+const SIDEBAR_CHANGE_GAP_MS = 10000;
 let sidebarTimer = null;
 let detailTimer = null;
 let sidebarRequest = null;
 let detailRequest = null;
 let detailAbort = null;
 let logsRequest = null;
+let watchSource = null;
+let watchKey = null;
+let watchLive = false;
+// A change arrived while a detail request was in flight.
+let detailDirty = false;
+let sidebarChangeTimer = null;
+let lastSidebarAt = 0;
+// Last status and max_version per run reported by the watch stream.
+const watchedStatuses = new Map();
 
 function execLink(id) {
   return OBELISK_UI_URL + '/execution/' + encodeURIComponent(id);
@@ -375,6 +389,7 @@ function setSelected(id) {
   state.pendingShell = null;
   state.stickToBottom = true;
   state.idlePolls = 0;
+  detailDirty = false;
   clearTimeout(detailTimer);
   const u = new URL(window.location.href);
   if (id) u.searchParams.set('run', id); else u.searchParams.delete('run');
@@ -386,12 +401,98 @@ function setSelected(id) {
 function scheduleSidebarRefresh() {
   clearTimeout(sidebarTimer);
   if (document.hidden) return;
-  sidebarTimer = setTimeout(refreshSidebar, SIDEBAR_POLL_MS);
+  sidebarTimer = setTimeout(refreshSidebar, watchLive ? WATCHED_SIDEBAR_POLL_MS : SIDEBAR_POLL_MS);
+}
+
+function requestSidebarRefresh() {
+  if (sidebarChangeTimer) return;
+  const wait = Math.max(0, lastSidebarAt + SIDEBAR_CHANGE_GAP_MS - Date.now());
+  sidebarChangeTimer = setTimeout(() => {
+    sidebarChangeTimer = null;
+    refreshSidebar();
+  }, wait);
+}
+
+function requestDetailRefresh() {
+  if (detailRequest && detailRequest.id === state.selected) {
+    detailDirty = true;
+    return;
+  }
+  refreshDetail();
+}
+
+function closeWatch() {
+  watchSource?.close();
+  watchSource = null;
+  watchLive = false;
+}
+
+// One change stream per tab covers the open run and the unfinished listed
+// runs, so the tab stays within the browser's per-origin connection limit.
+// It reopens only when that set changes; after an end event or a failed connect the
+// timers keep polling at their regular cadence.
+function ensureWatch() {
+  if (typeof EventSource === 'undefined') return;
+  const run = state.selected && runPhase(state.detail?.status) !== 'terminal' ? state.selected : '';
+  const ids = state.runs.filter((r) => r.status !== 'finished' && r.id !== run).map((r) => r.id).slice(0, 199);
+  const key = document.hidden || (!run && ids.length === 0) ? '' : run + '|' + ids.join(',');
+  if (key === watchKey) return;
+  closeWatch();
+  watchKey = key;
+  if (!key) return;
+  const query = new URLSearchParams();
+  if (run) {
+    query.set('run', run);
+    if (state.transcript?.workflow_id === run) query.set('cursor', String(state.transcript.response_cursor || 0));
+  }
+  if (ids.length) query.set('ids', ids.join(','));
+  const source = new EventSource('/api/watch?' + query.toString());
+  watchSource = source;
+  source.addEventListener('open', () => {
+    if (watchSource !== source) return;
+    watchLive = true;
+    scheduleSidebarRefresh();
+    if (!detailRequest) scheduleDetailRefresh();
+  });
+  source.addEventListener('error', () => {
+    if (watchSource !== source || !watchLive) return;
+    watchLive = false;
+    scheduleSidebarRefresh();
+    if (!detailRequest) scheduleDetailRefresh();
+  });
+  source.addEventListener('statuses', (ev) => {
+    if (watchSource === source) onWatchStatuses(JSON.parse(ev.data));
+  });
+  source.addEventListener('run', () => {
+    if (watchSource === source) requestDetailRefresh();
+  });
+  source.addEventListener('end', () => {
+    source.close();
+    if (watchSource !== source) return;
+    watchSource = null;
+    watchLive = false;
+    scheduleSidebarRefresh();
+    if (!detailRequest) scheduleDetailRefresh();
+  });
+}
+
+function onWatchStatuses(items) {
+  let sidebarChanged = false;
+  for (const item of items) {
+    if (item.id === state.selected) requestDetailRefresh();
+    const sig = item.status + ':' + item.max_version;
+    const previous = watchedStatuses.get(item.id);
+    const listed = state.runs.find((r) => r.id === item.id);
+    if (previous !== undefined ? previous !== sig : (listed && listed.status !== item.status)) sidebarChanged = true;
+    watchedStatuses.set(item.id, sig);
+  }
+  if (sidebarChanged) requestSidebarRefresh();
 }
 
 function refreshSidebar() {
   if (sidebarRequest) return sidebarRequest;
   clearTimeout(sidebarTimer);
+  lastSidebarAt = Date.now();
   sidebarRequest = (async () => {
     try {
       const r = await fetch('/api/runs', { headers: { accept: 'application/json' } });
@@ -399,6 +500,7 @@ function refreshSidebar() {
       const data = await r.json();
       state.runs = data.runs || [];
       renderSidebar();
+      ensureWatch();
     } catch (_) {
     } finally {
       sidebarRequest = null;
@@ -434,6 +536,10 @@ function renderSidebar() {
 function scheduleDetailRefresh() {
   clearTimeout(detailTimer);
   if (document.hidden || !state.selected || runPhase(state.detail?.status) === 'terminal') return;
+  if (watchLive && watchKey?.startsWith(state.selected + '|')) {
+    detailTimer = setTimeout(refreshDetail, WATCHED_DETAIL_POLL_MS);
+    return;
+  }
   const base = shellIsWorking(state.detail)
     ? BUSY_DETAIL_POLL_MS
     : (agentIsWorking(state.detail) ? AGENT_DETAIL_POLL_MS : DETAIL_POLL_MS);
@@ -501,6 +607,7 @@ function refreshDetail() {
       if (selected === state.selected) {
         renderDetail(contentChanged);
         if (state.logsOpen) refreshLogs();
+        ensureWatch();
       }
     } catch (e) {
       if (e.name !== 'AbortError' && selected === state.selected) {
@@ -510,7 +617,12 @@ function refreshDetail() {
       if (detailRequest?.promise === promise) {
         detailRequest = null;
         detailAbort = null;
-        scheduleDetailRefresh();
+        if (detailDirty) {
+          detailDirty = false;
+          refreshDetail();
+        } else {
+          scheduleDetailRefresh();
+        }
       }
     }
   })();
@@ -1962,6 +2074,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     clearTimeout(sidebarTimer);
     clearTimeout(detailTimer);
+    closeWatch();
+    watchKey = null;
     return;
   }
   refreshSidebar();

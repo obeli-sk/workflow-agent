@@ -96,6 +96,26 @@ PARENT_ID="$("$OBELISK" generate execution-id)"
 CURRENT_OUT="$(shell_turn "$PARENT_ID" "shell-chat-current" 'chat current')"
 node scripts/e2e-json.js check-current-id "$PARENT_ID" <<<"$CURRENT_OUT"
 
+echo ">>> /api/watch streams status and session-event signals"
+WATCH_LOG="$E2E_TMP/watch.log"
+# Start after the events seen so far, so the run signal must come from the next turn.
+WATCH_CURSOR="$(run_detail "$PARENT_ID" | node -e \
+    'process.stdout.write(String(JSON.parse(require("fs").readFileSync(0, "utf8")).transcript.response_cursor))')"
+curl --silent --no-buffer --max-time 60 \
+    "http://127.0.0.1:${EXTERNAL_PORT}/api/watch?run=${PARENT_ID}&cursor=${WATCH_CURSOR}" >"$WATCH_LOG" &
+WATCH_PID=$!
+watch_saw() { grep -q "$1" "$WATCH_LOG"; }
+e2e_wait_until watch_saw "event: statuses" \
+    || { echo "watch sent no statuses: $(cat "$WATCH_LOG")" >&2; exit 1; }
+if watch_saw "event: run"; then
+    echo "watch signalled already-seen session events: $(cat "$WATCH_LOG")" >&2
+    exit 1
+fi
+shell_turn "$PARENT_ID" "shell-watch-signal" 'true' >/dev/null
+e2e_wait_until watch_saw "event: run" \
+    || { echo "watch sent no run signal: $(cat "$WATCH_LOG")" >&2; exit 1; }
+kill "$WATCH_PID" 2>/dev/null || true
+
 echo ">>> renaming the parent via chat rename and seeing it on /api/runs"
 shell_turn "$PARENT_ID" "shell-chat-rename" 'chat rename e2e-slug' >/dev/null
 RENAME_OUT="$(shell_turn "$PARENT_ID" "shell-chat-current-2" 'chat current')"
