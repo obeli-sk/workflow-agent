@@ -126,3 +126,38 @@ export function cancelObeliskExecution(id) {
 export function stubObeliskExecution(id, result) {
     return webapi.stubExecution(id, JSON.stringify(result));
 }
+
+// Follow streams resolve on headers; the caller reads `body` incrementally.
+async function apiStream(label, path, init = {}) {
+    let resp;
+    try {
+        resp = await fetch(`${API_BASE}${path}`, {
+            ...init,
+            headers: {
+                accept: "text/event-stream",
+                authorization: `Bearer ${OBELISK_API_TOKEN}`,
+                ...(init.headers || {}),
+            },
+        });
+    } catch (e) {
+        throw new Error(`${label}: ${String(e)}`);
+    }
+    if (!resp.ok) throw new Error(`${label}: HTTP ${resp.status}: ${await resp.text()}`);
+    return resp;
+}
+
+export function followStatuses(ids) {
+    return apiStream("follow-statuses", "/v1/executions/status/batch?follow=true", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ execution_ids: ids }),
+    });
+}
+
+export function followResponses(id, joinSet, cursor) {
+    const current = Number.isFinite(cursor) && cursor > 0 ? Math.trunc(cursor) : 0;
+    return apiStream(
+        `follow-responses ${id}`,
+        `/v1/executions/${encodeURIComponent(id)}/responses?follow=true&join_set=${encodeURIComponent(joinSet)}&cursor=${current}`,
+    );
+}

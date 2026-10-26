@@ -251,9 +251,9 @@ test("tenant sends a request to the app API with the cloud token and returns any
 
 test("run reports provisioner errors with the command id and rejects credential flags", async () => {
     provisioner({
-        "POST /v1/apps/demo/deactivate": () => new Response(JSON.stringify({ error: "app is busy" }), { status: 409 }),
+        "POST /v1/apps/demo/disable": () => new Response(JSON.stringify({ error: "app is busy" }), { status: 409 }),
     });
-    const stopped = await run(["app", "--app", "demo", "deactivate", "--command-id", "E_cmd"], "", null);
+    const stopped = await run(["app", "--app", "demo", "disable", "--command-id", "E_cmd"], "", null);
     assert.equal(stopped.exit_code, 1);
     assert.equal(stopped.stderr, "Error: app is busy (HTTP 409). Command ID: E_cmd\n");
 

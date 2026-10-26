@@ -6,13 +6,16 @@
 //   GET  /api/runs                  list runs (sidebar)
 //   GET  /api/runs/:id              one run, normalised into turns
 //   GET  /api/logs/:id              logs from the run and all derived executions
+//   GET  /api/watch                 SSE change signal, query: run, cursor, ids
 //   POST /api/submit                body: {prompt} -> {execution_id}
 //   POST /api/input/:runId          body: {offer_id, input} -> accepted event
 //   POST /api/answer/:childId       body: {answer} -> {ok: true}
 //
-// The SPA polls the run list every 10s and active open runs every 3s, switching
-// to a short poll (backing off while nothing changes) while a shell command or
-// agent turn is outstanding. Terminal runs stop polling. Layout is two-pane:
+// The SPA opens one /api/watch stream per tab and refetches the run list or the
+// open run when it signals a change. Without a live stream it falls back to
+// polling the run list every 10s and active open runs every 3s, switching to a
+// short poll (backing off while nothing changes) while a shell command or agent
+// turn is outstanding. Terminal runs stop polling. Layout is two-pane:
 // sidebar = "new conversation" button + run list; right pane = chat-style
 // transcript with a persistent composer pinned at the bottom and a specific
 // agent/shell activity indicator directly above it.
@@ -23,6 +26,7 @@
 import { jsonError, jsonResponse, nonNegativeInteger, parseQuery } from "./lib/http.js";
 import { loadModels } from "./lib/models.js";
 import { detailRun, listRuns, loadExecutionTreeLogs } from "./lib/runs.js";
+import { watchResponse } from "./lib/watch.js";
 import {
     answerStub,
     cancelRun,
@@ -56,6 +60,13 @@ export default async function handle(request) {
             const id = decodeURIComponent(path.substring("/api/logs/".length));
             if (!id) return jsonError(400, "missing run id");
             return jsonResponse(await loadExecutionTreeLogs(id, query.cursor || ""));
+        }
+        if (method === "GET" && path === "/api/watch") {
+            return await watchResponse({
+                run: query.run || "",
+                cursor: nonNegativeInteger(query.cursor),
+                ids: (query.ids || "").split(",").filter(Boolean),
+            });
         }
         if (method === "POST" && path === "/api/submit") return await submit(request);
         if (method === "POST" && path === "/api/sessions") return await createSession(request);

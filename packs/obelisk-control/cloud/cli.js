@@ -178,7 +178,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         const body = { force: flags["--force"] === true, revision, deployment_id: deploymentId };
         return print(await appRequest(name, "POST", ["apply"], { ...command, body }), { kind: "lifecycle" });
     }
-    if (action === "reactivate" || action === "deactivate") {
+    if (action === "enable" || action === "disable") {
         allow(flags, ["--command-id"]);
         arity(rest, 0);
         return print(await appRequest(name, "POST", [action], command), { kind: "lifecycle" });
