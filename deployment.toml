@@ -39,7 +39,7 @@ replace_in = ["headers"]
 # command per entry and lists it (with its description) in the system prompt.
 
 # Session configuration is read once at session start. MAX_STEPS defaults to 40;
-# the program and MCP registries default to the deployed entries below. Override
+# the program and repo registries default to the deployed entries below. Override
 # any of them from the host environment without rebuilding the workflow.
 [[activity_js]]
 name = "config_discover"
@@ -54,13 +54,13 @@ ${PROGRAMS_JSON:-[
   {"name":"chat","ffqn":"obelisk-agent:programs/program.chat","description":"discover, read, message, and create peer agent sessions on this instance"}
 ]}
 ''' },
-  # Each entry mounts a lazily-listed GitHub repo tree at /workspace/apps/<name>
-  # (obelisk_web/obelisk-web.js -> the mount_apps activity below). `owner`
+  # Each entry mounts a lazily-listed GitHub repo tree at /workspace/github/<name>
+  # (vendor/just-bash/src/obelisk-web.js -> the mount_apps activity below). `owner`
   # defaults to "obeli-sk" and `ref` to "main" when omitted; `description` is
   # a terse "Lang: phrase" surfaced verbatim as a bullet in the system
   # prompt (session-logic.js's renderAppHelp) -
   # keep it short, the repo's own README.md is the place for detail. The
-  # default list covers the active example apps. Override the whole list to
+  # default list covers the active example apps and the website (docs sources). Override the whole list to
   # mount a different set of repos, private forks, or pinned refs.
   { key = "APPS_JSON", value = '''
 ${APPS_JSON:-[
@@ -72,7 +72,8 @@ ${APPS_JSON:-[
   {"name":"demo-stargazers","repo":"demo-stargazers","description":"Rust: a full webhook -> workflow -> external-API pattern (GitHub star notifications with persistent side effects); a reference before writing a similar workflow in JS"},
   {"name":"demo-tutorial","repo":"demo-tutorial","description":"JS: a small serial/parallel durable workflow tutorial; the fastest way to see the obelisk.* host API used correctly"},
   {"name":"obelisk-version-monitor","repo":"obelisk-version-monitor","description":"JS: a complete dashboard app (webhook + workflow + UI); reference it when building another operator-facing dashboard"},
-  {"name":"workflow-agent","repo":"workflow-agent","description":"JS: this agent's own source (session loop, just-bash interpreter, activity/pack examples); the reference for extending or debugging yourself"}
+  {"name":"workflow-agent","repo":"workflow-agent","description":"JS: this agent's own source (session loop, just-bash interpreter, activity/pack examples); the reference for extending or debugging yourself"},
+  {"name":"website","repo":"website","description":"Zola: the obeli.sk site; docs page https://obeli.sk/docs/VERSION/PATH/ is the Markdown file content/docs/VERSION/PATH.md (or PATH/_index.md), with docs for unreleased versions too"}
 ]}
 ''' },
   # The obelisk repo ref `obelisk generate new` fetches its starter app from.
@@ -94,10 +95,12 @@ secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
 
 # --- Docs: rendered llms.txt over the curl program ----------------------------
-# The session reads the Obelisk docs through the GET-only curl program instead
-# of a GitHub contents mount. Two pieces:
+# The session reads the rendered Obelisk docs through the GET-only curl program
+# (their Markdown sources are also mounted, see the website entry in APPS_JSON).
+# Two pieces:
 #
-#   * OBELISK_VERSION pins the doc set to the target runtime's version (e.g.
+#   * OBELISK_VERSION pins the doc set to the target runtime's version and is
+#     stated in the system prompt (e.g.
 #     "v0.42.0", matching the site's versioned doc directories and the obelisk
 #     repo tag `obelisk generate new` fetches its starter from). Empty falls
 #     back to `latest`. Set it from the flake lock when pinning matters
@@ -177,11 +180,10 @@ replace_in = ["headers"]
 
 # --- Reference mounts: GitHub repo trees ---------------------------------------
 # One activity backs every lazily-listed VFS repo tree the session mounts to
-# browse example apps while authoring deployments (APPS_JSON above picks which
+# browse example apps and docs sources while authoring deployments (APPS_JSON above picks which
 # repos and where; owner/repo/ref travel in params-json, not fixed env vars, so
-# this single block serves them all). GITHUB_MOUNT_TOKEN is optional but raises the
-# GitHub API rate limit from the shared 60 req/h anonymous IP pool to 5000 req/h,
-# which matters once multiple sessions share an egress IP. The workflow calls
+# this single block serves them all). Requests are anonymous; in the cloud,
+# GITHUB_API_URL points at the GitHub integration proxy, which authenticates them. The workflow calls
 # (method, params-json) on first `ls`/`cat` under each mount.
 
 [[activity_js]]
@@ -195,8 +197,6 @@ env_vars = [{ key = "GITHUB_API_URL", value = "${GITHUB_API_URL:-https://api.git
 url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos"
 methods = ["GET"]
 url_regex_suffix = "/[^/]+/[^/]+/(contents|commits/)"
-secrets = [{ name = "GITHUB_MOUNT_TOKEN", optional = true }]
-replace_in = ["headers"]
 
 # --- LLM endpoint: multi-provider client --------------------------------------
 # The only way the agent talks to a model. It speaks a provider-neutral message

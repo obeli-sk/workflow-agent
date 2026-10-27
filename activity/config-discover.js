@@ -8,7 +8,7 @@
 //     prompt-tail: string
 //   }, string>
 //
-// prompt-tail is the whole system prompt after "# Example apps": user-input
+// prompt-tail is the whole system prompt after "# GitHub repos": user-input
 // guidance, subagent delegation, deployment authoring, and the per-session
 // "# This session" text - not operator config.
 
@@ -32,8 +32,10 @@ const SUBAGENTS_SECTION =
     "- Never poll a child with sleep loops.\n" +
     "- A child parked in step-limit resumes where it left off when you send it `chat send ID continue`; its budget resets for the new turn.";
 
-const PACK_SYSTEM_PROMPT =
+// `obeliskVersion` is the target runtime release (OBELISK_VERSION, or "latest").
+const packSystemPrompt = (obeliskVersion) =>
     "# Deployment authoring\n\n" +
+    `The target Obelisk version is \`${obeliskVersion}\` (OBELISK_VERSION): write deployments and components for that release.\n\n` +
     "You are on a persistent virtual machine with a filesystem rooted at /workspace. Pull an app's " +
     "deployment into a working directory and edit deployment.toml and component sources with ordinary shell commands.\n\n" +
     "- Use `obelisk cloud app --app NAME ...` for an app's operations, as in the real CLI: `component list`, `execution ...`, `deployment active|list|show|pull|submit|enqueue|apply`.\n" +
@@ -42,19 +44,20 @@ const PACK_SYSTEM_PROMPT =
     "- Add a component by writing its source plus an `[[activity_js]]`/`[[workflow_js]]` table (name, location, params, return_type); add a bundled JavaScript file by writing it and importing it from the component.\n" +
     "- Run `obelisk generate deployment` for a fully-commented starter deployment.toml, or `obelisk generate new` to list the starter app templates.\n" +
     "- Follow the rendered llms.txt authoring guidance in the system prompt and fetch relevant linked pages before writing components; never guess API signatures.\n" +
-    "- Read-only reference repos for authoring are mounted at /workspace/apps/<name> (see \"Example apps\" above).\n" +
+    "- Read-only reference repos for authoring are mounted at /workspace/github/<name> (see \"GitHub repos\" above).\n" +
     "\n" +
     "# Mounts and network access\n\n" +
-    "Run `mount` to see every mounted app and its network-backed mount point.\n\n" +
-    "- `/workspace/apps/*` are lazy: a directory lists and a file's bytes fetch over the network on first access.\n" +
-    "- Each `/workspace/apps/<name>` tree costs one request per directory listed - avoid `tree`, `find`, or a recursive grep across them, and use targeted `ls`/`cat` or read a known path directly instead. Each step may fetch at most 50 uncached files and 200 directories from them.\n" +
+    "Run `mount` to see every mounted repo and its network-backed mount point.\n\n" +
+    "- `/workspace/github/*` are lazy: a directory lists and a file's bytes fetch over the network on first access.\n" +
+    "- Each `/workspace/github/<name>` tree costs one request per directory listed - avoid `tree`, `find`, or a recursive grep across them, and use targeted `ls`/`cat` or read a known path directly instead. Each step may fetch at most 50 uncached files and 200 directories from them.\n" +
     "- The shell's HTTP access goes through an operator allowlist: `curl` (GET only) works only for explicitly granted hosts; anything else is a policy-denied result, not a bug.\n" +
     "- Discover an app's webhook URL with `obelisk cloud app --app NAME endpoint webhook` and smoke-test its routes with `curl`. Verify executions through the app's API (`obelisk cloud app --app NAME execution list`, `execution logs ID`).\n";
 
 // The fixed part of the prompt tail, in the order the workflow renders it:
 // user input, then subagents, then deployment authoring. The per-session
 // "# This session" text (built by renderSelfSection) follows this.
-const STATIC_SECTIONS = [USER_INPUT_SECTION, SUBAGENTS_SECTION, PACK_SYSTEM_PROMPT].join("\n\n");
+const staticSections = (obeliskVersion) =>
+    [USER_INPUT_SECTION, SUBAGENTS_SECTION, packSystemPrompt(obeliskVersion)].join("\n\n");
 
 // The "# This session" paragraph: the session's own identity (exactly what
 // `chat current` prints), its parent for context gathering, and when to rename
@@ -95,15 +98,16 @@ function parentOf(executionId) {
 }
 
 export default async function discover(executionId, backend, effort, name) {
+    const obeliskVersion = (process.env["OBELISK_VERSION"] ?? "").trim() || "latest";
     return {
         max_steps: parseMaxSteps(process.env["MAX_STEPS"]),
         programs: parseRegistry("PROGRAMS_JSON", parseProgram),
         apps: parseRegistry("APPS_JSON", parseApp),
-        obelisk_version: (process.env["OBELISK_VERSION"] ?? "").trim() || "latest",
-        // STATIC_SECTIONS already ends in one "\n" (from PACK_SYSTEM_PROMPT);
+        obelisk_version: obeliskVersion,
+        // The static sections already end in one "\n" (from packSystemPrompt);
         // one more here yields the same blank-line gap as every other
         // section boundary in this prompt.
-        prompt_tail: `${STATIC_SECTIONS}\n${renderSelfSection(executionId, backend, effort, name)}`,
+        prompt_tail: `${staticSections(obeliskVersion)}\n${renderSelfSection(executionId, backend, effort, name)}`,
     };
 }
 
@@ -140,7 +144,7 @@ function parseProgram(entry, index, envName) {
 }
 
 // An APPS_JSON entry: a lazily-mounted GitHub repo tree, browsed at
-// /workspace/apps/<name> through the single obelisk-agent:mounts/apps.request
+// /workspace/github/<name> through the single obelisk-agent:mounts/apps.request
 // activity (activity/github-contents.js). `owner`/`ref` default to the
 // obeli-sk org's `main` branch so a typical entry is just `{name, repo}`.
 function parseApp(entry, index, envName) {

@@ -102,8 +102,8 @@ export function renderProgramHelp(programs) {
 export function renderAppHelp(apps) {
     if (!apps || apps.length === 0) return "";
     let text =
-        "\n# Example apps\n\n" +
-        "Read-only, mounted at /workspace/apps/<name>; each repo's own README.md has the full story:\n\n";
+        "\n# GitHub repos\n\n" +
+        "Read-only, mounted at /workspace/github/<name>; each repo's own README.md has the full story:\n\n";
     for (const app of apps) {
         const source = `${app.owner}/${app.repo}@${app.ref}`;
         text += app.description
@@ -114,7 +114,7 @@ export function renderAppHelp(apps) {
     return text;
 }
 
-// `promptTail` is everything after "# Example apps" (user input, subagents,
+// `promptTail` is everything after "# GitHub repos" (user input, subagents,
 // deployment authoring, and "# This session") from config-discover.js's
 // discover(), given this execution's identity.
 export function renderSystemPrompt(systemPrompt, programs, apps, mountOutput, promptTail) {
@@ -133,7 +133,7 @@ export function renderMount(apps) {
     let text = MOUNT_HEADER;
     for (const { name, owner, repo, ref, resolvedRef } of apps) {
         const gitRef = resolvedRef ?? ref;
-        text += `  /workspace/apps/${name}          example app, read-only (${owner}/${repo}@${gitRef})\n`;
+        text += `  /workspace/github/${name}          GitHub repo, read-only (${owner}/${repo}@${gitRef})\n`;
     }
     text += MOUNT_FOOTER;
     return text;

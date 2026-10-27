@@ -151,7 +151,7 @@ echo ">>> running the obelisk/mount custom commands"
 # `mount` time: the first `mount` (before anything touches the tree) shows
 # the requested ref (@main); only the second, after the `cat`, shows the
 # commit it pinned to.
-run_shell_turn "shell-e2e-2" "mount && cat /workspace/apps/components/README.md && mount && echo --- && obelisk cloud app execution --help"
+run_shell_turn "shell-e2e-2" "mount && cat /workspace/github/components/README.md && mount && echo --- && obelisk cloud app execution --help"
 if [[ "$SHELL_STDOUT" != *"Network-backed mounts"* ]]; then
     echo "mount command did not print the expected header: $SHELL_STDOUT" >&2
     exit 1
@@ -177,7 +177,7 @@ echo ">>> obelisk/mount E2E PASS"
 echo ">>> checking replay-stable ls formatting and collation"
 run_shell_turn "shell-e2e-ls" "touch b A a B && ls -la"
 LS_ORDER="$(printf '%s\n' "$SHELL_STDOUT" | sed -n 's/^[-d][^ ]* 1 user user [ ]*[0-9][0-9]* Jan  1 00:00 //p' | paste -sd ' ' -)"
-if [[ "$LS_ORDER" != ". .. a A apps b B" ]]; then
+if [[ "$LS_ORDER" != ". .. a A b B github" ]]; then
     echo "ls -la output did not use the replay-stable format/order: $SHELL_STDOUT" >&2
     exit 1
 fi

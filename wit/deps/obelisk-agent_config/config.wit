@@ -11,8 +11,8 @@ interface config {
     description: string,
   }
 
-  // A GitHub repo tree mounted read-only at /workspace/apps/<name>
-  // (obelisk_web/obelisk-web.js -> the mount_apps activity). `description`
+  // A GitHub repo tree mounted read-only at /workspace/github/<name>
+  // (vendor/just-bash/src/obelisk-web.js -> the mount_apps activity). `description`
   // is surfaced in the system prompt so the model knows what the repo is
   // and how to use it.
   record app {
@@ -27,9 +27,9 @@ interface config {
     max-steps: u32,
     programs: list<program>,
     apps: list<app>,
-    // The obelisk repo ref (`vX.Y.Z` or `latest`) that `obelisk generate new` fetches the starter from.
+    // `vX.Y.Z` or `latest`: stated in the prompt tail and the obelisk repo ref `obelisk generate new` fetches the starter from.
     obelisk-version: string,
-    // The whole tail of the system prompt after "# Example apps": user-input
+    // The whole tail of the system prompt after "# GitHub repos": user-input
     // guidance, subagent delegation, deployment authoring, and the
     // per-session "# This session" text.
     prompt-tail: string,

@@ -4,7 +4,7 @@ import discover from "./config-discover.js";
 
 // Isolate each test from whatever the real environment (or a prior test)
 // left behind; config-discover.js reads these lazily on every call.
-const ENV_KEYS = ["MAX_STEPS", "PROGRAMS_JSON", "APPS_JSON"];
+const ENV_KEYS = ["MAX_STEPS", "PROGRAMS_JSON", "APPS_JSON", "OBELISK_VERSION"];
 
 function withEnv(overrides, fn) {
     const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -64,6 +64,12 @@ test("discover's prompt_tail renders the static sections then This session, with
     assert.ok(tail.includes('"parent_id":"E_01ABC"'));
     assert.ok(tail.includes("chat read E_01ABC.n:research_1"));
     assert.ok(tail.includes("chat read E_01ABC"));
+});
+
+test("discover reports OBELISK_VERSION in the prompt tail", async () => {
+    const config = await withEnv({ OBELISK_VERSION: " v0.43.0 " }, () => discover("E_01XYZ", "", "", null));
+    assert.equal(config.obelisk_version, "v0.43.0");
+    assert.ok(config.prompt_tail.includes("The target Obelisk version is `v0.43.0`"), config.prompt_tail);
 });
 
 test("discover's prompt_tail carries no parent section for a top-level session", async () => {

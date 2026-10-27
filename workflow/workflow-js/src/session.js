@@ -67,7 +67,7 @@ import {
     userText,
 } from "./session-logic.js";
 
-// obelisk-agent:mounts/apps.request backs every /workspace/apps/<name> mount
+// obelisk-agent:mounts/apps.request backs every /workspace/github/<name> mount
 // and `obelisk generate new`; a failure surfaces as a plain message.
 function githubContents(method, paramsJson) {
     try {
@@ -306,7 +306,7 @@ function mountPacks(bash, config) {
         // `resolvedRef` onto it, once the mount is first used, is visible to
         // the `mount` command, which shares this
         // same `config.apps` array.
-        obeliskWeb.mount(fs, githubContents, `/workspace/apps/${app.name}`, app);
+        obeliskWeb.mount(fs, githubContents, `/workspace/github/${app.name}`, app);
     }
 }
 

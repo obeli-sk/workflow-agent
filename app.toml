@@ -2,15 +2,13 @@ app_name = "workflow-agent"
 
 [cloud.integrations]
 llm = { type = "llm", env = "LLM_BASE_URL" }
+# /workspace/github/* mounts read through the account's GitHub integration proxy.
+github = { type = "github", env = "GITHUB_API_URL" }
 
 [secrets]
 LLM_API_KEY = { optional = true }
 # The agent's own Obelisk server, accessed e.g. by the UI to get execution state.
 OBELISK_API_TOKEN = { type = "internal" }
-# Optional: raises the GitHub API rate limit for the /workspace/components
-# mount from the shared 60 req/h anonymous IP pool to 5000 req/h. Leave it unset
-# for occasional use.
-GITHUB_MOUNT_TOKEN = { optional = true }
 # Optional: ObeliskNet token enabling `obelisk cloud` in the shell.
 OBELISK_CLOUD_API_TOKEN = { optional = true }
 
@@ -161,8 +159,6 @@ methods = ["GET"]
 [[outbound_http.allowed_host]]
 url_prefix = "${GITHUB_API_URL:-https://api.github.com}/repos/"
 methods = ["GET"]
-secrets = ["GITHUB_MOUNT_TOKEN"]
-replace_in = ["headers"]
 
 # LLM server
 [[outbound_http.allowed_host]]

@@ -22,9 +22,8 @@
 // directories); `list` and `read` then follow links until they reach a real
 // tree or blob.
 //
-// GITHUB_MOUNT_TOKEN optionally authenticates direct GitHub requests.
 // Any HTTP or transport failure becomes the err arm (a throw).
-// GITHUB_API_URL overrides the API origin (the e2e suites point it at a local mock).
+// GITHUB_API_URL overrides the API origin (the cloud's GitHub integration proxy, or a local mock in e2e).
 
 const JSON_ACCEPT = "application/vnd.github+json";
 const RAW_ACCEPT = "application/vnd.github.raw";
@@ -181,8 +180,6 @@ async function requestUrl(url, accept) {
         "user-agent": "workflow-agent",
         "x-github-api-version": "2022-11-28",
     };
-    const token = process.env["GITHUB_MOUNT_TOKEN"];
-    if (token) headers["authorization"] = `Bearer ${token}`;
 
     let resp;
     try {
