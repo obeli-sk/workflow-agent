@@ -418,7 +418,7 @@ test("component list prints each component's exports", () => {
 
 // -- deployment --
 
-test("deployment submit preflights, then attaches only the missing files", () => {
+test("deployment submit uploads only the missing files, then resubmits", () => {
     const i = interp();
     i.vfs.writeFile("/workspace/deployment.toml", '[[activity_js]]\nlocation = "a.js"\n');
     i.vfs.writeFile("/workspace/a.js", "a");
@@ -428,17 +428,16 @@ test("deployment submit preflights, then attaches only the missing files", () =>
             { status: 409, body: { missing_files: [{ field_path: "activity_js[0].location", path: "a.js", digest }] } },
             { status: 201, body: "" },
         ),
+        [`PUT /v1/files/${digest}`]: { status: 204, body: "" },
     });
-    const out = api(i, "deployment submit --deployment-id Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV --description first", cloud);
+    const out = run(i, "cloud app --app demo --verbose deployment submit --deployment-id Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV --description first", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(out.stdout, "Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV\n");
-    assert.equal(out.stderr, "Submitted as Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV\n");
-    const [preflight, retry] = cloud.calls;
+    assert.equal(out.stderr, `Uploading a.js (1 bytes, ${digest})\nSubmitted as Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV\n`);
+    const [preflight, upload, retry] = cloud.calls;
     assert.equal(JSON.parse(preflight.body).description, "first");
-    const boundary = retry.contentType.match(/^multipart\/form-data; boundary=(.+)$/)[1];
-    assert.ok(retry.body.includes(`name="${digest}"; filename="a.js"\r\nContent-Type: application/octet-stream\r\n\r\na\r\n`), retry.body);
-    assert.ok(retry.body.includes('name="allow_unavailable_runtime_config"\r\n\r\nfalse\r\n'));
-    assert.ok(retry.body.endsWith(`--${boundary}--\r\n`));
+    assert.deepEqual([upload.contentType, upload.body], ["application/octet-stream", "a"]);
+    assert.equal(retry.body, preflight.body);
 });
 
 test("deployment submit reuses the active deployment when nothing changed", () => {
