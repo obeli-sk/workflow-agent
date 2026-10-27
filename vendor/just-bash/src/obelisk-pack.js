@@ -1194,40 +1194,36 @@ function canonicalJson(value) {
     return JSON.stringify(value);
 }
 
-// A preflight without blobs, then one retry attaching only the files the server is missing.
+// PORT: deployment.rs's `upload_and_submit_manifest`: a JSON submit, then each missing file
+// uploaded via `PUT /v1/files/{digest}` and a resubmit; repeated if GC reclaimed an upload.
 function uploadAndSubmit(context, prepared, allow, description, id) {
-    const missing = submitAttempt(context.api, prepared, allow, description, id, []);
-    if (missing === null) return id;
-    const files = missing.map((issue) => {
-        const path = `${prepared.dir}/${issue.path}`;
-        if (issue.path === null || issue.path === undefined || !context.interp.vfs.exists(path)) {
-            throw `server is missing ${issue.field_path} (${issue.digest}), which is not in the deployment tree`;
+    const MAX_UPLOAD_ROUNDS = 3;
+    for (let round = 0; ; round++) {
+        const missing = submitAttempt(context.api, prepared, allow, description, id);
+        if (missing === null) return id;
+        if (round === MAX_UPLOAD_ROUNDS) {
+            throw `server is still missing ${missing.length} file blob(s) after upload: ${missing.map((issue) => issue.digest).join(", ")}`;
         }
-        return { digest: issue.digest, path: issue.path, content: context.interp.vfs.readFile(path) };
-    });
-    const still = submitAttempt(context.api, prepared, allow, description, id, files);
-    if (still === null) return id;
-    throw `server is still missing ${still.length} file blob(s) after upload: ${still.map((issue) => issue.digest).join(", ")}`;
+        for (const issue of missing) uploadFile(context, prepared, issue);
+    }
+}
+
+function uploadFile(context, prepared, issue) {
+    const path = `${prepared.dir}/${issue.path}`;
+    if (issue.path === null || issue.path === undefined || !context.interp.vfs.exists(path)) {
+        throw `server is missing ${issue.field_path} (${issue.digest}), which is not in the deployment tree`;
+    }
+    const content = context.interp.vfs.readFile(path);
+    if (context.verbose) context.out.stderr += `Uploading ${issue.path} (${utf8Encode(content).length} bytes, ${issue.digest})\n`;
+    const response = context.api.send("PUT", `/v1/files/${issue.digest}`, "application/octet-stream", content);
+    if (!success(response)) throw `cannot upload ${issue.path}: server returned ${statusLine(response.status)}: ${response.body}`;
 }
 
 // One submit request: null when stored, else the missing-file issues.
-function submitAttempt(api, prepared, allow, description, id, files) {
-    const path = `/v1/deployments/${id}`;
-    let response;
-    if (files.length === 0) {
-        response = api.send("PUT", path, "application/json", JSON.stringify({
-            deployment_toml: prepared.toml, description, allow_unavailable_runtime_config: allow,
-        }));
-    } else {
-        const boundary = `obelisk-${ulid()}`;
-        const part = (name, filename, value) =>
-            `--${boundary}\r\nContent-Disposition: form-data; name="${name}"${filename === null ? "" : `; filename="${filename}"`}\r\n` +
-            `${filename === null ? "" : "Content-Type: application/octet-stream\r\n"}\r\n${value}\r\n`;
-        let body = part("deployment_toml", null, prepared.toml) + part("allow_unavailable_runtime_config", null, String(allow));
-        if (description !== null) body += part("description", null, description);
-        for (const file of files) body += part(file.digest, file.path, file.content);
-        response = api.send("PUT", path, `multipart/form-data; boundary=${boundary}`, `${body}--${boundary}--\r\n`);
-    }
+function submitAttempt(api, prepared, allow, description, id) {
+    const response = api.send("PUT", `/v1/deployments/${id}`, "application/json", JSON.stringify({
+        deployment_toml: prepared.toml, description, allow_unavailable_runtime_config: allow,
+    }));
     if (success(response)) return null;
     if (response.status === 409) {
         const detail = parseBody(response);
