@@ -96,7 +96,7 @@ The agent reads the Obelisk documentation from https://obeli.sk.
 `OBELISK_VERSION` pins it to a release (default `latest`) and is stated in the
 system prompt; `DOCS_URLS_JSON` replaces the URL list.
 
-Example apps from the [app catalog](https://obeli.sk/docs/latest/apps/) and the
+JS example apps from the [app catalog](https://obeli.sk/docs/latest/apps/) and the
 `website` repo (the docs' Markdown sources) are mounted read-only under
 `/workspace/github/<name>`. Override the list with `APPS_JSON`:
 
