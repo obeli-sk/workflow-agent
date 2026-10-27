@@ -19,5 +19,3 @@ export LLM_BASE_URL=http://127.0.0.1:9190
 # Obelisk version, used for constructing llms.txt URL and for fetching assets for `obelisk generate new`.
 export OBELISK_VERSION="v$(obelisk -v | cut -d ' ' -f 2)"
 
-# Optional: raises the GitHub API rate limit for fetching obeli-sk/* mounts.
-# export GITHUB_MOUNT_TOKEN=$(gh auth token)

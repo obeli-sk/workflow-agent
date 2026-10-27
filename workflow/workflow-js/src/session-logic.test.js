@@ -123,7 +123,7 @@ test("renderAppHelp lists each app as a markdown bullet, with or without a descr
         { name: "components", owner: "obeli-sk", repo: "components", ref: "main", description: "reusable Rust activities" },
         { name: "webui", owner: "obeli-sk", repo: "webui", ref: "main", description: "" },
     ]);
-    assert.ok(text.includes("# Example apps"));
+    assert.ok(text.includes("# GitHub repos"));
     assert.ok(text.includes("- `components` (obeli-sk/components@main) - reusable Rust activities\n"));
     assert.ok(text.includes("- `webui` (obeli-sk/webui@main)\n"));
 });
@@ -138,13 +138,13 @@ test("renderSystemPrompt composes the base prompt, shell help, apps, and the pro
         "Base instructions.",
         [{ name: "curl", ffqn: "x", description: "fetch" }],
         [{ name: "components", owner: "obeli-sk", repo: "components", ref: "main", description: "reusable Rust activities" }],
-        "Network-backed mounts\n  /workspace/apps/components  example app, read-only (obeli-sk/components@0123456789abcdef0123456789abcdef01234567)\n",
+        "Network-backed mounts\n  /workspace/github/components  GitHub repo, read-only (obeli-sk/components@0123456789abcdef0123456789abcdef01234567)\n",
         promptTail,
     );
     const baseAt = text.indexOf("Base instructions.");
     const shellAt = text.indexOf("# Shell");
     const helpAt = text.indexOf("registers these external commands");
-    const appsAt = text.indexOf("# Example apps");
+    const appsAt = text.indexOf("# GitHub repos");
     const appEntryAt = text.indexOf("- `components` (obeli-sk/components@main) - reusable Rust activities");
     const mountsAt = text.indexOf("# Mounts at session start");
     const pinnedMountAt = text.indexOf("components@0123456789abcdef0123456789abcdef01234567");
@@ -167,7 +167,7 @@ test("renderSystemPrompt composes the base prompt, shell help, apps, and the pro
 test("renderMount lists reference apps", () => {
     const apps = [{ name: "components", owner: "obeli-sk", repo: "components", ref: "main" }];
     const out = renderMount(apps);
-    assert.ok(out.includes("/workspace/apps/components  "));
+    assert.ok(out.includes("/workspace/github/components  "));
     assert.ok(out.includes("(obeli-sk/components@main)"));
     assert.ok(!out.includes("/workspace/cloud"));
 });

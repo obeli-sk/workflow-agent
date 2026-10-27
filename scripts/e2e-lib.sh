@@ -65,7 +65,6 @@ e2e_init() {
     export LLM_BASE_URL="http://127.0.0.1:9"
     # Closed port, so no suite reaches the real GitHub API; mount suites start their own mock.
     export GITHUB_API_URL="http://127.0.0.1:9"
-    unset GITHUB_MOUNT_TOKEN
     # No live docs fetch at session start; the system prompt keeps its placeholder.
     export DOCS_URLS_JSON="[]"
 
