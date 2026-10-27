@@ -66,6 +66,7 @@ ${PROGRAMS_JSON:-[
 ${APPS_JSON:-[
   {"name":"demo-agent","repo":"demo-agent","description":"JS: the minimal copy-to-start agent (durable loop workflow, LLM client, one tool activity, stub channel, web UI); copy it when asked to build a new agent deployment"},
   {"name":"demo-tutorial","repo":"demo-tutorial","description":"JS: a small serial/parallel durable workflow tutorial; the fastest way to see the obelisk.* host API used correctly"},
+  {"name":"demo-stargazers","repo":"demo-stargazers","description":"JS: a full webhook -> workflow -> external-API pattern (GitHub star notifications with persistent side effects); deployment-js.toml is the pure-JS version (also has a Rust one)"},
   {"name":"obelisk-version-monitor","repo":"obelisk-version-monitor","description":"JS: a complete dashboard app (webhook + workflow + UI); reference it when building another operator-facing dashboard"},
   {"name":"workflow-agent","repo":"workflow-agent","description":"JS: this agent's own source (session loop, just-bash interpreter, activity/pack examples); the reference for extending or debugging yourself"},
   {"name":"website","repo":"website","description":"Zola: the obeli.sk site; docs page https://obeli.sk/docs/VERSION/PATH/ is the Markdown file content/docs/VERSION/PATH.md (or PATH/_index.md), with docs for unreleased versions too"}
