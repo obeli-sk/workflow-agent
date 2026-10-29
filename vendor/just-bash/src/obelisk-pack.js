@@ -1627,8 +1627,8 @@ Commands:
                 [-a APP_CONFIG] [-d DEPLOYMENT] [--fill-non-interactive]
   apply       Apply the staged configuration and the enqueued (or active) deployment
                 [-a APP_CONFIG | --staged] [--fill-non-interactive] [--force]
-  reactivate  Reactivate the app
-  deactivate  Deactivate the app
+  enable      Enable the app
+  disable     Disable the app
   delete      Delete the app
   fill        Stage declared env vars and secrets from same-named exported variables
                 --non-interactive [-a APP_CONFIG | --staged]
