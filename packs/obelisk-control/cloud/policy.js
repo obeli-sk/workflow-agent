@@ -10,10 +10,10 @@ export function appConfig(text, path = "app.toml") {
     try {
         toml = parseToml(text);
     } catch (error) {
-        throw `Invalid app policy ${path}: ${error}`;
+        throw `Invalid app config ${path}: ${error}`;
     }
     const fail = (message) => {
-        throw `Invalid app policy ${path}: ${message}`;
+        throw `Invalid app config ${path}: ${message}`;
     };
     for (const key of Object.keys(toml)) {
         if (!TOP_LEVEL.includes(key)) fail(`unknown field \`${key}\``);

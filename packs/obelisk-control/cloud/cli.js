@@ -114,32 +114,32 @@ async function tokenCommand([action, id, ...extra], options) {
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
 }
 
-const POLICY_COMMANDS = ["new", "stage", "apply", "fill"];
+const POLICY_COMMANDS = ["new", "status", "stage", "apply", "fill"];
 
 async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, options, print) {
     const path = flags["-a"] ?? "app.toml";
-    if (["stage"].includes(action) && appToml === null) throw `Cannot read policy ${path}: No such file or directory`;
-    const config = appToml === null || (!POLICY_COMMANDS.includes(action) && flags["-a"]) ? null
-        // Status only reports a readable ./app.toml.
-        : action === "status" ? readableConfig(appToml, path) : appConfig(appToml, path);
+    const explicit = flags["-a"] !== undefined;
+    const config = appToml === null || (!POLICY_COMMANDS.includes(action) && explicit) ? null
+        // Status only reports a readable discovered ./app.toml.
+        : action === "status" && !explicit ? readableConfig(appToml, path) : appConfig(appToml, path);
     const command = { ...options, kind: "command" };
     const terminal = (flag) => `\`${flag}\` requires a terminal; use \`--fill-non-interactive\` to read same-named environment variables`;
     if (action === "new") {
         allow(flags, ["-a", "--fill", "--fill-non-interactive", "--command-id"]);
-        arity(rest, 1);
-        if ((flags["--fill"] || flags["--fill-non-interactive"]) && !config) throw "`--fill` requires an app config";
-        const name = appName(rest[0] ?? flags["--app"] ?? config?.appName, config);
+        arity(rest, 0);
+        const name = appName(flags["--app"] ?? config?.appName, config);
+        const local = configForApp(name, config, path, explicit, false);
+        if ((flags["--fill"] || flags["--fill-non-interactive"]) && !local) throw "`--fill` requires an app config";
         const body = { app_name: name };
-        if (config) {
+        if (local) {
             if (flags["--fill"] && !flags["--fill-non-interactive"]) throw terminal("--fill");
-            const values = initialValues(userSuppliedPolicy(config), flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
-            Object.assign(body, { policy: config.policy, cloud: config.cloud, env: values.env, secrets: values.secrets });
+            const values = initialValues(userSuppliedPolicy(local), flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
+            Object.assign(body, { policy: local.policy, cloud: local.cloud, env: values.env, secrets: values.secrets });
         }
         return print(await cloudRequest("POST", ["v1", "apps"], { ...options, kind: "secret-command", body }), { kind: "app", message: "App created." });
     }
     const name = appName(flags["--app"] ?? config?.appName, config);
-    // A discovered ./app.toml naming another app is not this app's configuration.
-    const local = config && (action === "stage" || flags["-a"] || !config.appName || config.appName === name) ? config : null;
+    const local = configForApp(name, config, path, explicit, action === "stage");
     const apply = flags["--app"] === undefined ? "obelisk cloud app apply" : `obelisk cloud app --app ${flags["--app"]} apply`;
     if (action === "get") {
         allow(flags, []);
@@ -147,7 +147,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         return print(await appRequest(name, "GET", [], options), { kind: "app" });
     }
     if (action === "status") {
-        allow(flags, []);
+        allow(flags, ["-a"]);
         arity(rest, 0);
         const value = await appRequest(name, "GET", ["status"], options);
         if (local) {
@@ -276,10 +276,26 @@ function appName(name, config) {
     if (name === undefined || name === null) {
         throw config
             ? "Set app_name in ./app.toml, --app or OBELISK_APP_NAME"
-            : "Select an app with --app, OBELISK_APP_NAME or app_name in ./app.toml\n\nCaused by:\n    Cannot read policy app.toml: No such file or directory";
+            : "Select an app with --app, OBELISK_APP_NAME or app_name in ./app.toml\n\nCaused by:\n    Cannot read app config app.toml: No such file or directory";
     }
     validateCloudAppName(name);
     return name;
+}
+
+// PORT: cloud.rs's `config_for_app`: never use another app's config; an explicit
+// or required one is an error, a discovered optional one is ignored.
+export function configForApp(name, config, path, explicit, required) {
+    if (!config) {
+        if (required) throw "No app config: ./app.toml not found; pass --app-config";
+        return null;
+    }
+    if (config.appName && config.appName !== name) {
+        if (explicit || required) {
+            throw `${path} is for app \`${config.appName}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${config.appName}\` or fix \`app_name\``;
+        }
+        return null;
+    }
+    return config;
 }
 
 function readableConfig(appToml, path) {

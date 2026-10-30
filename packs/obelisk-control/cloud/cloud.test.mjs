@@ -236,6 +236,22 @@ test("app status and stage report configuration revisions", async () => {
     assert.match(staged.stderr, /^Configuration unchanged at staged revision 3\.\n/);
 });
 
+test("app commands never use another app's config", async () => {
+    const requests = provisioner({ "GET /v1/apps/demo/status": { app: appRow(), api_ready: true } });
+    const other = POLICY.replace('app_name = "demo"', 'app_name = "other"');
+    for (const command of ["new", "status", "stage", "apply", "fill"]) {
+        const result = await run(["app", "--app", "demo", command, "-a", "app.toml"], "", other);
+        assert.equal(result.exit_code, 1, command);
+        assert.match(result.stderr, /app\.toml is for app `other`, but the selected app is `demo`/, command);
+    }
+    const staged = await run(["app", "--app", "demo", "stage"], "", other);
+    assert.match(staged.stderr, /is for app `other`/);
+    assert.equal(requests.length, 0);
+    const status = await run(["app", "--app", "demo", "status"], "", other);
+    assert.equal(status.exit_code, 0, status.stderr);
+    assert.doesNotMatch(status.stderr, /app\.toml/);
+});
+
 test("tenant sends a request to the app API with the cloud token and returns any status", async () => {
     const requests = provisioner({
         [`PUT ${APP_API}/v1/deployments/Dep_1`]: () => new Response(JSON.stringify({ missing_files: [] }), { status: 409 }),

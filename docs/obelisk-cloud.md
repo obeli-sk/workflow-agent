@@ -75,7 +75,10 @@ to one of three places:
   variables are passed along for the fill.
 
 `--app`, `--json` and `--verbose` are accepted anywhere. The app is `--app`,
-else an exported `OBELISK_APP_NAME`, else `app_name` in `./app.toml`.
+else an exported `OBELISK_APP_NAME`, else `app_name` in `./app.toml`. As in the
+real CLI, an app config naming a different app is an error when passed with `-a`
+or required (`stage`, `deploy`), and a discovered `./app.toml` is ignored by the
+other commands.
 
 ## Differences from the real CLI
 
