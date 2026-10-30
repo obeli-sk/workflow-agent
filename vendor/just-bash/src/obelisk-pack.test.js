@@ -205,6 +205,18 @@ test("cloud app deploy prepares the app, enqueues the deployment, then finishes 
     assert.deepEqual(JSON.parse(json.stdout).outcomes, ["applied"]);
 });
 
+test("cloud app deploy refuses another app's config or a missing one", () => {
+    const i = interp("/workspace/app", { OBELISK_APP_NAME: "demo" });
+    const cloud = fakeCloud();
+    let out = run(i, "cloud app deploy", cloud);
+    assert.equal(out.stderr, "Error: No app config: ./app.toml not found; pass --app-config\n");
+    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "other"\n');
+    out = run(i, "cloud app deploy", cloud);
+    assert.equal(out.exitCode, 1);
+    assert.match(out.stderr, /app\.toml is for app `other`, but the selected app is `demo`/);
+    assert.deepEqual(cloud.deploys, []);
+});
+
 test("cloud app deploy stops before finishing when the enqueue fails", () => {
     const i = interp("/workspace/app");
     i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');

@@ -147,7 +147,7 @@ function appName(interp, flag) {
     if (name !== undefined) return name;
     const policy = readPolicy(interp, APP_POLICY_FILE);
     if (policy === null) {
-        throw "Select an app with --app, OBELISK_APP_NAME or app_name in ./app.toml\n\nCaused by:\n    Cannot read policy app.toml: No such file or directory";
+        throw "Select an app with --app, OBELISK_APP_NAME or app_name in ./app.toml\n\nCaused by:\n    Cannot read app config app.toml: No such file or directory";
     }
     const configured = parsePolicy(policy, APP_POLICY_FILE).app_name;
     if (typeof configured !== "string") throw "Set app_name in ./app.toml, --app or OBELISK_APP_NAME";
@@ -158,7 +158,7 @@ function parsePolicy(text, path) {
     try {
         return parseToml(text);
     } catch (error) {
-        throw withContext(`Invalid policy ${path}`, error);
+        throw withContext(`Invalid app config ${path}`, error);
     }
 }
 
@@ -194,7 +194,7 @@ function cloudRun(interp, args, stdin, cloud, globals) {
     const envApp = exportedVar(interp, "OBELISK_APP_NAME");
     if (args[0] === "app" && globals.app === undefined && envApp !== undefined) forwarded.push("--app", envApp);
     const policy = readPolicy(interp, appConfig ?? APP_POLICY_FILE);
-    if (appConfig !== null && policy === null) throw `Cannot read policy ${appConfig}: No such file or directory`;
+    if (appConfig !== null && policy === null) throw `Cannot read app config ${appConfig}: No such file or directory`;
     const output = cloud.run(forwarded, input, policy, fill ? exportedEnv(interp) : null);
     return { stdout: output.stdout, stderr: output.stderr, exitCode: output.exitCode };
 }
@@ -212,9 +212,18 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     }
     const configPath = opts["--app-config"] ?? APP_POLICY_FILE;
     const policy = readPolicy(interp, configPath);
-    if (policy === null) throw `Cannot read policy ${configPath}: No such file or directory`;
-    const name = globals.app ?? exportedVar(interp, "OBELISK_APP_NAME") ?? parsePolicy(policy, configPath).app_name;
+    if (policy === null) {
+        throw opts["--app-config"] === undefined
+            ? "No app config: ./app.toml not found; pass --app-config"
+            : `Cannot read app config ${configPath}: No such file or directory`;
+    }
+    const configured = parsePolicy(policy, configPath).app_name;
+    const name = globals.app ?? exportedVar(interp, "OBELISK_APP_NAME") ?? configured;
     if (typeof name !== "string") throw "Set app_name in ./app.toml, --app or OBELISK_APP_NAME";
+    // PORT: cloud.rs's `config_for_app`: deploy requires its config to name the selected app.
+    if (typeof configured === "string" && configured !== name) {
+        throw `${configPath} is for app \`${configured}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${configured}\` or fix \`app_name\``;
+    }
     if (opts["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
     const prepared = prepareManifest(interp, opts["--deployment"] ?? "deployment.toml");
     const fillEnv = opts["--fill-non-interactive"] ? exportedEnv(interp) : null;
@@ -1619,9 +1628,9 @@ Commands:
   component   Inspect components
   admin       Perform operator-only destructive maintenance on the selected app
   new         Create a stopped app; apply explicitly to start it
-                [NAME] [-a APP_CONFIG] [--fill-non-interactive] [--command-id ID]
+                [-a APP_CONFIG] [--fill-non-interactive] [--command-id ID]
   get         Inspect the app row
-  status      Inspect management, Machine and target API health
+  status      Inspect management, Machine and target API health [-a APP_CONFIG]
   stage       Stage app policy and cloud settings without restarting the VM [-a APP_CONFIG]
   deploy      Publish the local project, creating or configuring the app and activating its deployment
                 [-a APP_CONFIG] [-d DEPLOYMENT] [--fill-non-interactive]
