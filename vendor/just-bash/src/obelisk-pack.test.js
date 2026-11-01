@@ -723,6 +723,8 @@ test("generate new requires --template and lists the available ones", () => {
     const out = generate(interp("/workspace/app"), "generate new");
     assert.equal(out.exitCode, 1);
     assert.match(out.stderr, /--template is required; templates at obeli-sk\/obelisk@v0\.42\.0: minimal, url-health-dashboard/);
+    const help = generate(interp("/workspace/app"), "generate new -h");
+    assert.match(help.stdout, /--template <TEMPLATE>  \[possible values: minimal, url-health-dashboard\]\n/);
 });
 
 test("generate new falls back to main when OBELISK_VERSION has no such template", () => {

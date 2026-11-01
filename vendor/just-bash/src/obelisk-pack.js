@@ -1437,7 +1437,7 @@ function executeGenerate(interp, args, generate, out) {
         return;
     }
     if (helpRequested(rest)) {
-        out.stdout += action === "new" ? generateNewHelp : action === "deployment" ? generateDeploymentHelp : generateHelp;
+        out.stdout += action === "new" ? generateNewHelp(generate) : action === "deployment" ? generateDeploymentHelp : generateHelp;
         return;
     }
     if (action === "deployment") {
@@ -1446,7 +1446,7 @@ function executeGenerate(interp, args, generate, out) {
         return;
     }
     if (action === "new") {
-        const { opts, positionals } = parseOptions(rest, { "--template": true }, ["APP"]);
+        const { opts, positionals } = parseOptions(rest, { "--template": true }, ["NAME"]);
         out.stdout += generateNew(interp, positionals[0], opts["--template"], generate);
         return;
     }
@@ -1734,17 +1734,30 @@ Usage: obelisk generate <COMMAND>
 
 Commands:
   deployment  Print a default deployment.toml with every option documented
-  new         Create a JS app from a template: --template NAME [APP]
+  new         Create a JS starter app in a new NAME directory, or in the current directory if unnamed
 `;
 
-const generateNewHelp = `Usage: obelisk generate new --template NAME [APP]
+// Templates are discovered on GitHub so the list never drifts from the pinned obelisk.
+function generateNewHelp(generate) {
+    let values;
+    try {
+        values = `[possible values: ${listTemplates(generate).names.join(", ")}]`;
+    } catch (error) {
+        values = `(templates could not be listed: ${message(error)})`;
+    }
+    return `Create a JS starter app in a new NAME directory, or in the current directory if unnamed.
+Deploy it from that directory with \`obelisk cloud app deploy\`.
 
-Create a runnable JS starter app from the obelisk repository's
-examples/templates/NAME at the operator's OBELISK_VERSION (falling back to main).
-Run without --template to list the templates. With APP, the app is created in a
-new APP directory; otherwise in the current directory, named after its slug.
-The template's app.toml gets the app name; deploy with \`obelisk cloud app deploy\`.
+Usage: obelisk generate new --template <TEMPLATE> [NAME]
+
+Arguments:
+  [NAME]  New directory and app name; defaults to the current directory with a derived slug
+
+Options:
+      --template <TEMPLATE>  ${values}
+  -h, --help                 Print help
 `;
+}
 
 const generateDeploymentHelp = `Usage: obelisk generate deployment
 
