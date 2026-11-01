@@ -32,7 +32,7 @@ test("app policy preserves internal environment sources and rejects optional", (
 });
 
 test("app policy accepts url_prefix rules in the server's stored shape", () => {
-    const hosts = `
+    const hosts = `app_name = "demo"
 [[outbound_http.allowed_host]]
 url_prefix = "https://example.com/api/"
 url_regex_suffix = "/v1/x$"
@@ -48,8 +48,8 @@ request_url_regex = "^GET https://a\\\\.example\\\\.net/"
         { url_prefix: "https://example.org", methods: null, request_url_regex: null, secrets: [], replace_in: [] },
         { pattern: "https://*.example.net", methods: null, request_url_regex: "^GET https://a\\.example\\.net/", secrets: [], replace_in: [] },
     ]);
-    assert.throws(() => appConfig(`[[outbound_http.allowed_host]]\nurl_prefix = "https://a.b"\npattern = "https://a.b"\n`), /cannot be combined/);
-    assert.throws(() => appConfig(`[[outbound_http.allowed_host]]\npattern = "https://a.b"\nurl_regex_suffix = "/x"\n`), /requires url_prefix/);
+    assert.throws(() => appConfig(`app_name = "demo"\n[[outbound_http.allowed_host]]\nurl_prefix = "https://a.b"\npattern = "https://a.b"\n`), /cannot be combined/);
+    assert.throws(() => appConfig(`app_name = "demo"\n[[outbound_http.allowed_host]]\npattern = "https://a.b"\nurl_regex_suffix = "/x"\n`), /requires url_prefix/);
 });
 
 const APP_API = "https://api--demo.obelisk.works";
@@ -103,10 +103,7 @@ test("deploy creates a missing app", async () => {
     const create = requests.find((request) => request.method === "POST");
     assert.equal(create.headers.authorization, "Bearer cloud-token");
     assert.match(create.headers["idempotency-key"], /^E_[0-9A-Z]{26}$/);
-    const body = JSON.parse(create.body);
-    assert.equal(body.app_name, "demo");
-    assert.deepEqual(body.policy, appConfig(policy).policy);
-    assert.deepEqual([body.env, body.secrets], [{}, {}]);
+    assert.deepEqual(JSON.parse(create.body), { app_toml: policy, env: {}, secrets: {} });
 });
 
 test("deploy sends cloud integrations and does not require the env they supply", async () => {
@@ -114,10 +111,8 @@ test("deploy sends cloud integrations and does not require the env they supply",
     const requests = provisioner({ "POST /v1/apps": appRow() });
     await prepareDeploy("", policy);
     const body = JSON.parse(requests.find((request) => request.method === "POST").body);
-    assert.deepEqual(body.cloud, { integrations: { llm: { type: "llm", env: "LLM_BASE_URL" } } });
-    assert.deepEqual(body.policy.public_env, ["LLM_BASE_URL"]);
-    assert.deepEqual(body.env, {});
-    assert.throws(() => appConfig('[cloud.integrations]\nllm = { type = "llm", env = "MISSING" }\n'), /environment-backed/);
+    assert.deepEqual(body, { app_toml: policy, env: {}, secrets: {} });
+    assert.throws(() => appConfig('app_name = "demo"\n[cloud.integrations]\nllm = { type = "llm", env = "MISSING" }\n'), /environment-backed/);
 });
 
 test("deploy stages the config of an existing app", async () => {
@@ -128,7 +123,8 @@ test("deploy stages the config of an existing app", async () => {
     const target = await prepareDeploy("demo", POLICY);
     assert.deepEqual(target, { created: false, revision: 2, log: "Deploying demo\n→ obelisk cloud app stage\n" });
     const stage = requests.find((request) => request.method === "PUT");
-    assert.deepEqual(JSON.parse(stage.body), { policy: appConfig(POLICY).policy, cloud: appConfig(POLICY).cloud });
+    assert.equal(stage.headers["content-type"], "application/toml");
+    assert.equal(stage.body, POLICY);
 });
 
 test("finish-deploy applies the staged revision with the enqueued deployment", async () => {
@@ -194,7 +190,7 @@ test("app apply refuses a local policy that the provisioner reports as differing
     const refused = await run(["app", "apply"], "", changed);
     assert.equal(refused.exit_code, 1);
     assert.match(refused.stderr, /app\.toml differs from staged configuration revision 4: \/policy\/public_env\/2\nRun `obelisk cloud app --app demo stage -a app\.toml`/);
-    assert.deepEqual(JSON.parse(requests.find((request) => request.path.endsWith("/compare")).body).policy, appConfig(changed).policy);
+    assert.equal(requests.find((request) => request.path.endsWith("/compare")).body, changed);
     provisioner({
         "GET /v1/apps/demo": appRow(),
         "GET /v1/apps/demo/env": { env: { MODE: "prod" } },

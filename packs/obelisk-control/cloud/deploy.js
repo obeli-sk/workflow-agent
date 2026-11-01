@@ -14,15 +14,13 @@ export default async function prepare_deploy(app, appToml, fillEnv) {
     const log = (line) => lines.push(`${line}\n`);
     const config = appConfig(appToml);
     const name = app || config.appName;
-    if (!name) throw "Set app_name in ./app.toml, --app or OBELISK_APP_NAME";
     validateCloudAppName(name);
     log(`Deploying ${name}`);
     const step = (command) => log(`→ obelisk cloud app ${command}`);
-    const desired = { policy: config.policy, cloud: config.cloud };
     try {
         if ((await lookupApp(name)) !== null) {
             step("stage");
-            const staged = await appRequest(name, "PUT", ["config"], { kind: "command", body: desired });
+            const staged = await appRequest(name, "PUT", ["config"], { kind: "command", toml: appToml });
             return { created: false, revision: stagedRevision(staged), log: lines.join("") };
         }
         if (fillEnv) step("fill");
@@ -30,7 +28,7 @@ export default async function prepare_deploy(app, appToml, fillEnv) {
         step("new");
         const created = await cloudRequest("POST", ["v1", "apps"], {
             kind: "secret-command",
-            body: { ...desired, app_name: name, env: values.env, secrets: values.secrets },
+            body: { app_toml: appToml, env: values.env, secrets: values.secrets },
         });
         return { created: true, revision: stagedRevision(created), log: lines.join("") };
     } catch (error) {

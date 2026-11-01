@@ -1,5 +1,5 @@
 // PORT: obelisk's `AppConfigToml::policy` (src/config/app.rs): app.toml text
-// to the `{app_name, policy, cloud}` the provisioner stores.
+// to the `{app_name, policy, cloud}` the provisioner derives from the verbatim `text` it stores.
 import { parseToml } from "./toml.js";
 
 const TOP_LEVEL = ["app_name", "cloud", "secrets", "public_env", "allowed_exec_activities", "outbound_http"];
@@ -18,7 +18,8 @@ export function appConfig(text, path = "app.toml") {
     for (const key of Object.keys(toml)) {
         if (!TOP_LEVEL.includes(key)) fail(`unknown field \`${key}\``);
     }
-    if (toml.app_name !== undefined && typeof toml.app_name !== "string") fail("app_name must be a string");
+    if (toml.app_name === undefined) fail("missing field `app_name`");
+    if (typeof toml.app_name !== "string") fail("app_name must be a string");
 
     const cloud = {};
     for (const [key, value] of Object.entries(table(toml.cloud, "cloud", fail))) {
@@ -79,7 +80,8 @@ export function appConfig(text, path = "app.toml") {
     const outboundHttp = hosts.map((host, index) => allowedHost(host, `outbound_http.allowed_host[${index}]`, fail));
 
     return {
-        appName: toml.app_name ?? null,
+        appName: toml.app_name,
+        text,
         policy: {
             format: "obelisk-app-config-v1",
             secrets,
