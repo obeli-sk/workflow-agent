@@ -428,6 +428,24 @@ test("component list prints each component's exports", () => {
     assert.match(api(interp(), "component push x", cloud).stderr, /^Error: `component push` needs an OCI registry/);
 });
 
+test("component source lists registered files or prints one", () => {
+    const cloud = fakeCloud({
+        "GET /v1/components/sha256:1/sources": [{ file: "wf.js", digest: "sha256:a" }, { file: ".../src/lib.rs", digest: "sha256:b" }],
+        "GET /v1/components/sha256:2/sources": [],
+        "GET /v1/components/sha256:1/source?file=wf.js": "export default 1;\n",
+    });
+    let out = api(interp(), "component source sha256:1", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stdout, "wf.js\n.../src/lib.rs\n");
+    assert.equal(JSON.parse(api(interp(), "component source sha256:1 --json", cloud).stdout)[1].digest, "sha256:b");
+    assert.equal(api(interp(), "component source sha256:2", cloud).stderr, "No sources registered for component sha256:2\n");
+    assert.equal(api(interp(), "component source sha256:1 wf.js", cloud).stdout, "export default 1;\n");
+    assert.equal(api(interp(), "component source sha256:1 wf.js --json", cloud).stdout, '"export default 1;\\n"\n');
+    out = api(interp(), "component source sha256:1 x.js", cloud);
+    assert.equal(out.exitCode, 1);
+    assert.match(out.stderr, /^Error: cannot fetch source `x.js` of component sha256:1\n\nCaused by:\n {4}server returned 404 Not Found/);
+});
+
 // -- deployment --
 
 test("deployment submit uploads only the missing files, then resubmits", () => {

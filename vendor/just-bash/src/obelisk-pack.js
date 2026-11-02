@@ -986,6 +986,7 @@ function componentCommand(context, [action, ...args]) {
     if (action === "push" || action === "add") {
         throw `\`component ${action}\` needs an OCI registry and is not available in the sandbox; run it with the real obelisk CLI`;
     }
+    if (action === "source") return componentSource(context, args);
     if (action !== "list") throw new UsageError(`unrecognized subcommand '${action}'`);
     const { opts } = parseOptions(args, { "-i": "--imports", "--imports": false, "--json": false, "-e": "--extensions", "--extensions": false }, []);
     const components = getJson(api, `/v1/components${query([
@@ -1002,6 +1003,30 @@ function componentCommand(context, [action, ...args]) {
         if (opts["--imports"]) out.stderr += `Imports:\n${functions(imports)}`;
         out.stderr += "\n";
     }
+}
+
+// PORT: component.rs's `component_source`. The tenant tools always ask for
+// JSON, so a file arrives as a JSON string.
+function componentSource(context, args) {
+    const { api, out } = context;
+    const { opts, positionals } = parseOptions(args, { "--json": false }, ["DIGEST", "FILE"]);
+    const digest = requiredArg(positionals[0], "DIGEST");
+    const json = context.json || opts["--json"] === true;
+    const file = positionals[1];
+    if (file !== undefined) {
+        let content;
+        try {
+            content = parseBody(checked(api.get(`/v1/components/${digest}/source${query([["file", file]])}`)));
+        } catch (error) {
+            throw withContext(`cannot fetch source \`${file}\` of component ${digest}`, error);
+        }
+        out.stdout += json ? `${prettyJson(content)}\n` : content;
+        return;
+    }
+    const sources = getJson(api, `/v1/components/${digest}/sources`);
+    if (json) return printJson(out, sources);
+    if (sources.length === 0) out.stderr += `No sources registered for component ${digest}\n`;
+    for (const source of sources) out.stdout += `${source.file}\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1668,9 +1693,11 @@ const componentHelp = `Inspect components
 Usage: obelisk cloud app component <COMMAND>
 
 Commands:
-  list  List components: [-i|--imports] [-e|--extensions] [--json]
-  push  Not available in the sandbox (needs an OCI registry)
-  add   Not available in the sandbox (needs an OCI registry)
+  list    List components: [-i|--imports] [-e|--extensions] [--json]
+  source  List a component's registered source files, or print one: DIGEST [FILE] [--json]
+            DIGEST as shown by \`component list --verbose\`; suffix keys like \`.../src/lib.rs\` match any path ending with them
+  push    Not available in the sandbox (needs an OCI registry)
+  add     Not available in the sandbox (needs an OCI registry)
 `;
 
 const deploymentHelp = `Manage deployments through the selected app's API
