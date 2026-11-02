@@ -613,18 +613,23 @@ function executionCommand(context, [action, ...args]) {
             return;
         }
         case "events": {
-            const { opts, positionals } = parseOptions(args, { "--from": true, "--limit": true, "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
+            const { backtraces, rest } = backtracesArg(args);
+            const { opts, positionals } = parseOptions(rest, { "--from": true, "--limit": true, "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
             const id = requiredArg(positionals[0], "EXECUTION_ID");
             const from = opts["--from"] === undefined ? undefined : integer(opts, "--from");
             const response = getJson(api, `/v1/executions/${id}/events${query([
                 ["length", integer(opts, "--limit", 20)],
+                ["include_backtrace_id", backtraces === undefined ? undefined : "true"],
                 ...(from === undefined ? [["direction", "older"]] : [["version", from], ["including_cursor", "true"]]),
             ])}`);
-            if (json(opts)) return printJson(out, response);
-            for (const event of response.events) {
-                out.stderr += `${event.version} \`${displayTime(event.created_at)}\` ${executionRequestDisplay(event.event)}\n`;
+            if (backtraces === undefined) {
+                if (json(opts)) return printJson(out, response);
+                for (const event of response.events) {
+                    out.stderr += `${event.version} \`${displayTime(event.created_at)}\` ${executionRequestDisplay(event.event)}\n`;
+                }
+                return;
             }
-            return;
+            return printEventsWithBacktraces(context, id, response, backtraces, json(opts));
         }
         case "responses": {
             const { opts, positionals } = parseOptions(args, { "--from": true, "--limit": true, "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
@@ -736,6 +741,131 @@ function executionCommand(context, [action, ...args]) {
         default:
             throw new UsageError(`unrecognized subcommand '${action}'`);
     }
+}
+
+// clap's `--backtraces[=source|frames]` (`require_equals`, default `source`).
+function backtracesArg(args) {
+    let backtraces;
+    const rest = [];
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === "--") {
+            rest.push(...args.slice(i));
+            break;
+        }
+        if (arg === "--backtraces") backtraces = "source";
+        else if (arg.startsWith("--backtraces=")) {
+            backtraces = arg.slice("--backtraces=".length);
+            if (backtraces !== "source" && backtraces !== "frames") {
+                throw new UsageError(`invalid value '${backtraces}' for '--backtraces[=<BACKTRACES>]'\n  [possible values: source, frames]`);
+            }
+        } else rest.push(arg);
+    }
+    return { backtraces, rest };
+}
+
+const SOURCE_CONTEXT_LINES = 2;
+
+// PORT: execution.rs's `execution_events_cmd` with `--backtraces`. A backtrace
+// spans a version range; it is shown once, at the first listed event of its range.
+function printEventsWithBacktraces(context, id, response, detail, json) {
+    const { api, out } = context;
+    const shown = new Set();
+    const sources = new Map();
+    const events = response.events.map((event) => {
+        const backtraceId = event.backtrace_id;
+        if (backtraceId === undefined || backtraceId === null || shown.has(backtraceId)) return { event };
+        shown.add(backtraceId);
+        const backtrace = getJson(api, `/v1/executions/${id}/backtrace${query([["version", backtraceId]])}`);
+        const snippets = detail === "source" ? sourceSnippets(api, sources, backtrace) : [];
+        return { event, backtrace, snippets };
+    });
+    if (json) {
+        return printJson(out, {
+            events: events.map(({ event, backtrace, snippets }) => {
+                if (backtrace === undefined) return event;
+                for (const { frameIdx, symbolIdx, snippet } of snippets) {
+                    backtrace.wasm_backtrace.frames[frameIdx].symbols[symbolIdx].source = snippet;
+                }
+                return { ...event, backtrace };
+            }),
+            max_version: response.max_version,
+        });
+    }
+    let anyBacktrace = false;
+    for (const { event, backtrace, snippets } of events) {
+        out.stderr += `${event.version} \`${displayTime(event.created_at)}\` ${executionRequestDisplay(event.event)}\n`;
+        if (backtrace === undefined) continue;
+        anyBacktrace = true;
+        out.stderr += backtraceDisplay(backtrace, snippets);
+    }
+    if (!anyBacktrace) {
+        out.stderr += `No persisted backtraces for these events, see \`obelisk cloud app execution persist-backtraces ${id}\`\n`;
+    }
+}
+
+// Snippets of symbols whose source is registered; `sources` caches each
+// file's lines by component digest and file, `null` when not registered.
+function sourceSnippets(api, sources, backtrace) {
+    const digest = backtrace.component_id.component_digest;
+    const snippets = [];
+    backtrace.wasm_backtrace.frames.forEach((frame, frameIdx) => {
+        frame.symbols.forEach((symbol, symbolIdx) => {
+            if (symbol.file === undefined || symbol.file === null || symbol.line === undefined || symbol.line === null) return;
+            const key = `${digest}\n${symbol.file}`;
+            if (!sources.has(key)) sources.set(key, fetchSourceLines(api, digest, symbol.file));
+            const lines = sources.get(key);
+            const snippet = lines && sourceSnippet(lines, symbol.line);
+            if (snippet) snippets.push({ frameIdx, symbolIdx, snippet });
+        });
+    });
+    return snippets;
+}
+
+function fetchSourceLines(api, digest, file) {
+    const response = api.get(`/v1/components/${digest}/source${query([["file", file]])}`);
+    if (response.status === 404) return null;
+    let content;
+    try {
+        content = parseBody(checked(response));
+    } catch (error) {
+        throw withContext(`cannot fetch source \`${file}\``, error);
+    }
+    // Rust's `str::lines`: no trailing empty line, `\r\n` counts as one break.
+    const lines = content.split("\n").map((line) => line.replace(/\r$/, ""));
+    if (lines.at(-1) === "") lines.pop();
+    return lines;
+}
+
+function sourceSnippet(lines, line) {
+    const idx = line - 1;
+    if (idx < 0 || idx >= lines.length) return null;
+    const start = Math.max(0, idx - SOURCE_CONTEXT_LINES);
+    const end = Math.min(lines.length, idx + SOURCE_CONTEXT_LINES + 1);
+    return { start_line: start + 1, lines: lines.slice(start, end) };
+}
+
+function backtraceDisplay(backtrace, snippets) {
+    let text = "";
+    backtrace.wasm_backtrace.frames.forEach((frame, frameIdx) => {
+        if (frame.symbols.length === 0) text += `    at ${frame.func_name} (${frame.module})\n`;
+        frame.symbols.forEach((symbol, symbolIdx) => {
+            const funcName = symbol.func_name ?? frame.func_name;
+            const has = (value) => value !== undefined && value !== null;
+            const location = !has(symbol.file) ? frame.module
+                : !has(symbol.line) ? symbol.file
+                : has(symbol.col) ? `${symbol.file}:${symbol.line}:${symbol.col}` : `${symbol.file}:${symbol.line}`;
+            text += `    at ${funcName} (${location})\n`;
+            const snippet = snippets.find((s) => s.frameIdx === frameIdx && s.symbolIdx === symbolIdx)?.snippet;
+            if (snippet === undefined || !has(symbol.line)) return;
+            const width = String(snippet.start_line + snippet.lines.length).length;
+            snippet.lines.forEach((lineText, offset) => {
+                const number = snippet.start_line + offset;
+                text += `      ${number === symbol.line ? ">" : " "} ${String(number).padStart(width)} | ${lineText}\n`;
+            });
+        });
+    });
+    return text;
 }
 
 function printOutcome(context, json, outcome, text) {
@@ -1671,6 +1801,7 @@ Commands:
                         EXECUTION_ID [--show-derived] [--level trace|debug|info|warn|error|off] [--stream-type stdout|stderr|none]
                         [--show-run-id] [--after TIMESTAMP] [--follow] [--limit 20] [-j]
   events              Show the execution event log: EXECUTION_ID [--from VERSION] [--limit 20] [-j]
+                        [--backtraces[=source|frames]]: persisted backtraces, with source snippets by default
   responses           Show join-set responses: EXECUTION_ID [--from CURSOR] [--limit 20] [-j]
   submit              Submit a new execution: [-e ID] FUNCTION [PARAMS]... [-f] [--follow-logs] [--paused] [-j]
                         FUNCTION is \`ns:pkg/ifc.fn\` or \`.../ifc.fn\`. PARAMS: one JSON array ('["a", 1]'), @file.json,

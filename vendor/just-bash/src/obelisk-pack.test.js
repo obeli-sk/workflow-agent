@@ -401,6 +401,64 @@ test("execution advance pauses captured delays and children before writing them"
     assert.equal(out.stderr, "success, current state: Paused(PendingAt(`2026-01-01 00:00:00 UTC`, last_lock=None))\n");
 });
 
+test("execution events --backtraces shows each backtrace once with source snippets", () => {
+    const created = { created: { ffqn: "a:b/c.d", scheduled_at: "2026-01-01T00:00:00Z" } };
+    const events = {
+        events: [
+            { version: 0, created_at: "2026-01-01T00:00:00Z", event: created },
+            { version: 2, created_at: "2026-01-01T00:00:00Z", event: "paused", backtrace_id: 2 },
+            { version: 3, created_at: "2026-01-01T00:00:00Z", event: "paused", backtrace_id: 2 },
+        ],
+        max_version: 3,
+    };
+    const backtrace = {
+        component_id: { component_digest: "sha256:wf" },
+        wasm_backtrace: {
+            frames: [
+                { module: "wf", func_name: "f0", symbols: [{ func_name: "run", file: "wf.js", line: 2, col: 10 }, { file: "lib.js", line: 1 }] },
+                { module: "wf", func_name: "native", symbols: [] },
+            ],
+        },
+    };
+    const cloud = fakeCloud({
+        "GET /v1/executions/E_1/events?length=20&include_backtrace_id=true&direction=older": events,
+        "GET /v1/executions/E_1/backtrace?version=2": backtrace,
+        "GET /v1/components/sha256:wf/source?file=wf.js": "a\nb\nc\nd\n",
+    });
+    let out = api(interp(), "execution events E_1 --backtraces", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stderr, [
+        "0 `2026-01-01 00:00:00 UTC` Created(a:b/c.d, `2026-01-01 00:00:00 UTC`)",
+        "2 `2026-01-01 00:00:00 UTC` Paused",
+        "    at run (wf.js:2:10)",
+        "        1 | a",
+        "      > 2 | b",
+        "        3 | c",
+        "        4 | d",
+        "    at f0 (lib.js:1)",
+        "    at native (wf)",
+        "3 `2026-01-01 00:00:00 UTC` Paused",
+        "",
+    ].join("\n"));
+    assert.equal(cloud.calls.filter((call) => call.path.includes("/backtrace?")).length, 1);
+    assert.equal(cloud.calls.filter((call) => call.path.includes("/source?")).length, 2, "lib.js 404 is cached");
+
+    out = api(interp(), "execution events E_1 --backtraces=frames", cloud);
+    assert.doesNotMatch(out.stderr, /\| a/);
+    assert.match(out.stderr, /at run \(wf\.js:2:10\)/);
+
+    out = api(interp(), "execution events E_1 --backtraces --json", cloud);
+    const parsed = JSON.parse(out.stdout);
+    assert.equal(parsed.max_version, 3);
+    assert.deepEqual(parsed.events[1].backtrace.wasm_backtrace.frames[0].symbols[0].source, { start_line: 1, lines: ["a", "b", "c", "d"] });
+    assert.equal(parsed.events[2].backtrace, undefined);
+
+    assert.equal(api(interp(), "execution events E_1 --backtraces=bogus", cloud).exitCode, 2);
+
+    const none = fakeCloud({ "GET /v1/executions/E_1/events?length=20&include_backtrace_id=true&direction=older": { events: [events.events[0]], max_version: 0 } });
+    assert.match(api(interp(), "execution events E_1 --backtraces", none).stderr, /No persisted backtraces for these events, see `obelisk cloud app execution persist-backtraces E_1`/);
+});
+
 test("execution upgrade switches to the active deployment's component", () => {
     const cloud = fakeCloud({
         "GET /v1/executions/E_1/status": { ffqn: "a:b/c.d", component_digest: "sha256:old" },
