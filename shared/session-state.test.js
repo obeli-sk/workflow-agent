@@ -100,7 +100,7 @@ test("every state has a rendered label", () => {
         assert.ok(typeof cls === "string", state);
     }
     assert.equal(SESSION_STATE_LABELS[SESSION_STATES.CANCELLED][0], "cancelled");
-    assert.equal(SESSION_STATE_LABELS[SESSION_STATES.FINAL_RESPONSE][0], "final response");
+    assert.equal(SESSION_STATE_LABELS[SESSION_STATES.FINAL_RESPONSE][0], "turn complete");
 });
 
 test("scanMarkers reads raw session-event values", () => {

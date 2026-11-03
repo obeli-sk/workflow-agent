@@ -112,7 +112,7 @@ export const SESSION_STATE_LABELS = {
     [SESSION_STATES.WORKING]: ["working", "working"],
     [SESSION_STATES.AWAITING_USER]: ["your turn", "awaiting"],
     [SESSION_STATES.AWAITING_ANSWER]: ["awaiting answer", "awaiting"],
-    [SESSION_STATES.FINAL_RESPONSE]: ["final response", "finished"],
+    [SESSION_STATES.FINAL_RESPONSE]: ["turn complete", "finished"],
     [SESSION_STATES.STEP_LIMIT]: ["step limit", "awaiting"],
     [SESSION_STATES.FINISHED_OK]: ["ok", "finished"],
     [SESSION_STATES.CANCELLED]: ["cancelled", "err"],

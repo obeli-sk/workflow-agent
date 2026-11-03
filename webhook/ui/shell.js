@@ -1580,7 +1580,7 @@ function renderStep(step, turnNumber, stepNumber) {
     + latencyHtml(step.llm_latency_ms, 'LLM latency', 'LLM ') + '</div>';
   if (step.kind === 'assistant_response') {
     return '<div class="step">' + header
-      + '<div class="turn-final">final response</div>'
+      + '<div class="turn-final">turn complete</div>'
       + displayBlocksHtml(step.blocks) + '</div>';
   }
   const calls = (step.calls || []).map((call, k) =>
