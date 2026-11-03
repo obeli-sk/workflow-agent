@@ -274,9 +274,9 @@ test("state reports the next turn after shell-only exchanges", async () => {
     assert.equal(state.turn_index, 2);
 });
 
-test("a composer command after the reply supersedes final response", async () => {
+test("a composer command after the reply supersedes turn complete", async () => {
     // Mirrors E_01M0YQJ2PKF: answered at turns 0 and 1, then `$ pwd` ran at
-    // turn 2; the stale reply must not keep the final-response label.
+    // turn 2; the stale reply must not keep the turn-complete label.
     const reply = (turn) => ({
         assistant_reply: {
             content_json: JSON.stringify([{ type: "text", text: "answer " + turn }]),
@@ -423,7 +423,7 @@ test("read --final prints just the finished reply, not the transcript", async ()
 
     const asJson = await run(["read", RUN_ID, "--final", "--json"], routes);
     const outcome = JSON.parse(asJson.result.stdout);
-    assert.equal(outcome.state, "final-response");
+    assert.equal(outcome.state, "turn-complete");
     assert.equal(outcome.kind, "reply");
     assert.equal(outcome.text, "run just deploy");
 });

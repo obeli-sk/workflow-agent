@@ -11,7 +11,7 @@ export const SESSION_STATES = {
     WORKING: "working",
     AWAITING_USER: "awaiting-user",
     AWAITING_ANSWER: "awaiting-answer",
-    FINAL_RESPONSE: "final-response",
+    TURN_COMPLETE: "turn-complete",
     STEP_LIMIT: "step-limit",
     FINISHED_OK: "finished-ok",
     CANCELLED: "cancelled",
@@ -24,7 +24,7 @@ export const SESSION_STATES = {
 // Terminal marker turns derived from the session-event stream; both readers
 // (full walk in chat.js, recent-window scan in webhook/lib/responses.js)
 // produce this shape so the projection stays identical.
-//   lastReplyTurn: newest completed assistant text message (a final response).
+//   lastReplyTurn: newest assistant text message that completed a turn.
 //   stepLimitTurn: newest MAX_STEPS agent error.
 //   hasShellEvents: any recorded shell command.
 //
@@ -95,7 +95,7 @@ function blockedState(join, working, markers) {
         }
         if (lastReplyTurn !== null
             && (lastShellTurn === null || lastReplyTurn > lastShellTurn)) {
-            return SESSION_STATES.FINAL_RESPONSE;
+            return SESSION_STATES.TURN_COMPLETE;
         }
         if (lastShellTurn !== null || markers.hasShellEvents) return SESSION_STATES.SHELL_ONLY;
         return SESSION_STATES.AWAITING_USER;
@@ -112,7 +112,7 @@ export const SESSION_STATE_LABELS = {
     [SESSION_STATES.WORKING]: ["working", "working"],
     [SESSION_STATES.AWAITING_USER]: ["your turn", "awaiting"],
     [SESSION_STATES.AWAITING_ANSWER]: ["awaiting answer", "awaiting"],
-    [SESSION_STATES.FINAL_RESPONSE]: ["final response", "finished"],
+    [SESSION_STATES.TURN_COMPLETE]: ["turn complete", "finished"],
     [SESSION_STATES.STEP_LIMIT]: ["step limit", "awaiting"],
     [SESSION_STATES.FINISHED_OK]: ["ok", "finished"],
     [SESSION_STATES.CANCELLED]: ["cancelled", "err"],

@@ -51,16 +51,16 @@ test("ask-user offers are awaiting-answer regardless of naming", () => {
     assert.equal(project({ joinName: "12-ask-user" }), SESSION_STATES.AWAITING_ANSWER);
 });
 
-test("parked sessions distinguish final response, step limit, shell-only, queued", () => {
+test("parked sessions distinguish turn complete, step limit, shell-only, queued", () => {
     const finalMarkers = { ...emptyMarkers(), lastReplyTurn: 3 };
-    assert.equal(project({ markers: finalMarkers }), SESSION_STATES.FINAL_RESPONSE);
+    assert.equal(project({ markers: finalMarkers }), SESSION_STATES.TURN_COMPLETE);
 
     // A step-limit error newer than the last reply wins.
     const limited = { ...emptyMarkers(), lastReplyTurn: 1, stepLimitTurn: 2 };
     assert.equal(project({ markers: limited }), SESSION_STATES.STEP_LIMIT);
     // An older step-limit error stays superseded by the newer final reply.
     const recovered = { ...emptyMarkers(), lastReplyTurn: 5, stepLimitTurn: 2 };
-    assert.equal(project({ markers: recovered }), SESSION_STATES.FINAL_RESPONSE);
+    assert.equal(project({ markers: recovered }), SESSION_STATES.TURN_COMPLETE);
 
     const shelled = { ...emptyMarkers(), hasShellEvents: true };
     assert.equal(project({ markers: shelled }), SESSION_STATES.SHELL_ONLY);
@@ -68,7 +68,7 @@ test("parked sessions distinguish final response, step limit, shell-only, queued
     assert.equal(project(), SESSION_STATES.AWAITING_USER);
 });
 
-test("a later turn's terminal event supersedes an earlier final response", () => {
+test("a later turn's terminal event supersedes an earlier completed reply", () => {
     // The model answered turn 1, then a composer command ran at turn 2:
     // the reply no longer is the latest word.
     const continued = { ...emptyMarkers(), lastReplyTurn: 1, lastShellTurn: 2, hasShellEvents: true };
@@ -76,7 +76,7 @@ test("a later turn's terminal event supersedes an earlier final response", () =>
 
     // And the other order: a command first, a fresh answer after.
     const answered = { ...emptyMarkers(), lastReplyTurn: 3, lastShellTurn: 2, hasShellEvents: true };
-    assert.equal(project({ markers: answered }), SESSION_STATES.FINAL_RESPONSE);
+    assert.equal(project({ markers: answered }), SESSION_STATES.TURN_COMPLETE);
 
     // A step limit newer than both still wins.
     const limited = { ...emptyMarkers(), lastReplyTurn: 1, lastShellTurn: 2, stepLimitTurn: 3 };
@@ -100,7 +100,7 @@ test("every state has a rendered label", () => {
         assert.ok(typeof cls === "string", state);
     }
     assert.equal(SESSION_STATE_LABELS[SESSION_STATES.CANCELLED][0], "cancelled");
-    assert.equal(SESSION_STATE_LABELS[SESSION_STATES.FINAL_RESPONSE][0], "final response");
+    assert.equal(SESSION_STATE_LABELS[SESSION_STATES.TURN_COMPLETE][0], "turn complete");
 });
 
 test("scanMarkers reads raw session-event values", () => {
