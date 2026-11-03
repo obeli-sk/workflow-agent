@@ -57,16 +57,19 @@ export function renderSummary(summary, value) {
             break;
         }
         case "status": {
-            out += app(value?.app);
             const status = text(value?.app, "status", "");
             const machine = text(value, "machine_state", "");
             const up = machine === "started";
-            if (["started", "stopped", "suspended"].includes(machine) && ((status === "running" && !up) || (status === "stopped" && up))) {
+            // An idle running app is suspended by design and resumes on the next request.
+            const idle = status === "running" && ["suspended", "suspending"].includes(machine);
+            out += app(value?.app, idle ? "suspended" : undefined);
+            if (!idle && ["started", "stopped", "suspended"].includes(machine) && ((status === "running" && !up) || (status === "stopped" && up))) {
                 line(`VM is ${machine} although the app is ${status}. Run \`obelisk cloud app apply\` to reconcile it.`);
             }
             out += configRevisions(value);
             if (Number.isInteger(value?.memory_mb)) line(`Memory: ${value.memory_mb} MB`);
-            line(`API: ${value?.api_ready === true ? "ready" : "unavailable"}`);
+            // Not checked (null): probing would wake the suspended Machine.
+            line(`API: ${value?.api_ready === true ? "ready" : idle && value?.api_ready === null ? "resumes on request" : "unavailable"}`);
             break;
         }
         case "token":
@@ -148,8 +151,8 @@ function configRevisions(value) {
     return out;
 }
 
-function app(value) {
-    let out = `${text(value, "app_name", "App")}: ${text(value, "status", "unknown")}\n`;
+function app(value, note) {
+    let out = `${text(value, "app_name", "App")}: ${text(value, "status", "unknown")}${note ? ` (${note})` : ""}\n`;
     const name = text(value, "app_name", "");
     const desired = value?.desired_state;
     if (typeof desired === "string" && value?.status !== desired) {
