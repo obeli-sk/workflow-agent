@@ -166,7 +166,7 @@ test("turn header summarizes step count, tool-call count and total latency", asy
     // Turn 0: 10 tool steps + a terminal error (the error is not a step).
     assert.match(turn0, /Turn 1 · 10 steps · 10 tool calls/);
     assert.match(turn0, /total 23\.6s/);
-    // Turn 1: two tool steps + a final-response step; the error/response are the
+    // Turn 1: two tool steps + a turn-complete step; the error/response are the
     // terminal, so total spans the "go" prompt through the response.
     assert.match(turn1, /Turn 2 · 3 steps · 2 tool calls/);
     assert.match(turn1, /total 10\.0s/);

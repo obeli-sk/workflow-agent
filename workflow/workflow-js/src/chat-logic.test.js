@@ -131,7 +131,7 @@ test("parseWatchArgs reads flags and id", () => {
 });
 
 test("WATCH_WAKE_STATES covers progress stops and terminals", () => {
-    for (const state of ["final-response", "step-limit", "awaiting-answer", "shell-only", "finished-ok", "cancelled", "failed"]) {
+    for (const state of ["turn-complete", "step-limit", "awaiting-answer", "shell-only", "finished-ok", "cancelled", "failed"]) {
         assert.ok(WATCH_WAKE_STATES.includes(state), `${state} should wake`);
     }
     for (const state of ["thinking", "working", "awaiting-user", "paused", "unknown"]) {

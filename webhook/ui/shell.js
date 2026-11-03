@@ -1574,7 +1574,7 @@ function turnGroupHeader(number, stepCount, toolCallCount, totalLatencyMs) {
 
 // One step: the LLM latency lives in the step header (so it stays visible even
 // for a silent step that emitted no narration), the narration renders beneath
-// it, then the tool calls or the final-response marker.
+// it, then the tool calls or the turn-complete marker.
 function renderStep(step, turnNumber, stepNumber) {
   const header = '<div class="step-header"><span>Step ' + stepNumber + '</span>'
     + latencyHtml(step.llm_latency_ms, 'LLM latency', 'LLM ') + '</div>';
