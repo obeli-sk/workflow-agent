@@ -1631,6 +1631,7 @@ Commands:
                 [-a APP_CONFIG] [--fill-non-interactive] [--command-id ID]
   get         Inspect the app row
   status      Inspect management, Machine and target API health [-a APP_CONFIG]
+  events      List recent lifecycle and Machine events, newest first [-n LIMIT]
   stage       Stage app policy and cloud settings without restarting the VM [-a APP_CONFIG]
   deploy      Publish the local project, creating or configuring the app and activating its deployment
                 [-a APP_CONFIG] [-d DEPLOYMENT] [--fill-non-interactive]

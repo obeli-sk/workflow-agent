@@ -249,6 +249,39 @@ test("app status shows an idle-suspended app as resuming on request", async () =
     assert.match(stopped, /\nAPI: unavailable\n/);
 });
 
+test("app status shows health and a failing wake-up", async () => {
+    provisioner({ "GET /v1/apps/demo/status": {
+        app: appRow(), machine_state: "started", api_ready: false,
+        health: { status: "critical", critical_since: 1762180000000 },
+        wake_failure: { wake_at: 1762180000000, attempts: 3, retry_after: 1762180060000, error: "host unavailable" },
+    } });
+    const result = await run(["app", "status"], "", POLICY);
+    assert.equal(result.exit_code, 0, result.stderr);
+    assert.match(result.stderr, /\nHealth: critical since 2025-11-03 14:26:40 UTC\n/);
+    assert.match(result.stderr, /\nWake-up failing: 3 attempts since 2025-11-03 14:26:40 UTC, next retry at 2025-11-03 14:27:40 UTC\nWake-up error: host unavailable\n/);
+    provisioner({ "GET /v1/apps/demo/status": { app: appRow(), machine_state: "suspended", api_ready: null, health: null, wake_failure: null } });
+    const idle = await run(["app", "status"], "", POLICY);
+    assert.doesNotMatch(idle.stderr, /Health|Wake-up/);
+});
+
+test("app events lists recent events newest first", async () => {
+    const requests = provisioner({ "GET /v1/apps/demo/events": { events: [
+        { event_id: 2, created_at: 1762180060000, level: "info", code: "machine.health.recovered", message: "Health check recovered after 60 s", details: null },
+        { event_id: 1, created_at: 1762180000000, level: "warn", code: "machine.health.critical", message: "Health check is critical", details: {} },
+    ] } });
+    const result = await run(["app", "events", "--limit", "7"], "", POLICY);
+    assert.equal(result.exit_code, 0, result.stderr);
+    assert.equal(result.stderr,
+        "2025-11-03 14:27:40 UTC  info   Health check recovered after 60 s  (machine.health.recovered)\n"
+        + "2025-11-03 14:26:40 UTC  warn   Health check is critical  (machine.health.critical)\n");
+    assert.equal(requests[0].path, "/v1/apps/demo/events?limit=7");
+    await run(["app", "events"], "", POLICY);
+    assert.equal(requests[1].path, "/v1/apps/demo/events?limit=5");
+    assert.equal((await run(["app", "events", "-n", "51"], "", POLICY)).exit_code, 2);
+    provisioner({ "GET /v1/apps/demo/events": { events: [] } });
+    assert.equal((await run(["app", "events"], "", POLICY)).stderr, "No events.\n");
+});
+
 test("app commands never use another app's config", async () => {
     const requests = provisioner({ "GET /v1/apps/demo/status": { app: appRow(), api_ready: true } });
     const other = POLICY.replace('app_name = "demo"', 'app_name = "other"');

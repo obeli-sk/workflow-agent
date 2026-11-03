@@ -69,7 +69,16 @@ export function renderSummary(summary, value) {
             out += configRevisions(value);
             if (Number.isInteger(value?.memory_mb)) line(`Memory: ${value.memory_mb} MB`);
             // Not checked (null): probing would wake the suspended Machine.
+            out += health(value);
             line(`API: ${value?.api_ready === true ? "ready" : idle && value?.api_ready === null ? "resumes on request" : "unavailable"}`);
+            break;
+        }
+        case "events": {
+            const events = Array.isArray(value?.events) ? value.events : [];
+            if (events.length === 0) line("No events.");
+            for (const event of events) {
+                line(`${time(event?.created_at)}  ${text(event, "level", "").padEnd(5)}  ${text(event, "message", "")}  (${text(event, "code", "")})`);
+            }
             break;
         }
         case "token":
@@ -147,6 +156,26 @@ function configRevisions(value) {
         out += changes.length === 0
             ? `${path}: matches the staged configuration\n`
             : `${path}: differs from the staged configuration: ${changes.join(", ")}. Run \`obelisk cloud app --app ${text(app, "app_name", "")} stage\` to stage it.\n`;
+    }
+    return out;
+}
+
+// Unix milliseconds as UTC time.
+function time(ms) {
+    return Number.isInteger(ms) ? new Date(ms).toISOString().replace(/\.\d+Z$/, " UTC").replace("T", " ") : "unknown time";
+}
+
+// PORT: output.rs's `health`: health check of a started Machine and a failing scheduled wake-up.
+function health(value) {
+    let out = "";
+    const status = value?.health?.status;
+    if (typeof status === "string") {
+        out += value.health.critical_since == null ? `Health: ${status}\n` : `Health: ${status} since ${time(value.health.critical_since)}\n`;
+    }
+    const wake = value?.wake_failure;
+    if (isObject(wake)) {
+        out += `Wake-up failing: ${JSON.stringify(wake.attempts ?? null)} attempts since ${time(wake.wake_at)}, next retry at ${time(wake.retry_after)}\n`;
+        if (typeof wake.error === "string") out += `Wake-up error: ${wake.error}\n`;
     }
     return out;
 }

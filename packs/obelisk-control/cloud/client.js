@@ -18,7 +18,7 @@ export function cloudToken() {
 
 // `kind`: "read", "command" (sends an Idempotency-Key), "secret" (redacts error bodies) or "secret-command" (both).
 // `toml` sends a verbatim app.toml instead of a JSON `body`.
-export async function cloudRequest(method, segments, { body, toml, kind = "read", commandId, verbose = false, log } = {}) {
+export async function cloudRequest(method, segments, { body, toml, kind = "read", commandId, verbose = false, log, query } = {}) {
     const headers = { accept: "application/json", authorization: `Bearer ${cloudToken()}` };
     let id = null;
     if (kind === "command" || kind === "secret-command") {
@@ -28,7 +28,8 @@ export async function cloudRequest(method, segments, { body, toml, kind = "read"
     }
     if (body !== undefined) headers["content-type"] = "application/json";
     if (toml !== undefined) headers["content-type"] = "application/toml";
-    const url = `${cloudBase()}/${segments.map(encodeURIComponent).join("/")}`;
+    const search = query ? `?${new URLSearchParams(query)}` : "";
+    const url = `${cloudBase()}/${segments.map(encodeURIComponent).join("/")}${search}`;
     let response;
     try {
         response = await fetch(url, { method, headers, body: toml ?? (body === undefined ? undefined : JSON.stringify(body)) });

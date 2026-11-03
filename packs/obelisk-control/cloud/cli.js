@@ -34,7 +34,7 @@ export default async function run(args, stdin, appToml, fillEnv) {
 // A command-line error, reported like clap's.
 export class UsageError extends Error {}
 
-const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "--from-env"];
+const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "--from-env", "-n", "--limit"];
 const BOOLEAN_FLAGS = [
     "--json", "--verbose", "--force", "--stdin", "--staged", "--fill", "--fill-non-interactive", "--non-interactive",
 ];
@@ -51,7 +51,7 @@ export function parseArgs(args) {
         if (VALUE_FLAGS.includes(name)) {
             const value = eq !== -1 && name !== arg ? arg.slice(eq + 1) : args[++i];
             if (value === undefined) throw new UsageError(`a value is required for '${name} <VALUE>' but none was supplied`);
-            flags[name === "--app-config" ? "-a" : name] = value;
+            flags[{ "--app-config": "-a", "--limit": "-n" }[name] ?? name] = value;
         } else if (BOOLEAN_FLAGS.includes(arg)) {
             flags[arg] = true;
         } else if (["--api-url", "--api-token", "--apps-domain"].includes(name)) {
@@ -158,6 +158,15 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
             value.local_config = { path, comparison, error };
         }
         return print(value, { kind: "status" });
+    }
+    if (action === "events") {
+        allow(flags, ["-n"]);
+        arity(rest, 0);
+        const limit = flags["-n"] ?? "5";
+        if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 50) {
+            throw new UsageError(`invalid value '${limit}' for '--limit <LIMIT>': ${limit} is not in 1..=50`);
+        }
+        return print(await appRequest(name, "GET", ["events"], { ...options, query: { limit } }), { kind: "events" });
     }
     if (action === "stage") {
         allow(flags, ["-a", "--command-id"]);
