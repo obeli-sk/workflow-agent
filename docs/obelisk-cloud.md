@@ -7,8 +7,10 @@ and logs of a hosted app.
 
 ## Configuration
 
-- `OBELISK_CLOUD_API_URL` (public env) points at the provisioner. Its default,
-  `http://127.0.0.1:9090`, does nothing unless something listens there.
+- `OBELISK_CLOUD_API_URL` (public env) points at the provisioner API. Its default,
+  `http://127.0.0.1:9090/api`, does nothing unless something listens there.
+  ObeliskNet serves it under `/api` on the cloud host, e.g.
+  `https://cloud.obeli.sk/api`.
 - `OBELISK_CLOUD_API_TOKEN` (optional secret) is the account token. When it is
   unset, `obelisk cloud` is left out of the system prompt.
 - `OBELISK_CLOUD_APPS_DOMAIN` (optional public env) is the hosted apps' domain,

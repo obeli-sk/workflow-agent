@@ -56,11 +56,17 @@ const APP_API = "https://api--demo.obelisk.works";
 
 // A fake provisioner: `routes` maps "METHOD /path" to a response body, or a function of the request.
 function provisioner(routes) {
-    process.env.OBELISK_CLOUD_API_URL = "https://cloud.test/";
+    // The provisioner API lives under `/api` behind app-proxy.
+    process.env.OBELISK_CLOUD_API_URL = "https://cloud.test/api/";
     process.env.OBELISK_CLOUD_API_TOKEN = "cloud-token";
     const requests = [];
     globalThis.fetch = async (url, init = {}) => {
-        const { origin, pathname, search } = new URL(url);
+        const { origin, search } = new URL(url);
+        let { pathname } = new URL(url);
+        if (origin === "https://cloud.test") {
+            assert.ok(pathname.startsWith("/api/"), pathname);
+            pathname = pathname.slice("/api".length);
+        }
         const request = { url, origin, path: pathname + search, method: init.method ?? "GET", headers: init.headers ?? {}, body: init.body };
         requests.push(request);
         const key = `${request.method} ${origin === "https://cloud.test" ? "" : origin}${pathname}`;

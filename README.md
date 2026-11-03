@@ -69,7 +69,7 @@ provisioner with the same API as ObeliskNet. Without a token, `obelisk cloud`
 is left out of the system prompt.
 
 ```sh
-export OBELISK_CLOUD_API_URL=https://...   # the provisioner API
+export OBELISK_CLOUD_API_URL=https://cloud.obeli.sk/api   # the provisioner API
 export OBELISK_CLOUD_API_TOKEN=...
 ```
 
