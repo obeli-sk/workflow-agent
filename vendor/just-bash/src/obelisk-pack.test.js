@@ -175,14 +175,13 @@ test("provisioner commands forward args, policy, OBELISK_APP_NAME and --from-env
     assert.equal(out.stderr, "Error: environment variable MISSING is not set\n");
 });
 
-test("cloud app deploy prepares the app, enqueues the deployment, then finishes with its id", () => {
+test("cloud app deploy uploads without switching, then finishes with its id", () => {
     const i = interp("/workspace/app");
     i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
     i.vfs.writeFile("/workspace/app/deployment.toml", '[[activity_js]]\nlocation = "a.js"\n');
     i.vfs.writeFile("/workspace/app/a.js", "a");
     const cloud = fakeCloud({
         "PUT /v1/deployments/*": { status: 201, body: "" },
-        "PUT /v1/deployments/*/switch": { ok: "restart_required" },
     });
     const out = run(i, "cloud app deploy", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
@@ -199,7 +198,8 @@ test("cloud app deploy prepares the app, enqueues the deployment, then finishes 
         allow_unavailable_runtime_config: true,
     });
     assert.equal(out.stdout, "https://demo.test/hook\n");
-    assert.equal(out.stderr, `→ prepare\n→ obelisk cloud app deployment enqueue\nSubmitted as ${id}\nDeployment staged for cloud app apply.\n→ finish\nDeployed demo\n`);
+    assert.equal(out.stderr, `→ prepare\n→ obelisk cloud app deployment submit\nSubmitted as ${id}\n→ finish\nDeployed demo\n`);
+    assert.ok(!cloud.calls.some((call) => call.path.endsWith("/switch")));
 
     const json = run(i, "cloud app deploy --json", cloud);
     assert.deepEqual(JSON.parse(json.stdout).outcomes, ["applied"]);
@@ -217,7 +217,7 @@ test("cloud app deploy refuses another app's config or a missing one", () => {
     assert.deepEqual(cloud.deploys, []);
 });
 
-test("cloud app deploy stops before finishing when the enqueue fails", () => {
+test("cloud app deploy stops before finishing when the upload fails", () => {
     const i = interp("/workspace/app");
     i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
     i.vfs.writeFile("/workspace/app/deployment.toml", "");
@@ -460,9 +460,10 @@ test("deployment submit reuses the active deployment when nothing changed", () =
         "GET /v1/info": serverInfo({ deployment_id: "Dep_1" }),
         "GET /v1/deployments/Dep_1": { deployment_toml: `[[activity_js]]\ncontent_digest = "${sha256("a")}"\nlocation = "a.js"\n`, description: null },
     });
-    const out = api(i, "deployment apply", cloud);
-    assert.equal(out.exitCode, 1);
-    assert.equal(out.stderr, "Deployment content unchanged; using Dep_1\nError: server returned 404 Not Found: no route for PUT /v1/deployments/Dep_1/switch\n");
+    const out = api(i, "deployment submit", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stdout, "Dep_1\n");
+    assert.equal(out.stderr, "Deployment content unchanged; using Dep_1\n");
 });
 
 test("deployment submit reports server rejections like the real CLI", () => {
@@ -475,45 +476,33 @@ test("deployment submit reports server rejections like the real CLI", () => {
     assert.match(api(i, "deployment submit", cloud).stderr, /^Error: deployment rejected by the server: configuration references secret\(s\) `TOKEN` not registered/);
 });
 
-test("deployment submit rejects generated metadata and an ID with --description", () => {
+test("deployment submit rejects generated metadata and missing files", () => {
     const i = interp();
     i.vfs.writeFile("/workspace/deployment.toml", '[[activity_js]]\nlocation = "a.js"\ncontent_digest = "sha256:1"\n');
     assert.equal(api(i, "deployment submit", fakeCloud()).stderr,
         "Error: activity_js.content_digest is generated submission metadata; remove it from deployment.toml\n");
-    assert.equal(api(i, "deployment enqueue Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV --description x", fakeCloud()).stderr,
-        "Error: --description cannot be used with an existing deployment ID\n");
     assert.match(api(i, "deployment submit missing.toml", fakeCloud()).stderr, /^Error: cannot read deployment manifest "missing.toml"/);
 });
 
-test("deployment enqueue and apply switch the deployment and report the outcome", () => {
+test("cloud deployment enqueue and apply reject activation before any API calls", () => {
     const id = "Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV";
-    let cloud = fakeCloud({ [`PUT /v1/deployments/${id}/switch`]: { ok: "switched" } });
-    let out = api(interp(), `deployment enqueue ${id} --allow-unavailable-runtime-config`, cloud);
-    assert.equal(out.exitCode, 0, out.stderr);
-    assert.equal(out.stderr, "Deployment already active; it will remain active after restart.\n");
-    assert.deepEqual(JSON.parse(cloud.calls[0].body), { allow_unavailable_runtime_config: true, apply: false });
-
-    out = api(interp(), `deployment apply ${id}`, cloud);
-    assert.equal(out.stderr, "Applied successfully.\n");
-    assert.deepEqual(JSON.parse(cloud.calls[1].body), { allow_unavailable_runtime_config: false, apply: true });
-
-    cloud = fakeCloud({ [`PUT /v1/deployments/${id}/switch`]: { ok: "restart_required" } });
-    out = api(interp(), `deployment apply ${id}`, cloud);
-    assert.equal(out.stderr, "Error: Could not apply immediately; deployment enqueued. Restart the server to apply.\n");
-    assert.equal(api(interp(), `deployment apply ${id} --allow-unavailable-runtime-config`, cloud).exitCode, 2);
+    for (const action of ["enqueue", "apply"]) {
+        for (const source of [id, "--empty", "missing.toml"]) {
+            const cloud = fakeCloud();
+            const out = run(interp(), `cloud app deployment ${action} ${source}`, cloud);
+            assert.equal(out.exitCode, 1);
+            assert.equal(out.stderr, "Error: Cloud deployment enqueue/apply is unsupported; use `obelisk cloud app deploy` to upload and activate a deployment, or `obelisk cloud app apply` to apply configuration with the active deployment\n");
+            assert.deepEqual(cloud.calls, []);
+            assert.deepEqual(cloud.deploys, []);
+            assert.deepEqual(cloud.runs, []);
+        }
+    }
 });
 
-test("deployment commands reject malformed info and switch responses", () => {
-    let out = api(interp(), "deployment active", fakeCloud({ "GET /v1/info": { deployment_id: "Dep_1" } }));
+test("deployment active rejects malformed info", () => {
+    const out = api(interp(), "deployment active", fakeCloud({ "GET /v1/info": { deployment_id: "Dep_1" } }));
     assert.equal(out.exitCode, 1);
     assert.match(out.stderr, /Invalid ServerInfoResponse/);
-    const id = "Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV";
-    for (const body of [{}, { ok: "unknown" }, { err: "failed" }]) {
-        out = api(interp(), `deployment apply ${id}`, fakeCloud({ [`PUT /v1/deployments/${id}/switch`]: body }));
-        assert.equal(out.exitCode, 1);
-        assert.match(out.stderr, /Invalid DeploymentSwitchResponse/);
-        assert.ok(!out.stderr.includes("Applied successfully"));
-    }
 });
 
 test("deployment list prints a table", () => {

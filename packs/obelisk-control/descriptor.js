@@ -125,7 +125,7 @@ async function loadDocsIndexes() {
 
 const APP_COMMANDS = [
     '- `obelisk cloud apps list`; `obelisk cloud app --app NAME status|get|endpoint`. `--app` may be left out when OBELISK_APP_NAME is exported or inside a directory whose app.toml names the app.',
-    '- The app\'s own API, as in the real CLI: `component list`, `execution list|status|result|logs|events|responses|submit|cancel|pause|unpause|replay|advance|upgrade`, `deployment active|list|show|pull|submit|enqueue|apply`, `admin ...`. Human output goes to stderr and values or `--json` to stdout.',
+    '- The app\'s own API, as in the real CLI: `component list`, `execution list|status|result|logs|events|responses|submit|cancel|pause|unpause|replay|advance|upgrade`, `deployment active|list|show|pull|submit`, `admin ...`. Human output goes to stderr and values or `--json` to stdout.',
     '- `obelisk cloud app --app NAME execution list` hides webhook-spawned child executions unless `--show-derived` is passed.',
     '- Pull an existing deployment with `obelisk cloud app --app NAME deployment pull ID -o DIRECTORY` (`deployment active` prints the active ID). Edit the pulled files; the pull has no app.toml, so read the app policy with `obelisk cloud app --app NAME get`. A deployment cannot grant itself additional permissions.',
 ];
@@ -136,7 +136,7 @@ const CLOUD_SECTION = [
     'Use `obelisk cloud` to manage available apps (run `obelisk cloud --help`). Some apps restrict provisioning, configuration or lifecycle commands; follow the reported permissions.',
     '',
     ...APP_COMMANDS,
-    '- Create and deploy from the working directory: write `app.toml` (with `app_name`) and `deployment.toml`, then `obelisk cloud app deploy -a app.toml -d deployment.toml`. It creates or restages the app, applies and starts it, uploads the deployment and prints the webhook URL.',
+    '- Create and deploy from the working directory: write `app.toml` (with `app_name`) and `deployment.toml`, then `obelisk cloud app deploy -a app.toml -d deployment.toml`. It creates or restages the app, uploads the deployment, then calls provisioner Apply with its ID and prints the webhook URL. `app apply` uses the currently active deployment; it does not upload deployment.toml. Cloud `deployment enqueue` and `deployment apply` are unsupported.',
     '- Config: `obelisk cloud app --app NAME env list|set NAME VALUE|unset NAME` and `secrets list|set NAME --stdin|set NAME --from-env VAR|unset NAME`; then `obelisk cloud app --app NAME apply`.',
     '- Destructive commands (`delete`, `disable`) need the user\'s confirmation first.',
 ].join(nl);

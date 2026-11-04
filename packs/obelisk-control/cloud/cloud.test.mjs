@@ -127,7 +127,7 @@ test("deploy stages the config of an existing app", async () => {
     assert.equal(stage.body, POLICY);
 });
 
-test("finish-deploy applies the staged revision with the enqueued deployment", async () => {
+test("finish-deploy applies the staged revision with the uploaded deployment", async () => {
     const requests = provisioner({
         "GET /v1/apps/demo/env": { env: { MODE: "prod" } },
         "GET /v1/apps/demo/secrets": { secrets: [{ name: "API_KEY" }] },

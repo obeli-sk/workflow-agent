@@ -44,9 +44,9 @@ The `obelisk-agent:tools/cloud` interface has these activities
   1. `prepare-deploy` stages the config of an existing app, or creates the
      app. A new app whose policy requires env or secrets needs
      `--fill-non-interactive`, which reads same-named exported shell variables.
-  2. The shell submits and enqueues the deployment on the app's API.
+  2. The shell uploads the deployment to the app's API, without enqueueing or switching it.
   3. `finish-deploy` fills an existing app's values, checks the required env
-     and secrets, applies the config with the enqueued deployment's ID and
+     and secrets, applies the config through the provisioner with the uploaded deployment's ID and
      requires the app to be running.
 - `tenant` (`tenant.js`) sends one POST, PUT or DELETE request to
   `https://api--<app>.<domain>` with the cloud token and returns the status
@@ -54,8 +54,8 @@ The `obelisk-agent:tools/cloud` interface has these activities
 - `tenant-read` (`tenant-read.js`) does the same for GET and is retried on
   transient errors.
 
-In the shell (`vendor/just-bash/src/obelisk-pack.js`), each `obelisk cloud` command goes
-to one of three places:
+In the shell (`vendor/just-bash/src/obelisk-pack.js`), `obelisk cloud` commands
+are handled as follows:
 
 - `cloud app [--app NAME] execution|component|deployment|admin ...` is ported
   from obelisk's `src/command/{execution,component,deployment,admin}.rs`. It
@@ -64,10 +64,15 @@ to one of three places:
   human output on stderr, values and JSON on stdout. Errors print
   `Error: ...` and exit 1; usage errors exit 2.
 - `cloud app deploy [-a app.toml] [-d deployment.toml] [--fill-non-interactive]`
-  calls `prepare-deploy`, then submits and enqueues the deployment against
+  calls `prepare-deploy`, then uploads the deployment against
   the app. The submit uploads only the files the server asks for and reuses the
   active deployment when nothing changed. Last, it calls `finish-deploy` with
   the deployment ID.
+- `cloud app deployment enqueue` and `cloud app deployment apply` are rejected
+  before any API request, with guidance to use `cloud app deploy` or `cloud app apply`.
+  Deploy uploads local deployment.toml changes and applies that deployment's ID.
+  Apply uses the currently active deployment with staged configuration and does
+  not upload local deployment.toml changes.
 - Everything else goes to `run` with the app policy's text: the `-a` file,
   else `./app.toml`. `--from-env VAR` turns into `--stdin` with the exported
   variable's value, so secret values never appear in argv. With
@@ -106,7 +111,7 @@ obelisk cloud app deployment pull "$(obelisk cloud app deployment active)" -o /w
 cd /workspace/example
 cat deployment.toml
 cat webhook/handle.js
-obelisk cloud app deployment apply
+obelisk cloud app deploy
 ```
 
 As in the real CLI, `deployment pull ID [-o DIR] [-f]` writes

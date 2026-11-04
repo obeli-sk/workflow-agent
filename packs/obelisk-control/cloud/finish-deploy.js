@@ -3,8 +3,7 @@
 //        fill-env: option<list<tuple<string, string>>>)
 //     -> result<record { app-json: string, log: string }, string>
 //
-// PORT: obelisk's src/command/cloud/deploy.rs after the deployment enqueue:
-// fill an existing app's values, then apply the staged revision with the enqueued deployment.
+// PORT: obelisk's src/command/cloud/deploy.rs after deployment upload.
 import { appRequest } from "./client.js";
 import { appConfig } from "./policy.js";
 import { fillValues, unsetOptional, userSuppliedPolicy } from "./fill.js";

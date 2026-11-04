@@ -3,7 +3,7 @@
 //
 // `cloud` (host.js's `createCloud`) backs `obelisk cloud ...`:
 // `run(args, stdin, appToml, fillEnv)` runs the provisioner commands,
-// `prepareDeploy`/`finishDeploy` wrap `app deploy`'s enqueue, and
+// `prepareDeploy`/`finishDeploy` wrap `app deploy`'s upload, and
 // `get(app, path)`/`send(app, method, path, contentType, body)` call the app's
 // own API, returning `{ status, body }`. The app API subcommands (`execution`,
 // `component`, `deployment`, `admin`) are ported here from obelisk's
@@ -14,7 +14,7 @@
 // interpreter.js's `invoke`); `commandHandler` strips it with
 // `args.slice(1)`, same as obelisk-program.js.
 
-import { parseApiResponse, parseServerInfoResponse, parseDeploymentSwitchResponse } from "../../obelisk-api/index.js";
+import { parseApiResponse, parseServerInfoResponse } from "../../obelisk-api/index.js";
 import { base64Decode, sha256Hex } from "./commands/hash.js";
 import { utf8Decode, utf8Encode } from "./utf8.js";
 import { DEPLOYMENT_TEMPLATE } from "./obelisk-deployment-template.js";
@@ -84,6 +84,9 @@ function executeCloud(interp, args, stdin, cloud, out) {
     if (group === "app" && APP_API_GROUPS.includes(sub)) {
         const commandArgs = rest.slice(2);
         if (commandArgs[0] === undefined || helpRequested(commandArgs)) return done(out, API_HELP[sub]);
+        if (sub === "deployment" && ["enqueue", "apply"].includes(commandArgs[0])) {
+            throw "Cloud deployment enqueue/apply is unsupported; use `obelisk cloud app deploy` to upload and activate a deployment, or `obelisk cloud app apply` to apply configuration with the active deployment";
+        }
         const app = appName(interp, globals.app);
         const api = {
             get: (path) => cloud.get(app, path),
@@ -200,7 +203,7 @@ function cloudRun(interp, args, stdin, cloud, globals) {
 }
 
 // PORT: obelisk's src/command/cloud/deploy.rs. `prepareDeploy` stages or
-// creates the app, the deployment is enqueued on the app's API here, then
+// creates the app, the deployment is uploaded to the app's API here, then
 // `finishDeploy` fills and applies.
 function cloudDeploy(interp, args, globals, cloud, out) {
     const { opts } = parseOptions(args, {
@@ -236,7 +239,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
         }
     };
     const target = activity(() => cloud.prepareDeploy(name, policy, fillEnv));
-    out.stderr += `${target.log}→ obelisk cloud app deployment enqueue\n`;
+    out.stderr += `${target.log}→ obelisk cloud app deployment submit\n`;
     const context = {
         interp, out, verbose: globals.verbose,
         api: {
@@ -247,7 +250,6 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     let id;
     try {
         id = submitPrepared(context, prepared, true, null, null);
-        switchDeployment(context, id, true, "enqueue");
     } catch (error) {
         throw withContext(`Deployment staging failed; inspect \`obelisk cloud app --app ${name} status\` and retry deploy`, error);
     }
@@ -1010,20 +1012,16 @@ function deploymentCommand(context, [action, ...args]) {
     const { api, out, interp } = context;
     const json = (opts) => context.json || opts["--json"] === true;
     switch (action) {
-        case "submit":
-        case "enqueue":
-        case "apply": {
+        case "submit": {
             const spec = { "--empty": false, "--description": true, "--deployment-id": true, "--json": false };
-            if (action !== "apply") spec["--allow-unavailable-runtime-config"] = false;
-            const { opts, positionals } = parseOptions(args, spec, [action === "submit" ? "PATH" : "PATH|ID"]);
+            spec["--allow-unavailable-runtime-config"] = false;
+            const { opts, positionals } = parseOptions(args, spec, ["PATH"]);
             if (opts["--empty"] && positionals.length > 0) {
-                throw new UsageError(`the argument '--empty' cannot be used with '[${action === "submit" ? "PATH" : "PATH|ID"}]'`);
+                throw new UsageError("the argument '--empty' cannot be used with '[PATH]'");
             }
             const source = opts["--empty"] ? null : positionals[0] ?? "deployment.toml";
             const allow = opts["--allow-unavailable-runtime-config"] === true;
-            const id = submitDeployment(context, source, action === "submit" ? allow : action === "enqueue", opts["--description"] ?? null, opts["--deployment-id"] ?? null);
-            if (action === "enqueue") switchDeployment(context, id, allow, "enqueue");
-            if (action === "apply") switchDeployment(context, id, false, "apply");
+            const id = submitDeployment(context, source, allow, opts["--description"] ?? null, opts["--deployment-id"] ?? null);
             return printValue(out, id, json(opts));
         }
         case "list": {
@@ -1276,18 +1274,6 @@ function missingRuntimeConfig(detail) {
     return lines.length > 0 ? lines.join("\n") : JSON.stringify(detail);
 }
 
-function switchDeployment(context, id, allow, command) {
-    const response = parseDeploymentSwitchResponse(parseBody(sendJson(context.api, "PUT", `/v1/deployments/${id}/switch`, {
-        allow_unavailable_runtime_config: allow, apply: command === "apply",
-    })));
-    const outcome = response.ok;
-    if (command === "apply" && outcome === "switched") context.out.stderr += "Applied successfully.\n";
-    else if (command === "apply" && outcome === "restart_required") throw "Could not apply immediately; deployment enqueued. Restart the server to apply.";
-    else if (command === "enqueue" && outcome === "switched") context.out.stderr += "Deployment already active; it will remain active after restart.\n";
-    else if (command === "enqueue" && outcome === "restart_required") context.out.stderr += "Deployment staged for cloud app apply.\n";
-    else throw `unexpected outcome from server: ${outcome}`;
-}
-
 // ---------------------------------------------------------------------------
 // `admin` (PORT: obelisk's src/command/admin.rs)
 // ---------------------------------------------------------------------------
@@ -1419,7 +1405,7 @@ deployment may use. Deploy from this directory:
 obelisk cloud app deploy
 \`\`\`
 
-This creates the app from \`app.toml\` when needed, enqueues \`deployment.toml\`, applies both, and
+This creates the app from \`app.toml\` when needed, uploads \`deployment.toml\`, applies both, and
 prints the webhook URL. Then inspect it with \`obelisk cloud app component list\` and
 \`obelisk cloud app execution list\`.
 
@@ -1635,7 +1621,7 @@ Commands:
   stage       Stage app policy and cloud settings without restarting the VM [-a APP_CONFIG]
   deploy      Publish the local project, creating or configuring the app and activating its deployment
                 [-a APP_CONFIG] [-d DEPLOYMENT] [--fill-non-interactive]
-  apply       Apply the staged configuration and the enqueued (or active) deployment
+  apply       Apply the staged configuration with the currently active deployment
                 [-a APP_CONFIG | --staged] [--fill-non-interactive] [--force]
   enable      Enable the app
   disable     Disable the app
@@ -1695,17 +1681,15 @@ Commands:
   submit   Submit a deployment TOML; print the deployment ID
              [PATH (default deployment.toml) | --empty] [--allow-unavailable-runtime-config] [--description TEXT]
              [--deployment-id ID] [--json]
-  enqueue  Submit and stage for cloud app apply
-             [PATH|ID | --empty] [--allow-unavailable-runtime-config] [--description TEXT] [--deployment-id ID] [--json]
-  apply    Submit (if a file is given) and apply immediately; fails if not possible
-             [PATH|ID | --empty] [--description TEXT] [--deployment-id ID] [--json]
   list     List recent deployments [--json]
   active   Print the ID of the currently active deployment [--json]
   show     Show a deployment's manifest, one source FILE, or the manifest as JSON: ID [FILE] [--json]
   pull     Write a deployment's editable deployment.toml and source files (fetched on first read)
              ID [-o|--output DIR] [-f|--force] [--include-generated-metadata]
 
-Submit, enqueue and apply reuse the active deployment when its content and description are unchanged.
+Submit reuses the active deployment when its content and description are unchanged.
+Use \`obelisk cloud app deploy\` to upload and activate, or \`obelisk cloud app apply\` to apply
+configuration with the active deployment. Deployment enqueue/apply are unsupported in cloud mode.
 Leave \`content_digest\` and \`component_files\` out of deployment.toml; they are generated on submit.
 `;
 
