@@ -272,7 +272,7 @@ async function secretsCommand(name, [action, key, ...extra], flags, stdin, optio
 function endpoint(name, which, flags) {
     const endpoints = appEndpoints(name);
     if (which !== undefined) {
-        const key = { api: "api_url", webhook: "webhook_url", webui: "webui_url" }[which];
+        const key = { api: "api_url", webhook: "webhook_url", webui: "webui_url", internal: "internal_url" }[which];
         if (!key) throw new UsageError(`unrecognized subcommand '${which}'`);
         return { stdout: flags["--json"] ? `${JSON.stringify(endpoints[key], null, 2)}\n` : `${endpoints[key]}\n` };
     }

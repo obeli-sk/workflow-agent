@@ -120,11 +120,12 @@ export function appEndpoints(name) {
         throw "Invalid apps domain: expected a DNS hostname without scheme, port or path";
     }
     const hostname = `${name}.${domain}`;
-    if (hostname.length + "webui--".length > 253) throw "App hostname exceeds the DNS length limit";
+    if (hostname.length + "internal--".length > 253) throw "App hostname exceeds the DNS length limit";
     return {
         api_url: `https://api--${hostname}`,
         webhook_url: `https://${hostname}`,
         webui_url: `https://webui--${hostname}`,
+        internal_url: `https://internal--${hostname}`,
     };
 }
 
