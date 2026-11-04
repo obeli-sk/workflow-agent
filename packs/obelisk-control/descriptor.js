@@ -138,6 +138,7 @@ const CLOUD_SECTION = [
     ...APP_COMMANDS,
     '- Create and deploy from the working directory: write `app.toml` (with `app_name`) and `deployment.toml`, then `obelisk cloud app deploy -a app.toml -d deployment.toml`. It creates or restages the app, uploads the deployment, then calls provisioner Apply with its ID and prints the webhook URL. `app apply` uses the currently active deployment; it does not upload deployment.toml. Cloud `deployment enqueue` and `deployment apply` are unsupported.',
     '- Config: `obelisk cloud app --app NAME env list|set NAME VALUE|unset NAME` and `secrets list|set NAME --stdin|set NAME --from-env VAR|unset NAME`; then `obelisk cloud app --app NAME apply`.',
+    '- Apps share a domain with other tenants, so the platform forwards only `__Host-` cookies to webhooks. Set them with `Secure`, `Path=/` and no `Domain`; anything else is dropped and reported in the `obelisknet-cookie-rejected` response header. Tenants are the same site, so `SameSite` is no CSRF protection: check `Origin` on unsafe methods. Prefer the `internal` server for private pages: it handles sign-in and names the caller in `obelisknet-user-slug`, so it rarely needs a login cookie.',
     '- Destructive commands (`delete`, `disable`) need the user\'s confirmation first.',
 ].join(nl);
 
