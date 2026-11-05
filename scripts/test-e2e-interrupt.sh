@@ -64,7 +64,7 @@ wait_for() {
 
 echo ">>> scenario 1: operator interrupt on a direct-shell script"
 SESSION_ID="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
 INJECTION_ID="$(e2e_take_offer "$SESSION_ID")"
 
@@ -99,24 +99,24 @@ ALIVE_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-int-2 <<<"$PROJEC
     echo "follow-up output wrong: $ALIVE_OUT" >&2
     exit 1
 }
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 echo ">>> session survival E2E PASS"
 
 echo ">>> scenario 2: model-supplied timeout through the canned LLM"
 TIMEOUT_SESSION="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$TIMEOUT_SESSION" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$TIMEOUT_SESSION" "$RUN_FFQN" \
     '["please test timeouts", "fake", null, null, null]'
 SUBJECT_ID="$TIMEOUT_SESSION"
 wait_for "watchdog timeout tool result" \
     check-tool-result-interrupted call-timeout-1 124 timeout
 wait_for "model reaction after the timeout" \
     check-final-reply "timeout scenario complete"
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$TIMEOUT_SESSION" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$TIMEOUT_SESSION" >/dev/null || true
 echo ">>> watchdog timeout E2E PASS: exit 124 surfaced to the model, turn ended cleanly"
 
 echo ">>> scenario 3: composer stop of the agent loop mid-turn"
 LOOP_SESSION="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$LOOP_SESSION" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$LOOP_SESSION" "$RUN_FFQN" \
     '["please loop", "fake-loop", null, null, null]'
 LOOP_OFFER="$(e2e_take_offer "$LOOP_SESSION")"
 SUBJECT_ID="$LOOP_SESSION"
@@ -146,7 +146,7 @@ FOLLOWUP_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-loop-followup 
     exit 1
 }
 
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$LOOP_SESSION" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$LOOP_SESSION" >/dev/null || true
 echo ">>> session survival after composer stop E2E PASS"
 
 echo ">>> interrupt E2E SUITE PASS"

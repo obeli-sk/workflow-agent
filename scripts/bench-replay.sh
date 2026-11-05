@@ -13,7 +13,7 @@ export AGENT_MODELS='[]' DOCS_URLS_JSON='[]' PROGRAMS_JSON='[]'
 export OBELISK_JS_RUNTIME=v8
 e2e_start_server
 SESSION_ID="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$SESSION_ID" \
     obelisk-agent:workflow/workflow.run-cancellable '["", null, null, null, null]'
 EXTERNAL_URL="http://127.0.0.1:${BENCH_EXTERNAL_PORT:-19090}"
 
@@ -68,7 +68,7 @@ BASH
     echo ">>> local shell turn $turn complete"
 done
 wait_for_offer
-"$OBELISK" execution pause -a "$E2E_API_URL" "$SESSION_ID"
+"$OBELISK" execution pause --api-url "$E2E_API_URL" "$SESSION_ID"
 
 stop_server() {
     kill -SIGINT "$E2E_SERVER_PID"

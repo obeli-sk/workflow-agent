@@ -41,10 +41,10 @@ wait_for_input_offer() {
 # Finds the record-output stub with the shell id's shell_output (records batch events).
 shell_notification() {
     local shell_id="$1" record_id candidate
-    SESSION_EXECUTIONS="$("$OBELISK" execution list -j -a "$E2E_API_URL" -e "$SESSION_ID" --show-derived --limit 100)" || return 1
+    SESSION_EXECUTIONS="$("$OBELISK" execution list -j --api-url "$E2E_API_URL" -e "$SESSION_ID" --show-derived --limit 100)" || return 1
     while IFS= read -r record_id; do
         if [[ -n "$record_id" ]] \
-            && candidate="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$record_id" 2>/dev/null)" \
+            && candidate="$("$OBELISK" execution result -j --api-url "$E2E_API_URL" "$record_id" 2>/dev/null)" \
             && node -e "const list=JSON.parse(require('fs').readFileSync(0,'utf8'))?.ok??[]; const r=list.find((e)=>e?.shell_output)?.shell_output; process.exit(r?.id===process.argv[1]?0:1)" "$shell_id" <<<"$candidate" 2>/dev/null; then
             NOTIFICATION="$candidate"
             return 0
@@ -84,7 +84,7 @@ projection_named() {
 
 echo ">>> checking ask-user lifecycle through the session projection"
 ASK_SESSION_ID="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$ASK_SESSION_ID" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$ASK_SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
 
 ASK_OFFER_ID="$(e2e_take_offer "$ASK_SESSION_ID")"
@@ -106,11 +106,11 @@ curl --fail --silent --show-error \
 e2e_wait_until projection_check "$ASK_SESSION_ID" check-human-input-resolved \
     || { echo "ask-user resolution was not projected: $PROJECTION" >&2; exit 1; }
 echo ">>> ask-user projection E2E PASS"
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$ASK_SESSION_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$ASK_SESSION_ID" >/dev/null || true
 
 echo ">>> creating an empty session and running one direct shell turn"
 SESSION_ID="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
 
 e2e_take_offer "$SESSION_ID" >/dev/null
@@ -189,21 +189,21 @@ if [[ "$SHELL_STDOUT" != *"PATH (default deployment.toml)"* ]]; then
     exit 1
 fi
 echo ">>> ls E2E PASS"
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 
 echo ">>> creating a session with an initial name"
 NAMED_SESSION_ID="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$NAMED_SESSION_ID" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$NAMED_SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, "e2e-rename-check"]'
 e2e_wait_until projection_named "$NAMED_SESSION_ID" e2e-rename-check \
     || { echo "session did not report its initial name: $PROJECTION" >&2; exit 1; }
 echo ">>> rename E2E PASS: the session-name join set published the at-creation name"
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$NAMED_SESSION_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$NAMED_SESSION_ID" >/dev/null || true
 
 echo ">>> exercising 'chat create' (self-referential child submit)"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 CHAT_SESSION_ID="$SESSION_ID"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$CHAT_SESSION_ID" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$CHAT_SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
 run_shell_turn "shell-e2e-3" "chat create --name e2e-chat-child hello from the e2e test"
 CHILD_ID="$(printf '%s' "$SHELL_STDOUT" | tr -d '[:space:]')"
@@ -215,12 +215,12 @@ echo ">>> chat create returned child execution id: $CHILD_ID"
 e2e_wait_until projection_named "$CHILD_ID" e2e-chat-child \
     || { echo "child session did not start or report its --name: $PROJECTION" >&2; exit 1; }
 echo ">>> chat create E2E PASS: the self-referential child submit works and reports its --name"
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$CHILD_ID" >/dev/null || true
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$CHAT_SESSION_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$CHILD_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$CHAT_SESSION_ID" >/dev/null || true
 
 EXEC_ID="$("$OBELISK" generate execution-id)"
 echo ">>> submitting $RUN_FFQN as $EXEC_ID"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$EXEC_ID" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$EXEC_ID" "$RUN_FFQN" \
     '["hello from the e2e test", null, null, null, null]'
 
 EXPECT="No models available from discovery or AGENT_MODELS"
@@ -230,7 +230,7 @@ e2e_wait_until projection_check "$EXEC_ID" check-agent-error "$EXPECT" \
 echo ">>> E2E PASS: the session surfaced the LLM configuration error and returned to idle"
 
 
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$EXEC_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$EXEC_ID" >/dev/null || true
 
 # The web UI creates sessions through its statically imported
 # run-cancellable-schedule; the session must start and publish an input offer.
@@ -240,4 +240,4 @@ SESSION_ID="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSyn
 [[ "$SESSION_ID" == E_* ]] || { echo "UI session create returned no execution id: $UI_CREATED" >&2; exit 1; }
 wait_for_input_offer
 echo ">>> UI session create E2E PASS: $SESSION_ID started and is waiting for input"
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$SESSION_ID" >/dev/null || true

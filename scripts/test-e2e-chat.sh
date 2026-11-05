@@ -23,7 +23,7 @@ run_detail() {
 }
 
 chat_finished() {
-    CHAT_RESULT="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$1" 2>/dev/null)"
+    CHAT_RESULT="$("$OBELISK" execution result -j --api-url "$E2E_API_URL" "$1" 2>/dev/null)"
 }
 
 # Invoke the chat program directly (one activity execution) and print its
@@ -32,7 +32,7 @@ chat_finished() {
 chat_direct() {
     local params="$1" exec_id
     exec_id="$("$OBELISK" generate execution-id)"
-    "$OBELISK" execution submit -a "$E2E_API_URL" -e "$exec_id" "$CHAT_FFQN" "$params" >/dev/null
+    "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$exec_id" "$CHAT_FFQN" "$params" >/dev/null
     e2e_wait_until chat_finished "$exec_id" \
         || { echo "chat direct call did not finish: $params" >&2; return 1; }
     node scripts/e2e-json.js program-stdout <<<"$CHAT_RESULT" && return 0
@@ -91,7 +91,7 @@ grep -q "Usage: chat COMMAND" <<<"$HELP_OUT"
 
 echo ">>> creating a parent session and running chat current in it"
 PARENT_ID="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$PARENT_ID" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$PARENT_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
 CURRENT_OUT="$(shell_turn "$PARENT_ID" "shell-chat-current" 'chat current')"
 node scripts/e2e-json.js check-current-id "$PARENT_ID" <<<"$CURRENT_OUT"
@@ -132,12 +132,12 @@ CREATE_OUT="$(shell_turn "$PARENT_ID" "shell-chat-create" 'chat create --model f
 CHILD_ID="$(head -n 1 <<<"$CREATE_OUT")"
 [[ "$CHILD_ID" == E_* ]] || { echo "unexpected child create output: $CREATE_OUT" >&2; exit 1; }
 # Captured, not piped into grep -q: an early-exiting grep breaks obelisk's stdout.
-TOP_LEVEL_LIST="$("$OBELISK" execution list -j -a "$E2E_API_URL" --limit 200)"
+TOP_LEVEL_LIST="$("$OBELISK" execution list -j --api-url "$E2E_API_URL" --limit 200)"
 if grep -q "\"$CHILD_ID\"" <<<"$TOP_LEVEL_LIST"; then
     echo "child session was listed without --show-derived" >&2
     exit 1
 fi
-DERIVED_LIST="$("$OBELISK" execution list -j -a "$E2E_API_URL" --show-derived --limit 200)"
+DERIVED_LIST="$("$OBELISK" execution list -j --api-url "$E2E_API_URL" --show-derived --limit 200)"
 grep -q "$CHILD_ID" <<<"$DERIVED_LIST"
 
 echo ">>> chat create --name with a \$-prefixed prompt opens a labeled child in bash"
@@ -202,7 +202,7 @@ grep -q '"timed_out":false' <<<"$WATCH_OUT" \
     || { echo "create --watch woke as a timeout: $WATCH_OUT" >&2; exit 1; }
 
 echo ">>> chat watch wakes immediately on a cancelled session"
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true
 WATCH_OUT="$(shell_turn "$PARENT_ID" "shell-chat-watch-cancelled" \
     "chat watch $TOPLEVEL_ID --timeout 60s")"
 grep -q '"state":"cancelled"' <<<"$WATCH_OUT" \
@@ -211,8 +211,8 @@ grep -q '"state":"cancelled"' <<<"$WATCH_OUT" \
 # KNOWN-RED: an Obelisk-core replay-finalize gap, not a workflow-agent bug -
 
 echo ">>> cleaning up sessions"
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$PARENT_ID" >/dev/null || true
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$CHILD_ID" >/dev/null || true
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$BASH_CHILD_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$PARENT_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$CHILD_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$BASH_CHILD_ID" >/dev/null || true
 echo ">>> chat E2E PASS"

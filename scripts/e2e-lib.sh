@@ -109,7 +109,7 @@ e2e_cleanup() {
 
 # Done waiting once the API answers or the server process has exited.
 e2e_server_settled() {
-    "$OBELISK" component list -a "$1" >/dev/null 2>&1 || ! kill -0 "$2" 2>/dev/null
+    "$OBELISK" component list --api-url "$1" >/dev/null 2>&1 || ! kill -0 "$2" 2>/dev/null
 }
 
 e2e_start_server() {
