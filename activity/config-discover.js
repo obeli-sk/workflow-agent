@@ -26,7 +26,7 @@ const USER_INPUT_SECTION =
 const SUBAGENTS_SECTION =
     "# Subagents\n\n" +
     "Delegate self-contained work with `chat create [--name slug] PROMPT`.\n\n" +
-    "- Pass `--watch` (or call `chat watch ID`) to block until the child stops progressing: final-response, step-limit, awaiting-answer, shell-only, or a terminal state.\n" +
+    "- Pass `--watch` (or call `chat watch ID`) to block until the child stops progressing: turn-complete, step-limit, awaiting-answer, shell-only, or a terminal state.\n" +
     "- The reported JSON includes a `final` field with the child's finished reply, error, or pending question, so you rarely need a follow-up read.\n" +
     "- When you do, use `chat read ID --final` (just that outcome) rather than a full `chat read ID` (the whole transcript, far more tokens); reach for the full read only when you need the reasoning trail.\n" +
     "- Never poll a child with sleep loops.\n" +

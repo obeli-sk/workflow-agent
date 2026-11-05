@@ -17,7 +17,7 @@ export const EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 // needs its owner. A queued child (`awaiting-user`, nothing done yet) and a
 // busy one deliberately do not wake.
 export const WATCH_WAKE_STATES = [
-    "final-response",
+    "turn-complete",
     "step-limit",
     "awaiting-answer",
     "shell-only",

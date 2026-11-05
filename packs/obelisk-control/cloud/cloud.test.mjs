@@ -232,6 +232,23 @@ test("app status and stage report configuration revisions", async () => {
     assert.match(staged.stderr, /^Configuration unchanged at staged revision 3\.\n/);
 });
 
+test("app status shows an idle-suspended app as resuming on request", async () => {
+    const status = async (machine_state, api_ready) => {
+        provisioner({ "GET /v1/apps/demo/status": { app: appRow(), machine_state, api_ready } });
+        const result = await run(["app", "status"], "", POLICY);
+        assert.equal(result.exit_code, 0, result.stderr);
+        return result.stderr;
+    };
+    const suspended = await status("suspended", null);
+    assert.match(suspended, /^demo: running \(suspended\)\n/);
+    assert.match(suspended, /\nAPI: resumes on request\n/);
+    assert.doesNotMatch(suspended, /reconcile/);
+    const stopped = await status("stopped", false);
+    assert.match(stopped, /^demo: running\n/);
+    assert.match(stopped, /VM is stopped although the app is running\./);
+    assert.match(stopped, /\nAPI: unavailable\n/);
+});
+
 test("app commands never use another app's config", async () => {
     const requests = provisioner({ "GET /v1/apps/demo/status": { app: appRow(), api_ready: true } });
     const other = POLICY.replace('app_name = "demo"', 'app_name = "other"');

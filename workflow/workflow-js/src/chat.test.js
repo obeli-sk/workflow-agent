@@ -272,7 +272,7 @@ test("createChild surfaces a submit failure", () => {
 
 test("attachFinal embeds the read --final text on success", () => {
     const delegate = fakeDelegate({ "read E_x --final": { stdout: "run just deploy\n", stderr: "", exitCode: 0 } });
-    const payload = { id: "E_x", state: "final-response" };
+    const payload = { id: "E_x", state: "turn-complete" };
     attachFinal(delegate.handler, null, "E_x", payload);
     assert.equal(payload.final, "run just deploy");
 });

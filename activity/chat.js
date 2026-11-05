@@ -151,7 +151,7 @@ async function cmdReadFinal(id, json) {
 // same centralized state `chat state` reports (shared/session-state.js).
 function finalOutcome(state, walked, resultKind) {
     switch (state) {
-        case "final-response":
+        case "turn-complete":
         case "finished-ok": {
             const turn = lastReplyTurn(walked.events);
             if (turn === null) return { kind: "none", text: "" };
@@ -955,7 +955,7 @@ function commandHelp(sub) {
                 "Usage: chat watch ID [--timeout DUR] [--interval DUR]",
                 "",
                 "Block until ID stops progressing on its own: wakes on",
-                "final-response, step-limit, awaiting-answer, shell-only, or a",
+                "turn-complete, step-limit, awaiting-answer, shell-only, or a",
                 "terminal state. Prints the state JSON (see 'chat state --help')",
                 "plus a `final` field: the same text `chat read ID --final` gives",
                 "(finished reply, error/failure reason, or pending question), so",
@@ -1027,7 +1027,7 @@ function help() {
         "                  (read it with --turn)",
         "  watch ID [--timeout DUR] [--interval DUR]",
         "                  Block until the session stops progressing: wakes on",
-        "                  final-response, step-limit, awaiting-answer, shell-only,",
+        "                  turn-complete, step-limit, awaiting-answer, shell-only,",
         "                  or a terminal state; prints the state JSON with a `final`",
         "                  field (the same text `read ID --final` gives) so you rarely",
         "                  need a follow-up read. Durations accept 30s / 500ms / 5m /",

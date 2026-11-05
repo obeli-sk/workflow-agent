@@ -166,7 +166,7 @@ test("turn header summarizes step count, tool-call count and total latency", asy
     // Turn 0: 10 tool steps + a terminal error (the error is not a step).
     assert.match(turn0, /Turn 1 · 10 steps · 10 tool calls/);
     assert.match(turn0, /total 23\.6s/);
-    // Turn 1: two tool steps + a final-response step; the error/response are the
+    // Turn 1: two tool steps + a turn-complete step; the error/response are the
     // terminal, so total spans the "go" prompt through the response.
     assert.match(turn1, /Turn 2 · 3 steps · 2 tool calls/);
     assert.match(turn1, /total 10\.0s/);
@@ -197,11 +197,11 @@ test("renders the turn-limit error as a terminal event, not a step", async () =>
     assert.match(turn0, /10 steps/);
 });
 
-test("shows the user message and final response inside the turn", async () => {
+test("shows the user message and turn complete marker inside the turn", async () => {
     const renderer = await loadRenderer();
     const [, turn1] = render(renderer, twoTurnTranscript());
     assert.match(turn1, /<div class="bubble user">.*go/s);
-    assert.match(turn1, /final response/);
+    assert.match(turn1, /turn complete/);
     // The response renders as markdown (URL-encoded into the hydration source).
     assert.match(turn1, /data-source="Done\./);
 });
@@ -264,7 +264,7 @@ test("renders a prompt queued mid-call after the response it raced", async () =>
     // Both prompts belong to the same workflow turn, so they stay in one group.
     const groups = renderer.groupTurns(turns);
     assert.equal(groups.length, 1);
-    assert.match(renderTurnGroupHtml(renderer, turns), /final response/);
+    assert.match(renderTurnGroupHtml(renderer, turns), /turn complete/);
 });
 
 test("renders a prompt before a step whose reconstructed start is the same millisecond", async () => {
