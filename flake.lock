@@ -20,11 +20,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1792773339,
-        "narHash": "sha256-rZLrzrC6i+jnTAlvPZHogKDulY7WWDEv9hJeHieO7Zw=",
+        "lastModified": 1793341285,
+        "narHash": "sha256-Y1CiZ4SoBUjLQyQM/pY+rS2dXD3CHLPstF0lmOc73D4=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "3ec636362e1816bc2f0888fa0fa2c69f1bc9e504",
+        "rev": "1c89083e451e891152365b799595cf7790a43325",
         "type": "github"
       },
       "original": {
@@ -45,17 +45,17 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1793554487,
-        "narHash": "sha256-ap0KBZsmWs7jgA33b20x1O6TuiEaDicFGEGuBEztMJ0=",
+        "lastModified": 1793873293,
+        "narHash": "sha256-ogF5iiiRY2fXHa/zswQXeOa1U7yQr/r277eherNlkAM=",
         "owner": "obeli-sk",
         "repo": "obelisk",
-        "rev": "0d0c2263d2da2278bcd0bcafe9e009e4ea43d6bc",
+        "rev": "87f2ad2c3d2cf942cf6818990ac5907390c6baa5",
         "type": "github"
       },
       "original": {
         "owner": "obeli-sk",
+        "ref": "latest-rc",
         "repo": "obelisk",
-        "rev": "0d0c2263d2da2278bcd0bcafe9e009e4ea43d6bc",
         "type": "github"
       }
     },

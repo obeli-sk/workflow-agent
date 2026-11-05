@@ -3,7 +3,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     obelisk = {
-      url = "github:obeli-sk/obelisk/0d0c2263d2da2278bcd0bcafe9e009e4ea43d6bc";
+      url = "github:obeli-sk/obelisk/latest-rc";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         flake-utils.follows = "flake-utils";
