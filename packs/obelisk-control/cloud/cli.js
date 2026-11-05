@@ -54,7 +54,7 @@ export function parseArgs(args) {
             flags[{ "--app-config": "-a", "--limit": "-n" }[name] ?? name] = value;
         } else if (BOOLEAN_FLAGS.includes(arg)) {
             flags[arg] = true;
-        } else if (["--api-url", "--api-token", "--apps-domain"].includes(name)) {
+        } else if (["--api-url", "--api-token", "--apps-domain", "--account"].includes(name)) {
             throw `${name} is not supported here; the cloud comes from OBELISK_CLOUD_API_URL, OBELISK_CLOUD_API_TOKEN and OBELISK_CLOUD_APPS_DOMAIN`;
         } else if (arg.startsWith("-") && arg !== "-") {
             throw new UsageError(`unexpected argument '${arg}' found`);

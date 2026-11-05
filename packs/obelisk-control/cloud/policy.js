@@ -20,6 +20,13 @@ export function appConfig(text, path = "app.toml") {
     }
     if (toml.app_name === undefined) fail("missing field `app_name`");
     if (typeof toml.app_name !== "string") fail("app_name must be a string");
+    try {
+        validateCloudAppName(toml.app_name);
+    } catch (error) {
+        // PORT: app.rs's `generate_app_name_hint`.
+        const command = path === "app.toml" ? "obelisk generate app-name" : `obelisk generate app-name -a ${path}`;
+        throw `invalid \`app_name\` in ${path}; set a random one with \`${command}\`\n\nCaused by:\n    ${error}`;
+    }
 
     const cloud = {};
     for (const [key, value] of Object.entries(table(toml.cloud, "cloud", fail))) {

@@ -356,6 +356,10 @@ test("endpoint webhook prints the app's webhook URL", async () => {
     assert.equal(endpoint.stdout, "https://demo.obelisk.works\n");
 });
 
+test("an invalid app_name in the config points at generate app-name", () => {
+    assert.throws(() => appConfig('app_name = "Bad Name"\n', "x/app.toml"), (error) => error.includes("obelisk generate app-name -a x/app.toml"));
+});
+
 test("cloud auth status reports the configured token's state", async () => {
     const fetched = globalThis.fetch;
     try {
