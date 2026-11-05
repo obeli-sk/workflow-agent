@@ -6,8 +6,8 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 API_PORT=28018
-EXTERNAL_PORT=28093
-e2e_init "chat-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-chat-token"
+UI_PORT=28093
+e2e_init "chat-e2e" "$API_PORT" "$UI_PORT" "e2e-chat-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions","wire_model":"fake"}]'
 
@@ -17,7 +17,7 @@ RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 CHAT_FFQN="obelisk-agent:programs/program.chat"
 run_detail() {
     local detail
-    detail="$(curl --fail --silent "http://127.0.0.1:${EXTERNAL_PORT}/api/runs/$1")" || return 1
+    detail="$(curl --fail --silent "http://127.0.0.1:${UI_PORT}/api/runs/$1")" || return 1
     node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"))' <<<"$detail" >/dev/null 2>&1 || return 1
     printf '%s\n' "$detail"
 }
@@ -64,7 +64,7 @@ projection_check() {
 
 # Same for the /api/runs listing, into RUNS.
 runs_check() {
-    RUNS="$(curl --fail --silent "http://127.0.0.1:${EXTERNAL_PORT}/api/runs")" \
+    RUNS="$(curl --fail --silent "http://127.0.0.1:${UI_PORT}/api/runs")" \
         && node scripts/e2e-json.js "$@" <<<"$RUNS" >/dev/null 2>&1
 }
 
@@ -75,7 +75,7 @@ shell_turn() {
     curl --fail --silent --show-error \
         -H 'content-type: application/json' \
         -d "{\"offer_id\":\"$offer\",\"input\":{\"shell\":{\"id\":\"$turn_id\",\"script\":\"$script\",\"stdin\":\"\"}}}" \
-        "http://127.0.0.1:${EXTERNAL_PORT}/api/input/$session_id" >/dev/null
+        "http://127.0.0.1:${UI_PORT}/api/input/$session_id" >/dev/null
     e2e_wait_until projection_check "$session_id" check-shell-event-done "$turn_id" \
         || { echo "shell turn $turn_id did not complete: $PROJECTION" >&2; return 1; }
     node scripts/e2e-json.js shell-event-stdout "$turn_id" <<<"$PROJECTION"
@@ -102,7 +102,7 @@ WATCH_LOG="$E2E_TMP/watch.log"
 WATCH_CURSOR="$(run_detail "$PARENT_ID" | node -e \
     'process.stdout.write(String(JSON.parse(require("fs").readFileSync(0, "utf8")).transcript.response_cursor))')"
 curl --silent --no-buffer --max-time 60 \
-    "http://127.0.0.1:${EXTERNAL_PORT}/api/watch?run=${PARENT_ID}&cursor=${WATCH_CURSOR}" >"$WATCH_LOG" &
+    "http://127.0.0.1:${UI_PORT}/api/watch?run=${PARENT_ID}&cursor=${WATCH_CURSOR}" >"$WATCH_LOG" &
 WATCH_PID=$!
 watch_saw() { grep -q "$1" "$WATCH_LOG"; }
 e2e_wait_until watch_saw "event: statuses" \

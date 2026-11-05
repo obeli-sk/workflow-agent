@@ -21,7 +21,10 @@ export LLM_BASE_URL=http://127.0.0.1:9190  # any OpenAI- or Anthropic-compatible
 just serve
 ```
 
-Open http://localhost:9090. Then:
+Open http://localhost:9091. `just serve` uses `obelisk server run --dev`, which
+starts this `internal` server without credentials; keep it on localhost. On
+ObeliskNet the UI is at `https://internal--<app>.<domain>`, behind platform
+sign-in. Then:
 
 - type a prompt to start a session with the agent,
 - or start with `$ ` to open a session straight in the shell (`$ help` lists the commands).

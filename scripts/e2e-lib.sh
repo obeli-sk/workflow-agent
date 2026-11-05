@@ -41,7 +41,7 @@ e2e_opened_shell_done() {
 e2e_init() {
     local suite="$1"
     local api_port="$2"
-    local external_port="$3"
+    local ui_port="$3"
     local token="$4"
 
     OBELISK="${OBELISK:-obelisk}"
@@ -55,7 +55,7 @@ e2e_init() {
     # No provisioner, so `obelisk cloud` stays out of the prompt.
     unset OBELISK_CLOUD_API_TOKEN
     export OBELISK__API__LISTENING_ADDR="127.0.0.1:${api_port}"
-    export OBELISK__HTTP_SERVER__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}"
+    export OBELISK__HTTP_SERVER__INTERNAL__LISTENING_ADDR="127.0.0.1:${ui_port}"
     # OBELISK_UI_URL is a required internal webui-url source, so the Web UI must listen.
     export OBELISK__WEBUI__LISTENING_ADDR="127.0.0.1:$((api_port + 200))"
     export OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/obelisk-sqlite"
@@ -116,7 +116,8 @@ e2e_start_server() {
     local deployment="${1:-$ROOT/deployment.toml}"
 
     echo ">>> starting ISOLATED obelisk server on ${E2E_API_URL} (sqlite: ${E2E_TMP}/obelisk-sqlite)"
-    "$OBELISK" server run \
+    # --dev starts the `internal` server, which serves the UI, without credentials.
+    "$OBELISK" server run --dev \
         --server-config "${E2E_SERVER_CONFIG:-$ROOT/server.toml}" \
         --app-config "${E2E_APP_CONFIG:-$ROOT/app.toml}" \
         --deployment "$deployment" \

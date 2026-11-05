@@ -11,11 +11,11 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 API_PORT=28016
-EXTERNAL_PORT=28091
-e2e_init "agent-workflow-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-agent-workflow-token"
+UI_PORT=28091
+e2e_init "agent-workflow-e2e" "$API_PORT" "$UI_PORT" "e2e-agent-workflow-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export AGENT_MODELS="[]"
-export LLM_BASE_URL="http://127.0.0.1:${EXTERNAL_PORT}"
+export LLM_BASE_URL="http://127.0.0.1:${UI_PORT}"
 
 export APPS_JSON='[{"name":"components","repo":"components","description":"E2E GitHub mount"}]'
 e2e_start_github_mock "obeli-sk/components=$ROOT/scripts/e2e-fixtures/components"
@@ -23,7 +23,7 @@ e2e_start_server
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 run_detail() {
-    curl --fail --silent --show-error "http://127.0.0.1:${EXTERNAL_PORT}/api/runs/$1" 2>&1
+    curl --fail --silent --show-error "http://127.0.0.1:${UI_PORT}/api/runs/$1" 2>&1
 }
 
 # Waits for SESSION_ID to publish a fresh input offer. run_shell_turn's own
@@ -60,7 +60,7 @@ run_shell_turn() {
     curl --fail --silent --show-error \
         -H 'content-type: application/json' \
         -d "{\"offer_id\":\"$injection_id\",\"input\":{\"shell\":{\"id\":\"$shell_id\",\"script\":$(printf '%s' "$script" | node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8")))'),\"stdin\":\"\"}}}" \
-        "http://127.0.0.1:${EXTERNAL_PORT}/api/input/$SESSION_ID" >/dev/null
+        "http://127.0.0.1:${UI_PORT}/api/input/$SESSION_ID" >/dev/null
 
     e2e_wait_until shell_notification "$shell_id" \
         || { echo "shell turn $shell_id did not complete: $SESSION_EXECUTIONS" >&2; exit 1; }
@@ -93,7 +93,7 @@ ASK_BODY="$(node scripts/e2e-json.js shell-input "$ASK_OFFER_ID" shell-e2e-ask "
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d "$ASK_BODY" \
-    "http://127.0.0.1:${EXTERNAL_PORT}/api/input/$ASK_SESSION_ID" >/dev/null
+    "http://127.0.0.1:${UI_PORT}/api/input/$ASK_SESSION_ID" >/dev/null
 
 e2e_wait_until projection_check "$ASK_SESSION_ID" check-human-input-request \
     || { echo "ask-user request was not projected: $PROJECTION" >&2; exit 1; }
@@ -101,7 +101,7 @@ ASK_ID="$(node scripts/e2e-json.js pending-ask-id <<<"$PROJECTION")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d '{"answer":"yes"}' \
-    "http://127.0.0.1:${EXTERNAL_PORT}/api/answer/$ASK_ID" >/dev/null
+    "http://127.0.0.1:${UI_PORT}/api/answer/$ASK_ID" >/dev/null
 
 e2e_wait_until projection_check "$ASK_SESSION_ID" check-human-input-resolved \
     || { echo "ask-user resolution was not projected: $PROJECTION" >&2; exit 1; }
@@ -120,7 +120,7 @@ RESPONSE_CURSOR="$(node scripts/e2e-json.js response-cursor <<<"$PROJECTION")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d "{\"offer_id\":\"$INJECTION_ID\",\"input\":{\"shell\":{\"id\":\"shell-e2e-1\",\"script\":\"which curl && curl --version\",\"stdin\":\"\"}}}" \
-    "http://127.0.0.1:${EXTERNAL_PORT}/api/input/$SESSION_ID" >/dev/null
+    "http://127.0.0.1:${UI_PORT}/api/input/$SESSION_ID" >/dev/null
 
 # The session batches several events (session_started, input_offered,
 # shell_output, ...) into each `record-output` stub, so we cannot pick the
@@ -139,7 +139,7 @@ node scripts/e2e-json.js check-shell-notification <<<"$NOTIFICATION"
 # The next input_offer is published after the record-output stub, so poll until it settles.
 shell_projection() {
     SHELL_PROJECTION="$(curl --fail --silent \
-        "http://127.0.0.1:${EXTERNAL_PORT}/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")" \
+        "http://127.0.0.1:${UI_PORT}/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")" \
         && node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION" 2>/dev/null
 }
 e2e_wait_until shell_projection \
@@ -235,7 +235,7 @@ echo ">>> E2E PASS: the session surfaced the LLM configuration error and returne
 # The web UI creates sessions through its statically imported
 # run-cancellable-schedule; the session must start and publish an input offer.
 UI_CREATED="$(curl --fail --silent --show-error -X POST -H 'content-type: application/json' \
-    -d '{}' "http://127.0.0.1:${EXTERNAL_PORT}/api/sessions")"
+    -d '{}' "http://127.0.0.1:${UI_PORT}/api/sessions")"
 SESSION_ID="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(0,'utf8')).execution_id ?? '')" <<<"$UI_CREATED")"
 [[ "$SESSION_ID" == E_* ]] || { echo "UI session create returned no execution id: $UI_CREATED" >&2; exit 1; }
 wait_for_input_offer

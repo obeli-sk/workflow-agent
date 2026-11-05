@@ -7,7 +7,7 @@ source "$ROOT/scripts/e2e-lib.sh"
 
 OUTPUT_DIR="$(realpath -m "${1:-/tmp/workflow-agent-replay-benchmark}")"
 mkdir -p "$OUTPUT_DIR"
-e2e_init replay-benchmark "${BENCH_API_PORT:-15005}" "${BENCH_EXTERNAL_PORT:-19090}" replay-benchmark
+e2e_init replay-benchmark "${BENCH_API_PORT:-15005}" "${BENCH_UI_PORT:-19090}" replay-benchmark
 export OBELISK_API_URL="$E2E_API_URL"
 export AGENT_MODELS='[]' DOCS_URLS_JSON='[]' PROGRAMS_JSON='[]'
 export OBELISK_JS_RUNTIME=v8
@@ -15,10 +15,10 @@ e2e_start_server
 SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$SESSION_ID" \
     obelisk-agent:workflow/workflow.run-cancellable '["", null, null, null, null]'
-EXTERNAL_URL="http://127.0.0.1:${BENCH_EXTERNAL_PORT:-19090}"
+UI_URL="http://127.0.0.1:${BENCH_UI_PORT:-19090}"
 
 detail() {
-    curl --fail --silent --show-error "$EXTERNAL_URL/api/runs/$SESSION_ID"
+    curl --fail --silent --show-error "$UI_URL/api/runs/$SESSION_ID"
 }
 
 wait_for_offer() {
@@ -50,7 +50,7 @@ BASH
     jq -n --arg offer "$OFFER_ID" --arg id "$SHELL_ID" --arg script "$SCRIPT" \
         '{offer_id:$offer,input:{shell:{id:$id,script:$script,stdin:""}}}' \
         | curl --fail --silent --show-error -H 'content-type: application/json' \
-            --data-binary @- "$EXTERNAL_URL/api/input/$SESSION_ID" >/dev/null
+            --data-binary @- "$UI_URL/api/input/$SESSION_ID" >/dev/null
     deadline=$((SECONDS + 60))
     while true; do
         projection="$(detail)"

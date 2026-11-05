@@ -1,5 +1,4 @@
 app_name = "workflow-agent"
-public_http_servers = ["external"]
 
 [cloud.integrations]
 llm = { type = "llm", env = "LLM_BASE_URL" }

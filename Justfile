@@ -1,10 +1,10 @@
 set positional-arguments
 
 serve:
-  obelisk server run -d deployment.toml --server-config server.toml --app-config app.toml
+  obelisk server run --dev -d deployment.toml --server-config server.toml --app-config app.toml
 
 verify:
-  obelisk server verify --skip-db --deployment deployment.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
+  OBELISK__HTTP_SERVER__INTERNAL__API_AUTH=true obelisk server verify --skip-db --deployment deployment.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
 
 test: test-js test-e2e
 

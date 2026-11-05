@@ -19,9 +19,9 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 API_PORT=28019
-EXTERNAL_PORT=28094
+UI_PORT=28094
 LLM_PORT=28095
-e2e_init "interrupt-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-interrupt-token"
+e2e_init "interrupt-e2e" "$API_PORT" "$UI_PORT" "e2e-interrupt-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"},{"id":"fake-loop","label":"Fake Loop","api_type":"openai-chat-completions"}]'
 export LLM_BASE_URL="http://127.0.0.1:${LLM_PORT}"
@@ -39,7 +39,7 @@ e2e_wait_until llm_listening || { echo "fake llm did not start: $(cat "$E2E_TMP/
 e2e_start_server
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
-UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
+UI_BASE="http://127.0.0.1:${UI_PORT}"
 run_detail() {
     curl --fail --silent --show-error "$UI_BASE/api/runs/$1" 2>&1
 }
