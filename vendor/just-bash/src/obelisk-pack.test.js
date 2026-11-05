@@ -294,8 +294,8 @@ test("execution submit --follow streams the status and reports the result", () =
     });
     let out = api(interp(), "execution submit -e E_x a:b/c.d -f", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
-    assert.equal(out.stdout, "E_x\n");
-    assert.equal(out.stderr, 'Locked\nFinished: OK\nExecution finished: OK: {"value":1}\n');
+    assert.equal(out.stdout, 'E_x\n{\n  "ok": {\n    "value": 1\n  }\n}\n');
+    assert.equal(out.stderr, "Locked\nFinished: OK\nExecution finished: OK\n");
 
     out = api(interp(), "execution submit -e E_x a:b/c.d -f --json", cloud);
     assert.equal(out.stdout, '{"ok":"E_x"}\n{"ok":{"value":1}}\n');
@@ -306,7 +306,8 @@ test("execution result exits 1 on an error or execution failure", () => {
     let cloud = fakeCloud({ "GET /v1/executions/E_1?follow=false": { err: null } });
     let out = api(interp(), "execution result E_1", cloud);
     assert.equal(out.exitCode, 1);
-    assert.equal(out.stderr, "Execution finished: Error: (no return value)\n");
+    assert.equal(out.stdout, '{\n  "err": null\n}\n');
+    assert.equal(out.stderr, "Execution finished: Error\n");
 
     cloud = fakeCloud({ "GET /v1/executions/E_1?follow=false": { execution_failed: { kind: "timed_out", reason: "slow", detail: "d" } } });
     out = api(interp(), "execution result E_1", cloud);
@@ -315,7 +316,7 @@ test("execution result exits 1 on an error or execution failure", () => {
 
 test("execution status prints the status text, or JSON", () => {
     const cloud = fakeCloud({ "GET /v1/executions/E_1/status": { ffqn: "a:b/c.d", pending_state: { status: "blocked_by_join_set", join_set_id: "o:1", closing: true } } });
-    assert.equal(api(interp(), "execution get E_1", cloud).stderr, "Blocked by o:1 (closing)\n");
+    assert.equal(api(interp(), "execution status E_1", cloud).stderr, "Blocked by o:1 (closing)\n");
     assert.equal(JSON.parse(api(interp(), "execution status E_1 --json", cloud).stdout).ffqn, "a:b/c.d");
 });
 
@@ -528,18 +529,69 @@ test("deployment submit uploads only the missing files, then resubmits", () => {
     assert.equal(retry.body, preflight.body);
 });
 
-test("deployment submit reuses the active deployment when nothing changed", () => {
+test("deployment submit refreshes the deployment storing the same content", () => {
     const i = interp();
-    i.vfs.writeFile("/workspace/deployment.toml", "# comment\n[[activity_js]]\nlocation = 'a.js'\n");
+    i.vfs.writeFile("/workspace/deployment.toml", "[[activity_js]]\nlocation = 'a.js'\n");
     i.vfs.writeFile("/workspace/a.js", "a");
+    const digest = api(i, "deployment digest", fakeCloud()).stdout.trim();
+    assert.match(digest, /^sha256:[0-9a-f]{64}$/);
     const cloud = fakeCloud({
-        "GET /v1/info": serverInfo({ deployment_id: "Dep_1" }),
-        "GET /v1/deployments/Dep_1": { deployment_toml: `[[activity_js]]\ncontent_digest = "${sha256("a")}"\nlocation = "a.js"\n`, description: null },
+        [`GET /v1/deployment-digests/${digest}`]: { deployment_id: "Dep_1" },
+        "PUT /v1/deployments/Dep_1": { status: 200, body: "null" },
     });
     const out = api(i, "deployment submit", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(out.stdout, "Dep_1\n");
-    assert.equal(out.stderr, "Deployment content unchanged; using Dep_1\n");
+    assert.equal(out.stderr, "Deployment content matches Dep_1\nSubmitted as Dep_1\n");
+    assert.equal(JSON.parse(cloud.calls.at(-1).body).description, null);
+});
+
+test("deployment digest reads a stored deployment by ID", () => {
+    const id = "Dep_01JABCDEFGHJKMNPQRSTVWXYZ0";
+    const cloud = fakeCloud({ [`GET /v1/deployments/${id}`]: { digest: "sha256:abc" } });
+    assert.equal(api(interp(), `deployment digest ${id}`, cloud).stdout, "sha256:abc\n");
+});
+
+test("cloud app pull writes app.toml and the active deployment", () => {
+    const i = interp();
+    const cloud = fakeCloud({
+        "GET /v1/app-toml": { status: 200, body: 'app_name = "demo"\n' },
+        "GET /v1/info": serverInfo({ deployment_id: "Dep_1", app_name: "demo" }),
+        "GET /v1/deployments/Dep_1?include_generated_metadata=false": { deployment_toml: "# stored\n", files: [] },
+    });
+    let out = api(i, "pull -o out", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.equal(out.stderr, "Wrote out/app.toml for app demo\nWrote out/deployment.toml (0 source files) for deployment Dep_1\n");
+    assert.equal(i.vfs.readFile("/workspace/out/app.toml"), 'app_name = "demo"\n');
+    assert.equal(i.vfs.readFile("/workspace/out/deployment.toml"), "# stored\n");
+    out = api(i, "pull -o out", cloud);
+    assert.equal(out.exitCode, 1);
+    assert.match(out.stderr, /try using `--force`/);
+    assert.equal(api(i, "pull -o out -f", cloud).exitCode, 0);
+});
+
+test("deployment pull defaults to the active deployment", () => {
+    const cloud = fakeCloud({
+        "GET /v1/info": serverInfo({ deployment_id: "Dep_1" }),
+        "GET /v1/deployments/Dep_1?include_generated_metadata=false": { deployment_toml: "# stored\n", files: [] },
+    });
+    const out = api(interp(), "deployment pull", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.match(out.stderr, /^Pulling active deployment Dep_1\n/);
+});
+
+test("generate app-name sets the root app_name and keeps the rest", () => {
+    const i = interp();
+    i.vfs.writeFile("/workspace/app.toml", '# keep\napp_name = "old"\n\n[env_vars]\napp_name = "kept"\n');
+    const out = run(i, ["generate", "app-name"], fakeCloud());
+    const name = out.stdout.trim();
+    assert.match(name, /^[a-z]+-[a-z]+$/);
+    assert.ok(name.length <= 20);
+    assert.equal(out.stderr, "Updated app_name in app.toml\n");
+    assert.equal(i.vfs.readFile("/workspace/app.toml"), `# keep\napp_name = "${name}"\n\n[env_vars]\napp_name = "kept"\n`);
+    const printed = run(i, ["generate", "app-name", "--print-only"], fakeCloud());
+    assert.equal(printed.stderr, "");
+    assert.equal(i.vfs.readFile("/workspace/app.toml").includes(name), true);
 });
 
 test("deployment submit reports server rejections like the real CLI", () => {
@@ -762,8 +814,9 @@ test("generate new fetches the chosen template at OBELISK_VERSION", () => {
         out.stdout,
         'Generated "/workspace/My Cool_App/app.toml"\nGenerated "/workspace/My Cool_App/workflow/run.js"\nGenerated "/workspace/My Cool_App/README.md"\n',
     );
-    assert.match(i.vfs.readFile("/workspace/My Cool_App/README.md"), /^# my-cool-app\n[^]*obelisk cloud app deploy\n/);
-    assert.equal(i.vfs.readFile("/workspace/My Cool_App/app.toml"), 'app_name = "my-cool-app"\n');
+    const generated = /using generated app name `([a-z]+-[a-z]+)`\n$/.exec(out.stderr)[1];
+    assert.match(i.vfs.readFile("/workspace/My Cool_App/README.md"), new RegExp(`^# ${generated}\n[^]*obelisk cloud app deploy\n`));
+    assert.equal(i.vfs.readFile("/workspace/My Cool_App/app.toml"), `app_name = "${generated}"\n`);
     assert.equal(i.vfs.readFile("/workspace/My Cool_App/workflow/run.js"), "42\n");
     assert.deepEqual(source.calls[3], [
         "read",
@@ -780,8 +833,9 @@ test("generate new fetches the chosen template at OBELISK_VERSION", () => {
     assert.equal(i.vfs.isFile("/workspace/My Cool_App/chosen-app/workflow/run.js"), true);
 
     out = generate(i, ["generate", "new", "--template", "minimal", "Bad Name"]);
-    assert.equal(out.exitCode, 1);
-    assert.match(out.stderr, /invalid app name/);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.match(out.stderr, /invalid app name `Bad Name`.*using generated app name/);
+    assert.match(i.vfs.readFile("/workspace/My Cool_App/Bad Name/app.toml"), /^app_name = "[a-z]+-[a-z]+"\n$/);
 });
 
 test("generate new requires --template and lists the available ones", () => {

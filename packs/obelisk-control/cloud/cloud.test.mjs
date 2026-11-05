@@ -356,6 +356,24 @@ test("endpoint webhook prints the app's webhook URL", async () => {
     assert.equal(endpoint.stdout, "https://demo.obelisk.works\n");
 });
 
+test("cloud auth status reports the configured token's state", async () => {
+    const fetched = globalThis.fetch;
+    try {
+        globalThis.fetch = async () => new Response("[]", { status: 200 });
+        const active = await run(["auth", "status", "--json"], "", null, null);
+        const [account] = JSON.parse(active.stdout).accounts;
+        assert.deepEqual([account.default, account.token_state], [true, "active"]);
+        globalThis.fetch = async () => new Response("{}", { status: 401 });
+        const rejected = await run(["auth", "status"], "", null, null);
+        assert.match(rejected.stderr, /token state: rejected/);
+        const login = await run(["auth", "login"], "", null, null);
+        assert.equal(login.exit_code, 1);
+        assert.match(login.stderr, /not available in the sandbox/);
+    } finally {
+        globalThis.fetch = fetched;
+    }
+});
+
 test("tenant-read GETs a path on the app API", async () => {
     provisioner({ [`GET ${APP_API}/v1/info`]: serverInfo({ deployment_id: "Dep_1" }) });
     assert.deepEqual(await tenantRead("demo", "/v1/info"), { status: 200, body: JSON.stringify(serverInfo({ deployment_id: "Dep_1" })) });

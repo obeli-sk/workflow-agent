@@ -130,10 +130,10 @@ export function appEndpoints(name) {
 }
 
 // One request on the app's API at `path` (starting with `/`), authenticated by the cloud token.
-export async function appApiRequest(app, method, path, contentType, body) {
+export async function appApiRequest(app, method, path, contentType, body, accept = "application/json") {
     validateCloudAppName(app);
     if (typeof path !== "string" || !path.startsWith("/")) throw `invalid app API path ${path}`;
-    const headers = { accept: "application/json", authorization: `Bearer ${cloudToken()}` };
+    const headers = { accept, authorization: `Bearer ${cloudToken()}` };
     if (contentType) headers["content-type"] = contentType;
     let response;
     try {

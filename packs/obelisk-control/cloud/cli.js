@@ -10,7 +10,7 @@
 // `fill-env` the shell's exported variables for `--fill-non-interactive`.
 // Like the CLI, JSON goes to stdout and human output to stderr; errors exit 1,
 // usage errors 2.
-import { appApiGet, appEndpoints, appRequest, cloudRequest, stagedRevision } from "./client.js";
+import { appApiGet, appEndpoints, appRequest, cloudBase, cloudRequest, stagedRevision } from "./client.js";
 import { fillValues, initialValues, userSuppliedPolicy } from "./fill.js";
 import { appConfig, configName, validateCloudAppName } from "./policy.js";
 import { humanOutput, renderSummary } from "./output.js";
@@ -90,12 +90,47 @@ async function execute({ positionals, flags }, stdin, appToml, fillEnv) {
         arity(rest, 1);
         return print(await cloudRequest("GET", ["v1", "apps"], options), { kind: "apps" });
     }
+    if (group === "auth") {
+        allow(flags, []);
+        return authCommand(rest, flags);
+    }
     if (group === "token") {
         allow(flags, []);
         return print(...(await tokenCommand(rest, options)));
     }
     if (group === "app") return appCommand(rest, flags, stdin, appToml, fillEnv, options, print);
     throw new UsageError(`unrecognized subcommand '${positionals.join(" ")}'`);
+}
+
+// PORT: cloud/auth.rs's `status`, reduced to what the shell has: no saved logins, only the
+// configured token, whose account name and expiry it cannot know.
+async function authCommand([action, ...extra], flags) {
+    if (["login", "switch", "logout"].includes(action)) {
+        throw `\`cloud auth ${action}\` is not available in the sandbox; the account comes from OBELISK_CLOUD_API_TOKEN`;
+    }
+    if (action !== "status") throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
+    arity(extra, 0);
+    const accounts = process.env["OBELISK_CLOUD_API_TOKEN"]
+        ? [{
+            default: true,
+            api_url: cloudBase(),
+            apps_domain: process.env["OBELISK_CLOUD_APPS_DOMAIN"] || "obelisk.works",
+            token_state: await tokenState(),
+        }]
+        : [];
+    const value = { accounts };
+    return flags["--json"] ? { stdout: `${JSON.stringify(value, null, 2)}\n` } : { stderr: humanOutput(value) };
+}
+
+async function tokenState() {
+    try {
+        await cloudRequest("GET", ["v1", "tokens"]);
+        return "active";
+    } catch (error) {
+        const status = /\(HTTP (\d+)\)$/.exec(error)?.[1];
+        if (status === "401") return "rejected";
+        return status ? `unknown (HTTP ${status})` : `unknown (${error})`;
+    }
 }
 
 async function tokenCommand([action, id, ...extra], options) {
