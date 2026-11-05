@@ -37,7 +37,7 @@ left out and a warning is shown instead.
 The `obelisk-agent:tools/cloud` interface has these activities
 (`packs/obelisk-control/cloud/`); all but `tenant-read` have `max_retries = 0`:
 
-- `run` (`cli.js`) runs the provisioner commands: `apps list`,
+- `run` (`cli.js`) runs the provisioner commands: `apps list`, `auth status`,
   `token list|get`, `app new|get|status|events|stage|apply|enable|disable|delete`,
   `env ...`, `secrets ...` and `endpoint`. It returns stdout, stderr and an
   exit code, and its errors use the real CLI's wording.
@@ -109,15 +109,16 @@ other commands.
 ```sh
 obelisk cloud apps list
 export OBELISK_APP_NAME=example
-obelisk cloud app deployment pull "$(obelisk cloud app deployment active)" -o /workspace/example
+obelisk cloud app pull -o /workspace/example
 cd /workspace/example
 cat deployment.toml
 cat webhook/handle.js
 obelisk cloud app deploy
 ```
 
-As in the real CLI, `deployment pull ID [-o DIR] [-f]` writes
-`deployment.toml` without the generated `content_digest` and `component_files`,
+As in the real CLI, `app pull [-o DIR] [-f]` writes the app's verbatim
+`app.toml` and pulls its active deployment. `deployment pull [ID] [-o DIR] [-f]`
+writes only `deployment.toml` without the generated `content_digest` and `component_files`,
 plus the deployment's source files. It refuses to overwrite an existing file
 unless `--force` is given. Source files are registered with their content
 digests and are fetched on first read. An unedited file keeps its digest and
