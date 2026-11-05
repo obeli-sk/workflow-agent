@@ -17,7 +17,8 @@ export function cloudToken() {
 }
 
 // `kind`: "read", "command" (sends an Idempotency-Key), "secret" (redacts error bodies) or "secret-command" (both).
-export async function cloudRequest(method, segments, { body, kind = "read", commandId, verbose = false, log } = {}) {
+// `toml` sends a verbatim app.toml instead of a JSON `body`.
+export async function cloudRequest(method, segments, { body, toml, kind = "read", commandId, verbose = false, log, query } = {}) {
     const headers = { accept: "application/json", authorization: `Bearer ${cloudToken()}` };
     let id = null;
     if (kind === "command" || kind === "secret-command") {
@@ -26,10 +27,12 @@ export async function cloudRequest(method, segments, { body, kind = "read", comm
         headers["idempotency-key"] = id;
     }
     if (body !== undefined) headers["content-type"] = "application/json";
-    const url = `${cloudBase()}/${segments.map(encodeURIComponent).join("/")}`;
+    if (toml !== undefined) headers["content-type"] = "application/toml";
+    const search = query ? `?${new URLSearchParams(query)}` : "";
+    const url = `${cloudBase()}/${segments.map(encodeURIComponent).join("/")}${search}`;
     let response;
     try {
-        response = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+        response = await fetch(url, { method, headers, body: toml ?? (body === undefined ? undefined : JSON.stringify(body)) });
     } catch (error) {
         throw id ? `Cloud request failed; retry the same command with --command-id ${id}` : `Cloud request failed: ${error}`;
     }
@@ -117,19 +120,20 @@ export function appEndpoints(name) {
         throw "Invalid apps domain: expected a DNS hostname without scheme, port or path";
     }
     const hostname = `${name}.${domain}`;
-    if (hostname.length + "webui--".length > 253) throw "App hostname exceeds the DNS length limit";
+    if (hostname.length + "internal--".length > 253) throw "App hostname exceeds the DNS length limit";
     return {
         api_url: `https://api--${hostname}`,
         webhook_url: `https://${hostname}`,
         webui_url: `https://webui--${hostname}`,
+        internal_url: `https://internal--${hostname}`,
     };
 }
 
 // One request on the app's API at `path` (starting with `/`), authenticated by the cloud token.
-export async function appApiRequest(app, method, path, contentType, body) {
+export async function appApiRequest(app, method, path, contentType, body, accept = "application/json") {
     validateCloudAppName(app);
     if (typeof path !== "string" || !path.startsWith("/")) throw `invalid app API path ${path}`;
-    const headers = { accept: "application/json", authorization: `Bearer ${cloudToken()}` };
+    const headers = { accept, authorization: `Bearer ${cloudToken()}` };
     if (contentType) headers["content-type"] = contentType;
     let response;
     try {

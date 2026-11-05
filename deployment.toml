@@ -17,14 +17,14 @@ exec.lock_expiry.seconds = 30
 # `warnings` list the workflow surfaces to the user in the UI.
 env_vars = [
   { key = "DOCS_URLS_JSON", value = "${DOCS_URLS_JSON:-[\"https://obeli.sk/docs/${OBELISK_VERSION:-latest}/llms.txt/\"]}" },
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
 ]
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
 # Lists ObeliskNet apps for the prompt when OBELISK_CLOUD_API_TOKEN is set.
 [[activity_js.allowed_host]]
-url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
+url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
 methods = ["GET"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
@@ -376,6 +376,7 @@ exec.lock_expiry.minutes = 2
 
 [[webhook_endpoint_js]]
 name = "ui-api"
+http_server = "internal"
 location = "webhook/ui-api.js"
 routes = [
   { methods = ["GET"], route = "/" },
@@ -437,11 +438,11 @@ wit = "wit"
 max_retries = 0
 location = "packs/obelisk-control/cloud/cli.js"
 env_vars = [
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
   { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
 [[activity_js.allowed_host]]
-url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
+url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
 methods = ["GET", "POST", "PUT", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
@@ -460,11 +461,11 @@ max_retries = 0
 exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/deploy.js"
 env_vars = [
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
   { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
 [[activity_js.allowed_host]]
-url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
+url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
 methods = ["GET", "POST", "PUT"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
@@ -478,11 +479,11 @@ max_retries = 0
 exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/finish-deploy.js"
 env_vars = [
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}" },
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
   { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
 [[activity_js.allowed_host]]
-url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090}"
+url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
 methods = ["GET", "POST", "PUT"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]

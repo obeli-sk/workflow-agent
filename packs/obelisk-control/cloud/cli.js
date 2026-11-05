@@ -10,7 +10,7 @@
 // `fill-env` the shell's exported variables for `--fill-non-interactive`.
 // Like the CLI, JSON goes to stdout and human output to stderr; errors exit 1,
 // usage errors 2.
-import { appApiGet, appEndpoints, appRequest, cloudRequest, stagedRevision } from "./client.js";
+import { appApiGet, appEndpoints, appRequest, cloudBase, cloudRequest, stagedRevision } from "./client.js";
 import { fillValues, initialValues, userSuppliedPolicy } from "./fill.js";
 import { appConfig, configName, validateCloudAppName } from "./policy.js";
 import { humanOutput, renderSummary } from "./output.js";
@@ -34,7 +34,7 @@ export default async function run(args, stdin, appToml, fillEnv) {
 // A command-line error, reported like clap's.
 export class UsageError extends Error {}
 
-const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "--from-env"];
+const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "--from-env", "-n", "--limit"];
 const BOOLEAN_FLAGS = [
     "--json", "--verbose", "--force", "--stdin", "--staged", "--fill", "--fill-non-interactive", "--non-interactive",
 ];
@@ -51,10 +51,10 @@ export function parseArgs(args) {
         if (VALUE_FLAGS.includes(name)) {
             const value = eq !== -1 && name !== arg ? arg.slice(eq + 1) : args[++i];
             if (value === undefined) throw new UsageError(`a value is required for '${name} <VALUE>' but none was supplied`);
-            flags[name === "--app-config" ? "-a" : name] = value;
+            flags[{ "--app-config": "-a", "--limit": "-n" }[name] ?? name] = value;
         } else if (BOOLEAN_FLAGS.includes(arg)) {
             flags[arg] = true;
-        } else if (["--api-url", "--api-token", "--apps-domain"].includes(name)) {
+        } else if (["--api-url", "--api-token", "--apps-domain", "--account"].includes(name)) {
             throw `${name} is not supported here; the cloud comes from OBELISK_CLOUD_API_URL, OBELISK_CLOUD_API_TOKEN and OBELISK_CLOUD_APPS_DOMAIN`;
         } else if (arg.startsWith("-") && arg !== "-") {
             throw new UsageError(`unexpected argument '${arg}' found`);
@@ -90,12 +90,47 @@ async function execute({ positionals, flags }, stdin, appToml, fillEnv) {
         arity(rest, 1);
         return print(await cloudRequest("GET", ["v1", "apps"], options), { kind: "apps" });
     }
+    if (group === "auth") {
+        allow(flags, []);
+        return authCommand(rest, flags);
+    }
     if (group === "token") {
         allow(flags, []);
         return print(...(await tokenCommand(rest, options)));
     }
     if (group === "app") return appCommand(rest, flags, stdin, appToml, fillEnv, options, print);
     throw new UsageError(`unrecognized subcommand '${positionals.join(" ")}'`);
+}
+
+// PORT: cloud/auth.rs's `status`, reduced to what the shell has: no saved logins, only the
+// configured token, whose account name and expiry it cannot know.
+async function authCommand([action, ...extra], flags) {
+    if (["login", "switch", "logout"].includes(action)) {
+        throw `\`cloud auth ${action}\` is not available in the sandbox; the account comes from OBELISK_CLOUD_API_TOKEN`;
+    }
+    if (action !== "status") throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
+    arity(extra, 0);
+    const accounts = process.env["OBELISK_CLOUD_API_TOKEN"]
+        ? [{
+            default: true,
+            api_url: cloudBase(),
+            apps_domain: process.env["OBELISK_CLOUD_APPS_DOMAIN"] || "obelisk.works",
+            token_state: await tokenState(),
+        }]
+        : [];
+    const value = { accounts };
+    return flags["--json"] ? { stdout: `${JSON.stringify(value, null, 2)}\n` } : { stderr: humanOutput(value) };
+}
+
+async function tokenState() {
+    try {
+        await cloudRequest("GET", ["v1", "tokens"]);
+        return "active";
+    } catch (error) {
+        const status = /\(HTTP (\d+)\)$/.exec(error)?.[1];
+        if (status === "401") return "rejected";
+        return status ? `unknown (HTTP ${status})` : `unknown (${error})`;
+    }
 }
 
 async function tokenCommand([action, id, ...extra], options) {
@@ -127,18 +162,18 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     if (action === "new") {
         allow(flags, ["-a", "--fill", "--fill-non-interactive", "--command-id"]);
         arity(rest, 0);
-        const name = appName(flags["--app"] ?? config?.appName, config);
+        const name = appName(flags["--app"] ?? config?.appName);
         const local = configForApp(name, config, path, explicit, false);
         if ((flags["--fill"] || flags["--fill-non-interactive"]) && !local) throw "`--fill` requires an app config";
-        const body = { app_name: name };
+        const body = { app_toml: `app_name = ${JSON.stringify(name)}\n` };
         if (local) {
             if (flags["--fill"] && !flags["--fill-non-interactive"]) throw terminal("--fill");
             const values = initialValues(userSuppliedPolicy(local), flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
-            Object.assign(body, { policy: local.policy, cloud: local.cloud, env: values.env, secrets: values.secrets });
+            Object.assign(body, { app_toml: local.text, env: values.env, secrets: values.secrets });
         }
         return print(await cloudRequest("POST", ["v1", "apps"], { ...options, kind: "secret-command", body }), { kind: "app", message: "App created." });
     }
-    const name = appName(flags["--app"] ?? config?.appName, config);
+    const name = appName(flags["--app"] ?? config?.appName);
     const local = configForApp(name, config, path, explicit, action === "stage");
     const apply = flags["--app"] === undefined ? "obelisk cloud app apply" : `obelisk cloud app --app ${flags["--app"]} apply`;
     if (action === "get") {
@@ -153,17 +188,25 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         if (local) {
             let comparison = null;
             let error = null;
-            try { comparison = await compareConfig(name, desiredConfig(local), options); }
+            try { comparison = await compareConfig(name, local.text, options); }
             catch (e) { error = typeof e === "string" ? e : String(e?.message ?? e); }
             value.local_config = { path, comparison, error };
         }
         return print(value, { kind: "status" });
     }
+    if (action === "events") {
+        allow(flags, ["-n"]);
+        arity(rest, 0);
+        const limit = flags["-n"] ?? "5";
+        if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 50) {
+            throw new UsageError(`invalid value '${limit}' for '--limit <LIMIT>': ${limit} is not in 1..=50`);
+        }
+        return print(await appRequest(name, "GET", ["events"], { ...options, query: { limit } }), { kind: "events" });
+    }
     if (action === "stage") {
         allow(flags, ["-a", "--command-id"]);
         arity(rest, 0);
-        const body = desiredConfig(local);
-        return print(await appRequest(name, "PUT", ["config"], { ...command, body }), { kind: "staged", message: "Configuration staged.", apply });
+        return print(await appRequest(name, "PUT", ["config"], { ...command, toml: local.text }), { kind: "staged", message: "Configuration staged.", apply });
     }
     if (action === "apply") {
         allow(flags, ["-a", "--staged", "--fill", "--fill-non-interactive", "--force", "--command-id"]);
@@ -264,19 +307,17 @@ async function secretsCommand(name, [action, key, ...extra], flags, stdin, optio
 function endpoint(name, which, flags) {
     const endpoints = appEndpoints(name);
     if (which !== undefined) {
-        const key = { api: "api_url", webhook: "webhook_url", webui: "webui_url" }[which];
+        const key = { api: "api_url", webhook: "webhook_url", webui: "webui_url", internal: "internal_url" }[which];
         if (!key) throw new UsageError(`unrecognized subcommand '${which}'`);
         return { stdout: flags["--json"] ? `${JSON.stringify(endpoints[key], null, 2)}\n` : `${endpoints[key]}\n` };
     }
     return flags["--json"] ? { stdout: `${JSON.stringify(endpoints, null, 2)}\n` } : { stderr: humanOutput(endpoints) };
 }
 
-// PORT: cloud.rs's `app_name`. `config` is the policy the shell found, if any.
-function appName(name, config) {
+// PORT: cloud.rs's `app_name`; a parsed config always names an app.
+function appName(name) {
     if (name === undefined || name === null) {
-        throw config
-            ? "Set app_name in ./app.toml, --app or OBELISK_APP_NAME"
-            : "Select an app with --app, OBELISK_APP_NAME or app_name in ./app.toml\n\nCaused by:\n    Cannot read app config app.toml: No such file or directory";
+        throw "Select an app with --app, OBELISK_APP_NAME or app_name in ./app.toml\n\nCaused by:\n    Cannot read app config app.toml: No such file or directory";
     }
     validateCloudAppName(name);
     return name;
@@ -289,7 +330,7 @@ export function configForApp(name, config, path, explicit, required) {
         if (required) throw "No app config: ./app.toml not found; pass --app-config";
         return null;
     }
-    if (config.appName && config.appName !== name) {
+    if (config.appName !== name) {
         if (explicit || required) {
             throw `${path} is for app \`${config.appName}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${config.appName}\` or fix \`app_name\``;
         }
@@ -302,20 +343,16 @@ function readableConfig(appToml, path) {
     try { return appConfig(appToml, path); } catch { return null; }
 }
 
-function desiredConfig(config) {
-    return { policy: config.policy, cloud: config.cloud };
-}
-
-// PORT: cloud.rs's `compare_config`: the provisioner diffs `desired` against staging.
-function compareConfig(name, desired, options) {
-    return appRequest(name, "POST", ["config", "compare"], { ...options, body: desired });
+// PORT: cloud.rs's `compare_config`: the provisioner diffs `appToml` against staging.
+function compareConfig(name, appToml, options) {
+    return appRequest(name, "POST", ["config", "compare"], { ...options, toml: appToml });
 }
 
 // PORT: cloud.rs's `staged_or_local` without the prompt: the staged config and its revision.
 async function stagedOrLocal(current, local, name, path, options) {
     const staged = { policy: current?.policy, cloud: current?.cloud };
     if (!local) return { desired: staged, revision: stagedRevision(current) };
-    const comparison = await compareConfig(name, desiredConfig(local), options);
+    const comparison = await compareConfig(name, local.text, options);
     const revision = stagedRevision(comparison);
     const changes = Array.isArray(comparison?.changes) ? comparison.changes.filter((change) => typeof change === "string") : [];
     if (changes.length === 0) return { desired: staged, revision };

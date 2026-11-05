@@ -19,9 +19,9 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 API_PORT=28019
-EXTERNAL_PORT=28094
+UI_PORT=28094
 LLM_PORT=28095
-e2e_init "interrupt-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-interrupt-token"
+e2e_init "interrupt-e2e" "$API_PORT" "$UI_PORT" "e2e-interrupt-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"},{"id":"fake-loop","label":"Fake Loop","api_type":"openai-chat-completions"}]'
 export LLM_BASE_URL="http://127.0.0.1:${LLM_PORT}"
@@ -39,7 +39,7 @@ e2e_wait_until llm_listening || { echo "fake llm did not start: $(cat "$E2E_TMP/
 e2e_start_server
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
-UI_BASE="http://127.0.0.1:${EXTERNAL_PORT}"
+UI_BASE="http://127.0.0.1:${UI_PORT}"
 run_detail() {
     curl --fail --silent --show-error "$UI_BASE/api/runs/$1" 2>&1
 }
@@ -64,7 +64,7 @@ wait_for() {
 
 echo ">>> scenario 1: operator interrupt on a direct-shell script"
 SESSION_ID="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
 INJECTION_ID="$(e2e_take_offer "$SESSION_ID")"
 
@@ -99,24 +99,24 @@ ALIVE_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-int-2 <<<"$PROJEC
     echo "follow-up output wrong: $ALIVE_OUT" >&2
     exit 1
 }
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$SESSION_ID" >/dev/null || true
 echo ">>> session survival E2E PASS"
 
 echo ">>> scenario 2: model-supplied timeout through the canned LLM"
 TIMEOUT_SESSION="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$TIMEOUT_SESSION" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$TIMEOUT_SESSION" "$RUN_FFQN" \
     '["please test timeouts", "fake", null, null, null]'
 SUBJECT_ID="$TIMEOUT_SESSION"
 wait_for "watchdog timeout tool result" \
     check-tool-result-interrupted call-timeout-1 124 timeout
 wait_for "model reaction after the timeout" \
     check-final-reply "timeout scenario complete"
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$TIMEOUT_SESSION" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$TIMEOUT_SESSION" >/dev/null || true
 echo ">>> watchdog timeout E2E PASS: exit 124 surfaced to the model, turn ended cleanly"
 
 echo ">>> scenario 3: composer stop of the agent loop mid-turn"
 LOOP_SESSION="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$LOOP_SESSION" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$LOOP_SESSION" "$RUN_FFQN" \
     '["please loop", "fake-loop", null, null, null]'
 LOOP_OFFER="$(e2e_take_offer "$LOOP_SESSION")"
 SUBJECT_ID="$LOOP_SESSION"
@@ -146,7 +146,7 @@ FOLLOWUP_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-loop-followup 
     exit 1
 }
 
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$LOOP_SESSION" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$LOOP_SESSION" >/dev/null || true
 echo ">>> session survival after composer stop E2E PASS"
 
 echo ">>> interrupt E2E SUITE PASS"

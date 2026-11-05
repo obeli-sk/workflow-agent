@@ -32,7 +32,7 @@ test("app policy preserves internal environment sources and rejects optional", (
 });
 
 test("app policy accepts url_prefix rules in the server's stored shape", () => {
-    const hosts = `
+    const hosts = `app_name = "demo"
 [[outbound_http.allowed_host]]
 url_prefix = "https://example.com/api/"
 url_regex_suffix = "/v1/x$"
@@ -48,19 +48,25 @@ request_url_regex = "^GET https://a\\\\.example\\\\.net/"
         { url_prefix: "https://example.org", methods: null, request_url_regex: null, secrets: [], replace_in: [] },
         { pattern: "https://*.example.net", methods: null, request_url_regex: "^GET https://a\\.example\\.net/", secrets: [], replace_in: [] },
     ]);
-    assert.throws(() => appConfig(`[[outbound_http.allowed_host]]\nurl_prefix = "https://a.b"\npattern = "https://a.b"\n`), /cannot be combined/);
-    assert.throws(() => appConfig(`[[outbound_http.allowed_host]]\npattern = "https://a.b"\nurl_regex_suffix = "/x"\n`), /requires url_prefix/);
+    assert.throws(() => appConfig(`app_name = "demo"\n[[outbound_http.allowed_host]]\nurl_prefix = "https://a.b"\npattern = "https://a.b"\n`), /cannot be combined/);
+    assert.throws(() => appConfig(`app_name = "demo"\n[[outbound_http.allowed_host]]\npattern = "https://a.b"\nurl_regex_suffix = "/x"\n`), /requires url_prefix/);
 });
 
 const APP_API = "https://api--demo.obelisk.works";
 
 // A fake provisioner: `routes` maps "METHOD /path" to a response body, or a function of the request.
 function provisioner(routes) {
-    process.env.OBELISK_CLOUD_API_URL = "https://cloud.test/";
+    // The provisioner API lives under `/api` behind app-proxy.
+    process.env.OBELISK_CLOUD_API_URL = "https://cloud.test/api/";
     process.env.OBELISK_CLOUD_API_TOKEN = "cloud-token";
     const requests = [];
     globalThis.fetch = async (url, init = {}) => {
-        const { origin, pathname, search } = new URL(url);
+        const { origin, search } = new URL(url);
+        let { pathname } = new URL(url);
+        if (origin === "https://cloud.test") {
+            assert.ok(pathname.startsWith("/api/"), pathname);
+            pathname = pathname.slice("/api".length);
+        }
         const request = { url, origin, path: pathname + search, method: init.method ?? "GET", headers: init.headers ?? {}, body: init.body };
         requests.push(request);
         const key = `${request.method} ${origin === "https://cloud.test" ? "" : origin}${pathname}`;
@@ -103,10 +109,7 @@ test("deploy creates a missing app", async () => {
     const create = requests.find((request) => request.method === "POST");
     assert.equal(create.headers.authorization, "Bearer cloud-token");
     assert.match(create.headers["idempotency-key"], /^E_[0-9A-Z]{26}$/);
-    const body = JSON.parse(create.body);
-    assert.equal(body.app_name, "demo");
-    assert.deepEqual(body.policy, appConfig(policy).policy);
-    assert.deepEqual([body.env, body.secrets], [{}, {}]);
+    assert.deepEqual(JSON.parse(create.body), { app_toml: policy, env: {}, secrets: {} });
 });
 
 test("deploy sends cloud integrations and does not require the env they supply", async () => {
@@ -114,10 +117,8 @@ test("deploy sends cloud integrations and does not require the env they supply",
     const requests = provisioner({ "POST /v1/apps": appRow() });
     await prepareDeploy("", policy);
     const body = JSON.parse(requests.find((request) => request.method === "POST").body);
-    assert.deepEqual(body.cloud, { integrations: { llm: { type: "llm", env: "LLM_BASE_URL" } } });
-    assert.deepEqual(body.policy.public_env, ["LLM_BASE_URL"]);
-    assert.deepEqual(body.env, {});
-    assert.throws(() => appConfig('[cloud.integrations]\nllm = { type = "llm", env = "MISSING" }\n'), /environment-backed/);
+    assert.deepEqual(body, { app_toml: policy, env: {}, secrets: {} });
+    assert.throws(() => appConfig('app_name = "demo"\n[cloud.integrations]\nllm = { type = "llm", env = "MISSING" }\n'), /environment-backed/);
 });
 
 test("deploy stages the config of an existing app", async () => {
@@ -128,10 +129,11 @@ test("deploy stages the config of an existing app", async () => {
     const target = await prepareDeploy("demo", POLICY);
     assert.deepEqual(target, { created: false, revision: 2, log: "Deploying demo\n→ obelisk cloud app stage\n" });
     const stage = requests.find((request) => request.method === "PUT");
-    assert.deepEqual(JSON.parse(stage.body), { policy: appConfig(POLICY).policy, cloud: appConfig(POLICY).cloud });
+    assert.equal(stage.headers["content-type"], "application/toml");
+    assert.equal(stage.body, POLICY);
 });
 
-test("finish-deploy applies the staged revision with the enqueued deployment", async () => {
+test("finish-deploy applies the staged revision with the uploaded deployment", async () => {
     const requests = provisioner({
         "GET /v1/apps/demo/env": { env: { MODE: "prod" } },
         "GET /v1/apps/demo/secrets": { secrets: [{ name: "API_KEY" }] },
@@ -194,7 +196,7 @@ test("app apply refuses a local policy that the provisioner reports as differing
     const refused = await run(["app", "apply"], "", changed);
     assert.equal(refused.exit_code, 1);
     assert.match(refused.stderr, /app\.toml differs from staged configuration revision 4: \/policy\/public_env\/2\nRun `obelisk cloud app --app demo stage -a app\.toml`/);
-    assert.deepEqual(JSON.parse(requests.find((request) => request.path.endsWith("/compare")).body).policy, appConfig(changed).policy);
+    assert.equal(requests.find((request) => request.path.endsWith("/compare")).body, changed);
     provisioner({
         "GET /v1/apps/demo": appRow(),
         "GET /v1/apps/demo/env": { env: { MODE: "prod" } },
@@ -251,6 +253,39 @@ test("app status shows an idle-suspended app as resuming on request", async () =
     assert.match(stopped, /^demo: running\n/);
     assert.match(stopped, /VM is stopped although the app is running\./);
     assert.match(stopped, /\nAPI: unavailable\n/);
+});
+
+test("app status shows health and a failing wake-up", async () => {
+    provisioner({ "GET /v1/apps/demo/status": {
+        app: appRow(), machine_state: "started", api_ready: false,
+        health: { status: "critical", critical_since: 1762180000000 },
+        wake_failure: { wake_at: 1762180000000, attempts: 3, retry_after: 1762180060000, error: "host unavailable" },
+    } });
+    const result = await run(["app", "status"], "", POLICY);
+    assert.equal(result.exit_code, 0, result.stderr);
+    assert.match(result.stderr, /\nHealth: critical since 2025-11-03 14:26:40 UTC\n/);
+    assert.match(result.stderr, /\nWake-up failing: 3 attempts since 2025-11-03 14:26:40 UTC, next retry at 2025-11-03 14:27:40 UTC\nWake-up error: host unavailable\n/);
+    provisioner({ "GET /v1/apps/demo/status": { app: appRow(), machine_state: "suspended", api_ready: null, health: null, wake_failure: null } });
+    const idle = await run(["app", "status"], "", POLICY);
+    assert.doesNotMatch(idle.stderr, /Health|Wake-up/);
+});
+
+test("app events lists recent events newest first", async () => {
+    const requests = provisioner({ "GET /v1/apps/demo/events": { events: [
+        { event_id: 2, created_at: 1762180060000, level: "info", code: "machine.health.recovered", message: "Health check recovered after 60 s", details: null },
+        { event_id: 1, created_at: 1762180000000, level: "warn", code: "machine.health.critical", message: "Health check is critical", details: {} },
+    ] } });
+    const result = await run(["app", "events", "--limit", "7"], "", POLICY);
+    assert.equal(result.exit_code, 0, result.stderr);
+    assert.equal(result.stderr,
+        "2025-11-03 14:27:40 UTC  info   Health check recovered after 60 s  (machine.health.recovered)\n"
+        + "2025-11-03 14:26:40 UTC  warn   Health check is critical  (machine.health.critical)\n");
+    assert.equal(requests[0].path, "/v1/apps/demo/events?limit=7");
+    await run(["app", "events"], "", POLICY);
+    assert.equal(requests[1].path, "/v1/apps/demo/events?limit=5");
+    assert.equal((await run(["app", "events", "-n", "51"], "", POLICY)).exit_code, 2);
+    provisioner({ "GET /v1/apps/demo/events": { events: [] } });
+    assert.equal((await run(["app", "events"], "", POLICY)).stderr, "No events.\n");
 });
 
 test("app commands never use another app's config", async () => {
@@ -319,6 +354,28 @@ test("endpoint webhook prints the app's webhook URL", async () => {
     const endpoint = await run(["app", "--app", "demo", "endpoint", "webhook"], "", null);
     assert.equal(endpoint.exit_code, 0, endpoint.stderr);
     assert.equal(endpoint.stdout, "https://demo.obelisk.works\n");
+});
+
+test("an invalid app_name in the config points at generate app-name", () => {
+    assert.throws(() => appConfig('app_name = "Bad Name"\n', "x/app.toml"), (error) => error.includes("obelisk generate app-name -a x/app.toml"));
+});
+
+test("cloud auth status reports the configured token's state", async () => {
+    const fetched = globalThis.fetch;
+    try {
+        globalThis.fetch = async () => new Response("[]", { status: 200 });
+        const active = await run(["auth", "status", "--json"], "", null, null);
+        const [account] = JSON.parse(active.stdout).accounts;
+        assert.deepEqual([account.default, account.token_state], [true, "active"]);
+        globalThis.fetch = async () => new Response("{}", { status: 401 });
+        const rejected = await run(["auth", "status"], "", null, null);
+        assert.match(rejected.stderr, /token state: rejected/);
+        const login = await run(["auth", "login"], "", null, null);
+        assert.equal(login.exit_code, 1);
+        assert.match(login.stderr, /not available in the sandbox/);
+    } finally {
+        globalThis.fetch = fetched;
+    }
 });
 
 test("tenant-read GETs a path on the app API", async () => {

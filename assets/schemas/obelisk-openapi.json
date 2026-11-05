@@ -60,6 +60,36 @@
         }
       }
     },
+    "/v1/app-toml": {
+      "get": {
+        "tags": [
+          "app policy"
+        ],
+        "operationId": "app_toml",
+        "responses": {
+          "200": {
+            "content": {
+              "application/toml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "App config the server started with, verbatim"
+          },
+          "406": {
+            "description": "Accept must allow application/toml",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/deployments/{deployment_id}/switch": {
       "put": {
         "tags": [
@@ -218,6 +248,9 @@
           "deployment_id": {
             "type": "string"
           },
+          "gc": {
+            "$ref": "#/components/schemas/ServerInfoGc"
+          },
           "node_run_id": {
             "type": "string"
           },
@@ -227,6 +260,106 @@
           "started_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ServerInfoGc": {
+        "type": "object",
+        "description": "The `[maintenance.gc]` configuration of the running server.",
+        "required": [
+          "enabled",
+          "interval_ms",
+          "batch_size",
+          "batch_delay_ms",
+          "upload_grace_period_ms",
+          "retention"
+        ],
+        "properties": {
+          "batch_delay_ms": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "batch_size": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "interval_ms": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "retention": {
+            "$ref": "#/components/schemas/ServerInfoGcRetention"
+          },
+          "upload_grace_period_ms": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        }
+      },
+      "ServerInfoGcRetention": {
+        "type": "object",
+        "required": [
+          "executions",
+          "deployments",
+          "system_events"
+        ],
+        "properties": {
+          "deployments": {
+            "$ref": "#/components/schemas/ServerInfoGcCountedRetention"
+          },
+          "executions": {
+            "$ref": "#/components/schemas/ServerInfoGcCountedRetention"
+          },
+          "system_events": {
+            "$ref": "#/components/schemas/ServerInfoGcRetentionPolicy"
+          }
+        }
+      },
+      "ServerInfoGcCountedRetention": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "max_age_ms",
+          "max_count"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "max_age_ms": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "max_count": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0,
+            "description": "Keep at most this many newest records; 0 disables the limit."
+          }
+        }
+      },
+      "ServerInfoGcRetentionPolicy": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "max_age_ms"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "max_age_ms": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
           }
         }
       },
@@ -407,8 +540,63 @@
                     "source": {
                       "type": "string",
                       "enum": [
-                        "api-url",
+                        "api-url"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "internal"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "type",
+                    "source"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": [
                         "webui-url"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "internal"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "type",
+                    "source",
+                    "http_server"
+                  ],
+                  "properties": {
+                    "http_server": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "http-server-url"
                       ]
                     },
                     "type": {
@@ -422,6 +610,14 @@
                 }
               ]
             }
+          },
+          "public_http_servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true,
+            "description": "`http_server` names that may serve webhooks without credentials. Omitted when empty."
           },
           "secrets": {
             "type": "object",

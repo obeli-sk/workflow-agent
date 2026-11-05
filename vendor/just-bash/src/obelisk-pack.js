@@ -3,7 +3,7 @@
 //
 // `cloud` (host.js's `createCloud`) backs `obelisk cloud ...`:
 // `run(args, stdin, appToml, fillEnv)` runs the provisioner commands,
-// `prepareDeploy`/`finishDeploy` wrap `app deploy`'s enqueue, and
+// `prepareDeploy`/`finishDeploy` wrap `app deploy`'s upload, and
 // `get(app, path)`/`send(app, method, path, contentType, body)` call the app's
 // own API, returning `{ status, body }`. The app API subcommands (`execution`,
 // `component`, `deployment`, `admin`) are ported here from obelisk's
@@ -14,15 +14,17 @@
 // interpreter.js's `invoke`); `commandHandler` strips it with
 // `args.slice(1)`, same as obelisk-program.js.
 
-import { parseApiResponse, parseServerInfoResponse, parseDeploymentSwitchResponse } from "../../obelisk-api/index.js";
+import { parseApiResponse } from "../../obelisk-api/index.js";
 import { base64Decode, sha256Hex } from "./commands/hash.js";
 import { utf8Decode, utf8Encode } from "./utf8.js";
+import { randomAppName } from "./obelisk-app-names.js";
 import { DEPLOYMENT_TEMPLATE } from "./obelisk-deployment-template.js";
 import { isCasNamespacedDigest } from "./fs.js";
 import { parseToml } from "../../../packs/obelisk-control/cloud/toml.js";
 
 const APP_POLICY_FILE = "app.toml";
 const APP_API_GROUPS = ["execution", "component", "deployment", "admin"];
+const DEPLOYMENT_ID = /^Dep_[0-9A-HJKMNP-TV-Z]{26}$/;
 
 const TEMPLATE_OWNER = "obeli-sk";
 const TEMPLATE_REPO = "obelisk";
@@ -84,6 +86,9 @@ function executeCloud(interp, args, stdin, cloud, out) {
     if (group === "app" && APP_API_GROUPS.includes(sub)) {
         const commandArgs = rest.slice(2);
         if (commandArgs[0] === undefined || helpRequested(commandArgs)) return done(out, API_HELP[sub]);
+        if (sub === "deployment" && ["enqueue", "apply"].includes(commandArgs[0])) {
+            throw "Cloud deployment enqueue/apply is unsupported; use `obelisk cloud app deploy` to upload and activate a deployment, or `obelisk cloud app apply` to apply configuration with the active deployment";
+        }
         const app = appName(interp, globals.app);
         const api = {
             get: (path) => cloud.get(app, path),
@@ -94,6 +99,13 @@ function executeCloud(interp, args, stdin, cloud, out) {
         else if (sub === "component") componentCommand(context, commandArgs);
         else if (sub === "deployment") deploymentCommand(context, commandArgs);
         else adminCommand(context, commandArgs);
+        return { ...out, exitCode: 0 };
+    }
+    if (group === "app" && sub === "pull") {
+        if (helpRequested(rest)) return done(out, cloudAppHelp);
+        const app = appName(interp, globals.app);
+        const api = { get: (path) => cloud.get(app, path) };
+        appPull({ interp, api, out }, rest.slice(2));
         return { ...out, exitCode: 0 };
     }
     if (group === "app" && sub === "deploy") {
@@ -125,7 +137,7 @@ function cloudGlobals(args) {
             globals.app = args[++i];
             if (globals.app === undefined) throw new UsageError("a value is required for '--app <NAME>' but none was supplied");
         } else if (arg.startsWith("--app=")) globals.app = arg.slice("--app=".length);
-        else if (["--api-url", "--api-token", "--apps-domain"].includes(arg.split("=")[0])) {
+        else if (["--api-url", "--api-token", "--apps-domain", "--account"].includes(arg.split("=")[0])) {
             throw `${arg.split("=")[0]} is not supported here; the cloud comes from OBELISK_CLOUD_API_URL, OBELISK_CLOUD_API_TOKEN and OBELISK_CLOUD_APPS_DOMAIN`;
         } else rest.push(arg);
     }
@@ -200,12 +212,12 @@ function cloudRun(interp, args, stdin, cloud, globals) {
 }
 
 // PORT: obelisk's src/command/cloud/deploy.rs. `prepareDeploy` stages or
-// creates the app, the deployment is enqueued on the app's API here, then
+// creates the app, the deployment is uploaded to the app's API here, then
 // `finishDeploy` fills and applies.
 function cloudDeploy(interp, args, globals, cloud, out) {
     const { opts } = parseOptions(args, {
         "-a": "--app-config", "--app-config": true, "-d": "--deployment", "--deployment": true,
-        "--fill": false, "--fill-non-interactive": false,
+        "--fill": false, "--fill-non-interactive": false, "--description": true,
     }, []);
     if (opts["--fill"] && opts["--fill-non-interactive"]) {
         throw new UsageError("the argument '--fill' cannot be used with '--fill-non-interactive'");
@@ -236,7 +248,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
         }
     };
     const target = activity(() => cloud.prepareDeploy(name, policy, fillEnv));
-    out.stderr += `${target.log}→ obelisk cloud app deployment enqueue\n`;
+    out.stderr += `${target.log}→ obelisk cloud app deployment submit\n`;
     const context = {
         interp, out, verbose: globals.verbose,
         api: {
@@ -246,8 +258,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     };
     let id;
     try {
-        id = submitPrepared(context, prepared, true, null, null);
-        switchDeployment(context, id, true, "enqueue");
+        id = submitPrepared(context, prepared, true, opts["--description"] ?? null, null);
     } catch (error) {
         throw withContext(`Deployment staging failed; inspect \`obelisk cloud app --app ${name} status\` and retry deploy`, error);
     }
@@ -605,24 +616,29 @@ function executionCommand(context, [action, ...args]) {
             }, ["EXECUTION_ID"]);
             const id = requiredArg(positionals[0], "EXECUTION_ID");
             const logs = logsOptions(opts["--level"] ?? "debug", opts["--stream-type"], opts["--show-derived"] === true, opts["--show-run-id"] === true, integer(opts, "--limit", 20));
-            if (opts["--follow"]) return followLogs(context, id, logs, opts["--after"], json(opts));
+            if (opts["--follow"]) return followLogs(context, id, logs, opts["--after"], json(opts), "stdout");
             const items = fetchLogs(api, id, logs, null, opts["--after"]);
-            printLogItems(out, items, json(opts), logs);
+            printLogItems(out, items, json(opts), logs, "stdout");
             return;
         }
         case "events": {
-            const { opts, positionals } = parseOptions(args, { "--from": true, "--limit": true, "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
+            const { backtraces, rest } = backtracesArg(args);
+            const { opts, positionals } = parseOptions(rest, { "--from": true, "--limit": true, "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
             const id = requiredArg(positionals[0], "EXECUTION_ID");
             const from = opts["--from"] === undefined ? undefined : integer(opts, "--from");
             const response = getJson(api, `/v1/executions/${id}/events${query([
                 ["length", integer(opts, "--limit", 20)],
+                ["include_backtrace_id", backtraces === undefined ? undefined : "true"],
                 ...(from === undefined ? [["direction", "older"]] : [["version", from], ["including_cursor", "true"]]),
             ])}`);
-            if (json(opts)) return printJson(out, response);
-            for (const event of response.events) {
-                out.stderr += `${event.version} \`${displayTime(event.created_at)}\` ${executionRequestDisplay(event.event)}\n`;
+            if (backtraces === undefined) {
+                if (json(opts)) return printJson(out, response);
+                for (const event of response.events) {
+                    out.stderr += `${event.version} \`${displayTime(event.created_at)}\` ${executionRequestDisplay(event.event)}\n`;
+                }
+                return;
             }
-            return;
+            return printEventsWithBacktraces(context, id, response, backtraces, json(opts));
         }
         case "responses": {
             const { opts, positionals } = parseOptions(args, { "--from": true, "--limit": true, "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
@@ -652,8 +668,7 @@ function executionCommand(context, [action, ...args]) {
             sendJson(api, "PUT", `/v1/executions/${id}/stub`, value);
             return;
         }
-        case "status":
-        case "get": {
+        case "status": {
             const { opts, positionals } = parseOptions(args, { "-f": "--follow", "--follow": false, "--no-reconnect": false, "-j": "--json", "--json": false }, ["EXECUTION_ID"]);
             const id = requiredArg(positionals[0], "EXECUTION_ID");
             if (opts["--no-reconnect"] && !opts["--follow"]) throw new UsageError("the following required arguments were not provided:\n  --follow");
@@ -736,6 +751,131 @@ function executionCommand(context, [action, ...args]) {
     }
 }
 
+// clap's `--backtraces[=source|frames]` (`require_equals`, default `source`).
+function backtracesArg(args) {
+    let backtraces;
+    const rest = [];
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === "--") {
+            rest.push(...args.slice(i));
+            break;
+        }
+        if (arg === "--backtraces") backtraces = "source";
+        else if (arg.startsWith("--backtraces=")) {
+            backtraces = arg.slice("--backtraces=".length);
+            if (backtraces !== "source" && backtraces !== "frames") {
+                throw new UsageError(`invalid value '${backtraces}' for '--backtraces[=<BACKTRACES>]'\n  [possible values: source, frames]`);
+            }
+        } else rest.push(arg);
+    }
+    return { backtraces, rest };
+}
+
+const SOURCE_CONTEXT_LINES = 2;
+
+// PORT: execution.rs's `execution_events_cmd` with `--backtraces`. A backtrace
+// spans a version range; it is shown once, at the first listed event of its range.
+function printEventsWithBacktraces(context, id, response, detail, json) {
+    const { api, out } = context;
+    const shown = new Set();
+    const sources = new Map();
+    const events = response.events.map((event) => {
+        const backtraceId = event.backtrace_id;
+        if (backtraceId === undefined || backtraceId === null || shown.has(backtraceId)) return { event };
+        shown.add(backtraceId);
+        const backtrace = getJson(api, `/v1/executions/${id}/backtrace${query([["version", backtraceId]])}`);
+        const snippets = detail === "source" ? sourceSnippets(api, sources, backtrace) : [];
+        return { event, backtrace, snippets };
+    });
+    if (json) {
+        return printJson(out, {
+            events: events.map(({ event, backtrace, snippets }) => {
+                if (backtrace === undefined) return event;
+                for (const { frameIdx, symbolIdx, snippet } of snippets) {
+                    backtrace.wasm_backtrace.frames[frameIdx].symbols[symbolIdx].source = snippet;
+                }
+                return { ...event, backtrace };
+            }),
+            max_version: response.max_version,
+        });
+    }
+    let anyBacktrace = false;
+    for (const { event, backtrace, snippets } of events) {
+        out.stderr += `${event.version} \`${displayTime(event.created_at)}\` ${executionRequestDisplay(event.event)}\n`;
+        if (backtrace === undefined) continue;
+        anyBacktrace = true;
+        out.stderr += backtraceDisplay(backtrace, snippets);
+    }
+    if (!anyBacktrace) {
+        out.stderr += `No persisted backtraces for these events, see \`obelisk cloud app execution persist-backtraces ${id}\`\n`;
+    }
+}
+
+// Snippets of symbols whose source is registered; `sources` caches each
+// file's lines by component digest and file, `null` when not registered.
+function sourceSnippets(api, sources, backtrace) {
+    const digest = backtrace.component_id.component_digest;
+    const snippets = [];
+    backtrace.wasm_backtrace.frames.forEach((frame, frameIdx) => {
+        frame.symbols.forEach((symbol, symbolIdx) => {
+            if (symbol.file === undefined || symbol.file === null || symbol.line === undefined || symbol.line === null) return;
+            const key = `${digest}\n${symbol.file}`;
+            if (!sources.has(key)) sources.set(key, fetchSourceLines(api, digest, symbol.file));
+            const lines = sources.get(key);
+            const snippet = lines && sourceSnippet(lines, symbol.line);
+            if (snippet) snippets.push({ frameIdx, symbolIdx, snippet });
+        });
+    });
+    return snippets;
+}
+
+function fetchSourceLines(api, digest, file) {
+    const response = api.get(`/v1/components/${digest}/source${query([["file", file]])}`);
+    if (response.status === 404) return null;
+    let content;
+    try {
+        content = parseBody(checked(response));
+    } catch (error) {
+        throw withContext(`cannot fetch source \`${file}\``, error);
+    }
+    // Rust's `str::lines`: no trailing empty line, `\r\n` counts as one break.
+    const lines = content.split("\n").map((line) => line.replace(/\r$/, ""));
+    if (lines.at(-1) === "") lines.pop();
+    return lines;
+}
+
+function sourceSnippet(lines, line) {
+    const idx = line - 1;
+    if (idx < 0 || idx >= lines.length) return null;
+    const start = Math.max(0, idx - SOURCE_CONTEXT_LINES);
+    const end = Math.min(lines.length, idx + SOURCE_CONTEXT_LINES + 1);
+    return { start_line: start + 1, lines: lines.slice(start, end) };
+}
+
+function backtraceDisplay(backtrace, snippets) {
+    let text = "";
+    backtrace.wasm_backtrace.frames.forEach((frame, frameIdx) => {
+        if (frame.symbols.length === 0) text += `    at ${frame.func_name} (${frame.module})\n`;
+        frame.symbols.forEach((symbol, symbolIdx) => {
+            const funcName = symbol.func_name ?? frame.func_name;
+            const has = (value) => value !== undefined && value !== null;
+            const location = !has(symbol.file) ? frame.module
+                : !has(symbol.line) ? symbol.file
+                : has(symbol.col) ? `${symbol.file}:${symbol.line}:${symbol.col}` : `${symbol.file}:${symbol.line}`;
+            text += `    at ${funcName} (${location})\n`;
+            const snippet = snippets.find((s) => s.frameIdx === frameIdx && s.symbolIdx === symbolIdx)?.snippet;
+            if (snippet === undefined || !has(symbol.line)) return;
+            const width = String(snippet.start_line + snippet.lines.length).length;
+            snippet.lines.forEach((lineText, offset) => {
+                const number = snippet.start_line + offset;
+                text += `      ${number === symbol.line ? ">" : " "} ${String(number).padStart(width)} | ${lineText}\n`;
+            });
+        });
+    });
+    return text;
+}
+
 function printOutcome(context, json, outcome, text) {
     if (json) printJson(context.out, { ok: outcome });
     else context.out.stderr += `${text}\n`;
@@ -785,7 +925,7 @@ function submitExecution(context, args, json) {
         out.stdout += `${body.ok}\n`;
     }
     if (followLogsEnabled) {
-        followLogs(context, id, logsOptions("debug", undefined, false, false, 20), undefined, asJson);
+        followLogs(context, id, logsOptions("debug", undefined, false, false, 20), undefined, asJson, "stderr");
         printRetval(context, getJson(api, `/v1/executions/${id}?follow=false`), asJson, true);
     } else if (follow) {
         executionResult(context, id, true, asJson);
@@ -860,12 +1000,12 @@ function printRetval(context, result, json, streaming) {
         else printJson(out, result);
         return;
     }
-    const value = (v) => (v === null || v === undefined ? "(no return value)" : JSON.stringify(v));
+    printJson(out, result);
     if ("ok" in result) {
-        out.stderr += `Execution finished: OK: ${value(result.ok)}\n`;
+        out.stderr += "Execution finished: OK\n";
         return;
     }
-    if ("err" in result) out.stderr += `Execution finished: Error: ${value(result.err)}\n`;
+    if ("err" in result) out.stderr += "Execution finished: Error\n";
     else out.stderr += `Execution finished: ${executionFailureDisplay(result.execution_failed)}\n`;
     throw ALREADY_PRINTED;
 }
@@ -895,7 +1035,8 @@ function fetchLogs(api, id, logs, cursor, after) {
     ])}`);
 }
 
-function printLogItems(out, items, json, logs) {
+// `stream`: where human output goes; JSON always goes to stdout.
+function printLogItems(out, items, json, logs, stream) {
     for (const item of items) {
         if (json) {
             printNdjson(out, item);
@@ -903,21 +1044,21 @@ function printLogItems(out, items, json, logs) {
         }
         const prefix = `${logs.showRunId ? `${item.run_id} ` : ""}${logs.showDerived ? `${item.execution_id} ` : ""}`;
         if (item.type === "log") {
-            out.stdout += `${displayTime(item.created_at)} [${item.level.padEnd(6)}] ${prefix}${item.message}\n`;
+            out[stream] += `${displayTime(item.created_at)} [${item.level.padEnd(6)}] ${prefix}${item.message}\n`;
         } else {
             const payload = utf8Decode(base64Decode(item.payload ?? "") ?? []);
-            out.stdout += `${displayTime(item.created_at)} [${item.stream_type.padEnd(6)}] ${prefix}${payload}\n`;
+            out[stream] += `${displayTime(item.created_at)} [${item.stream_type.padEnd(6)}] ${prefix}${payload}\n`;
         }
     }
     return items.length === 0 ? null : items[items.length - 1].cursor;
 }
 
 // Poll for new entries until the execution has finished and none are left.
-function followLogs(context, id, logs, after, json) {
+function followLogs(context, id, logs, after, json, stream) {
     let cursor = null;
     for (;;) {
         const items = fetchLogs(context.api, id, logs, cursor, after);
-        const last = printLogItems(context.out, items, json, logs);
+        const last = printLogItems(context.out, items, json, logs, stream);
         if (last !== null) cursor = last;
         const status = getJson(context.api, `/v1/executions/${id}/status`);
         if (status.pending_state?.status === "finished" && last === null) return;
@@ -984,6 +1125,7 @@ function componentCommand(context, [action, ...args]) {
     if (action === "push" || action === "add") {
         throw `\`component ${action}\` needs an OCI registry and is not available in the sandbox; run it with the real obelisk CLI`;
     }
+    if (action === "source") return componentSource(context, args);
     if (action !== "list") throw new UsageError(`unrecognized subcommand '${action}'`);
     const { opts } = parseOptions(args, { "-i": "--imports", "--imports": false, "--json": false, "-e": "--extensions", "--extensions": false }, []);
     const components = getJson(api, `/v1/components${query([
@@ -1002,6 +1144,30 @@ function componentCommand(context, [action, ...args]) {
     }
 }
 
+// PORT: component.rs's `component_source`. The tenant tools always ask for
+// JSON, so a file arrives as a JSON string.
+function componentSource(context, args) {
+    const { api, out } = context;
+    const { opts, positionals } = parseOptions(args, { "--json": false }, ["DIGEST", "FILE"]);
+    const digest = requiredArg(positionals[0], "DIGEST");
+    const json = context.json || opts["--json"] === true;
+    const file = positionals[1];
+    if (file !== undefined) {
+        let content;
+        try {
+            content = parseBody(checked(api.get(`/v1/components/${digest}/source${query([["file", file]])}`)));
+        } catch (error) {
+            throw withContext(`cannot fetch source \`${file}\` of component ${digest}`, error);
+        }
+        out.stdout += json ? `${prettyJson(content)}\n` : content;
+        return;
+    }
+    const sources = getJson(api, `/v1/components/${digest}/sources`);
+    if (json) return printJson(out, sources);
+    if (sources.length === 0) out.stderr += `No sources registered for component ${digest}\n`;
+    for (const source of sources) out.stdout += `${source.file}\n`;
+}
+
 // ---------------------------------------------------------------------------
 // `deployment` (PORT: obelisk's src/command/deployment.rs)
 // ---------------------------------------------------------------------------
@@ -1010,20 +1176,16 @@ function deploymentCommand(context, [action, ...args]) {
     const { api, out, interp } = context;
     const json = (opts) => context.json || opts["--json"] === true;
     switch (action) {
-        case "submit":
-        case "enqueue":
-        case "apply": {
+        case "submit": {
             const spec = { "--empty": false, "--description": true, "--deployment-id": true, "--json": false };
-            if (action !== "apply") spec["--allow-unavailable-runtime-config"] = false;
-            const { opts, positionals } = parseOptions(args, spec, [action === "submit" ? "PATH" : "PATH|ID"]);
+            spec["--allow-unavailable-runtime-config"] = false;
+            const { opts, positionals } = parseOptions(args, spec, ["PATH"]);
             if (opts["--empty"] && positionals.length > 0) {
-                throw new UsageError(`the argument '--empty' cannot be used with '[${action === "submit" ? "PATH" : "PATH|ID"}]'`);
+                throw new UsageError("the argument '--empty' cannot be used with '[PATH]'");
             }
             const source = opts["--empty"] ? null : positionals[0] ?? "deployment.toml";
             const allow = opts["--allow-unavailable-runtime-config"] === true;
-            const id = submitDeployment(context, source, action === "submit" ? allow : action === "enqueue", opts["--description"] ?? null, opts["--deployment-id"] ?? null);
-            if (action === "enqueue") switchDeployment(context, id, allow, "enqueue");
-            if (action === "apply") switchDeployment(context, id, false, "apply");
+            const id = submitDeployment(context, source, allow, opts["--description"] ?? null, opts["--deployment-id"] ?? null);
             return printValue(out, id, json(opts));
         }
         case "list": {
@@ -1081,46 +1243,83 @@ function deploymentCommand(context, [action, ...args]) {
             return;
         }
         case "pull": {
-            const { opts, positionals } = parseOptions(args, {
-                "-o": "--output", "--output": true, "-f": "--force", "--force": false, "--include-generated-metadata": false,
-            }, ["ID"]);
-            const id = requiredArg(positionals[0], "ID");
-            const dep = getJson(api, `/v1/deployments/${id}?include_generated_metadata=${opts["--include-generated-metadata"] === true}`);
-            const output = opts["--output"] ?? ".";
-            const dir = interp.resolvePath(output);
-            if (interp.vfs.exists(dir) && !interp.vfs.isDir(dir)) {
-                throw withContext(`cannot create output directory ${JSON.stringify(output)}`, "File exists (os error 17)");
+            const { opts, positionals } = parseOptions(args, PULL_OPTIONS, ["ID"]);
+            let id = positionals[0];
+            if (id === undefined) {
+                id = getJson(api, "/v1/info").deployment_id;
+                out.stderr += `Pulling active deployment ${id}\n`;
             }
-            interp.vfs.mkdirp(dir);
-            const display = (rel) => JSON.stringify(output === "." ? `./${rel}` : `${output.replace(/\/+$/, "")}/${rel}`);
-            const writable = (rel) => {
-                const path = `${dir}/${rel}`;
-                if (interp.vfs.isDir(path) || (!opts["--force"] && interp.vfs.exists(path))) {
-                    throw withContext(`cannot open ${display(rel)} for writing${opts["--force"] ? "" : ", try using `--force`"}`, "File exists (os error 17)");
-                }
-                return path;
-            };
-            interp.vfs.writeFile(writable("deployment.toml"), dep.deployment_toml);
-            // Source bytes are fetched on first read.
-            const loader = (digest) => fetchFile(api, digest);
-            for (const ref of dep.files) {
-                let rel;
-                try {
-                    rel = normalizeDeploymentPath(ref.path);
-                } catch (error) {
-                    throw withContext(`refusing to write unsafe source path \`${ref.path}\``, error);
-                }
-                interp.vfs.registerLazyWithLoader(writable(rel), ref.digest, ref.size, loader);
-            }
-            const count = dep.files.length;
-            out.stderr += `Wrote ${display("deployment.toml").slice(1, -1)} (${count} source file${count === 1 ? "" : "s"}) for deployment ${id}\n`;
-            return;
+            return pullDeployment(context, id, opts);
+        }
+        case "digest": {
+            const { opts, positionals } = parseOptions(args, { "--json": false }, ["SOURCE"]);
+            const source = positionals[0] ?? "deployment.toml";
+            const digest = DEPLOYMENT_ID.test(source)
+                ? getJson(api, `/v1/deployments/${source}`).digest
+                : manifestDigest(prepareManifest(interp, source).toml);
+            return printValue(out, digest, json(opts));
         }
         case "verify":
             throw "`deployment verify` compiles components locally and is not available in the sandbox; `deployment submit` verifies on the server";
         default:
             throw new UsageError(`unrecognized subcommand '${action}'`);
     }
+}
+
+const PULL_OPTIONS = {
+    "-o": "--output", "--output": true, "-f": "--force", "--force": false, "--include-generated-metadata": false,
+};
+
+// The output directory, created, with its path display and write checks.
+function pullTarget(interp, opts) {
+    const output = opts["--output"] ?? ".";
+    const dir = interp.resolvePath(output);
+    if (interp.vfs.exists(dir) && !interp.vfs.isDir(dir)) {
+        throw withContext(`cannot create output directory ${JSON.stringify(output)}`, "File exists (os error 17)");
+    }
+    interp.vfs.mkdirp(dir);
+    const display = (rel) => JSON.stringify(output === "." ? `./${rel}` : `${output.replace(/\/+$/, "")}/${rel}`);
+    const writable = (rel) => {
+        const path = `${dir}/${rel}`;
+        if (interp.vfs.isDir(path) || (!opts["--force"] && interp.vfs.exists(path))) {
+            throw withContext(`cannot open ${display(rel)} for writing${opts["--force"] ? "" : ", try using `--force`"}`, "File exists (os error 17)");
+        }
+        return path;
+    };
+    return { display, writable };
+}
+
+// PORT: deployment.rs's `pull_deployment`.
+function pullDeployment(context, id, opts) {
+    const { api, out, interp } = context;
+    const dep = getJson(api, `/v1/deployments/${id}?include_generated_metadata=${opts["--include-generated-metadata"] === true}`);
+    const { display, writable } = pullTarget(interp, opts);
+    interp.vfs.writeFile(writable("deployment.toml"), dep.deployment_toml);
+    // Source bytes are fetched on first read.
+    const loader = (digest) => fetchFile(api, digest);
+    for (const ref of dep.files) {
+        let rel;
+        try {
+            rel = normalizeDeploymentPath(ref.path);
+        } catch (error) {
+            throw withContext(`refusing to write unsafe source path \`${ref.path}\``, error);
+        }
+        interp.vfs.registerLazyWithLoader(writable(rel), ref.digest, ref.size, loader);
+    }
+    const count = dep.files.length;
+    out.stderr += `Wrote ${display("deployment.toml").slice(1, -1)} (${count} source file${count === 1 ? "" : "s"}) for deployment ${id}\n`;
+}
+
+// PORT: app.rs's `App::Pull`: the verbatim app.toml, then the active deployment.
+function appPull(context, args) {
+    const { api, out, interp } = context;
+    const { opts } = parseOptions(args, PULL_OPTIONS, []);
+    const appToml = checked(api.get("/v1/app-toml")).body;
+    const info = getJson(api, "/v1/info");
+    const { display, writable } = pullTarget(interp, opts);
+    interp.vfs.writeFile(writable(APP_POLICY_FILE), appToml);
+    out.stderr += `Wrote ${display(APP_POLICY_FILE).slice(1, -1)} for app ${info.app_name}\n`;
+    pullDeployment(context, info.deployment_id, opts);
 }
 
 function fetchFile(api, digest) {
@@ -1133,7 +1332,7 @@ function fetchFile(api, digest) {
 
 // An existing `Dep_` ID is returned as is; a manifest (or `--empty`) is submitted.
 function submitDeployment(context, source, allow, description, deploymentId) {
-    if (source !== null && /^Dep_[0-9A-HJKMNP-TV-Z]{26}$/.test(source)) {
+    if (source !== null && DEPLOYMENT_ID.test(source)) {
         if (description !== null) throw "--description cannot be used with an existing deployment ID";
         if (deploymentId !== null) throw "--deployment-id cannot be used with an existing deployment ID source";
         return source;
@@ -1168,39 +1367,27 @@ function prepareManifest(interp, path) {
     return { dir, toml: manifestWithDigests(interp.vfs, dir, manifestWithGeneratedFiles(interp.vfs, dir, manifest)) };
 }
 
-// Reuses the active deployment when its description and content are unchanged.
 function submitPrepared(context, prepared, allow, description, deploymentId) {
-    const { api, out } = context;
-    if (deploymentId === null) {
-        const response = api.get("/v1/info");
-        if (response.status !== 404) {
-            const activeId = parseServerInfoResponse(parseBody(checked(response))).deployment_id;
-            const active = getJson(api, `/v1/deployments/${activeId}`);
-            if ((active.description ?? null) === description && sameToml(active.deployment_toml, prepared.toml)) {
-                out.stderr += `Deployment content unchanged; using ${activeId}\n`;
-                return activeId;
-            }
-        }
-    }
-    const id = uploadAndSubmit(context, prepared, allow, description, deploymentId ?? `Dep_${ulid()}`);
-    out.stderr += `Submitted as ${id}\n`;
+    const id = deploymentId ?? findDeploymentByDigest(context, prepared) ?? `Dep_${ulid()}`;
+    uploadAndSubmit(context, prepared, allow, description, id);
+    context.out.stderr += `Submitted as ${id}\n`;
     return id;
 }
 
-function sameToml(a, b) {
-    try {
-        return canonicalJson(parseToml(a)) === canonicalJson(parseToml(b));
-    } catch {
-        return false;
-    }
+// PORT: deployment.rs's `find_deployment_by_digest`: resubmitting stored content
+// refreshes that deployment instead of conflicting on the unique digest.
+function findDeploymentByDigest(context, prepared) {
+    // backcompat: 0.43.0-rc.15 servers lack this endpoint and answer 404 too.
+    const response = context.api.get(`/v1/deployment-digests/${manifestDigest(prepared.toml)}`);
+    if (response.status === 404) return null;
+    const id = parseBody(checked(response)).deployment_id;
+    context.out.stderr += `Deployment content matches ${id}\n`;
+    return id;
 }
 
-function canonicalJson(value) {
-    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-    if (value && typeof value === "object") {
-        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
-    }
-    return JSON.stringify(value);
+// PORT: prepared.rs's `compute_manifest_digest`.
+function manifestDigest(toml) {
+    return `sha256:${sha256Hex(utf8Encode(toml))}`;
 }
 
 // PORT: deployment.rs's `upload_and_submit_manifest`: a JSON submit, then each missing file
@@ -1274,18 +1461,6 @@ function missingRuntimeConfig(detail) {
         lines.push(`configuration requires optional secret(s) ${list(detail.unset_secrets)} whose app.toml \`[secrets]\` environment variables are unset. Set them and restart the server, or mark every reference to them in the component \`optional = true\``);
     }
     return lines.length > 0 ? lines.join("\n") : JSON.stringify(detail);
-}
-
-function switchDeployment(context, id, allow, command) {
-    const response = parseDeploymentSwitchResponse(parseBody(sendJson(context.api, "PUT", `/v1/deployments/${id}/switch`, {
-        allow_unavailable_runtime_config: allow, apply: command === "apply",
-    })));
-    const outcome = response.ok;
-    if (command === "apply" && outcome === "switched") context.out.stderr += "Applied successfully.\n";
-    else if (command === "apply" && outcome === "restart_required") throw "Could not apply immediately; deployment enqueued. Restart the server to apply.";
-    else if (command === "enqueue" && outcome === "switched") context.out.stderr += "Deployment already active; it will remain active after restart.\n";
-    else if (command === "enqueue" && outcome === "restart_required") context.out.stderr += "Deployment staged for cloud app apply.\n";
-    else throw `unexpected outcome from server: ${outcome}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1419,7 +1594,7 @@ deployment may use. Deploy from this directory:
 obelisk cloud app deploy
 \`\`\`
 
-This creates the app from \`app.toml\` when needed, enqueues \`deployment.toml\`, applies both, and
+This creates the app from \`app.toml\` when needed, uploads \`deployment.toml\`, applies both, and
 prints the webhook URL. Then inspect it with \`obelisk cloud app component list\` and
 \`obelisk cloud app execution list\`.
 
@@ -1437,7 +1612,7 @@ function executeGenerate(interp, args, generate, out) {
         return;
     }
     if (helpRequested(rest)) {
-        out.stdout += action === "new" ? generateNewHelp : action === "deployment" ? generateDeploymentHelp : generateHelp;
+        out.stdout += action === "new" ? generateNewHelp(generate) : action === "deployment" ? generateDeploymentHelp : generateHelp;
         return;
     }
     if (action === "deployment") {
@@ -1446,8 +1621,15 @@ function executeGenerate(interp, args, generate, out) {
         return;
     }
     if (action === "new") {
-        const { opts, positionals } = parseOptions(rest, { "--template": true }, ["APP"]);
-        out.stdout += generateNew(interp, positionals[0], opts["--template"], generate);
+        const { opts, positionals } = parseOptions(rest, { "--template": true }, ["NAME"]);
+        out.stdout += generateNew(interp, positionals[0], opts["--template"], generate, out);
+        return;
+    }
+    if (action === "app-name") {
+        const { opts } = parseOptions(rest, { "-a": "--app-config", "--app-config": true, "--print-only": false }, []);
+        const name = randomAppName();
+        if (!opts["--print-only"]) updateAppName(interp, opts["--app-config"], name, out);
+        out.stdout += `${name}\n`;
         return;
     }
     throw new UsageError(`unrecognized subcommand '${action}'`);
@@ -1456,7 +1638,36 @@ function executeGenerate(interp, args, generate, out) {
 // PORT: real obelisk `generate new [NAME]`, except `--template` is required.
 // The template is read from the `obelisk` repo at the operator-pinned
 // `OBELISK_VERSION` ref, so it never drifts from the cloud's servers.
-function generateNew(interp, name, template, generate) {
+// PORT: generate.rs's `Generate::AppName`: updates `--app-config`, or ./app.toml if present.
+function updateAppName(interp, configPath, name, out) {
+    const path = configPath ?? APP_POLICY_FILE;
+    const resolved = interp.resolvePath(path);
+    if (!interp.vfs.exists(resolved) || interp.vfs.isDir(resolved)) {
+        if (configPath === undefined) return;
+        throw `cannot read app config ${path}: No such file or directory (os error 2)`;
+    }
+    const text = interp.vfs.readFile(resolved);
+    try {
+        parseToml(text);
+    } catch (error) {
+        throw withContext(`cannot parse app config ${path}`, error);
+    }
+    interp.vfs.writeFile(resolved, withAppName(text, name));
+    out.stderr += `Updated app_name in ${path}\n`;
+}
+
+// PORT: app.rs's `with_app_name`: only the root table's `app_name` line changes.
+function withAppName(text, name) {
+    const line = `app_name = ${JSON.stringify(name)}`;
+    const firstTable = text.search(/^[ \t]*\[/m);
+    const root = firstTable === -1 ? text : text.slice(0, firstTable);
+    const rest = firstTable === -1 ? "" : text.slice(firstTable);
+    const existing = /^[ \t]*"?app_name"?[ \t]*=.*$/m;
+    if (existing.test(root)) return root.replace(existing, () => line) + rest;
+    return `${root}${root === "" || root.endsWith("\n") ? "" : "\n"}${line}\n${rest}`;
+}
+
+function generateNew(interp, name, template, generate, out) {
     if (!template) {
         const { ref, names } = listTemplates(generate);
         throw `generate new: --template is required; templates at ${TEMPLATE_OWNER}/${TEMPLATE_REPO}@${ref}: ${names.join(", ")}`;
@@ -1464,9 +1675,8 @@ function generateNew(interp, name, template, generate) {
     if (!/^[A-Za-z0-9._-]+$/.test(template) || template === "." || template === "..") {
         throw `generate new: invalid template name '${template}'`;
     }
-    const appName = name !== undefined ? name : slugifyAppName(basename(interp.cwd));
-    validateAppName(appName);
-    const outputDir = name !== undefined ? interp.resolvePath(appName) : interp.cwd;
+    const appName = generatedAppName(name ?? basename(interp.cwd), out);
+    const outputDir = name !== undefined ? interp.resolvePath(name) : interp.cwd;
     if (name !== undefined && interp.vfs.exists(outputDir)) {
         throw `cannot create new app directory ${outputDir}: File exists`;
     }
@@ -1537,25 +1747,12 @@ function collectTemplateFiles(githubContents, repo, root, relative, files, appNa
     }
 }
 
-// PORT: obelisk's `slugify_app_name`.
-function slugifyAppName(name) {
-    let slug = "";
-    for (const character of name) {
-        if (slug.length === 63) break;
-        if (/^[A-Za-z0-9]$/.test(character)) {
-            slug += character.toLowerCase();
-        } else if (slug !== "" && !slug.endsWith("-")) {
-            slug += "-";
-        }
-    }
-    return slug.replace(/-+$/, "");
-}
-
-// PORT: obelisk's `validate_app_name`.
-function validateAppName(name) {
-    if (!/^[a-z0-9-]{1,63}$/.test(name) || name.startsWith("-") || name.endsWith("-")) {
-        throw `invalid app name \`${name}\`: expected a DNS label (1-63 lowercase ASCII letters, digits, or interior hyphens)`;
-    }
+// PORT: generate.rs: a name failing `validate_app_name` is replaced by a random one.
+function generatedAppName(requested, out) {
+    if (/^[a-z0-9-]{4,25}$/.test(requested) && !requested.startsWith("-") && !requested.endsWith("-")) return requested;
+    const name = randomAppName();
+    out.stderr += `invalid app name \`${requested}\`: expected a DNS label (4-25 lowercase ASCII letters, digits, or interior hyphens); using generated app name \`${name}\`\n`;
+    return name;
 }
 
 function decodeJson(text) {
@@ -1608,6 +1805,7 @@ const cloudHelp = `Manage apps through the Obelisk cloud control plane
 Usage: obelisk cloud [OPTIONS] <COMMAND>
 
 Commands:
+  auth   Show the cloud account this shell is configured with (status)
   token  Inspect cloud bearer tokens (list, get ID)
   apps   List apps owned by the authenticated user (apps list)
   app    Manage an app and its deployments, executions and configuration
@@ -1627,14 +1825,17 @@ Commands:
   execution   Manage executions through the selected app's API
   component   Inspect components
   admin       Perform operator-only destructive maintenance on the selected app
+  pull        Write the app's app.toml, active deployment.toml and source files (fetched on first read)
+                [-o|--output DIR] [-f|--force] [--include-generated-metadata]
   new         Create a stopped app; apply explicitly to start it
                 [-a APP_CONFIG] [--fill-non-interactive] [--command-id ID]
   get         Inspect the app row
   status      Inspect management, Machine and target API health [-a APP_CONFIG]
+  events      List recent lifecycle and Machine events, newest first [-n LIMIT]
   stage       Stage app policy and cloud settings without restarting the VM [-a APP_CONFIG]
   deploy      Publish the local project, creating or configuring the app and activating its deployment
-                [-a APP_CONFIG] [-d DEPLOYMENT] [--fill-non-interactive]
-  apply       Apply the staged configuration and the enqueued (or active) deployment
+                [-a APP_CONFIG] [-d DEPLOYMENT] [--description TEXT] [--fill-non-interactive]
+  apply       Apply the staged configuration with the currently active deployment
                 [-a APP_CONFIG | --staged] [--fill-non-interactive] [--force]
   enable      Enable the app
   disable     Disable the app
@@ -1643,7 +1844,7 @@ Commands:
                 --non-interactive [-a APP_CONFIG | --staged]
   env         list | set NAME VALUE | unset NAME
   secrets     list | set NAME (--from-env VAR | --stdin) | unset NAME
-  endpoint    Show all endpoints, or select api, webhook or webui
+  endpoint    Show all endpoints, or select api, webhook, webui or internal
 
 Run \`obelisk cloud app <COMMAND> --help\` for a command's subcommands.
 `;
@@ -1659,12 +1860,13 @@ Commands:
                         EXECUTION_ID [--show-derived] [--level trace|debug|info|warn|error|off] [--stream-type stdout|stderr|none]
                         [--show-run-id] [--after TIMESTAMP] [--follow] [--limit 20] [-j]
   events              Show the execution event log: EXECUTION_ID [--from VERSION] [--limit 20] [-j]
+                        [--backtraces[=source|frames]]: persisted backtraces, with source snippets by default
   responses           Show join-set responses: EXECUTION_ID [--from CURSOR] [--limit 20] [-j]
   submit              Submit a new execution: [-e ID] FUNCTION [PARAMS]... [-f] [--follow-logs] [--paused] [-j]
                         FUNCTION is \`ns:pkg/ifc.fn\` or \`.../ifc.fn\`. PARAMS: one JSON array ('["a", 1]'), @file.json,
                         \`-\` for stdin, or after \`--\` one JSON value (or @file) per argument; none for no parameters
   stub                Write a stubbed execution's return value: EXECUTION_ID RETURN_VAL_JSON
-  status              Get an execution's current state (alias: get): EXECUTION_ID [-f] [-j]
+  status              Get an execution's current state: EXECUTION_ID [-f] [-j]
   result              Get an execution's final result: EXECUTION_ID [-f] [-j]
   cancel              Cancel an activity or delay: ID [--json]
   pause               Pause a workflow execution or delay: ID [--json]
@@ -1681,9 +1883,11 @@ const componentHelp = `Inspect components
 Usage: obelisk cloud app component <COMMAND>
 
 Commands:
-  list  List components: [-i|--imports] [-e|--extensions] [--json]
-  push  Not available in the sandbox (needs an OCI registry)
-  add   Not available in the sandbox (needs an OCI registry)
+  list    List components: [-i|--imports] [-e|--extensions] [--json]
+  source  List a component's registered source files, or print one: DIGEST [FILE] [--json]
+            DIGEST as shown by \`component list --verbose\`; suffix keys like \`.../src/lib.rs\` match any path ending with them
+  push    Not available in the sandbox (needs an OCI registry)
+  add     Not available in the sandbox (needs an OCI registry)
 `;
 
 const deploymentHelp = `Manage deployments through the selected app's API
@@ -1694,17 +1898,17 @@ Commands:
   submit   Submit a deployment TOML; print the deployment ID
              [PATH (default deployment.toml) | --empty] [--allow-unavailable-runtime-config] [--description TEXT]
              [--deployment-id ID] [--json]
-  enqueue  Submit and stage for cloud app apply
-             [PATH|ID | --empty] [--allow-unavailable-runtime-config] [--description TEXT] [--deployment-id ID] [--json]
-  apply    Submit (if a file is given) and apply immediately; fails if not possible
-             [PATH|ID | --empty] [--description TEXT] [--deployment-id ID] [--json]
   list     List recent deployments [--json]
   active   Print the ID of the currently active deployment [--json]
   show     Show a deployment's manifest, one source FILE, or the manifest as JSON: ID [FILE] [--json]
   pull     Write a deployment's editable deployment.toml and source files (fetched on first read)
-             ID [-o|--output DIR] [-f|--force] [--include-generated-metadata]
+             [ID (default active)] [-o|--output DIR] [-f|--force] [--include-generated-metadata]
+  digest   Print a deployment's content digest: [PATH (default deployment.toml) | ID] [--json]
 
-Submit, enqueue and apply reuse the active deployment when its content and description are unchanged.
+Submitting stored content refreshes the deployment holding it. \`--description\` omitted keeps
+that deployment's description; an empty one clears it.
+Use \`obelisk cloud app deploy\` to upload and activate, or \`obelisk cloud app apply\` to apply
+configuration with the active deployment. Deployment enqueue/apply are unsupported in cloud mode.
 Leave \`content_digest\` and \`component_files\` out of deployment.toml; they are generated on submit.
 `;
 
@@ -1734,17 +1938,31 @@ Usage: obelisk generate <COMMAND>
 
 Commands:
   deployment  Print a default deployment.toml with every option documented
-  new         Create a JS app from a template: --template NAME [APP]
+  new         Create a JS starter app in a new NAME directory, or in the current directory if unnamed
+  app-name    Print a random app name; also set it in the app config: [-a APP_CONFIG (default ./app.toml if present)] [--print-only]
 `;
 
-const generateNewHelp = `Usage: obelisk generate new --template NAME [APP]
+// Templates are discovered on GitHub so the list never drifts from the pinned obelisk.
+function generateNewHelp(generate) {
+    let values;
+    try {
+        values = `[possible values: ${listTemplates(generate).names.join(", ")}]`;
+    } catch (error) {
+        values = `(templates could not be listed: ${message(error)})`;
+    }
+    return `Create a JS starter app in a new NAME directory, or in the current directory if unnamed.
+Deploy it from that directory with \`obelisk cloud app deploy\`.
 
-Create a runnable JS starter app from the obelisk repository's
-examples/templates/NAME at the operator's OBELISK_VERSION (falling back to main).
-Run without --template to list the templates. With APP, the app is created in a
-new APP directory; otherwise in the current directory, named after its slug.
-The template's app.toml gets the app name; deploy with \`obelisk cloud app deploy\`.
+Usage: obelisk generate new --template <TEMPLATE> [NAME]
+
+Arguments:
+  [NAME]  New directory and app name; defaults to the current directory. An invalid app name is replaced by a random one
+
+Options:
+      --template <TEMPLATE>  ${values}
+  -h, --help                 Print help
 `;
+}
 
 const generateDeploymentHelp = `Usage: obelisk generate deployment
 

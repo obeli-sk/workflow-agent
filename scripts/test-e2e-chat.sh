@@ -6,8 +6,8 @@ ROOT="$PWD"
 source "$ROOT/scripts/e2e-lib.sh"
 
 API_PORT=28018
-EXTERNAL_PORT=28093
-e2e_init "chat-e2e" "$API_PORT" "$EXTERNAL_PORT" "e2e-chat-token"
+UI_PORT=28093
+e2e_init "chat-e2e" "$API_PORT" "$UI_PORT" "e2e-chat-token"
 export OBELISK_API_URL="$E2E_API_URL"
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions","wire_model":"fake"}]'
 
@@ -17,13 +17,13 @@ RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
 CHAT_FFQN="obelisk-agent:programs/program.chat"
 run_detail() {
     local detail
-    detail="$(curl --fail --silent "http://127.0.0.1:${EXTERNAL_PORT}/api/runs/$1")" || return 1
+    detail="$(curl --fail --silent "http://127.0.0.1:${UI_PORT}/api/runs/$1")" || return 1
     node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"))' <<<"$detail" >/dev/null 2>&1 || return 1
     printf '%s\n' "$detail"
 }
 
 chat_finished() {
-    CHAT_RESULT="$("$OBELISK" execution result -j -a "$E2E_API_URL" "$1" 2>/dev/null)"
+    CHAT_RESULT="$("$OBELISK" execution result -j --api-url "$E2E_API_URL" "$1" 2>/dev/null)"
 }
 
 # Invoke the chat program directly (one activity execution) and print its
@@ -32,7 +32,7 @@ chat_finished() {
 chat_direct() {
     local params="$1" exec_id
     exec_id="$("$OBELISK" generate execution-id)"
-    "$OBELISK" execution submit -a "$E2E_API_URL" -e "$exec_id" "$CHAT_FFQN" "$params" >/dev/null
+    "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$exec_id" "$CHAT_FFQN" "$params" >/dev/null
     e2e_wait_until chat_finished "$exec_id" \
         || { echo "chat direct call did not finish: $params" >&2; return 1; }
     node scripts/e2e-json.js program-stdout <<<"$CHAT_RESULT" && return 0
@@ -64,7 +64,7 @@ projection_check() {
 
 # Same for the /api/runs listing, into RUNS.
 runs_check() {
-    RUNS="$(curl --fail --silent "http://127.0.0.1:${EXTERNAL_PORT}/api/runs")" \
+    RUNS="$(curl --fail --silent "http://127.0.0.1:${UI_PORT}/api/runs")" \
         && node scripts/e2e-json.js "$@" <<<"$RUNS" >/dev/null 2>&1
 }
 
@@ -75,7 +75,7 @@ shell_turn() {
     curl --fail --silent --show-error \
         -H 'content-type: application/json' \
         -d "{\"offer_id\":\"$offer\",\"input\":{\"shell\":{\"id\":\"$turn_id\",\"script\":\"$script\",\"stdin\":\"\"}}}" \
-        "http://127.0.0.1:${EXTERNAL_PORT}/api/input/$session_id" >/dev/null
+        "http://127.0.0.1:${UI_PORT}/api/input/$session_id" >/dev/null
     e2e_wait_until projection_check "$session_id" check-shell-event-done "$turn_id" \
         || { echo "shell turn $turn_id did not complete: $PROJECTION" >&2; return 1; }
     node scripts/e2e-json.js shell-event-stdout "$turn_id" <<<"$PROJECTION"
@@ -91,7 +91,7 @@ grep -q "Usage: chat COMMAND" <<<"$HELP_OUT"
 
 echo ">>> creating a parent session and running chat current in it"
 PARENT_ID="$("$OBELISK" generate execution-id)"
-"$OBELISK" execution submit -a "$E2E_API_URL" -e "$PARENT_ID" "$RUN_FFQN" \
+"$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$PARENT_ID" "$RUN_FFQN" \
     '["", null, null, null, null]'
 CURRENT_OUT="$(shell_turn "$PARENT_ID" "shell-chat-current" 'chat current')"
 node scripts/e2e-json.js check-current-id "$PARENT_ID" <<<"$CURRENT_OUT"
@@ -102,7 +102,7 @@ WATCH_LOG="$E2E_TMP/watch.log"
 WATCH_CURSOR="$(run_detail "$PARENT_ID" | node -e \
     'process.stdout.write(String(JSON.parse(require("fs").readFileSync(0, "utf8")).transcript.response_cursor))')"
 curl --silent --no-buffer --max-time 60 \
-    "http://127.0.0.1:${EXTERNAL_PORT}/api/watch?run=${PARENT_ID}&cursor=${WATCH_CURSOR}" >"$WATCH_LOG" &
+    "http://127.0.0.1:${UI_PORT}/api/watch?run=${PARENT_ID}&cursor=${WATCH_CURSOR}" >"$WATCH_LOG" &
 WATCH_PID=$!
 watch_saw() { grep -q "$1" "$WATCH_LOG"; }
 e2e_wait_until watch_saw "event: statuses" \
@@ -132,12 +132,12 @@ CREATE_OUT="$(shell_turn "$PARENT_ID" "shell-chat-create" 'chat create --model f
 CHILD_ID="$(head -n 1 <<<"$CREATE_OUT")"
 [[ "$CHILD_ID" == E_* ]] || { echo "unexpected child create output: $CREATE_OUT" >&2; exit 1; }
 # Captured, not piped into grep -q: an early-exiting grep breaks obelisk's stdout.
-TOP_LEVEL_LIST="$("$OBELISK" execution list -j -a "$E2E_API_URL" --limit 200)"
+TOP_LEVEL_LIST="$("$OBELISK" execution list -j --api-url "$E2E_API_URL" --limit 200)"
 if grep -q "\"$CHILD_ID\"" <<<"$TOP_LEVEL_LIST"; then
     echo "child session was listed without --show-derived" >&2
     exit 1
 fi
-DERIVED_LIST="$("$OBELISK" execution list -j -a "$E2E_API_URL" --show-derived --limit 200)"
+DERIVED_LIST="$("$OBELISK" execution list -j --api-url "$E2E_API_URL" --show-derived --limit 200)"
 grep -q "$CHILD_ID" <<<"$DERIVED_LIST"
 
 echo ">>> chat create --name with a \$-prefixed prompt opens a labeled child in bash"
@@ -202,7 +202,7 @@ grep -q '"timed_out":false' <<<"$WATCH_OUT" \
     || { echo "create --watch woke as a timeout: $WATCH_OUT" >&2; exit 1; }
 
 echo ">>> chat watch wakes immediately on a cancelled session"
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true
 WATCH_OUT="$(shell_turn "$PARENT_ID" "shell-chat-watch-cancelled" \
     "chat watch $TOPLEVEL_ID --timeout 60s")"
 grep -q '"state":"cancelled"' <<<"$WATCH_OUT" \
@@ -211,8 +211,8 @@ grep -q '"state":"cancelled"' <<<"$WATCH_OUT" \
 # KNOWN-RED: an Obelisk-core replay-finalize gap, not a workflow-agent bug -
 
 echo ">>> cleaning up sessions"
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$PARENT_ID" >/dev/null || true
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$CHILD_ID" >/dev/null || true
-"$OBELISK" execution cancel -a "$E2E_API_URL" "$BASH_CHILD_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$PARENT_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$TOPLEVEL_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$CHILD_ID" >/dev/null || true
+"$OBELISK" execution cancel --api-url "$E2E_API_URL" "$BASH_CHILD_ID" >/dev/null || true
 echo ">>> chat E2E PASS"
