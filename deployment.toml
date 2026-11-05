@@ -376,6 +376,7 @@ exec.lock_expiry.minutes = 2
 
 [[webhook_endpoint_js]]
 name = "ui-api"
+http_server = "external"
 location = "webhook/ui-api.js"
 routes = [
   { methods = ["GET"], route = "/" },

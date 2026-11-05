@@ -55,7 +55,7 @@ e2e_init() {
     # No provisioner, so `obelisk cloud` stays out of the prompt.
     unset OBELISK_CLOUD_API_TOKEN
     export OBELISK__API__LISTENING_ADDR="127.0.0.1:${api_port}"
-    export OBELISK__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}"
+    export OBELISK__HTTP_SERVER__EXTERNAL__LISTENING_ADDR="127.0.0.1:${external_port}"
     # OBELISK_UI_URL is a required internal webui-url source, so the Web UI must listen.
     export OBELISK__WEBUI__LISTENING_ADDR="127.0.0.1:$((api_port + 200))"
     export OBELISK__DATABASE__SQLITE__DIRECTORY="${E2E_TMP}/obelisk-sqlite"
