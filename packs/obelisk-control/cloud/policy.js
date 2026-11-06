@@ -2,7 +2,7 @@
 // to the `{app_name, policy, cloud}` the provisioner derives from the verbatim `text` it stores.
 import { parseToml } from "./toml.js";
 
-const TOP_LEVEL = ["app_name", "cloud", "secrets", "public_env", "allowed_exec_activities", "outbound_http"];
+const TOP_LEVEL = ["app_name", "cloud", "secrets", "public_env", "public_http_servers", "allowed_exec_activities", "outbound_http"];
 const HOST_FIELDS = ["pattern", "url_prefix", "url_regex_suffix", "methods", "request_url_regex", "secrets", "replace_in"];
 
 export function appConfig(text, path = "app.toml") {
@@ -26,6 +26,14 @@ export function appConfig(text, path = "app.toml") {
         // PORT: app.rs's `generate_app_name_hint`.
         const command = path === "app.toml" ? "obelisk generate app-name" : `obelisk generate app-name -a ${path}`;
         throw `invalid \`app_name\` in ${path}; set a random one with \`${command}\`\n\nCaused by:\n    ${error}`;
+    }
+
+    const publicHttpServers = toml.public_http_servers ?? [];
+    if (!Array.isArray(publicHttpServers) || !publicHttpServers.every((name) => typeof name === "string")) {
+        fail("public_http_servers must be a list of server names");
+    }
+    for (const name of publicHttpServers) {
+        if (["internal", "webui"].includes(name)) fail(`public_http_servers cannot include reserved server \`${name}\``);
     }
 
     const cloud = {};
@@ -64,10 +72,15 @@ export function appConfig(text, path = "app.toml") {
             config = table(config, `public_env.${name}`, fail);
             const internal = config.type === "internal";
             for (const key of Object.keys(config)) {
-                if (!(internal ? ["type", "source"] : ["type", "optional"]).includes(key)) fail(`unknown field \`public_env.${name}.${key}\``);
+                if (!(internal ? ["type", "source", "http_server"] : ["type", "optional"]).includes(key)) fail(`unknown field \`public_env.${name}.${key}\``);
             }
             if (internal) {
-                if (!["api-url", "webui-url"].includes(config.source)) fail(`public_env.${name}.source must be "api-url" or "webui-url"`);
+                if (!["api-url", "webui-url", "http-server-url"].includes(config.source)) fail(`public_env.${name}.source must be "api-url", "webui-url" or "http-server-url"`);
+                if (config.source === "http-server-url") {
+                    if (typeof config.http_server !== "string") fail(`public_env.${name}.http_server must be a string`);
+                    return { name, type: "internal", source: config.source, http_server: config.http_server };
+                }
+                if (config.http_server !== undefined) fail(`unknown field \`public_env.${name}.http_server\``);
                 return { name, type: "internal", source: config.source };
             }
             if (config.type !== undefined && config.type !== "env") fail(`public_env.${name}.type must be "env" or "internal"`);
@@ -95,6 +108,7 @@ export function appConfig(text, path = "app.toml") {
             public_env: publicEnv,
             allowed_exec_activities: exposure(toml.allowed_exec_activities, "allowed_exec_activities", fail),
             outbound_http: outboundHttp,
+            ...(publicHttpServers.length > 0 && { public_http_servers: [...new Set(publicHttpServers)].sort() }),
         },
         cloud,
     };

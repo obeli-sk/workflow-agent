@@ -112,6 +112,43 @@ test("deploy creates a missing app", async () => {
     assert.deepEqual(JSON.parse(create.body), { app_toml: policy, env: {}, secrets: {} });
 });
 
+test("cloud app new accepts public servers and internal HTTP URLs without requesting environment values", async () => {
+    const policy = `app_name = "demo"
+public_http_servers = ["partner", "external", "external"]
+[public_env]
+INTERNAL_BASE_URL = { type = "internal", source = "http-server-url", http_server = "internal" }
+`;
+    const requests = provisioner({ "POST /v1/apps": appRow() });
+    const result = await run(["app", "new"], "", policy);
+    assert.equal(result.exit_code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(requests.find((request) => request.method === "POST").body), {
+        app_toml: policy, env: {}, secrets: {},
+    });
+    const parsed = appConfig(policy).policy;
+    assert.deepEqual(parsed.public_http_servers, ["external", "partner"]);
+    assert.deepEqual(parsed.public_env, [
+        { name: "INTERNAL_BASE_URL", type: "internal", source: "http-server-url", http_server: "internal" },
+    ]);
+    assert.ok(!("public_http_servers" in appConfig('app_name = "demo"\npublic_http_servers = []\n').policy));
+});
+
+test("cloud app new rejects reserved public listeners and malformed HTTP declarations before sending requests", async () => {
+    const requests = provisioner({});
+    for (const declaration of [
+        'public_http_servers = ["internal"]',
+        'public_http_servers = ["webui"]',
+        'public_http_servers = "external"',
+        'public_http_servers = [123]',
+        '[public_env]\nURL = { type = "internal", source = "http-server-url" }',
+        '[public_env]\nURL = { type = "internal", source = "api-url", http_server = "internal" }',
+    ]) {
+        const result = await run(["app", "new"], "", `app_name = "demo"\n${declaration}\n`);
+        assert.equal(result.exit_code, 1, declaration);
+        assert.match(result.stderr, /Invalid app config/);
+    }
+    assert.deepEqual(requests, []);
+});
+
 test("deploy sends cloud integrations and does not require the env they supply", async () => {
     const policy = 'app_name = "demo"\n[cloud.integrations]\nllm = { type = "llm", env = "LLM_BASE_URL" }\n[public_env]\nLLM_BASE_URL = {}\n';
     const requests = provisioner({ "POST /v1/apps": appRow() });
