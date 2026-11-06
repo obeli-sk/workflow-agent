@@ -3,7 +3,7 @@
 // literal, so it deliberately avoids backticks and ${...} in its own code.
 
 export function htmlShell() {
-    const uiUrl = (process.env["OBELISK_UI_URL"] || "http://localhost:8080").replace(/\/$/, "");
+    const uiUrl = process.env["OBELISK_UI_URL"].replace(/\/$/, "");
     const html = SHELL_HTML.replace("__OBELISK_UI_URL__", uiUrl);
     return new Response(html, {
         status: 200,

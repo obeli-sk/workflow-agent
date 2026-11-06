@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import vm from "node:vm";
 import { htmlShell } from "./shell.js";
 
+process.env.OBELISK_UI_URL = "https://webui.agent.test";
+
 function stubElement() {
     return {
         innerHTML: "", value: "", disabled: false, placeholder: "", textContent: "",
