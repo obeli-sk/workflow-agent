@@ -4,7 +4,7 @@ import discover from "./config-discover.js";
 
 // Isolate each test from whatever the real environment (or a prior test)
 // left behind; config-discover.js reads these lazily on every call.
-const ENV_KEYS = ["MAX_STEPS", "PROGRAMS_JSON", "APPS_JSON", "OBELISK_VERSION"];
+const ENV_KEYS = ["MAX_STEPS", "PROGRAMS_JSON", "APPS_JSON", "OBELISK_VERSION", "APP_NAME"];
 
 function withEnv(overrides, fn) {
     const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -42,7 +42,7 @@ test("discover parses PROGRAMS_JSON/APPS_JSON", async () => {
 });
 
 test("discover's prompt_tail renders the static sections then This session, with identity and parent", async () => {
-    const config = await withEnv({}, () => discover("E_01ABC.n:research_1", "claude", "low", "research"));
+    const config = await withEnv({ APP_NAME: "my-workflow" }, () => discover("E_01ABC.n:research_1", "claude", "low", "research"));
     const tail = config.prompt_tail;
 
     // Static sections come first, in order, followed by the per-session one.
@@ -58,6 +58,7 @@ test("discover's prompt_tail renders the static sections then This session, with
     );
 
     assert.ok(tail.includes('"execution_id":"E_01ABC.n:research_1"'));
+    assert.ok(tail.includes('You are running in the Obelisk app "my-workflow".'));
     assert.ok(tail.includes('"backend":"claude"'));
     assert.ok(tail.includes('"effort":"low"'));
     assert.ok(tail.includes('"name":"research"'));

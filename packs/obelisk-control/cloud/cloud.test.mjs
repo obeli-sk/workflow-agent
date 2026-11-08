@@ -112,10 +112,11 @@ test("deploy creates a missing app", async () => {
     assert.deepEqual(JSON.parse(create.body), { app_toml: policy, env: {}, secrets: {} });
 });
 
-test("cloud app new accepts public servers and internal HTTP URLs without requesting environment values", async () => {
+test("cloud app new accepts public servers and internal environment sources without requesting values", async () => {
     const policy = `app_name = "demo"
 public_http_servers = ["partner", "external", "external"]
 [public_env]
+APP_NAME = { type = "internal", source = "app-name" }
 INTERNAL_BASE_URL = { type = "internal", source = "http-server-url", http_server = "internal" }
 `;
     const requests = provisioner({ "POST /v1/apps": appRow() });
@@ -127,6 +128,7 @@ INTERNAL_BASE_URL = { type = "internal", source = "http-server-url", http_server
     const parsed = appConfig(policy).policy;
     assert.deepEqual(parsed.public_http_servers, ["external", "partner"]);
     assert.deepEqual(parsed.public_env, [
+        { name: "APP_NAME", type: "internal", source: "app-name" },
         { name: "INTERNAL_BASE_URL", type: "internal", source: "http-server-url", http_server: "internal" },
     ]);
     assert.ok(!("public_http_servers" in appConfig('app_name = "demo"\npublic_http_servers = []\n').policy));

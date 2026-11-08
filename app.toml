@@ -13,6 +13,7 @@ OBELISK_API_TOKEN = { type = "internal" }
 OBELISK_CLOUD_API_TOKEN = { optional = true }
 
 [public_env]
+APP_NAME = { type = "internal", source = "app-name" }
 DOCS_URLS_JSON = { optional = true }
 OBELISK_VERSION = { optional = true }
 MAX_STEPS = { optional = true }

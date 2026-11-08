@@ -73,6 +73,7 @@ function renderSelfSection(executionId, backend, effort, name) {
     });
     let text =
         "# This session\n\n" +
+        `You are running in the Obelisk app ${JSON.stringify(process.env["APP_NAME"])}.\n\n` +
         "`chat current` output for the session you are running in:\n" +
         `${payload}\n\n` +
         "Peers discover sessions by slug via `chat list`; read your own transcript " +
