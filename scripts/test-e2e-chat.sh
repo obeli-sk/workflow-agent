@@ -95,6 +95,10 @@ PARENT_ID="$("$OBELISK" generate execution-id)"
     '["", null, null, null, null]'
 CURRENT_OUT="$(shell_turn "$PARENT_ID" "shell-chat-current" 'chat current')"
 node scripts/e2e-json.js check-current-id "$PARENT_ID" <<<"$CURRENT_OUT"
+run_detail "$PARENT_ID" | node -e '
+    const detail = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    require("node:assert/strict").match(detail.system_prompt, /You are running in the Obelisk app "workflow-agent"\./);
+'
 
 echo ">>> /api/watch streams status and session-event signals"
 WATCH_LOG="$E2E_TMP/watch.log"

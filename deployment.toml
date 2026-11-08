@@ -47,6 +47,7 @@ ffqn = "obelisk-agent:config/config.discover"
 wit = "wit"
 location = "activity/config-discover.js"
 env_vars = [
+  { key = "APP_NAME", value = "${APP_NAME}" },
   { key = "MAX_STEPS", value = "${MAX_STEPS:-40}" },
   { key = "PROGRAMS_JSON", value = '''
 ${PROGRAMS_JSON:-[

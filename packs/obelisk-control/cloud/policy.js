@@ -75,7 +75,7 @@ export function appConfig(text, path = "app.toml") {
                 if (!(internal ? ["type", "source", "http_server"] : ["type", "optional"]).includes(key)) fail(`unknown field \`public_env.${name}.${key}\``);
             }
             if (internal) {
-                if (!["api-url", "webui-url", "http-server-url"].includes(config.source)) fail(`public_env.${name}.source must be "api-url", "webui-url" or "http-server-url"`);
+                if (!["app-name", "api-url", "webui-url", "http-server-url"].includes(config.source)) fail(`public_env.${name}.source must be "app-name", "api-url", "webui-url" or "http-server-url"`);
                 if (config.source === "http-server-url") {
                     if (typeof config.http_server !== "string") fail(`public_env.${name}.http_server must be a string`);
                     return { name, type: "internal", source: config.source, http_server: config.http_server };
