@@ -54,7 +54,7 @@
       },
       "original": {
         "owner": "obeli-sk",
-        "ref": "latest-rc",
+        "ref": "v0.43.0-rc.17",
         "repo": "obelisk",
         "type": "github"
       }
