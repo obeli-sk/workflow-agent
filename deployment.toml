@@ -124,7 +124,7 @@ exec.lock_expiry.seconds = 30
 pattern = "https://obeli.sk"
 methods = ["GET"]
 
-# Hosted app webhook URLs are discovered with `obelisk cloud app endpoint webhook`.
+# Hosted app webhook URLs are listed by `obelisk cloud app status`.
 [[activity_js.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["GET"]

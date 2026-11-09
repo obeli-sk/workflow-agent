@@ -65,7 +65,7 @@ export async function fillValues(name, policy, fillEnv) {
     if (env === null || typeof env !== "object" || Array.isArray(env)) throw "Invalid cloud environment response";
     if (!Array.isArray(secrets)) throw "Invalid cloud secrets response";
     const { report, pending } = collectValues(
-        `Run \`obelisk cloud app --app ${name} fill\`, or retry with \`--fill\` or \`--fill-non-interactive\``,
+        `Run \`obelisk cloud app fill --app ${name}\`, or retry with \`--fill\` or \`--fill-non-interactive\``,
         policy, env, secrets, fillEnv,
     );
     const staged = [];

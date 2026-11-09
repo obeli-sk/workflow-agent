@@ -79,18 +79,18 @@ export OBELISK_CLOUD_API_TOKEN=...
 The agent is then told about your apps and can run, for example:
 
 ```sh
-obelisk cloud apps list
+obelisk cloud app list
 obelisk cloud app deploy                    # create or update the app from ./app.toml and deploy
-obelisk cloud app --app NAME execution list
-obelisk cloud app --app NAME secrets set API_KEY --stdin
+obelisk cloud app execution list --app NAME
+obelisk cloud app secrets set API_KEY --stdin --app NAME
 ```
 
 Hosted API and webhook access defaults to `https://*.obelisk.works` on port
 443, including `dev.obelisk.works`. For another domain, set
 `OBELISK_CLOUD_APPS_DOMAIN`; the grant becomes `https://*.<domain>`. The webhook grant is GET-only and carries no API token.
-Find the webhook URL with `obelisk cloud app --app NAME endpoint webhook`.
+`obelisk cloud app status --app NAME` lists the app's API, Web UI and webhook URLs.
 
-Interactive and account-level commands (`--fill`, `token new|revoke`) are not
+Interactive commands (`--fill`) are not
 available from the session; `--fill-non-interactive` reads exported shell variables. See [`docs/obelisk-cloud.md`](docs/obelisk-cloud.md).
 
 ### Docs and example apps
@@ -118,7 +118,7 @@ owner's GitHub credentials. GitHub enforces repository permissions.
 `help` lists the commands, which cover the usual file, text and search tools.
 Besides those, the shell provides:
 
-- `obelisk cloud app --app NAME deployment pull ID -o DIRECTORY`: an editable
+- `obelisk cloud app deployment pull ID -o DIRECTORY --app NAME`: an editable
   snapshot of a deployment; source files load when first read.
 - `obelisk cloud ...`: the apps in the cloud (see above).
 - `curl`: GET-only, limited to the Obelisk docs and the apps' webhooks.

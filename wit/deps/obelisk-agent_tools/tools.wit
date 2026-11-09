@@ -56,7 +56,7 @@ interface cloud {
   // `fill-env` is the shell's exported variables when `--fill-non-interactive`
   // (or `fill --non-interactive`) asks for same-named values; none otherwise.
 
-  // Provisioner commands (`obelisk cloud apps|token|app ...` minus deploy and app API calls).
+  // Provisioner commands (`obelisk cloud auth|app ...` minus deploy and app API calls).
   run: func(args: list<string>, stdin: string, app-toml: option<string>, fill-env: option<list<tuple<string, string>>>) -> result<command-output, string>;
   // Stage the app's config from `app-toml`, or create the app. The err carries the log so far.
   prepare-deploy: func(app: string, app-toml: string, fill-env: option<list<tuple<string, string>>>) -> result<deploy-target, string>;

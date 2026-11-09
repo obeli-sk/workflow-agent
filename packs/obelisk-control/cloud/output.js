@@ -70,7 +70,7 @@ export function renderSummary(summary, value) {
             if (Number.isInteger(value?.memory_mb)) line(`Memory: ${value.memory_mb} MB`);
             // Not checked (null): probing would wake the suspended Machine.
             out += health(value);
-            line(`API: ${value?.api_ready === true ? "ready" : idle && value?.api_ready === null ? "resumes on request" : "unavailable"}`);
+            out += endpoints(value?.app?.endpoints, value?.api_ready === true ? "ready" : idle && value?.api_ready === null ? "resumes on request" : "unavailable");
             break;
         }
         case "events": {
@@ -79,15 +79,6 @@ export function renderSummary(summary, value) {
             for (const event of events) {
                 line(`${time(event?.created_at)}  ${text(event, "level", "").padEnd(5)}  ${text(event, "message", "")}  (${text(event, "code", "")})`);
             }
-            break;
-        }
-        case "token":
-            out += token(value);
-            break;
-        case "tokens": {
-            const tokens = Array.isArray(value?.tokens) ? value.tokens : [];
-            if (tokens.length === 0) line("No tokens.");
-            for (const item of tokens) out += token(item);
             break;
         }
         case "env": {
@@ -155,7 +146,7 @@ function configRevisions(value) {
         const changes = local.comparison.changes.filter((change) => typeof change === "string");
         out += changes.length === 0
             ? `${path}: matches the staged configuration\n`
-            : `${path}: differs from the staged configuration: ${changes.join(", ")}. Run \`obelisk cloud app --app ${text(app, "app_name", "")} stage\` to stage it.\n`;
+            : `${path}: differs from the staged configuration: ${changes.join(", ")}. Run \`obelisk cloud app stage --app ${text(app, "app_name", "")}\` to stage it.\n`;
     }
     return out;
 }
@@ -180,31 +171,28 @@ function health(value) {
     return out;
 }
 
+// PORT: output.rs's `endpoints`: URLs the applied configuration serves, with the API readiness.
+export function endpoints(value, api) {
+    if (!isObject(value)) return `API: ${api}\nEndpoints are available after the first apply.\n`;
+    return [["api", "API"], ["webui", "Web UI"], ["internal", "Internal webhooks"], ["external", "External webhooks"]]
+        .filter(([key]) => typeof value[key] === "string")
+        .map(([key, label]) => (key === "api" && api ? `${label}: ${value[key]} (${api})\n` : `${label}: ${value[key]}\n`))
+        .join("");
+}
+
 function app(value, note) {
     let out = `${text(value, "app_name", "App")}: ${text(value, "status", "unknown")}${note ? ` (${note})` : ""}\n`;
     const name = text(value, "app_name", "");
     const desired = value?.desired_state;
     if (typeof desired === "string" && value?.status !== desired) {
         out += ["running", "stopped"].includes(value?.status)
-            ? `Intended state: ${desired}. Run \`obelisk cloud app --app ${name} apply\` to reach it.\n`
+            ? `Intended state: ${desired}. Run \`obelisk cloud app apply --app ${name}\` to reach it.\n`
             : `Intended state: ${desired}\n`;
     }
-    if (typeof value?.webhook_url === "string") out += `URL: ${value.webhook_url}\n`;
-    if (value?.potentially_stale === true) out += `Pending changes. Run \`obelisk cloud app --app ${name} apply\` to apply them.\n`;
+    if (value?.potentially_stale === true) out += `Pending changes. Run \`obelisk cloud app apply --app ${name}\` to apply them.\n`;
     if (typeof value?.state?.failure === "string") out += `Error: ${value.state.failure}\n`;
     const reason = value?.state?.startup_failure?.reason;
     if (typeof reason === "string") out += `Startup failed: ${reason}. Use --verbose for startup details.\n`;
-    return out;
-}
-
-function token(value) {
-    const scope = value?.creation?.global === true ? "account-wide" : names(value?.creation?.apps);
-    const expires = Number.isInteger(value?.expires_at) ? value.expires_at : null;
-    const state = value?.revoked === true ? "revoked"
-        : expires !== null && expires <= Math.floor(Date.now() / 1000) ? "expired" : "active";
-    let out = `${text(value, "token_id", "Token")}  ${text(value, "name", "")}  ${state}  scope: ${scope}\n`;
-    if (value?.sync?.status === "pending") out += "Access changes pending.\n";
-    if (expires !== null) out += `Expires: ${new Date(expires * 1000).toISOString().replace(".000Z", "+00:00")}\n`;
     return out;
 }
 

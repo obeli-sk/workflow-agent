@@ -10,7 +10,7 @@
 // `fill-env` the shell's exported variables for `--fill-non-interactive`.
 // Like the CLI, JSON goes to stdout and human output to stderr; errors exit 1,
 // usage errors 2.
-import { appApiGet, appEndpoints, appRequest, cloudBase, cloudRequest, stagedRevision } from "./client.js";
+import { appApiGet, appRequest, cloudBase, cloudRequest, stagedRevision } from "./client.js";
 import { fillValues, initialValues, userSuppliedPolicy } from "./fill.js";
 import { appConfig, configName, validateCloudAppName } from "./policy.js";
 import { humanOutput, renderSummary } from "./output.js";
@@ -85,18 +85,15 @@ async function execute({ positionals, flags }, stdin, appToml, fillEnv) {
         if (flags["--json"]) return { stdout: `${JSON.stringify(value, null, 2)}\n` };
         return { stderr: options.verbose ? humanOutput(value) : renderSummary(summary, value) };
     };
-    if (group === "apps" && rest[0] === "list") {
+    if (group === "app" && rest[0] === "list") {
         allow(flags, []);
+        if (flags["--app"] !== undefined) throw new UsageError("unexpected argument '--app' found");
         arity(rest, 1);
         return print(await cloudRequest("GET", ["v1", "apps"], options), { kind: "apps" });
     }
     if (group === "auth") {
         allow(flags, []);
         return authCommand(rest, flags);
-    }
-    if (group === "token") {
-        allow(flags, []);
-        return print(...(await tokenCommand(rest, options)));
     }
     if (group === "app") return appCommand(rest, flags, stdin, appToml, fillEnv, options, print);
     throw new UsageError(`unrecognized subcommand '${positionals.join(" ")}'`);
@@ -133,22 +130,6 @@ async function tokenState() {
     }
 }
 
-async function tokenCommand([action, id, ...extra], options) {
-    if (action === "list") {
-        arity([id], 0);
-        return [await cloudRequest("GET", ["v1", "tokens"], options), { kind: "tokens" }];
-    }
-    if (action === "get") {
-        if (id === undefined) throw new UsageError("the following required arguments were not provided:\n  <ID>");
-        arity(extra, 0);
-        return [await cloudRequest("GET", ["v1", "tokens", id], options), { kind: "token" }];
-    }
-    if (action === "new" || action === "revoke") {
-        throw `\`cloud token ${action}\` is not available in the sandbox; run it with the real obelisk CLI`;
-    }
-    throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
-}
-
 const POLICY_COMMANDS = ["new", "status", "stage", "apply", "fill"];
 
 async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, options, print) {
@@ -175,12 +156,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     }
     const name = appName(flags["--app"] ?? config?.appName);
     const local = configForApp(name, config, path, explicit, action === "stage");
-    const apply = flags["--app"] === undefined ? "obelisk cloud app apply" : `obelisk cloud app --app ${flags["--app"]} apply`;
-    if (action === "get") {
-        allow(flags, []);
-        arity(rest, 0);
-        return print(await appRequest(name, "GET", [], options), { kind: "app" });
-    }
+    const apply = flags["--app"] === undefined ? "obelisk cloud app apply" : `obelisk cloud app apply --app ${flags["--app"]}`;
     if (action === "status") {
         allow(flags, ["-a"]);
         arity(rest, 0);
@@ -217,7 +193,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         const { desired, revision } = await stagedOrLocal(current, flags["--staged"] ? null : local, name, path, options);
         if (flags["--fill"]) throw terminal("--fill");
         await fillValues(name, userSuppliedPolicy(desired), flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
-        const { deployment_id: deploymentId } = await appApiGet(current?.api_url, ["v1", "info"]);
+        const { deployment_id: deploymentId } = await appApiGet(current?.endpoints?.api, ["v1", "info"]);
         const body = { force: flags["--force"] === true, revision, deployment_id: deploymentId };
         return print(await appRequest(name, "POST", ["apply"], { ...command, body }), { kind: "lifecycle" });
     }
@@ -244,11 +220,6 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     }
     if (action === "env") return envCommand(name, rest, flags, command, options, print, apply);
     if (action === "secrets") return secretsCommand(name, rest, flags, stdin, options, print, apply);
-    if (action === "endpoint") {
-        allow(flags, []);
-        arity(rest, 1);
-        return endpoint(name, rest[0], flags);
-    }
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
 }
 
@@ -303,17 +274,6 @@ async function secretsCommand(name, [action, key, ...extra], flags, stdin, optio
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
 }
 
-// PORT: cloud.rs's `run` for `endpoint`: computed from the name, no provisioner call.
-function endpoint(name, which, flags) {
-    const endpoints = appEndpoints(name);
-    if (which !== undefined) {
-        const key = { api: "api_url", webhook: "webhook_url", webui: "webui_url", internal: "internal_url" }[which];
-        if (!key) throw new UsageError(`unrecognized subcommand '${which}'`);
-        return { stdout: flags["--json"] ? `${JSON.stringify(endpoints[key], null, 2)}\n` : `${endpoints[key]}\n` };
-    }
-    return flags["--json"] ? { stdout: `${JSON.stringify(endpoints, null, 2)}\n` } : { stderr: humanOutput(endpoints) };
-}
-
 // PORT: cloud.rs's `app_name`; a parsed config always names an app.
 function appName(name) {
     if (name === undefined || name === null) {
@@ -356,5 +316,5 @@ async function stagedOrLocal(current, local, name, path, options) {
     const revision = stagedRevision(comparison);
     const changes = Array.isArray(comparison?.changes) ? comparison.changes.filter((change) => typeof change === "string") : [];
     if (changes.length === 0) return { desired: staged, revision };
-    throw `${path} differs from staged configuration revision ${revision}: ${changes.join(", ")}\nRun \`obelisk cloud app --app ${name} stage -a ${path}\`, or pass \`--staged\` to use the staged configuration`;
+    throw `${path} differs from staged configuration revision ${revision}: ${changes.join(", ")}\nRun \`obelisk cloud app stage --app ${name} -a ${path}\`, or pass \`--staged\` to use the staged configuration`;
 }

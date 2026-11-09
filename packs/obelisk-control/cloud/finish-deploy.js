@@ -20,7 +20,7 @@ export default async function finish_deploy(app, appToml, deploymentId, revision
             const filled = await fillValues(name, userSuppliedPolicy(config), fillEnv ? Object.fromEntries(fillEnv) : null);
             const unset = unsetOptional(filled);
             if (unset.length > 0) {
-                log(`Optional configuration not set: ${unset.join(", ")}. Run \`obelisk cloud app --app ${name} fill\` or \`deploy --fill\` to set it.`);
+                log(`Optional configuration not set: ${unset.join(", ")}. Run \`obelisk cloud app fill --app ${name}\` or \`deploy --fill\` to set it.`);
             }
         }
         log("→ obelisk cloud app apply");
@@ -28,7 +28,7 @@ export default async function finish_deploy(app, appToml, deploymentId, revision
         const row = await appRequest(name, "POST", ["apply"], { kind: "command", body });
         log(lifecycleOutcome(row));
         if (row?.status !== "running") {
-            throw `App is ${JSON.stringify(row?.status ?? null)}; inspect it with \`obelisk cloud app --app ${name} status\``;
+            throw `App is ${JSON.stringify(row?.status ?? null)}; inspect it with \`obelisk cloud app status --app ${name}\``;
         }
         return { app_json: JSON.stringify(row), log: lines.join("") };
     } catch (error) {
