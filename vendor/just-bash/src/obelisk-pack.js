@@ -1806,7 +1806,6 @@ Usage: obelisk cloud [OPTIONS] <COMMAND>
 
 Commands:
   auth   Show the cloud account this shell is configured with (status)
-  token  Inspect cloud bearer tokens (list, get ID)
   apps   List apps owned by the authenticated user (apps list)
   app    Manage an app and its deployments, executions and configuration
 

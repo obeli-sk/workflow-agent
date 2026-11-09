@@ -94,10 +94,6 @@ async function execute({ positionals, flags }, stdin, appToml, fillEnv) {
         allow(flags, []);
         return authCommand(rest, flags);
     }
-    if (group === "token") {
-        allow(flags, []);
-        return print(...(await tokenCommand(rest, options)));
-    }
     if (group === "app") return appCommand(rest, flags, stdin, appToml, fillEnv, options, print);
     throw new UsageError(`unrecognized subcommand '${positionals.join(" ")}'`);
 }
@@ -131,22 +127,6 @@ async function tokenState() {
         if (status === "401") return "rejected";
         return status ? `unknown (HTTP ${status})` : `unknown (${error})`;
     }
-}
-
-async function tokenCommand([action, id, ...extra], options) {
-    if (action === "list") {
-        arity([id], 0);
-        return [await cloudRequest("GET", ["v1", "tokens"], options), { kind: "tokens" }];
-    }
-    if (action === "get") {
-        if (id === undefined) throw new UsageError("the following required arguments were not provided:\n  <ID>");
-        arity(extra, 0);
-        return [await cloudRequest("GET", ["v1", "tokens", id], options), { kind: "token" }];
-    }
-    if (action === "new" || action === "revoke") {
-        throw `\`cloud token ${action}\` is not available in the sandbox; run it with the real obelisk CLI`;
-    }
-    throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
 }
 
 const POLICY_COMMANDS = ["new", "status", "stage", "apply", "fill"];

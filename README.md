@@ -90,7 +90,7 @@ Hosted API and webhook access defaults to `https://*.obelisk.works` on port
 `OBELISK_CLOUD_APPS_DOMAIN`; the grant becomes `https://*.<domain>`. The webhook grant is GET-only and carries no API token.
 Find the webhook URL with `obelisk cloud app --app NAME endpoint webhook`.
 
-Interactive and account-level commands (`--fill`, `token new|revoke`) are not
+Interactive commands (`--fill`) are not
 available from the session; `--fill-non-interactive` reads exported shell variables. See [`docs/obelisk-cloud.md`](docs/obelisk-cloud.md).
 
 ### Docs and example apps

@@ -38,7 +38,7 @@ The `obelisk-agent:tools/cloud` interface has these activities
 (`packs/obelisk-control/cloud/`); all but `tenant-read` have `max_retries = 0`:
 
 - `run` (`cli.js`) runs the provisioner commands: `apps list`, `auth status`,
-  `token list|get`, `app new|get|status|events|stage|apply|enable|disable|delete`,
+  `app new|get|status|events|stage|apply|enable|disable|delete`,
   `env ...`, `secrets ...` and `endpoint`. It returns stdout, stderr and an
   exit code, and its errors use the real CLI's wording.
 - `prepare-deploy` (`deploy.js`) and `finish-deploy` (`finish-deploy.js`)
@@ -99,7 +99,7 @@ other commands.
 - A deployment rejected for missing runtime configuration reports the server's
   findings without the real CLI's suggested app.toml snippet.
 - Interactive or account-level operations are rejected with a hint:
-  `--fill`, `fill` without `--non-interactive`, `token new|revoke`,
+  `--fill`, `fill` without `--non-interactive`,
   `--api-url`, `--api-token` and `--apps-domain`.
 - `obelisk server ...` and the top-level app commands do not exist. The agent
   asks the user with the separate `ask-user QUESTION` shell command.

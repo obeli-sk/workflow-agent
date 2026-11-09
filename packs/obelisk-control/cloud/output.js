@@ -81,15 +81,6 @@ export function renderSummary(summary, value) {
             }
             break;
         }
-        case "token":
-            out += token(value);
-            break;
-        case "tokens": {
-            const tokens = Array.isArray(value?.tokens) ? value.tokens : [];
-            if (tokens.length === 0) line("No tokens.");
-            for (const item of tokens) out += token(item);
-            break;
-        }
         case "env": {
             const env = isObject(value?.env) ? Object.entries(value.env) : [];
             if (env.length === 0) line("No environment variables.");
@@ -194,17 +185,6 @@ function app(value, note) {
     if (typeof value?.state?.failure === "string") out += `Error: ${value.state.failure}\n`;
     const reason = value?.state?.startup_failure?.reason;
     if (typeof reason === "string") out += `Startup failed: ${reason}. Use --verbose for startup details.\n`;
-    return out;
-}
-
-function token(value) {
-    const scope = value?.creation?.global === true ? "account-wide" : names(value?.creation?.apps);
-    const expires = Number.isInteger(value?.expires_at) ? value.expires_at : null;
-    const state = value?.revoked === true ? "revoked"
-        : expires !== null && expires <= Math.floor(Date.now() / 1000) ? "expired" : "active";
-    let out = `${text(value, "token_id", "Token")}  ${text(value, "name", "")}  ${state}  scope: ${scope}\n`;
-    if (value?.sync?.status === "pending") out += "Access changes pending.\n";
-    if (expires !== null) out += `Expires: ${new Date(expires * 1000).toISOString().replace(".000Z", "+00:00")}\n`;
     return out;
 }
 
