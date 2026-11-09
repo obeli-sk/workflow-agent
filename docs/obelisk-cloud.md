@@ -24,9 +24,10 @@ API and `https://<app>.<domain>` for webhooks. The default pattern
 `https://*.obelisk.works` covers both the production and `dev.obelisk.works`
 domains. Apply the app configuration and redeploy after changing the domain.
 
-Discover any app's webhook with
-`obelisk cloud app endpoint webhook --app NAME`, then fetch its route with
-`curl`.
+`obelisk cloud app status --app NAME` lists the URLs the app's applied
+configuration serves: API, Web UI, internal webhooks, and external webhooks
+when `external` is in `public_http_servers`. `app deploy` prints them as well.
+Fetch a webhook route with `curl`.
 
 `packs/obelisk-control/descriptor.js` adds a "Cloud apps" section to the
 system prompt along with the cloud's current apps. If the provisioner rejects the token or can't be reached, the section is
@@ -38,8 +39,8 @@ The `obelisk-agent:tools/cloud` interface has these activities
 (`packs/obelisk-control/cloud/`); all but `tenant-read` have `max_retries = 0`:
 
 - `run` (`cli.js`) runs the provisioner commands: `auth status`, `app list`,
-  `app new|get|status|events|stage|apply|enable|disable|delete`,
-  `env ...`, `secrets ...` and `endpoint`. It returns stdout, stderr and an
+  `app new|status|events|stage|apply|enable|disable|delete`,
+  `env ...` and `secrets ...`. It returns stdout, stderr and an
   exit code, and its errors use the real CLI's wording.
 - `prepare-deploy` (`deploy.js`) and `finish-deploy` (`finish-deploy.js`)
   run the provisioner part of `app deploy`, in the real CLI's order:

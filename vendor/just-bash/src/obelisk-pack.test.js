@@ -72,7 +72,7 @@ function fakeCloud(routes = {}) {
         },
         finishDeploy(app, appToml, deploymentId, revision, created, fillEnv) {
             cloud.deploys.push({ app, deploymentId, revision, created, fillEnv });
-            return { app: { name: app, webhook_url: "https://demo.test/hook", outcome: "applied" }, log: "→ finish\n" };
+            return { app: { name: app, endpoints: { api: "https://api--demo.test", internal: "https://internal--demo.test", external: "https://demo.test" }, outcome: "applied" }, log: "→ finish\n" };
         },
     };
     return cloud;
@@ -210,8 +210,8 @@ test("cloud app deploy uploads without switching, then finishes with its id", ()
         description: null,
         allow_unavailable_runtime_config: true,
     });
-    assert.equal(out.stdout, "https://demo.test/hook\n");
-    assert.equal(out.stderr, `→ prepare\n→ obelisk cloud app deployment submit\nSubmitted as ${id}\n→ finish\nDeployed demo\n`);
+    assert.equal(out.stdout, "");
+    assert.equal(out.stderr, `→ prepare\n→ obelisk cloud app deployment submit\nSubmitted as ${id}\n→ finish\nDeployed demo\nAPI: https://api--demo.test\nInternal webhooks: https://internal--demo.test\nExternal webhooks: https://demo.test\n`);
     assert.ok(!cloud.calls.some((call) => call.path.endsWith("/switch")));
 
     const json = run(i, "cloud app deploy --json", cloud);

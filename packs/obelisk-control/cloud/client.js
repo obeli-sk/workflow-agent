@@ -67,7 +67,7 @@ export async function lookupApp(name) {
 
 // PORT: cloud.rs's `api_origin`.
 export function apiOrigin(value) {
-    if (typeof value !== "string") throw "Provisioner response is missing api_url";
+    if (typeof value !== "string") throw "Provisioner response is missing endpoints.api";
     let url;
     try {
         url = new URL(value);
@@ -112,8 +112,8 @@ export async function appApiGet(apiUrl, segments) {
     }
 }
 
-// PORT: cloud.rs's `endpoints`: an app's URLs follow from its name and OBELISK_CLOUD_APPS_DOMAIN.
-export function appEndpoints(name) {
+// PORT: cloud.rs's `direct_api_url`: the app's API URL follows from its name and OBELISK_CLOUD_APPS_DOMAIN.
+function appApiUrl(name) {
     const domain = (process.env["OBELISK_CLOUD_APPS_DOMAIN"] || "obelisk.works").toLowerCase();
     const label = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
     if (domain.length > 253 || !domain.split(".").every((part) => label.test(part))) {
@@ -121,12 +121,7 @@ export function appEndpoints(name) {
     }
     const hostname = `${name}.${domain}`;
     if (hostname.length + "internal--".length > 253) throw "App hostname exceeds the DNS length limit";
-    return {
-        api_url: `https://api--${hostname}`,
-        webhook_url: `https://${hostname}`,
-        webui_url: `https://webui--${hostname}`,
-        internal_url: `https://internal--${hostname}`,
-    };
+    return `https://api--${hostname}`;
 }
 
 // One request on the app's API at `path` (starting with `/`), authenticated by the cloud token.
@@ -137,9 +132,9 @@ export async function appApiRequest(app, method, path, contentType, body, accept
     if (contentType) headers["content-type"] = contentType;
     let response;
     try {
-        response = await fetch(`${appEndpoints(app).api_url}${path}`, { method, headers, body: body ?? undefined });
+        response = await fetch(`${appApiUrl(app)}${path}`, { method, headers, body: body ?? undefined });
     } catch (error) {
-        throw `error sending request for url (${appEndpoints(app).api_url}${path}): ${error}`;
+        throw `error sending request for url (${appApiUrl(app)}${path}): ${error}`;
     }
     return { status: response.status, body: await response.text() };
 }

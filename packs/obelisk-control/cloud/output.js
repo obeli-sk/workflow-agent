@@ -70,7 +70,7 @@ export function renderSummary(summary, value) {
             if (Number.isInteger(value?.memory_mb)) line(`Memory: ${value.memory_mb} MB`);
             // Not checked (null): probing would wake the suspended Machine.
             out += health(value);
-            line(`API: ${value?.api_ready === true ? "ready" : idle && value?.api_ready === null ? "resumes on request" : "unavailable"}`);
+            out += endpoints(value?.app?.endpoints, value?.api_ready === true ? "ready" : idle && value?.api_ready === null ? "resumes on request" : "unavailable");
             break;
         }
         case "events": {
@@ -171,6 +171,15 @@ function health(value) {
     return out;
 }
 
+// PORT: output.rs's `endpoints`: URLs the applied configuration serves, with the API readiness.
+export function endpoints(value, api) {
+    if (!isObject(value)) return `API: ${api}\nEndpoints are available after the first apply.\n`;
+    return [["api", "API"], ["webui", "Web UI"], ["internal", "Internal webhooks"], ["external", "External webhooks"]]
+        .filter(([key]) => typeof value[key] === "string")
+        .map(([key, label]) => (key === "api" && api ? `${label}: ${value[key]} (${api})\n` : `${label}: ${value[key]}\n`))
+        .join("");
+}
+
 function app(value, note) {
     let out = `${text(value, "app_name", "App")}: ${text(value, "status", "unknown")}${note ? ` (${note})` : ""}\n`;
     const name = text(value, "app_name", "");
@@ -180,7 +189,6 @@ function app(value, note) {
             ? `Intended state: ${desired}. Run \`obelisk cloud app apply --app ${name}\` to reach it.\n`
             : `Intended state: ${desired}\n`;
     }
-    if (typeof value?.webhook_url === "string") out += `URL: ${value.webhook_url}\n`;
     if (value?.potentially_stale === true) out += `Pending changes. Run \`obelisk cloud app apply --app ${name}\` to apply them.\n`;
     if (typeof value?.state?.failure === "string") out += `Error: ${value.state.failure}\n`;
     const reason = value?.state?.startup_failure?.reason;

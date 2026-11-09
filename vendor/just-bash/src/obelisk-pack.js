@@ -21,6 +21,7 @@ import { randomAppName } from "./obelisk-app-names.js";
 import { DEPLOYMENT_TEMPLATE } from "./obelisk-deployment-template.js";
 import { isCasNamespacedDigest } from "./fs.js";
 import { parseToml } from "../../../packs/obelisk-control/cloud/toml.js";
+import { endpoints } from "../../../packs/obelisk-control/cloud/output.js";
 
 const APP_POLICY_FILE = "app.toml";
 const APP_API_GROUPS = ["execution", "component", "deployment", "admin"];
@@ -273,8 +274,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     if (globals.json) {
         out.stdout += `${prettyJson({ app: row, deployment_id: id, outcomes: row.outcome === undefined ? [] : [row.outcome] })}\n`;
     } else {
-        out.stderr += `Deployed ${name}\n`;
-        if (typeof row.webhook_url === "string") out.stdout += `${row.webhook_url}\n`;
+        out.stderr += `Deployed ${name}\n${endpoints(row.endpoints, "")}`;
     }
 }
 
@@ -1832,8 +1832,7 @@ Commands:
                 [-o|--output DIR] [-f|--force] [--include-generated-metadata]
   new         Create a stopped app; apply explicitly to start it
                 [-a APP_CONFIG] [--fill-non-interactive] [--command-id ID]
-  get         Inspect the app row
-  status      Inspect management, Machine and target API health [-a APP_CONFIG]
+  status      Show the app's state, endpoints, Machine and API health [-a APP_CONFIG]
   events      List recent lifecycle and Machine events, newest first [-n LIMIT]
   stage       Stage app policy and cloud settings without restarting the VM [-a APP_CONFIG]
   deploy      Publish the local project, creating or configuring the app and activating its deployment
@@ -1847,7 +1846,6 @@ Commands:
                 --non-interactive [-a APP_CONFIG | --staged]
   env         list | set NAME VALUE | unset NAME
   secrets     list | set NAME (--from-env VAR | --stdin) | unset NAME
-  endpoint    Show all endpoints, or select api, webhook, webui or internal
 
 Options (every command except list):
       --app <NAME>  Selected cloud app; defaults to $OBELISK_APP_NAME, then app_name in ./app.toml

@@ -52,7 +52,7 @@ const packSystemPrompt = (obeliskVersion) =>
     "- Each `/workspace/github/<name>` tree costs one request per directory listed - avoid `tree`, `find`, or a recursive grep across them, and use targeted `ls`/`cat` or read a known path directly instead. Each step may fetch at most 50 uncached files and 200 directories from them.\n" +
     "- The shell's HTTP access goes through an operator allowlist: `curl` (GET only) works only for explicitly granted hosts; anything else is a policy-denied result, not a bug.\n" +
     "- Each webhook names its server with `http_server`: `internal` for pages only you should reach (the platform handles sign-in), `external` for public sites and callbacks, which must do their own authentication and need `public_http_servers = [\"external\"]` in app.toml.\n" +
-    "- Discover an app's webhook URL with `obelisk cloud app endpoint webhook --app NAME` and smoke-test its routes with `curl`. Verify executions through the app's API (`obelisk cloud app execution list --app NAME`, `execution logs ID`).\n";
+    "- Find an app's webhook URLs with `obelisk cloud app status --app NAME` and smoke-test its routes with `curl`. Verify executions through the app's API (`obelisk cloud app execution list --app NAME`, `execution logs ID`).\n";
 
 // The fixed part of the prompt tail, in the order the workflow renders it:
 // user input, then subagents, then deployment authoring. The per-session

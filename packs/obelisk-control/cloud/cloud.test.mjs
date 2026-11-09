@@ -86,9 +86,8 @@ function appRow(overrides = {}) {
         status: "running",
         revision: 1,
         applied_revision: 1,
-        api_url: `${APP_API}/`,
-        webhook_url: "https://demo.obelisk.works",
-        webui_url: "https://demo.obelisk.works:5006",
+        hostname: "demo.obelisk.works",
+        endpoints: { api: `${APP_API}/`, webui: "https://webui--demo.obelisk.works", internal: "https://internal--demo.obelisk.works" },
         policy: config.policy,
         cloud: config.cloud,
         ...overrides,
@@ -179,7 +178,7 @@ test("finish-deploy applies the staged revision with the uploaded deployment", a
         "POST /v1/apps/demo/apply": appRow({ outcome: { configuration: "applied", vm: "started" } }),
     });
     const deployed = await finishDeploy("demo", POLICY, "Dep_1", 2, false, null);
-    assert.equal(JSON.parse(deployed.app_json).webhook_url, "https://demo.obelisk.works");
+    assert.equal(JSON.parse(deployed.app_json).endpoints.internal, "https://internal--demo.obelisk.works");
     assert.match(deployed.log, /^Optional configuration not set: secret EXTRA\. Run [^\n]*\n→ obelisk cloud app apply\n/);
     const apply = requests.find((request) => request.method === "POST");
     assert.deepEqual(JSON.parse(apply.body), { force: false, revision: 2, deployment_id: "Dep_1" });
@@ -286,12 +285,12 @@ test("app status shows an idle-suspended app as resuming on request", async () =
     };
     const suspended = await status("suspended", null);
     assert.match(suspended, /^demo: running \(suspended\)\n/);
-    assert.match(suspended, /\nAPI: resumes on request\n/);
+    assert.match(suspended, /\nAPI: \S+ \(resumes on request\)\n/);
     assert.doesNotMatch(suspended, /reconcile/);
     const stopped = await status("stopped", false);
     assert.match(stopped, /^demo: running\n/);
     assert.match(stopped, /VM is stopped although the app is running\./);
-    assert.match(stopped, /\nAPI: unavailable\n/);
+    assert.match(stopped, /\nAPI: \S+ \(unavailable\)\n/);
 });
 
 test("app status shows health and a failing wake-up", async () => {
@@ -302,6 +301,8 @@ test("app status shows health and a failing wake-up", async () => {
     } });
     const result = await run(["app", "status"], "", POLICY);
     assert.equal(result.exit_code, 0, result.stderr);
+    assert.match(result.stderr, /\nAPI: \S+ \(unavailable\)\nWeb UI: https:\/\/webui--demo\.obelisk\.works\nInternal webhooks: https:\/\/internal--demo\.obelisk\.works\n/);
+    assert.doesNotMatch(result.stderr, /External webhooks|URL:/);
     assert.match(result.stderr, /\nHealth: critical since 2025-11-03 14:26:40 UTC\n/);
     assert.match(result.stderr, /\nWake-up failing: 3 attempts since 2025-11-03 14:26:40 UTC, next retry at 2025-11-03 14:27:40 UTC\nWake-up error: host unavailable\n/);
     provisioner({ "GET /v1/apps/demo/status": { app: appRow(), machine_state: "suspended", api_ready: null, health: null, wake_failure: null } });
@@ -388,11 +389,12 @@ test("the descriptor lists the cloud's apps, or leaves the cloud out without a t
     }
 });
 
-test("endpoint webhook prints the app's webhook URL", async () => {
-    provisioner({ "GET /v1/apps/demo": appRow() });
-    const endpoint = await run(["app", "endpoint", "--app", "demo", "webhook"], "", null);
-    assert.equal(endpoint.exit_code, 0, endpoint.stderr);
-    assert.equal(endpoint.stdout, "https://demo.obelisk.works\n");
+test("get and endpoint are not app subcommands", async () => {
+    provisioner({});
+    for (const action of ["get", "endpoint"]) {
+        const result = await run(["app", action, "--app", "demo"], "", null);
+        assert.equal(result.exit_code, 2, result.stderr);
+    }
 });
 
 test("an invalid app_name in the config points at generate app-name", () => {

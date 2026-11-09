@@ -88,7 +88,7 @@ obelisk cloud app secrets set API_KEY --stdin --app NAME
 Hosted API and webhook access defaults to `https://*.obelisk.works` on port
 443, including `dev.obelisk.works`. For another domain, set
 `OBELISK_CLOUD_APPS_DOMAIN`; the grant becomes `https://*.<domain>`. The webhook grant is GET-only and carries no API token.
-Find the webhook URL with `obelisk cloud app endpoint webhook --app NAME`.
+`obelisk cloud app status --app NAME` lists the app's API, Web UI and webhook URLs.
 
 Interactive commands (`--fill`) are not
 available from the session; `--fill-non-interactive` reads exported shell variables. See [`docs/obelisk-cloud.md`](docs/obelisk-cloud.md).
