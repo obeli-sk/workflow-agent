@@ -85,8 +85,9 @@ async function execute({ positionals, flags }, stdin, appToml, fillEnv) {
         if (flags["--json"]) return { stdout: `${JSON.stringify(value, null, 2)}\n` };
         return { stderr: options.verbose ? humanOutput(value) : renderSummary(summary, value) };
     };
-    if (group === "apps" && rest[0] === "list") {
+    if (group === "app" && rest[0] === "list") {
         allow(flags, []);
+        if (flags["--app"] !== undefined) throw new UsageError("unexpected argument '--app' found");
         arity(rest, 1);
         return print(await cloudRequest("GET", ["v1", "apps"], options), { kind: "apps" });
     }
@@ -155,7 +156,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     }
     const name = appName(flags["--app"] ?? config?.appName);
     const local = configForApp(name, config, path, explicit, action === "stage");
-    const apply = flags["--app"] === undefined ? "obelisk cloud app apply" : `obelisk cloud app --app ${flags["--app"]} apply`;
+    const apply = flags["--app"] === undefined ? "obelisk cloud app apply" : `obelisk cloud app apply --app ${flags["--app"]}`;
     if (action === "get") {
         allow(flags, []);
         arity(rest, 0);
@@ -336,5 +337,5 @@ async function stagedOrLocal(current, local, name, path, options) {
     const revision = stagedRevision(comparison);
     const changes = Array.isArray(comparison?.changes) ? comparison.changes.filter((change) => typeof change === "string") : [];
     if (changes.length === 0) return { desired: staged, revision };
-    throw `${path} differs from staged configuration revision ${revision}: ${changes.join(", ")}\nRun \`obelisk cloud app --app ${name} stage -a ${path}\`, or pass \`--staged\` to use the staged configuration`;
+    throw `${path} differs from staged configuration revision ${revision}: ${changes.join(", ")}\nRun \`obelisk cloud app stage --app ${name} -a ${path}\`, or pass \`--staged\` to use the staged configuration`;
 }

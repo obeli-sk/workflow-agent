@@ -25,7 +25,7 @@ API and `https://<app>.<domain>` for webhooks. The default pattern
 domains. Apply the app configuration and redeploy after changing the domain.
 
 Discover any app's webhook with
-`obelisk cloud app --app NAME endpoint webhook`, then fetch its route with
+`obelisk cloud app endpoint webhook --app NAME`, then fetch its route with
 `curl`.
 
 `packs/obelisk-control/descriptor.js` adds a "Cloud apps" section to the
@@ -37,7 +37,7 @@ left out and a warning is shown instead.
 The `obelisk-agent:tools/cloud` interface has these activities
 (`packs/obelisk-control/cloud/`); all but `tenant-read` have `max_retries = 0`:
 
-- `run` (`cli.js`) runs the provisioner commands: `apps list`, `auth status`,
+- `run` (`cli.js`) runs the provisioner commands: `auth status`, `app list`,
   `app new|get|status|events|stage|apply|enable|disable|delete`,
   `env ...`, `secrets ...` and `endpoint`. It returns stdout, stderr and an
   exit code, and its errors use the real CLI's wording.
@@ -59,7 +59,7 @@ The `obelisk-agent:tools/cloud` interface has these activities
 In the shell (`vendor/just-bash/src/obelisk-pack.js`), `obelisk cloud` commands
 are handled as follows:
 
-- `cloud app [--app NAME] execution|component|deployment|admin ...` is ported
+- `cloud app execution|component|deployment|admin ... [--app NAME]` is ported
   from obelisk's `src/command/{execution,component,deployment,admin}.rs`. It
   sends the same requests through `tenant`/`tenant-read`
   (`createCloud` in `workflow-js/src/host.js`) and prints the same output:
@@ -81,8 +81,8 @@ are handled as follows:
   `--fill-non-interactive` (or `fill --non-interactive`), the exported
   variables are passed along for the fill.
 
-`--app`, `--json` and `--verbose` are accepted anywhere. The app is `--app`,
-else an exported `OBELISK_APP_NAME`, else `app_name` in `./app.toml`. As in the
+`--json` and `--verbose` are accepted anywhere; `--app` only after the `cloud app`
+subcommand, and not by `app list`. The app is `--app`, else an exported `OBELISK_APP_NAME`, else `app_name` in `./app.toml`. As in the
 real CLI, an app config naming a different app is an error when passed with `-a`
 or required (`stage`, `deploy`), and a discovered `./app.toml` is ignored by the
 other commands.
@@ -107,7 +107,7 @@ other commands.
 ## Pulling deployments
 
 ```sh
-obelisk cloud apps list
+obelisk cloud app list
 export OBELISK_APP_NAME=example
 obelisk cloud app pull -o /workspace/example
 cd /workspace/example

@@ -114,17 +114,19 @@ function executeCloud(interp, args, stdin, cloud, out) {
         return { ...out, exitCode: 0 };
     }
     if (helpRequested(rest)) return done(out, group === "app" ? cloudAppHelp : cloudHelp);
-    return cloudRun(interp, args, stdin, cloud, globals);
+    return cloudRun(interp, args, stdin, cloud, globals, rest);
 }
 
 function done(out, stdout) {
     return { ...out, stdout: out.stdout + stdout, exitCode: 0 };
 }
 
-// `--app`, `--json` and `--verbose` are global: accepted anywhere before `--`.
+// `--json` and `--verbose` are global: accepted anywhere before `--`. `--app` is accepted after
+// `app SUBCOMMAND`, except `app list`.
 function cloudGlobals(args) {
     const globals = { app: undefined, json: false, verbose: false };
     const rest = [];
+    let appTooEarly = false;
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (arg === "--") {
@@ -133,13 +135,16 @@ function cloudGlobals(args) {
         }
         if (arg === "--json") globals.json = true;
         else if (arg === "--verbose") globals.verbose = true;
-        else if (arg === "--app") {
-            globals.app = args[++i];
+        else if (arg === "--app" || arg.startsWith("--app=")) {
+            appTooEarly ||= rest.length < 2;
+            globals.app = arg === "--app" ? args[++i] : arg.slice("--app=".length);
             if (globals.app === undefined) throw new UsageError("a value is required for '--app <NAME>' but none was supplied");
-        } else if (arg.startsWith("--app=")) globals.app = arg.slice("--app=".length);
-        else if (["--api-url", "--api-token", "--apps-domain", "--account"].includes(arg.split("=")[0])) {
+        } else if (["--api-url", "--api-token", "--apps-domain", "--account"].includes(arg.split("=")[0])) {
             throw `${arg.split("=")[0]} is not supported here; the cloud comes from OBELISK_CLOUD_API_URL, OBELISK_CLOUD_API_TOKEN and OBELISK_CLOUD_APPS_DOMAIN`;
         } else rest.push(arg);
+    }
+    if (globals.app !== undefined && (appTooEarly || rest[0] !== "app" || rest[1] === "list")) {
+        throw new UsageError("unexpected argument '--app' found");
     }
     return { globals, rest };
 }
@@ -182,7 +187,7 @@ function readPolicy(interp, path) {
 
 // Provisioner commands, run by the `cloud.run` activity with the policy text,
 // OBELISK_APP_NAME as `--app`, and the exported variables for `fill`.
-function cloudRun(interp, args, stdin, cloud, globals) {
+function cloudRun(interp, args, stdin, cloud, globals, [group, sub]) {
     const forwarded = [];
     let input = stdin ?? "";
     let appConfig = null;
@@ -204,7 +209,7 @@ function cloudRun(interp, args, stdin, cloud, globals) {
         forwarded.push(arg);
     }
     const envApp = exportedVar(interp, "OBELISK_APP_NAME");
-    if (args[0] === "app" && globals.app === undefined && envApp !== undefined) forwarded.push("--app", envApp);
+    if (group === "app" && sub !== "list" && globals.app === undefined && envApp !== undefined) forwarded.push("--app", envApp);
     const policy = readPolicy(interp, appConfig ?? APP_POLICY_FILE);
     if (appConfig !== null && policy === null) throw `Cannot read app config ${appConfig}: No such file or directory`;
     const output = cloud.run(forwarded, input, policy, fill ? exportedEnv(interp) : null);
@@ -260,7 +265,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     try {
         id = submitPrepared(context, prepared, true, opts["--description"] ?? null, null);
     } catch (error) {
-        throw withContext(`Deployment staging failed; inspect \`obelisk cloud app --app ${name} status\` and retry deploy`, error);
+        throw withContext(`Deployment staging failed; inspect \`obelisk cloud app status --app ${name}\` and retry deploy`, error);
     }
     const deployed = activity(() => cloud.finishDeploy(name, policy, id, target.revision, target.created, fillEnv));
     out.stderr += deployed.log;
@@ -1598,8 +1603,8 @@ This creates the app from \`app.toml\` when needed, uploads \`deployment.toml\`,
 prints the webhook URL. Then inspect it with \`obelisk cloud app component list\` and
 \`obelisk cloud app execution list\`.
 
-To edit an existing app, run \`obelisk cloud app --app NAME deployment pull ID -o DIRECTORY\` (the
-active ID is \`obelisk cloud app --app NAME deployment active\`) and edit the pulled files.
+To edit an existing app, run \`obelisk cloud app deployment pull ID -o DIRECTORY --app NAME\` (the
+active ID is \`obelisk cloud app deployment active --app NAME\`) and edit the pulled files.
 `;
 }
 
@@ -1806,20 +1811,19 @@ Usage: obelisk cloud [OPTIONS] <COMMAND>
 
 Commands:
   auth   Show the cloud account this shell is configured with (status)
-  apps   List apps owned by the authenticated user (apps list)
-  app    Manage an app and its deployments, executions and configuration
+  app    List apps or manage one and its deployments, executions and configuration
 
 Options:
       --json        Print machine-readable JSON instead of human-readable output
       --verbose     Show detailed metadata and command diagnostics
-      --app <NAME>  Selected cloud app; defaults to $OBELISK_APP_NAME, then app_name in ./app.toml
 `;
 
-const cloudAppHelp = `Manage an app and its deployments, executions and configuration
+const cloudAppHelp = `List apps or manage one and its deployments, executions and configuration
 
-Usage: obelisk cloud app [--app <NAME>] <COMMAND>
+Usage: obelisk cloud app <COMMAND> [--app <NAME>]
 
 Commands:
+  list        List apps owned by the authenticated user
   deployment  Manage deployments through the selected app's API
   execution   Manage executions through the selected app's API
   component   Inspect components
@@ -1844,6 +1848,9 @@ Commands:
   env         list | set NAME VALUE | unset NAME
   secrets     list | set NAME (--from-env VAR | --stdin) | unset NAME
   endpoint    Show all endpoints, or select api, webhook, webui or internal
+
+Options (every command except list):
+      --app <NAME>  Selected cloud app; defaults to $OBELISK_APP_NAME, then app_name in ./app.toml
 
 Run \`obelisk cloud app <COMMAND> --help\` for a command's subcommands.
 `;

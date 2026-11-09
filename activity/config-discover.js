@@ -38,9 +38,9 @@ const packSystemPrompt = (obeliskVersion) =>
     `The target Obelisk version is \`${obeliskVersion}\` (OBELISK_VERSION): write deployments and components for that release.\n\n` +
     "You are on a persistent virtual machine with a filesystem rooted at /workspace. Pull an app's " +
     "deployment into a working directory and edit deployment.toml and component sources with ordinary shell commands.\n\n" +
-    "- Use `obelisk cloud app --app NAME ...` for an app's operations, as in the real CLI: `component list|source`, `execution ...`, `deployment active|list|show|pull|submit`.\n" +
+    "- Use `obelisk cloud app ... --app NAME` for an app's operations, as in the real CLI: `component list|source`, `execution ...`, `deployment active|list|show|pull|submit`.\n" +
     "- Edits are local until deployed: inside the app directory, `obelisk cloud app deploy` uploads deployment.toml, then applies its ID with the staged app.toml through the provisioner, and prints the webhook URL. `deployment submit` only stores a deployment and prints its ID. `obelisk cloud app apply` applies staged configuration with the currently active deployment, without uploading local deployment.toml changes. Cloud `deployment enqueue` and `deployment apply` are unsupported; use `app deploy` or `app apply`.\n" +
-    "- Pull before editing an existing app: `obelisk cloud app --app NAME pull -o /workspace/NAME`. It writes app.toml and deployment.toml and loads source bytes only when read; the pull refuses to overwrite files unless `--force`. Leave `content_digest` and `component_files` out of deployment.toml: they are generated on submit.\n" +
+    "- Pull before editing an existing app: `obelisk cloud app pull -o /workspace/NAME --app NAME`. It writes app.toml and deployment.toml and loads source bytes only when read; the pull refuses to overwrite files unless `--force`. Leave `content_digest` and `component_files` out of deployment.toml: they are generated on submit.\n" +
     "- Add a component by writing its source plus an `[[activity_js]]`/`[[workflow_js]]` table (name, location, params, return_type); add a bundled JavaScript file by writing it and importing it from the component.\n" +
     "- Run `obelisk generate deployment` for a fully-commented starter deployment.toml, or `obelisk generate new` to list the starter app templates.\n" +
     "- Follow the rendered llms.txt authoring guidance in the system prompt and fetch relevant linked pages before writing components; never guess API signatures.\n" +
@@ -52,7 +52,7 @@ const packSystemPrompt = (obeliskVersion) =>
     "- Each `/workspace/github/<name>` tree costs one request per directory listed - avoid `tree`, `find`, or a recursive grep across them, and use targeted `ls`/`cat` or read a known path directly instead. Each step may fetch at most 50 uncached files and 200 directories from them.\n" +
     "- The shell's HTTP access goes through an operator allowlist: `curl` (GET only) works only for explicitly granted hosts; anything else is a policy-denied result, not a bug.\n" +
     "- Each webhook names its server with `http_server`: `internal` for pages only you should reach (the platform handles sign-in), `external` for public sites and callbacks, which must do their own authentication and need `public_http_servers = [\"external\"]` in app.toml.\n" +
-    "- Discover an app's webhook URL with `obelisk cloud app --app NAME endpoint webhook` and smoke-test its routes with `curl`. Verify executions through the app's API (`obelisk cloud app --app NAME execution list`, `execution logs ID`).\n";
+    "- Discover an app's webhook URL with `obelisk cloud app endpoint webhook --app NAME` and smoke-test its routes with `curl`. Verify executions through the app's API (`obelisk cloud app execution list --app NAME`, `execution logs ID`).\n";
 
 // The fixed part of the prompt tail, in the order the workflow renders it:
 // user input, then subagents, then deployment authoring. The per-session

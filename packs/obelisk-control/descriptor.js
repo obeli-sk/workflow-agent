@@ -19,9 +19,9 @@ const nl = String.fromCharCode(10);
 const WIT_JSON_MAPPING = [
     '## Encoding params for `obelisk cloud app execution submit`',
     '',
-    '- Run `obelisk cloud app --help` for the subcommands, such as `obelisk cloud app --app NAME component list` and `obelisk cloud app --app NAME execution status ID`. Run `--help` (or `-h`) at any level for usage, e.g. `obelisk cloud app deployment --help`.',
-    '- Inspect an app\'s signatures with `obelisk cloud app --app NAME component list` before submitting when the parameter types are not already known.',
-    '- Submit with one JSON array (`obelisk cloud app --app NAME execution submit FFQN \'[1,"text"]\'`) or, after `--`, one JSON value per argument (`... execution submit FFQN -- 1 \'"text"\'`). It prints the new execution ID; add `--follow` to wait and print the result.',
+    '- Run `obelisk cloud app --help` for the subcommands, such as `obelisk cloud app component list --app NAME` and `obelisk cloud app execution status ID --app NAME`. Run `--help` (or `-h`) at any level for usage, e.g. `obelisk cloud app deployment --help`.',
+    '- Inspect an app\'s signatures with `obelisk cloud app component list --app NAME` before submitting when the parameter types are not already known.',
+    '- Submit with one JSON array (`obelisk cloud app execution submit FFQN \'[1,"text"]\' --app NAME`) or, after `--`, one JSON value per argument (`... execution submit FFQN -- 1 \'"text"\'`). It prints the new execution ID; add `--follow` to wait and print the result.',
     '- With `--follow`, the result goes to stdout as JSON and `Execution finished: OK` to stderr; a `result` err or an execution failure exits 1. `--json` prints only JSON.',
     '- The params are a JSON array of positional arguments in WIT parameter order; kebab-case identifiers become snake_case JSON keys and variant/enum values.',
     '- `bool` maps to JSON `true`/`false`; `char`/`string` map to JSON strings.',
@@ -34,7 +34,7 @@ const WIT_JSON_MAPPING = [
 ].join(nl);
 
 const SYSTEM_PROMPT = [
-    'You are the planner inside an Obelisk durable workflow that manages apps in the cloud. Use `obelisk cloud` to discover and manage apps, and `obelisk cloud app --app NAME pull -o DIRECTORY` to edit an existing app.',
+    'You are the planner inside an Obelisk durable workflow that manages apps in the cloud. Use `obelisk cloud` to discover and manage apps, and `obelisk cloud app pull -o DIRECTORY --app NAME` to edit an existing app.',
     '',
     '- Investigate, plan, and decide which durable actions are needed. Act through bash: shell commands and `obelisk` for durable, replayable actions that appear in the Obelisk execution log; built-in reasoning for the rest.',
     '- Narrate as you work: a short Markdown note alongside each tool call saying what you are about to run and why. Text and a tool call in one response are both kept, and the turn continues.',
@@ -124,11 +124,11 @@ async function loadDocsIndexes() {
 }
 
 const APP_COMMANDS = [
-    '- `obelisk cloud apps list`; `obelisk cloud app --app NAME status|get|endpoint`. `--app` may be left out when OBELISK_APP_NAME is exported or inside a directory whose app.toml names the app.',
+    '- `obelisk cloud app list`; `obelisk cloud app status|get|endpoint --app NAME`. `--app` may be left out when OBELISK_APP_NAME is exported or inside a directory whose app.toml names the app.',
     '- The app\'s own API, as in the real CLI: `component list|source`, `execution list|status|result|logs|events|responses|submit|cancel|pause|unpause|replay|persist-backtraces|advance|upgrade`, `deployment active|list|show|pull|digest|submit`, `admin ...`. Human output goes to stderr and values or `--json` to stdout.',
     '- To see where a workflow made its calls, run `execution persist-backtraces ID`, then `execution events ID --backtraces` for the call-site frames with source snippets.',
-    '- `obelisk cloud app --app NAME execution list` hides webhook-spawned child executions unless `--show-derived` is passed.',
-    '- Pull an existing app with `obelisk cloud app --app NAME pull -o DIRECTORY`: it writes app.toml, the active deployment.toml and its source files. Edit the pulled files. `deployment pull [ID]` pulls one deployment without app.toml. A deployment cannot grant itself additional permissions.',
+    '- `obelisk cloud app execution list --app NAME` hides webhook-spawned child executions unless `--show-derived` is passed.',
+    '- Pull an existing app with `obelisk cloud app pull -o DIRECTORY --app NAME`: it writes app.toml, the active deployment.toml and its source files. Edit the pulled files. `deployment pull [ID]` pulls one deployment without app.toml. A deployment cannot grant itself additional permissions.',
 ];
 
 const CLOUD_SECTION = [
@@ -138,7 +138,7 @@ const CLOUD_SECTION = [
     '',
     ...APP_COMMANDS,
     '- Create and deploy from the working directory: write `app.toml` (with `app_name`) and `deployment.toml`, then `obelisk cloud app deploy -a app.toml -d deployment.toml`. It creates or restages the app, uploads the deployment, then calls provisioner Apply with its ID and prints the webhook URL. `app apply` uses the currently active deployment; it does not upload deployment.toml. Cloud `deployment enqueue` and `deployment apply` are unsupported.',
-    '- Config: `obelisk cloud app --app NAME env list|set NAME VALUE|unset NAME` and `secrets list|set NAME --stdin|set NAME --from-env VAR|unset NAME`; then `obelisk cloud app --app NAME apply`.',
+    '- Config: `obelisk cloud app env list|set NAME VALUE|unset NAME --app APP` and `secrets list|set NAME --stdin|set NAME --from-env VAR|unset NAME`; then `obelisk cloud app apply --app APP`.',
     '- Each webhook names its server with `http_server`: `internal` for pages only you should reach (the platform handles sign-in), `external` for public sites and callbacks, which must do their own authentication and need `public_http_servers = ["external"]` in app.toml.',
     '- Apps share a domain with other tenants, so the platform forwards only `__Host-` cookies to webhooks. Set them with `Secure`, `Path=/` and no `Domain`; anything else is dropped and reported in the `obelisknet-cookie-rejected` response header. Tenants are the same site, so `SameSite` is no CSRF protection: check `Origin` on unsafe methods. Prefer the `internal` server for private pages: it handles sign-in and names the caller in `obelisknet-user-slug`, so it rarely needs a login cookie.',
     '- Destructive commands (`delete`, `disable`) need the user\'s confirmation first.',

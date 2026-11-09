@@ -92,9 +92,10 @@ function run(i, args, cloud, stdin = "") {
     return executeObelisk(i, typeof args === "string" ? words(args) : args, stdin, null, cloud);
 }
 
-// `obelisk cloud app --app demo ...`
+// `obelisk cloud app SUBCOMMAND --app demo ...`
 function api(i, args, cloud, stdin = "") {
-    return run(i, ["cloud", "app", "--app", "demo", ...(typeof args === "string" ? words(args) : args)], cloud, stdin);
+    const [sub, ...rest] = typeof args === "string" ? words(args) : args;
+    return run(i, ["cloud", "app", sub, "--app", "demo", ...rest], cloud, stdin);
 }
 
 // -- dispatch, help, app selection, errors --
@@ -126,7 +127,7 @@ test("usage errors exit 2 like clap, other errors print Error: and exit 1", () =
     assert.equal(out.stderr, "Error: server returned 404 Not Found: no route for GET /v1/executions/E_1/status\n");
 });
 
-test("the app comes from --app anywhere, then exported OBELISK_APP_NAME, then ./app.toml", () => {
+test("the app comes from --app, then exported OBELISK_APP_NAME, then ./app.toml", () => {
     const cloud = fakeCloud({ "GET /v1/info": serverInfo({ deployment_id: "Dep_1" }) });
     assert.equal(run(interp(), "cloud app deployment active --app flag", cloud).exitCode, 0);
     assert.equal(run(interp("/workspace", { OBELISK_APP_NAME: "env" }), "cloud app deployment active", cloud).exitCode, 0);
@@ -141,16 +142,28 @@ test("the app comes from --app anywhere, then exported OBELISK_APP_NAME, then ./
     assert.match(out.stderr, /^Error: Select an app with --app, OBELISK_APP_NAME or app_name in \.\/app\.toml/);
 });
 
+test("--app follows the app subcommand and is rejected by app list", () => {
+    const i = interp("/workspace", { OBELISK_APP_NAME: "demo" });
+    const cloud = fakeCloud();
+    for (const args of ["cloud app --app demo deployment active", "cloud --app demo app status", "cloud app list --app demo"]) {
+        const out = run(i, args, cloud);
+        assert.equal(out.exitCode, 2, args);
+        assert.match(out.stderr, /^error: unexpected argument '--app' found/, args);
+    }
+    assert.equal(run(i, "cloud app list", cloud).exitCode, 0);
+    assert.deepEqual(cloud.runs[0].args, ["app", "list"]);
+});
+
 test("--json is global and active prints the ID as a value", () => {
     const cloud = fakeCloud({ "GET /v1/info": serverInfo({ deployment_id: "Dep_1" }) });
     assert.equal(api(interp(), "deployment active", cloud).stdout, "Dep_1\n");
-    assert.equal(run(interp(), "cloud --json app --app demo deployment active", cloud).stdout, '"Dep_1"\n');
+    assert.equal(run(interp(), "cloud --json app deployment active --app demo", cloud).stdout, '"Dep_1"\n');
 });
 
 test("commandHandler strips the command name and runs inside the shell", () => {
     const bash = new Bash({ cwd: "/workspace" });
     bash.registerCommand("obelisk", commandHandler(null, fakeCloud({ "GET /v1/info": serverInfo({ deployment_id: "Dep_1" }) })));
-    const out = bash.exec("obelisk cloud app --app demo deployment active | tr D d");
+    const out = bash.exec("obelisk cloud app deployment active --app demo | tr D d");
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(out.stdout, "dep_1\n");
 });
@@ -224,7 +237,7 @@ test("cloud app deploy stops before finishing when the upload fails", () => {
     const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 400, body: "invalid deployment" } });
     const out = run(i, "cloud app deploy", cloud);
     assert.equal(out.exitCode, 1);
-    assert.match(out.stderr, /Error: Deployment staging failed; inspect `obelisk cloud app --app demo status` and retry deploy\n\nCaused by:\n {4}server returned 400 Bad Request: invalid deployment\n$/);
+    assert.match(out.stderr, /Error: Deployment staging failed; inspect `obelisk cloud app status --app demo` and retry deploy\n\nCaused by:\n {4}server returned 400 Bad Request: invalid deployment\n$/);
     assert.equal(cloud.deploys.length, 1);
 });
 
@@ -245,7 +258,7 @@ test("execution list forwards filters and prints a compact or verbose line per e
     assert.equal(out.stderr, "E_1 `Running` a:b/c.d\nE_2 `Finished: OK` a:b/c.e\n");
     assert.equal(out.stdout, "");
 
-    out = run(interp(), "cloud --verbose app --app demo execution list", cloud);
+    out = run(interp(), "cloud --verbose app execution list --app demo", cloud);
     assert.equal(out.stderr.split("\n")[0], "E_1 `Locked(`2026-01-01 00:00:00 UTC`, Exr_1, Run_1)` a:b/c.d `2026-01-01 00:00:00 UTC`");
     assert.deepEqual(JSON.parse(api(interp(), "execution list -j", cloud).stdout), executions);
 });
@@ -519,7 +532,7 @@ test("deployment submit uploads only the missing files, then resubmits", () => {
         ),
         [`PUT /v1/files/${digest}`]: { status: 204, body: "" },
     });
-    const out = run(i, "cloud app --app demo --verbose deployment submit --deployment-id Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV --description first", cloud);
+    const out = run(i, "cloud app deployment --app demo --verbose submit --deployment-id Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV --description first", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.equal(out.stdout, "Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV\n");
     assert.equal(out.stderr, `Uploading a.js (1 bytes, ${digest})\nSubmitted as Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV\n`);
@@ -639,7 +652,7 @@ test("deployment list prints a table", () => {
     });
     assert.equal(api(interp(), "deployment list", cloud).stderr,
         `${"ID".padEnd(32)}  ${"STATUS".padEnd(12)}  DESCRIPTION\n${"Dep_1".padEnd(32)}  ${"Active".padEnd(12)}  first\n`);
-    assert.match(run(interp(), "cloud app --app demo --verbose deployment list", cloud).stderr, /2026-01-01 00:00:00 {2}/);
+    assert.match(run(interp(), "cloud app deployment list --app demo --verbose", cloud).stderr, /2026-01-01 00:00:00 {2}/);
     assert.equal(api(interp(), "deployment list", fakeCloud({ "GET /v1/deployments": [] })).stderr, "No deployments found.\n");
 });
 

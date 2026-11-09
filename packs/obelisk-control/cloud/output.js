@@ -146,7 +146,7 @@ function configRevisions(value) {
         const changes = local.comparison.changes.filter((change) => typeof change === "string");
         out += changes.length === 0
             ? `${path}: matches the staged configuration\n`
-            : `${path}: differs from the staged configuration: ${changes.join(", ")}. Run \`obelisk cloud app --app ${text(app, "app_name", "")} stage\` to stage it.\n`;
+            : `${path}: differs from the staged configuration: ${changes.join(", ")}. Run \`obelisk cloud app stage --app ${text(app, "app_name", "")}\` to stage it.\n`;
     }
     return out;
 }
@@ -177,11 +177,11 @@ function app(value, note) {
     const desired = value?.desired_state;
     if (typeof desired === "string" && value?.status !== desired) {
         out += ["running", "stopped"].includes(value?.status)
-            ? `Intended state: ${desired}. Run \`obelisk cloud app --app ${name} apply\` to reach it.\n`
+            ? `Intended state: ${desired}. Run \`obelisk cloud app apply --app ${name}\` to reach it.\n`
             : `Intended state: ${desired}\n`;
     }
     if (typeof value?.webhook_url === "string") out += `URL: ${value.webhook_url}\n`;
-    if (value?.potentially_stale === true) out += `Pending changes. Run \`obelisk cloud app --app ${name} apply\` to apply them.\n`;
+    if (value?.potentially_stale === true) out += `Pending changes. Run \`obelisk cloud app apply --app ${name}\` to apply them.\n`;
     if (typeof value?.state?.failure === "string") out += `Error: ${value.state.failure}\n`;
     const reason = value?.state?.startup_failure?.reason;
     if (typeof reason === "string") out += `Startup failed: ${reason}. Use --verbose for startup details.\n`;
