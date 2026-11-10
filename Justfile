@@ -4,7 +4,7 @@ serve:
   obelisk server run --dev -d deployment.toml --server-config server.toml --app-config app.toml
 
 verify:
-  OBELISK__HTTP_SERVER__INTERNAL__API_AUTH=true obelisk server verify --skip-db --deployment deployment.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
+  obelisk server verify --dev --skip-db --deployment deployment.toml --server-config server.toml --app-config app.toml --allow-unavailable-runtime-config
 
 test: test-js test-e2e
 

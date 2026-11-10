@@ -83,8 +83,6 @@ jobs:
     env:
       AGENT_MODELS: "[]"
       LLM_BASE_URL: "http://127.0.0.1:9190"
-      # The UI's `internal` server starts only with credentials, as on ObeliskNet.
-      OBELISK__HTTP_SERVER__INTERNAL__API_AUTH: "true"
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
@@ -101,7 +99,7 @@ jobs:
         run: nix develop --command echo
 
       - name: obelisk server verify
-        run: nix develop --command obelisk server verify --skip-db -d deployment.toml -s server.toml -a app.toml
+        run: nix develop --command obelisk server verify --dev --skip-db -d deployment.toml -s server.toml -a app.toml
 
   e2e:
     name: End-to-end tests
