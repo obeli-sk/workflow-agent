@@ -53,7 +53,8 @@ The `obelisk-agent:tools/cloud` interface has these activities
      requires the app to be running.
 - `tenant` (`tenant.js`) sends one POST, PUT or DELETE request to
   `https://api--<app>.<domain>` with the cloud token and returns the status
-  and body, whatever the status.
+  and body, whatever the status. It sends no `If-Match`, so a deployment
+  switch gets `428`; deployments are activated by the provisioner's apply.
 - `tenant-read` (`tenant-read.js`) does the same for GET and is retried on
   transient errors.
 

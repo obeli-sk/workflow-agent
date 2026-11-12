@@ -2,8 +2,9 @@
 //   func(app: string, method: string, path: string, content-type: option<string>, body: option<string>)
 //     -> result<record { status: u16, body: string }, string>
 //
-// A request that changes the app (submits, deployment switches, execution
-// controls), sent once: max_retries = 0, as a retry could repeat it.
+// A request that changes the app (submits, execution controls), sent once:
+// max_retries = 0, as a retry could repeat it. Deployment switches need an
+// `If-Match` header this tool cannot send; `cloud app apply` activates instead.
 import { appApiRequest } from "./client.js";
 
 export default async function tenant(app, method, path, contentType, body) {
