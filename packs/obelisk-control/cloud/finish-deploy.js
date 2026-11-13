@@ -1,34 +1,34 @@
 // obelisk-agent:tools/cloud.finish-deploy:
-//   func(app: string, app-toml: string, deployment-id: string, revision: u64, created: bool,
-//        fill-env: option<list<tuple<string, string>>>)
+//   func(app: string, deployment-id: string, revision: u64, draft: option<string>, discard: option<string>)
 //     -> result<record { app-json: string, log: string }, string>
 //
 // PORT: obelisk's src/command/cloud/deploy.rs after deployment upload.
-import { appRequest } from "./client.js";
-import { appConfig } from "./policy.js";
-import { fillValues, unsetOptional, userSuppliedPolicy } from "./fill.js";
+import { appRequest, draftRequest } from "./client.js";
+import { validateCloudAppName } from "./policy.js";
 import { lifecycleOutcome } from "./output.js";
 
-export default async function finish_deploy(app, appToml, deploymentId, revision, created, fillEnv) {
+export default async function finish_deploy(app, deploymentId, revision, draft, discard) {
     const lines = [];
     const log = (line) => lines.push(`${line}\n`);
-    const config = appConfig(appToml);
-    const name = app || config.appName;
+    validateCloudAppName(app);
     try {
-        if (!created) {
-            if (fillEnv) log("→ obelisk cloud app fill");
-            const filled = await fillValues(name, userSuppliedPolicy(config), fillEnv ? Object.fromEntries(fillEnv) : null);
-            const unset = unsetOptional(filled);
-            if (unset.length > 0) {
-                log(`Optional configuration not set: ${unset.join(", ")}. Run \`obelisk cloud app fill --app ${name}\` or \`deploy --fill\` to set it.`);
-            }
-        }
         log("→ obelisk cloud app apply");
         const body = { force: false, revision, deployment_id: deploymentId };
-        const row = await appRequest(name, "POST", ["apply"], { kind: "command", body });
+        if (draft) body.draft = draft;
+        let row;
+        try {
+            row = await appRequest(app, "POST", ["apply"], { kind: "command", body });
+        } catch (error) {
+            const key = draft ?? discard;
+            throw key ? `Draft \`${key}\` keeps the staged changes; retry with \`obelisk cloud app deploy --app ${app} --draft ${key}\`\n\nCaused by:\n    ${error}` : error;
+        }
+        // An unchanged generated draft was not applied and would linger.
+        if (discard) {
+            try { await draftRequest(app, discard, "DELETE", []); } catch { /* best effort, like the CLI */ }
+        }
         log(lifecycleOutcome(row));
         if (row?.status !== "running") {
-            throw `App is ${JSON.stringify(row?.status ?? null)}; inspect it with \`obelisk cloud app status --app ${name}\``;
+            throw `App is ${JSON.stringify(row?.status ?? null)}; inspect it with \`obelisk cloud app status --app ${app}\``;
         }
         return { app_json: JSON.stringify(row), log: lines.join("") };
     } catch (error) {

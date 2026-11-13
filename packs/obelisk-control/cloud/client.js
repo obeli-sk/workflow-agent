@@ -55,6 +55,22 @@ export function appRequest(name, method, suffix, options) {
     return cloudRequest(method, ["v1", "apps", name, ...suffix], options);
 }
 
+// PORT: cloud.rs's `Client::draft`: a request on draft `key`; edits take no idempotency key.
+export function draftRequest(name, key, method, suffix, options = {}) {
+    const kind = method === "PUT" && suffix[0] === "secrets" ? "secret" : "read";
+    return appRequest(name, method, ["drafts", key, ...suffix], { ...options, kind });
+}
+
+// Draft `key`, or null when the caller has no such draft.
+export async function lookupDraft(name, key, options) {
+    try {
+        return await appRequest(name, "GET", ["drafts", key], options);
+    } catch (error) {
+        if (typeof error === "string" && /\(HTTP 404\)$/.test(error)) return null;
+        throw error;
+    }
+}
+
 // The app row, or null when the provisioner has no such app.
 export async function lookupApp(name) {
     try {
@@ -137,6 +153,11 @@ export async function appApiRequest(app, method, path, contentType, body, accept
         throw `error sending request for url (${appApiUrl(app)}${path}): ${error}`;
     }
     return { status: response.status, body: await response.text() };
+}
+
+export function appliedRevision(value) {
+    if (!Number.isInteger(value?.applied_revision)) throw "Cloud response is missing the applied configuration revision";
+    return value.applied_revision;
 }
 
 export function stagedRevision(value) {

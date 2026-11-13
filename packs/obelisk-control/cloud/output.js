@@ -98,9 +98,13 @@ export function renderSummary(summary, value) {
             break;
         case "staged":
             if (value?.changed === false) line(`Configuration unchanged at staged revision ${JSON.stringify(value?.revision ?? null)}.`);
-            else if (Number.isInteger(value?.revision) && value?.changed !== undefined) {
-                line(`Configuration staged as revision ${value.revision}. Run \`${summary.apply}\` to apply changes.`);
+            else if (Number.isInteger(value?.revision)) {
+                line(`${summary.message} Staged revision ${value.revision}; run \`${summary.apply}\` to apply changes.`);
             } else line(`${summary.message} Run \`${summary.apply}\` to apply changes.`);
+            out += draftNotes(value);
+            break;
+        case "unstaged":
+            line(value?.discarded === true ? `Draft \`${summary.draft}\` discarded.` : `No draft \`${summary.draft}\`.`);
             break;
         case "fill":
             for (const declaration of Array.isArray(value?.declarations) ? value.declarations : []) {
@@ -133,7 +137,19 @@ export function lifecycleOutcome(value) {
 function configRevisions(value) {
     let out = "";
     const app = value?.app;
-    if (Number.isInteger(app?.revision)) {
+    if (Array.isArray(value?.drafts)) {
+        out += `Configuration: applied revision ${JSON.stringify(app?.applied_revision ?? null)}\n`;
+        for (const draft of value.drafts) {
+            const key = text(draft, "key", "default");
+            if (draft?.stale === true) {
+                out += `Draft \`${key}\`: opened on revision ${JSON.stringify(draft?.parent_revision ?? null)}, superseded\n`;
+            } else if (draft?.summary?.changed === true) {
+                out += `Draft \`${key}\`: revision ${JSON.stringify(draft?.revision ?? null)}: ${draftChanges(draft)}. Run \`obelisk cloud app apply --app ${text(app, "app_name", "")}${draftArg(key)}\` to apply it.\n`;
+                out += draftNotes(draft);
+            }
+        }
+    // backcompat: provisioners without drafts report one staged revision.
+    } else if (Number.isInteger(app?.revision)) {
         const applied = app?.applied_revision;
         const state = !Number.isInteger(applied) ? "not applied yet"
             : applied === app.revision ? `applied revision ${applied}` : `applied revision ${applied} (apply pending)`;
@@ -148,6 +164,43 @@ function configRevisions(value) {
             ? `${path}: matches the staged configuration\n`
             : `${path}: differs from the staged configuration: ${changes.join(", ")}. Run \`obelisk cloud app stage --app ${text(app, "app_name", "")}\` to stage it.\n`;
     }
+    return out;
+}
+
+// PORT: output.rs's `draft_arg`: ` --draft KEY` for a key other than the default.
+export function draftArg(key) {
+    return key === "default" ? "" : ` --draft ${key}`;
+}
+
+// PORT: output.rs's `draft_values`: `missing` or `unused` values of a draft, as `env NAME` and `secret NAME`.
+export function draftValues(draft, which) {
+    const names = (kind) => (Array.isArray(draft?.values?.[`${which}_${kind}`]) ? draft.values[`${which}_${kind}`] : [])
+        .filter((name) => typeof name === "string")
+        .map((name) => `${kind === "env" ? "env" : "secret"} ${name}`);
+    return [...names("env"), ...names("secrets")];
+}
+
+// PORT: output.rs's `draft_changes`: a draft's changes against the applied revision, by name only.
+export function draftChanges(draft) {
+    const summary = draft?.summary;
+    const changes = [["app_toml", "app.toml"], ["policy", "policy"], ["cloud", "cloud"]]
+        .filter(([key]) => summary?.[key] === true)
+        .map(([, label]) => label);
+    for (const [kind, label] of [["env", "env"], ["secrets", "secret"]]) {
+        for (const [diff, sign] of [["added", "+"], ["removed", "-"], ["changed", "~"]]) {
+            const names = Array.isArray(summary?.[kind]?.[diff]) ? summary[kind][diff] : [];
+            for (const name of names) changes.push(`${label} ${sign}${typeof name === "string" ? name : ""}`);
+        }
+    }
+    return changes.length === 0 ? "no changes" : changes.join(", ");
+}
+
+function draftNotes(draft) {
+    let out = "";
+    const missing = draftValues(draft, "missing");
+    if (missing.length > 0) out += `Missing values: ${missing.join(", ")}\n`;
+    const unused = draftValues(draft, "unused");
+    if (unused.length > 0) out += `Not declared in app.toml: ${unused.join(", ")}\n`;
     return out;
 }
 

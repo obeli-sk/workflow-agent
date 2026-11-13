@@ -159,6 +159,14 @@ function exportedEnv(interp) {
     return [...interp.exported].filter((name) => interp.vars.get(name) !== undefined).map((name) => [name, interp.vars.get(name)]);
 }
 
+// The exported variables a command reads: all of them for a fill, else those that bare
+// `--env NAME` and `--secret NAME` (or `--secret NAME=...`, rejected later) name.
+function readEnv(interp, fill, env, secrets) {
+    if (fill) return exportedEnv(interp);
+    const names = new Set([...env.filter((item) => !item.includes("=")), ...secrets].map((item) => item.split("=")[0]));
+    return exportedEnv(interp).filter(([name]) => names.has(name));
+}
+
 // PORT: cloud.rs's `app_name`: `--app`, else OBELISK_APP_NAME, else `app_name` in ./app.toml.
 function appName(interp, flag) {
     const name = flag ?? exportedVar(interp, "OBELISK_APP_NAME");
@@ -193,8 +201,11 @@ function cloudRun(interp, args, stdin, cloud, globals, [group, sub]) {
     let input = stdin ?? "";
     let appConfig = null;
     let fill = false;
+    const values = { "--env": [], "--secret": [] };
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
+        const flag = arg.split("=")[0];
+        if (flag in values) values[flag].push(arg.includes("=") ? arg.slice(flag.length + 1) : args[i + 1] ?? "");
         if (arg === "--from-env") {
             const name = args[++i];
             if (name === undefined) throw new UsageError("a value is required for '--from-env <FROM_ENV>' but none was supplied");
@@ -213,17 +224,19 @@ function cloudRun(interp, args, stdin, cloud, globals, [group, sub]) {
     if (group === "app" && sub !== "list" && globals.app === undefined && envApp !== undefined) forwarded.push("--app", envApp);
     const policy = readPolicy(interp, appConfig ?? APP_POLICY_FILE);
     if (appConfig !== null && policy === null) throw `Cannot read app config ${appConfig}: No such file or directory`;
-    const output = cloud.run(forwarded, input, policy, fill ? exportedEnv(interp) : null);
+    const read = readEnv(interp, fill, values["--env"], values["--secret"]);
+    const output = cloud.run(forwarded, input, policy, fill || read.length > 0 ? read : null);
     return { stdout: output.stdout, stderr: output.stderr, exitCode: output.exitCode };
 }
 
-// PORT: obelisk's src/command/cloud/deploy.rs. `prepareDeploy` stages or
-// creates the app, the deployment is uploaded to the app's API here, then
-// `finishDeploy` fills and applies.
+// PORT: obelisk's src/command/cloud/deploy.rs. `prepareDeploy` stages the
+// config and values into a draft or creates the app, the deployment is
+// uploaded to the app's API here, then `finishDeploy` applies.
 function cloudDeploy(interp, args, globals, cloud, out) {
     const { opts } = parseOptions(args, {
         "-a": "--app-config", "--app-config": true, "-d": "--deployment", "--deployment": true,
         "--fill": false, "--fill-non-interactive": false, "--description": true,
+        "--env": [], "--secret": [], "--draft": true,
     }, []);
     if (opts["--fill"] && opts["--fill-non-interactive"]) {
         throw new UsageError("the argument '--fill' cannot be used with '--fill-non-interactive'");
@@ -243,8 +256,15 @@ function cloudDeploy(interp, args, globals, cloud, out) {
         throw `${configPath} is for app \`${configured}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${configured}\` or fix \`app_name\``;
     }
     if (opts["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
+    const generated = opts["--draft"] === undefined;
+    const draft = opts["--draft"] ?? `deploy-${ulid().toLowerCase()}`;
+    if (!/^[a-z0-9._-]{1,64}$/.test(draft)) {
+        throw new UsageError(`invalid value '${draft}' for '--draft <DRAFT>': draft key must be 1-64 characters a-z, 0-9, '.', '_' or '-'`);
+    }
     const prepared = prepareManifest(interp, opts["--deployment"] ?? "deployment.toml");
-    const fillEnv = opts["--fill-non-interactive"] ? exportedEnv(interp) : null;
+    const fill = opts["--fill-non-interactive"] === true;
+    const env = opts["--env"] ?? [];
+    const secrets = opts["--secret"] ?? [];
     const activity = (call) => {
         try {
             return call();
@@ -253,7 +273,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
             throw ALREADY_PRINTED;
         }
     };
-    const target = activity(() => cloud.prepareDeploy(name, policy, fillEnv));
+    const target = activity(() => cloud.prepareDeploy(name, policy, draft, env, secrets, fill, readEnv(interp, fill, env, secrets)));
     out.stderr += `${target.log}→ obelisk cloud app deployment submit\n`;
     const context = {
         interp, out, verbose: globals.verbose,
@@ -266,9 +286,13 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     try {
         id = submitPrepared(context, prepared, true, opts["--description"] ?? null, null);
     } catch (error) {
-        throw withContext(`Deployment staging failed; inspect \`obelisk cloud app status --app ${name}\` and retry deploy`, error);
+        const failed = withContext(`Deployment staging failed; inspect \`obelisk cloud app status --app ${name}\` and retry deploy`, error);
+        throw target.draft ? withContext(`Draft \`${target.draft}\` keeps the staged changes; retry with \`obelisk cloud app deploy --app ${name} --draft ${target.draft}\``, failed) : failed;
     }
-    const deployed = activity(() => cloud.finishDeploy(name, policy, id, target.revision, target.created, fillEnv));
+    // Changed drafts are applied by key; an unchanged generated draft is discarded.
+    const applied = target.changed ? target.draft : null;
+    const discard = !target.changed && generated ? target.draft : null;
+    const deployed = activity(() => cloud.finishDeploy(name, id, target.revision, applied, discard));
     out.stderr += deployed.log;
     const row = deployed.app;
     if (globals.json) {
@@ -368,10 +392,12 @@ function parseOptions(args, spec, names) {
         let name = eq === -1 ? arg : arg.slice(0, eq);
         if (typeof spec[name] === "string") name = spec[name];
         if (spec[name] === undefined) throw new UsageError(`unexpected argument '${arg}' found`);
-        if (spec[name] === true) {
+        if (spec[name] === true || Array.isArray(spec[name])) {
             const value = eq === -1 ? args[++i] : arg.slice(eq + 1);
             if (value === undefined) throw new UsageError(`a value is required for '${name} <${valueName(name)}>' but none was supplied`);
-            opts[name] = value;
+            // An array spec marks a repeatable flag.
+            if (Array.isArray(spec[name])) (opts[name] ??= []).push(value);
+            else opts[name] = value;
         } else {
             if (eq !== -1) throw new UsageError(`unexpected value '${arg.slice(eq + 1)}' for '${name}' found; no more were expected`);
             opts[name] = true;
@@ -1831,21 +1857,30 @@ Commands:
   pull        Write the app's app.toml, active deployment.toml and source files (fetched on first read)
                 [-o|--output DIR] [-f|--force] [--include-generated-metadata]
   new         Create a stopped app; apply explicitly to start it
-                [-a APP_CONFIG] [--fill-non-interactive] [--command-id ID]
-  status      Show the app's state, endpoints, Machine and API health [-a APP_CONFIG]
+                [-a APP_CONFIG] [VALUES] [--command-id ID]
+  status      Show the app's state, endpoints, Machine and API health, and your drafts [-a APP_CONFIG]
   events      List recent lifecycle and Machine events, newest first [-n LIMIT]
-  stage       Stage app policy and cloud settings without restarting the VM [-a APP_CONFIG]
+  stage       Stage app.toml in a draft without restarting the VM [-a APP_CONFIG] [--draft KEY]
+  unstage     Discard a draft and its staged changes [--draft KEY]
   deploy      Publish the local project, creating or configuring the app and activating its deployment
-                [-a APP_CONFIG] [-d DEPLOYMENT] [--description TEXT] [--fill-non-interactive]
-  apply       Apply the staged configuration with the currently active deployment
-                [-a APP_CONFIG | --staged] [--fill-non-interactive] [--force]
+                [-a APP_CONFIG] [-d DEPLOYMENT] [--description TEXT] [VALUES]
+                [--draft KEY]: resume this draft; defaults to a new \`deploy-<id>\` draft per run
+  apply       Apply a draft with the currently active deployment, or re-apply the applied revision
+                [-a APP_CONFIG | --staged] [VALUES] [--draft KEY] [--force]
   enable      Enable the app
   disable     Disable the app
   delete      Delete the app
   fill        Stage declared env vars and secrets from same-named exported variables
-                --non-interactive [-a APP_CONFIG | --staged]
-  env         list | set NAME VALUE | unset NAME
-  secrets     list | set NAME (--from-env VAR | --stdin) | unset NAME
+                --non-interactive [-a APP_CONFIG | --staged] [--draft KEY]
+  env         list | set NAME VALUE [--draft KEY] | unset NAME [--draft KEY]
+  secrets     list | set NAME (--from-env VAR | --stdin) [--draft KEY] | unset NAME [--draft KEY]
+
+VALUES, staged into the draft before applying:
+      --env NAME[=VALUE]      Set an env var; a bare NAME reads the same-named exported variable
+      --secret NAME           Set a secret from the same-named exported variable
+      --fill-non-interactive  Read the remaining declared values from same-named exported variables
+
+Drafts default to \`default\`, shared with the dashboard. Applying a draft discards the app's other drafts.
 
 Options (every command except list):
       --app <NAME>  Selected cloud app; defaults to $OBELISK_APP_NAME, then app_name in ./app.toml
