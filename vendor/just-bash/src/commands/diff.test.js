@@ -14,8 +14,8 @@ test("identical files are silent", () => {
     assert.equal(r.exitCode, 0);
 });
 
-test("different files show a unified diff", () => {
-    const r = withFiles([["/a.txt", "hello\n"], ["/b.txt", "world\n"]]).exec("diff /a.txt /b.txt");
+test("-u shows a unified diff", () => {
+    const r = withFiles([["/a.txt", "hello\n"], ["/b.txt", "world\n"]]).exec("diff -u /a.txt /b.txt");
     assert.match(r.stdout, /---/);
     assert.match(r.stdout, /\+\+\+/);
     assert.match(r.stdout, /-hello/);
@@ -41,8 +41,15 @@ test("-i ignores case", () => {
 });
 
 test("a single-line change gets a @@ hunk with context", () => {
-    const r = withFiles([["/a.txt", "1\n2\n3\n4\n5\n"], ["/b.txt", "1\n2\nX\n4\n5\n"]]).exec("diff /a.txt /b.txt");
+    const r = withFiles([["/a.txt", "1\n2\n3\n4\n5\n"], ["/b.txt", "1\n2\nX\n4\n5\n"]]).exec("diff -u /a.txt /b.txt");
     assert.match(r.stdout, /@@/);
+    assert.equal(r.exitCode, 1);
+});
+
+test("default output is GNU normal format", () => {
+    const r = withFiles([["/a.txt", "1\n2\n3\n4\n"], ["/b.txt", "0\n1\nX\nY\n4\n"]]).exec("diff /a.txt /b.txt");
+    assert.equal(r.stdout, "0a1\n> 0\n2,3c3,4\n< 2\n< 3\n---\n> X\n> Y\n");
+    assert.equal(withFiles([["/a.txt", "1\n2\n3\n"], ["/b.txt", "1\n"]]).exec("diff /a.txt /b.txt").stdout, "2,3d1\n< 2\n< 3\n");
     assert.equal(r.exitCode, 1);
 });
 
@@ -60,6 +67,5 @@ test("missing operand errors", () => {
 
 test("stdin as the first file via -", () => {
     const r = withFiles([["/b.txt", "from file\n"]]).exec('echo "from stdin" | diff - /b.txt');
-    assert.match(r.stdout, /-from stdin/);
-    assert.match(r.stdout, /\+from file/);
+    assert.equal(r.stdout, "1c1\n< from stdin\n---\n> from file\n");
 });

@@ -357,3 +357,18 @@ test("a command reading an unfetchable lazy-mounted file fails the script, not t
     assert.equal(r.exitCode, 1);
     assert.match(r.stderr, /File too large: \/dep\/big\.bin/);
 });
+
+test("redirects apply to compound commands", () => {
+    const bash = new Bash({ cwd: "/workspace" });
+    const r = bash.exec([
+        "{ echo a; echo b; } > g; { echo c; } >> g",
+        "( echo s ) > s.txt",
+        "for i in 1 2; do echo $i; done > loop.txt",
+        "if true; then echo y; fi 2>/dev/null > if.txt",
+        "while read -r line; do echo \"got $line\"; done < g",
+        "while read -r line; do echo \"doc $line\"; done <<EOF\nh\nEOF",
+        "cat g s.txt loop.txt if.txt",
+    ].join("\n"));
+    assert.equal(r.stdout, "got a\ngot b\ngot c\ndoc h\na\nb\nc\ns\n1\n2\ny\n");
+    assert.equal(r.exitCode, 0);
+});

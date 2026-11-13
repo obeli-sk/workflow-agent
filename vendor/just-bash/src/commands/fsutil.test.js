@@ -74,6 +74,25 @@ test("head and tail preserve an unterminated final line", () => {
     assert.equal(bash.exec("printf 'first\\nlast' | tail -n 1").stdout, "last");
 });
 
+test("tail +N starts at line or byte N", () => {
+    const bash = fresh();
+    bash.vfs.writeFile("/workspace/f", "1\n2\n3\n4\n5\n");
+    assert.equal(bash.exec("tail -n +4 f").stdout, "4\n5\n");
+    assert.equal(bash.exec("tail -n+2 f | head -n 1").stdout, "2\n");
+    assert.equal(bash.exec("cat f | tail --lines=+5").stdout, "5\n");
+    assert.equal(bash.exec("tail -n +9 f").stdout, "");
+    assert.equal(bash.exec("tail -n 2 f").stdout, "4\n5\n");
+    assert.equal(bash.exec("printf 'abcdef' | tail -c +3").stdout, "cdef");
+});
+
+test("cat -n and -b number lines from files and stdin", () => {
+    const bash = fresh();
+    bash.vfs.writeFile("/workspace/f", "a\n\nb\n");
+    assert.equal(bash.exec("cat -n f").stdout, "     1\ta\n     2\t\n     3\tb\n");
+    assert.equal(bash.exec("cat f | cat -b").stdout, "     1\ta\n\n     2\tb\n");
+    assert.equal(bash.exec("echo x | cat -n f -").stdout, "     1\ta\n     2\t\n     3\tb\n     4\tx\n");
+});
+
 test("chmod validates mode syntax and target existence", () => {
     const bash = fresh();
     bash.vfs.writeFile("/f.txt", "x");
