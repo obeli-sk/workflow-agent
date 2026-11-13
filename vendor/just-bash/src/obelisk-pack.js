@@ -292,7 +292,9 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     // Changed drafts are applied by key; an unchanged generated draft is discarded.
     const applied = target.changed ? target.draft : null;
     const discard = !target.changed && generated ? target.draft : null;
-    const deployed = activity(() => cloud.finishDeploy(name, id, target.revision, applied, discard));
+    // Chosen here so that retrying the apply after it redeploys this app reuses the Idempotency-Key.
+    const commandId = `E_${ulid()}`;
+    const deployed = activity(() => cloud.finishDeploy(name, id, target.revision, applied, discard, commandId));
     out.stderr += deployed.log;
     const row = deployed.app;
     if (globals.json) {

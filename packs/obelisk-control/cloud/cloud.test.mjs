@@ -193,24 +193,25 @@ test("finish-deploy applies the draft with the uploaded deployment, or discards 
     let requests = provisioner({
         "POST /v1/apps/demo/apply": appRow({ outcome: { configuration: "applied", vm: "started" } }),
     });
-    const deployed = await finishDeploy("demo", "Dep_1", 2, "deploy-x", null);
+    const deployed = await finishDeploy("demo", "Dep_1", 2, "deploy-x", null, "E_01M7A0M1P2P2F1VNCPZ9S26DFJ");
     assert.equal(JSON.parse(deployed.app_json).endpoints.internal, "https://internal--demo.obelisk.works");
     assert.equal(deployed.log, "→ obelisk cloud app apply\nConfiguration applied. App started.\n");
     assert.deepEqual(JSON.parse(requests[0].body), { force: false, revision: 2, deployment_id: "Dep_1", draft: "deploy-x" });
+    assert.equal(requests[0].headers["idempotency-key"], "E_01M7A0M1P2P2F1VNCPZ9S26DFJ");
     requests = provisioner({
         "POST /v1/apps/demo/apply": appRow(),
         "DELETE /v1/apps/demo/drafts/deploy-x": { discarded: true },
     });
-    await finishDeploy("demo", "Dep_1", 1, null, "deploy-x");
+    await finishDeploy("demo", "Dep_1", 1, null, "deploy-x", "E_01M7A0M1P2P2F1VNCPZ9S26DFJ");
     assert.deepEqual(calls(requests), ["POST /v1/apps/demo/apply", "DELETE /v1/apps/demo/drafts/deploy-x"]);
     assert.deepEqual(JSON.parse(requests[0].body), { force: false, revision: 1, deployment_id: "Dep_1" });
 });
 
 test("finish-deploy requires a running app and keeps the draft on failure", async () => {
     provisioner({ "POST /v1/apps/demo/apply": appRow({ status: "stopped" }) });
-    await assert.rejects(finishDeploy("demo", "Dep_1", 1, null, null), /\nError: App is "stopped"; inspect it with/);
+    await assert.rejects(finishDeploy("demo", "Dep_1", 1, null, null, "E_01M7A0M1P2P2F1VNCPZ9S26DFJ"), /\nError: App is "stopped"; inspect it with/);
     provisioner({ "POST /v1/apps/demo/apply": () => new Response(JSON.stringify({ error: "draft is stale" }), { status: 409 }) });
-    await assert.rejects(finishDeploy("demo", "Dep_1", 2, "deploy-x", null), /Error: Draft `deploy-x` keeps the staged changes; retry with `obelisk cloud app deploy --app demo --draft deploy-x`\n\nCaused by:\n {4}draft is stale/);
+    await assert.rejects(finishDeploy("demo", "Dep_1", 2, "deploy-x", null, "E_01M7A0M1P2P2F1VNCPZ9S26DFJ"), /Error: Draft `deploy-x` keeps the staged changes; retry with `obelisk cloud app deploy --app demo --draft deploy-x`\n\nCaused by:\n {4}draft is stale/);
 });
 
 test("app apply applies the default draft with the app API's deployment id", async () => {

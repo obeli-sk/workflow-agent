@@ -70,8 +70,8 @@ function fakeCloud(routes = {}) {
             cloud.deploys.push({ app, appToml, draft, env, secrets, fill, exported });
             return cloud.target ?? { created: true, draft: null, changed: false, revision: 1, log: "→ prepare\n" };
         },
-        finishDeploy(app, deploymentId, revision, draft, discard) {
-            cloud.deploys.push({ app, deploymentId, revision, draft, discard });
+        finishDeploy(app, deploymentId, revision, draft, discard, commandId) {
+            cloud.deploys.push({ app, deploymentId, revision, draft, discard, commandId });
             return { app: { name: app, endpoints: { api: "https://api--demo.test", internal: "https://internal--demo.test", external: "https://demo.test" }, outcome: "applied" }, log: "→ finish\n" };
         },
     };
@@ -202,9 +202,11 @@ test("cloud app deploy uploads without switching, then finishes with its id", ()
     assert.match(id, /^Dep_[0-9A-Z]{26}$/);
     const draft = cloud.deploys[0].draft;
     assert.match(draft, /^deploy-[0-9a-z]{26}$/);
+    const commandId = cloud.deploys[1].commandId;
+    assert.match(commandId, /^E_[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
     assert.deepEqual(cloud.deploys, [
         { app: "demo", appToml: 'app_name = "demo"\n', draft, env: [], secrets: [], fill: false, exported: [] },
-        { app: "demo", deploymentId: id, revision: 1, draft: null, discard: null },
+        { app: "demo", deploymentId: id, revision: 1, draft: null, discard: null, commandId },
     ]);
     const submit = cloud.calls.find((call) => call.path === `/v1/deployments/${id}`);
     assert.deepEqual(JSON.parse(submit.body), {

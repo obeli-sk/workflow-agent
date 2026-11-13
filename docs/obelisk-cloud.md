@@ -55,7 +55,9 @@ The `obelisk-agent:tools/cloud` interface has these activities
   3. `finish-deploy` applies the draft's revision (or the applied revision when
      nothing changed) with the uploaded deployment's ID, discards an unchanged
      generated draft and requires the app to be running. On failure the draft
-     keeps the staged changes and the error names it.
+     keeps the staged changes and the error names it. The shell passes the
+     apply's Idempotency-Key, so `finish-deploy` is retried: deploying the app
+     the shell runs in interrupts it, and the retry gets the apply's result.
 - `tenant` (`tenant.js`) sends one POST, PUT or DELETE request to
   `https://api--<app>.<domain>` with the cloud token and returns the status
   and body, whatever the status. It sends no `If-Match`, so a deployment

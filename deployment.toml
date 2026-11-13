@@ -430,7 +430,7 @@ replace_in = ["headers"]
 # the ObeliskNet provisioner (OBELISK_CLOUD_API_URL) and each app's own API, which
 # lives under OBELISK_CLOUD_APPS_DOMAIN.
 # max_retries = 0: commands are not idempotent across a retry (fresh
-# Idempotency-Key, auto-ID submissions).
+# Idempotency-Key, auto-ID submissions), except cloud_finish_deploy below.
 
 [[activity_js]]
 name = "cloud_run"
@@ -475,7 +475,10 @@ replace_in = ["headers"]
 name = "cloud_finish_deploy"
 ffqn = "obelisk-agent:tools/cloud.finish-deploy"
 wit = "wit"
-max_retries = 0
+# Deploying this app closes the executor running the apply and interrupts it.
+# The workflow passes the Idempotency-Key, so a retry gets the apply's result.
+max_retries = 3
+retry_exp_backoff.seconds = 1
 # Applying waits for the app VM to come up.
 exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/finish-deploy.js"

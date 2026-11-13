@@ -70,7 +70,9 @@ interface cloud {
   prepare-deploy: func(app: string, app-toml: string, draft: string, env: list<string>, secrets: list<string>, fill: bool, exported: list<tuple<string, string>>) -> result<deploy-target, string>;
   // Apply `revision` (of `draft` when given) with the uploaded deployment, then delete draft
   // `discard` when given, and require the app to be running; returns the app row. The err carries the log so far.
-  finish-deploy: func(app: string, deployment-id: string, revision: u64, draft: option<string>, discard: option<string>) -> result<deployed, string>;
+  // `command-id` is the apply's Idempotency-Key, stable across retries: deploying the app this runs in
+  // interrupts the call, and the retry picks up the apply's recorded result.
+  finish-deploy: func(app: string, deployment-id: string, revision: u64, draft: option<string>, discard: option<string>, command-id: string) -> result<deployed, string>;
   // GET `path` (with its query) on the app's API; err only when no response arrived.
   tenant-read: func(app: string, path: string) -> result<response, string>;
   // Any other request on the app's API, sent once.
