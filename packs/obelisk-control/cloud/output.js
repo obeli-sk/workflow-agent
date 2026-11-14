@@ -64,7 +64,7 @@ export function renderSummary(summary, value) {
             const idle = status === "running" && ["suspended", "suspending"].includes(machine);
             out += app(value?.app, idle ? "suspended" : undefined);
             if (!idle && ["started", "stopped", "suspended"].includes(machine) && ((status === "running" && !up) || (status === "stopped" && up))) {
-                line(`VM is ${machine} although the app is ${status}. Run \`obelisk cloud app apply\` to reconcile it.`);
+                line(`VM is ${machine} although the app is ${status}. Run \`obelisk cloud app apply --reapply\` to reconcile it.`);
             }
             out += configRevisions(value);
             if (Number.isInteger(value?.memory_mb)) line(`Memory: ${value.memory_mb} MB`);
@@ -105,12 +105,6 @@ export function renderSummary(summary, value) {
             break;
         case "unstaged":
             line(value?.discarded === true ? `Draft \`${summary.draft}\` discarded.` : `No draft \`${summary.draft}\`.`);
-            break;
-        case "fill":
-            for (const declaration of Array.isArray(value?.declarations) ? value.declarations : []) {
-                line(`${declaration?.kind === "secrets" ? "secret" : "env"} ${text(declaration, "name", "")}: ${text(declaration, "action", "not set")}`);
-            }
-            if (value?.apply_required === true) line(`Run \`${summary.apply}\` to apply changes.`);
             break;
         default:
             throw `unknown summary ${summary.kind}`;
@@ -239,10 +233,10 @@ function app(value, note) {
     const desired = value?.desired_state;
     if (typeof desired === "string" && value?.status !== desired) {
         out += ["running", "stopped"].includes(value?.status)
-            ? `Intended state: ${desired}. Run \`obelisk cloud app apply --app ${name}\` to reach it.\n`
+            ? `Intended state: ${desired}. Run \`obelisk cloud app apply --app ${name} --reapply\` to reach it.\n`
             : `Intended state: ${desired}\n`;
     }
-    if (value?.potentially_stale === true) out += `Pending changes. Run \`obelisk cloud app apply --app ${name}\` to apply them.\n`;
+    if (value?.potentially_stale === true) out += `Pending changes. Run \`obelisk cloud app apply --app ${name} --reapply\` to apply them.\n`;
     if (typeof value?.state?.failure === "string") out += `Error: ${value.state.failure}\n`;
     const reason = value?.state?.startup_failure?.reason;
     if (typeof reason === "string") out += `Startup failed: ${reason}. Use --verbose for startup details.\n`;

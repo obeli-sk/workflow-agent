@@ -55,10 +55,12 @@ export function appRequest(name, method, suffix, options) {
     return cloudRequest(method, ["v1", "apps", name, ...suffix], options);
 }
 
-// PORT: cloud.rs's `Client::draft`: a request on draft `key`; edits take no idempotency key.
-export function draftRequest(name, key, method, suffix, options = {}) {
+// PORT: cloud.rs's `Client::draft`: a request on draft `key`; `reuse` lets an edit create a
+// missing draft. Edits take no idempotency key.
+export function draftRequest(name, key, method, suffix, options = {}, reuse = false) {
     const kind = method === "PUT" && suffix[0] === "secrets" ? "secret" : "read";
-    return appRequest(name, method, ["drafts", key, ...suffix], { ...options, kind });
+    const query = reuse && suffix.length > 0 ? { ...options.query, create_or_reuse: "true" } : options.query;
+    return appRequest(name, method, ["drafts", key, ...suffix], { ...options, kind, query });
 }
 
 // Draft `key`, or null when the caller has no such draft.

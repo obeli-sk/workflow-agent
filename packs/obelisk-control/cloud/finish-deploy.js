@@ -1,33 +1,27 @@
 // obelisk-agent:tools/cloud.finish-deploy:
-//   func(app: string, deployment-id: string, revision: u64, draft: option<string>, discard: option<string>,
-//        command-id: string)
+//   func(app: string, deployment-id: string, revision: u64, draft: option<string>, command-id: string)
 //     -> result<record { app-json: string, log: string }, string>
 //
 // PORT: obelisk's src/command/cloud/deploy.rs after deployment upload.
 // Retried with the caller's `commandId`: deploying the app this activity runs in
 // interrupts it, and the provisioner answers the retry with the apply's result.
-import { appRequest, draftRequest } from "./client.js";
+import { appRequest } from "./client.js";
 import { validateCloudAppName } from "./policy.js";
 import { lifecycleOutcome } from "./output.js";
 
-export default async function finish_deploy(app, deploymentId, revision, draft, discard, commandId) {
+export default async function finish_deploy(app, deploymentId, revision, draft, commandId) {
     const lines = [];
     const log = (line) => lines.push(`${line}\n`);
     validateCloudAppName(app);
     try {
         log("→ obelisk cloud app apply");
-        const body = { force: false, revision, deployment_id: deploymentId };
-        if (draft) body.draft = draft;
+        const body = { force: false, deployment_id: deploymentId, ...(draft ? { draft } : { revision }) };
         let row;
         try {
             row = await appRequest(app, "POST", ["apply"], { kind: "command", body, commandId });
         } catch (error) {
-            const key = draft ?? discard;
-            throw key ? `Draft \`${key}\` keeps the staged changes; retry with \`obelisk cloud app deploy --app ${app} --draft ${key}\`\n\nCaused by:\n    ${error}` : error;
-        }
-        // An unchanged generated draft was not applied and would linger.
-        if (discard) {
-            try { await draftRequest(app, discard, "DELETE", []); } catch { /* best effort, like the CLI */ }
+            // A draft left by a failed apply is discarded by the next successful one.
+            throw `Retry with \`obelisk cloud app deploy --app ${app}\`\n\nCaused by:\n    ${error}`;
         }
         log(lifecycleOutcome(row));
         if (row?.status !== "running") {

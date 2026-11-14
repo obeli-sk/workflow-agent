@@ -68,10 +68,10 @@ function fakeCloud(routes = {}) {
         },
         prepareDeploy(app, appToml, draft, env, secrets, fill, exported) {
             cloud.deploys.push({ app, appToml, draft, env, secrets, fill, exported });
-            return cloud.target ?? { created: true, draft: null, changed: false, revision: 1, log: "→ prepare\n" };
+            return cloud.target ?? { created: true, draft: null, revision: 1, log: "→ prepare\n" };
         },
-        finishDeploy(app, deploymentId, revision, draft, discard, commandId) {
-            cloud.deploys.push({ app, deploymentId, revision, draft, discard, commandId });
+        finishDeploy(app, deploymentId, revision, draft, commandId) {
+            cloud.deploys.push({ app, deploymentId, revision, draft, commandId });
             return { app: { name: app, endpoints: { api: "https://api--demo.test", internal: "https://internal--demo.test", external: "https://demo.test" }, outcome: "applied" }, log: "→ finish\n" };
         },
     };
@@ -180,7 +180,7 @@ test("provisioner commands forward args, policy, OBELISK_APP_NAME and --from-env
         args: words("app secrets set API_KEY --stdin --app demo"), stdin: "s3cret", appToml: 'app_name = "demo"\n', fillEnv: null,
     });
 
-    out = run(i, "cloud app fill --non-interactive", cloud);
+    out = run(i, "cloud app new --fill-non-interactive", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.deepEqual(new Map(cloud.runs[1].fillEnv).get("API_KEY"), "s3cret");
 
@@ -206,7 +206,7 @@ test("cloud app deploy uploads without switching, then finishes with its id", ()
     assert.match(commandId, /^E_[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
     assert.deepEqual(cloud.deploys, [
         { app: "demo", appToml: 'app_name = "demo"\n', draft, env: [], secrets: [], fill: false, exported: [] },
-        { app: "demo", deploymentId: id, revision: 1, draft: null, discard: null, commandId },
+        { app: "demo", deploymentId: id, revision: 1, draft: null, commandId },
     ]);
     const submit = cloud.calls.find((call) => call.path === `/v1/deployments/${id}`);
     assert.deepEqual(JSON.parse(submit.body), {
@@ -222,37 +222,46 @@ test("cloud app deploy uploads without switching, then finishes with its id", ()
     assert.deepEqual(JSON.parse(json.stdout).outcomes, ["applied"]);
 });
 
-test("cloud app deploy forwards --env/--secret with only the named variables and applies a changed draft", () => {
+test("cloud app deploy forwards --env/--secret with only the named variables and applies its draft", () => {
     const i = interp("/workspace/app", { MODE: "prod", API_KEY: "s3cret", OTHER: "x" });
     i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
     i.vfs.writeFile("/workspace/app/deployment.toml", "");
     const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
-    cloud.target = { created: false, draft: "ci", changed: true, revision: 5, log: "→ prepare\n" };
-    const out = run(i, "cloud app deploy --draft ci --env MODE --env REGION=eu --secret API_KEY", cloud);
+    cloud.target = { created: false, draft: "deploy-1", revision: 5, log: "→ prepare\n" };
+    const out = run(i, "cloud app deploy --env MODE --env REGION=eu --secret API_KEY", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
     const [prepare, finish] = cloud.deploys;
-    assert.deepEqual([prepare.draft, prepare.env, prepare.secrets, prepare.fill], ["ci", ["MODE", "REGION=eu"], ["API_KEY"], false]);
+    assert.match(prepare.draft, /^deploy-[0-9a-z]{26}$/);
+    assert.deepEqual([prepare.env, prepare.secrets, prepare.fill], [["MODE", "REGION=eu"], ["API_KEY"], false]);
     assert.deepEqual(new Map(prepare.exported), new Map([["MODE", "prod"], ["API_KEY", "s3cret"]]));
-    assert.deepEqual([finish.revision, finish.draft, finish.discard], [5, "ci", null]);
-
-    const unchanged = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
-    unchanged.target = { created: false, draft: "ci", changed: false, revision: 4, log: "" };
-    run(i, "cloud app deploy --draft ci", unchanged);
-    assert.deepEqual([unchanged.deploys[1].draft, unchanged.deploys[1].discard], [null, null]);
+    assert.deepEqual([finish.revision, finish.draft], [5, "deploy-1"]);
 
     const filled = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
     run(i, "cloud app deploy --fill-non-interactive", filled);
     assert.equal(new Map(filled.deploys[0].exported).get("OTHER"), "x");
-    assert.equal(run(i, "cloud app deploy --draft Bad", fakeCloud()).exitCode, 2);
+    assert.equal(run(i, "cloud app deploy --draft ci", fakeCloud()).exitCode, 2);
 });
 
-test("cloud app apply forwards the variables named by bare --env and --secret", () => {
+test("cloud app deploy discards its draft when the submission fails", () => {
+    const i = interp("/workspace/app");
+    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
+    i.vfs.writeFile("/workspace/app/deployment.toml", "");
+    const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 500, body: "boom" } });
+    cloud.target = { created: false, draft: "deploy-1", revision: 5, log: "" };
+    const out = run(i, "cloud app deploy", cloud);
+    assert.equal(out.exitCode, 1);
+    assert.match(out.stderr, /Deployment staging failed/);
+    assert.deepEqual(cloud.runs.map((call) => call.args), [words("app unstage --app demo --draft deploy-1")]);
+    assert.equal(cloud.deploys.length, 1);
+});
+
+test("cloud app new forwards the variables named by bare --env and --secret", () => {
     const i = interp("/workspace", { OBELISK_APP_NAME: "demo", MODE: "prod", API_KEY: "s3cret", OTHER: "x" });
     i.vfs.writeFile("/workspace/app.toml", 'app_name = "demo"\n');
     const cloud = fakeCloud();
-    const out = run(i, "cloud app apply --env MODE --env REGION=eu --secret API_KEY", cloud);
+    const out = run(i, "cloud app new --env MODE --env REGION=eu --secret API_KEY", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
-    assert.deepEqual(cloud.runs[0].args, words("app apply --env MODE --env REGION=eu --secret API_KEY --app demo"));
+    assert.deepEqual(cloud.runs[0].args, words("app new --env MODE --env REGION=eu --secret API_KEY --app demo"));
     assert.deepEqual(new Map(cloud.runs[0].fillEnv), new Map([["MODE", "prod"], ["API_KEY", "s3cret"]]));
 });
 

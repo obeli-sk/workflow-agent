@@ -77,7 +77,7 @@ export function explicitValues(envFlags, secretFlags, env) {
         const eq = item.indexOf("=");
         if (eq !== -1) {
             const name = item.slice(0, eq);
-            throw `\`--secret\` takes only a name and reads the same-named environment variable, e.g. \`${name}=... obelisk cloud app apply --secret ${name}\``;
+            throw `\`--secret\` takes only a name and reads the same-named environment variable, e.g. \`${name}=... obelisk cloud app deploy --secret ${name}\``;
         }
         configName(item);
         pending.push({ kind: "secrets", name: item, value: read(item) });
@@ -95,9 +95,9 @@ function without(policy, explicit) {
     };
 }
 
-// PORT: cloud.rs's `stage_values`: stages `explicit` values into draft `key` (whose view is
-// `draft`, or null when not opened), then the remaining declared values of `fillEnv`; a null
-// `fillEnv` stages only `explicit`. Returns the latest draft view and the fill report.
+// PORT: cloud.rs's `stage_values`: stages `explicit` values into the existing draft `key` (whose
+// view is `draft`), then the remaining declared values of `fillEnv`; a null `fillEnv` stages only
+// `explicit`. Returns the latest draft view and the fill report.
 export async function stageValues(app, key, draft, explicit, fillEnv) {
     const staged = [];
     const put = async ({ kind, name, value }) => {
@@ -113,26 +113,24 @@ export async function stageValues(app, key, draft, explicit, fillEnv) {
     for (const value of explicit) draft = await put(value);
     let report = [];
     if (fillEnv !== null) {
-        const base = draft ?? await draftRequest(app, key, "POST", []);
-        if (base?.env === null || typeof base?.env !== "object" || Array.isArray(base.env)) throw "Invalid cloud draft environment";
-        if (!Array.isArray(base?.secrets)) throw "Invalid cloud draft secrets";
+        if (draft?.env === null || typeof draft?.env !== "object" || Array.isArray(draft.env)) throw "Invalid cloud draft environment";
+        if (!Array.isArray(draft?.secrets)) throw "Invalid cloud draft secrets";
         let pending;
         ({ report, pending } = collectValues(
-            `Run \`obelisk cloud app fill --app ${app}${draftArg(key)}\`, or retry with \`--fill\` or \`--fill-non-interactive\``,
-            without(userSuppliedPolicy(base), explicit), base.env, base.secrets, fillEnv,
+            "Retry with `--fill` or `--fill-non-interactive`",
+            without(userSuppliedPolicy(draft), explicit), draft.env, draft.secrets, fillEnv,
         ));
-        draft = base;
         for (const value of pending) draft = await put(value);
     }
     return { draft, filled: { draft: key, staged, declarations: report } };
 }
 
-// PORT: cloud.rs's `apply_request`: applies draft `key` when it has changes, otherwise re-applies
-// the applied revision. `note` receives the human progress lines.
+// PORT: cloud.rs's `apply_request`: applies the current contents of draft `key`, or re-applies
+// the applied revision without one. `note` receives the human progress lines.
 export function applyRequest(name, key, draft, current, deploymentId, force, note) {
     const body = { force, deployment_id: deploymentId };
     const applied = JSON.stringify(current?.applied_revision ?? null);
-    if (draft?.summary?.changed !== true) {
+    if (draft === null) {
         note(`Re-applying revision ${applied}`);
         return { ...body, revision: current?.applied_revision };
     }
@@ -141,12 +139,12 @@ export function applyRequest(name, key, draft, current, deploymentId, force, not
     }
     const missing = draftValues(draft, "missing");
     if (missing.length > 0) {
-        throw `Missing values in draft \`${key}\`: ${missing.join(", ")}. Pass them with \`--env NAME[=VALUE]\` or \`--secret NAME\`, or retry with \`--fill\` or \`--fill-non-interactive\``;
+        throw `Missing values in draft \`${key}\`: ${missing.join(", ")}. Stage them with \`obelisk cloud app env set\` or \`obelisk cloud app secrets set\`${draftArg(key)}`;
     }
     note(`Applying draft \`${key}\` revision ${JSON.stringify(draft.revision ?? null)} over revision ${applied}: ${draftChanges(draft)}`);
     const unused = draftValues(draft, "unused");
     if (unused.length > 0) note(`Not declared in app.toml: ${unused.join(", ")}`);
-    return { ...body, revision: draft.revision, draft: key };
+    return { ...body, draft: key };
 }
 
 // PORT: cloud.rs's `initial_values`: a new app's env and secrets.

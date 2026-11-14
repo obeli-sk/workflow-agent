@@ -39,23 +39,24 @@ The `obelisk-agent:tools/cloud` interface has these activities
 (`packs/obelisk-control/cloud/`); all but `tenant-read` have `max_retries = 0`:
 
 - `run` (`cli.js`) runs the provisioner commands: `auth status`, `app list`,
-  `app new|status|events|stage|unstage|apply|fill|enable|disable|delete`,
+  `app new|status|events|stage|unstage|apply|enable|disable|delete`,
   `env ...` and `secrets ...`. Edits go into a named draft
-  (`--draft`, default `default`) through `/v1/apps/<app>/drafts/<key>/...`,
-  and `apply` applies it, re-applying the applied revision when the draft has
-  no changes. It returns stdout, stderr and an
+  (`--draft`, default `default`) through `/v1/apps/<app>/drafts/<key>/...`
+  with `create_or_reuse=true`, and `apply` applies only what is staged in it;
+  `apply --reapply` re-applies the applied revision. It returns stdout, stderr and an
   exit code, and its errors use the real CLI's wording.
 - `prepare-deploy` (`deploy.js`) and `finish-deploy` (`finish-deploy.js`)
   run the provisioner part of `app deploy`, in the real CLI's order:
-  1. `prepare-deploy` stages the config, `--env`/`--secret` values and, with
-     `--fill-non-interactive`, the remaining declared values of an existing
-     app into its draft, then checks that the draft is current and has every
-     required value. A new app is created with those values instead.
+  1. `prepare-deploy` exclusively creates the deploy's draft of an existing
+     app and stages the config, `--env`/`--secret` values and, with
+     `--fill-non-interactive`, the remaining declared values into it, then
+     checks that it has every required value. On failure it discards the
+     draft. A new app is created with those values instead.
   2. The shell uploads the deployment to the app's API, without enqueueing or switching it.
-  3. `finish-deploy` applies the draft's revision (or the applied revision when
-     nothing changed) with the uploaded deployment's ID, discards an unchanged
-     generated draft and requires the app to be running. On failure the draft
-     keeps the staged changes and the error names it. The shell passes the
+  3. `finish-deploy` applies the draft (or re-applies the revision of a new
+     app) with the uploaded deployment's ID and requires the app to be running.
+     A draft left by a failed apply is discarded by the next successful one.
+     The shell passes the
      apply's Idempotency-Key, so `finish-deploy` is retried: deploying the app
      the shell runs in interrupts it, and the retry gets the apply's result.
 - `tenant` (`tenant.js`) sends one POST, PUT or DELETE request to
@@ -75,10 +76,9 @@ are handled as follows:
   human output on stderr, values and JSON on stdout. Errors print
   `Error: ...` and exit 1; usage errors exit 2.
 - `cloud app deploy [-a app.toml] [-d deployment.toml] [--env NAME[=VALUE]]...
-  [--secret NAME]... [--fill-non-interactive] [--draft KEY]` calls
-  `prepare-deploy` with the draft (a generated `deploy-<ulid>` unless
-  `--draft` is given), then uploads the deployment against
-  the app. The submit uploads only the files the server asks for and reuses the
+  [--secret NAME]... [--fill-non-interactive]` calls `prepare-deploy` with a
+  generated `deploy-<ulid>` draft, then uploads the deployment against
+  the app; a failed upload discards the draft through `run`'s `unstage`. The submit uploads only the files the server asks for and reuses the
   active deployment when nothing changed. Last, it calls `finish-deploy` with
   the deployment ID.
 - `cloud app deployment enqueue` and `cloud app deployment apply` are rejected
@@ -90,8 +90,8 @@ are handled as follows:
   else `./app.toml`. `--from-env VAR` turns into `--stdin` with the exported
   variable's value, so secret values never appear in argv. A bare
   `--env NAME` and `--secret NAME` read the exported variable, so only those
-  variables are passed along; with `--fill-non-interactive` (or
-  `fill --non-interactive`), all exported variables are passed for the fill.
+  variables are passed along; with `--fill-non-interactive`, all exported
+  variables are passed for the fill.
 
 `--json` and `--verbose` are accepted anywhere; `--app` only after the `cloud app`
 subcommand, and not by `app list`. The app is `--app`, else an exported `OBELISK_APP_NAME`, else `app_name` in `./app.toml`. As in the
@@ -111,8 +111,7 @@ other commands.
 - A deployment rejected for missing runtime configuration reports the server's
   findings without the real CLI's suggested app.toml snippet.
 - Interactive or account-level operations are rejected with a hint:
-  `--fill`, `fill` without `--non-interactive`,
-  `--api-url`, `--api-token` and `--apps-domain`.
+  `--fill`, `--api-url`, `--api-token` and `--apps-domain`.
 - `obelisk server ...` and the top-level app commands do not exist. The agent
   asks the user with the separate `ask-user QUESTION` shell command.
 

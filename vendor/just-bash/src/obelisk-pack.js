@@ -217,7 +217,7 @@ function cloudRun(interp, args, stdin, cloud, globals, [group, sub]) {
         }
         if (arg === "-a" || arg === "--app-config") appConfig = args[i + 1];
         if (arg.startsWith("--app-config=")) appConfig = arg.slice("--app-config=".length);
-        if (arg === "--fill-non-interactive" || arg === "--non-interactive") fill = true;
+        if (arg === "--fill-non-interactive") fill = true;
         forwarded.push(arg);
     }
     const envApp = exportedVar(interp, "OBELISK_APP_NAME");
@@ -236,7 +236,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     const { opts } = parseOptions(args, {
         "-a": "--app-config", "--app-config": true, "-d": "--deployment", "--deployment": true,
         "--fill": false, "--fill-non-interactive": false, "--description": true,
-        "--env": [], "--secret": [], "--draft": true,
+        "--env": [], "--secret": [],
     }, []);
     if (opts["--fill"] && opts["--fill-non-interactive"]) {
         throw new UsageError("the argument '--fill' cannot be used with '--fill-non-interactive'");
@@ -256,11 +256,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
         throw `${configPath} is for app \`${configured}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${configured}\` or fix \`app_name\``;
     }
     if (opts["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
-    const generated = opts["--draft"] === undefined;
-    const draft = opts["--draft"] ?? `deploy-${ulid().toLowerCase()}`;
-    if (!/^[a-z0-9._-]{1,64}$/.test(draft)) {
-        throw new UsageError(`invalid value '${draft}' for '--draft <DRAFT>': draft key must be 1-64 characters a-z, 0-9, '.', '_' or '-'`);
-    }
+    const draft = `deploy-${ulid().toLowerCase()}`;
     const prepared = prepareManifest(interp, opts["--deployment"] ?? "deployment.toml");
     const fill = opts["--fill-non-interactive"] === true;
     const env = opts["--env"] ?? [];
@@ -286,15 +282,15 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     try {
         id = submitPrepared(context, prepared, true, opts["--description"] ?? null, null);
     } catch (error) {
-        const failed = withContext(`Deployment staging failed; inspect \`obelisk cloud app status --app ${name}\` and retry deploy`, error);
-        throw target.draft ? withContext(`Draft \`${target.draft}\` keeps the staged changes; retry with \`obelisk cloud app deploy --app ${name} --draft ${target.draft}\``, failed) : failed;
+        if (target.draft) {
+            // Best effort, like the CLI.
+            try { cloud.run(["app", "unstage", "--app", name, "--draft", target.draft], "", null, null); } catch { /* ignored */ }
+        }
+        throw withContext(`Deployment staging failed; inspect \`obelisk cloud app status --app ${name}\` and retry deploy`, error);
     }
-    // Changed drafts are applied by key; an unchanged generated draft is discarded.
-    const applied = target.changed ? target.draft : null;
-    const discard = !target.changed && generated ? target.draft : null;
     // Chosen here so that retrying the apply after it redeploys this app reuses the Idempotency-Key.
     const commandId = `E_${ulid()}`;
-    const deployed = activity(() => cloud.finishDeploy(name, id, target.revision, applied, discard, commandId));
+    const deployed = activity(() => cloud.finishDeploy(name, id, target.revision, target.draft, commandId));
     out.stderr += deployed.log;
     const row = deployed.app;
     if (globals.json) {
@@ -1866,18 +1862,16 @@ Commands:
   unstage     Discard a draft and its staged changes [--draft KEY]
   deploy      Publish the local project, creating or configuring the app and activating its deployment
                 [-a APP_CONFIG] [-d DEPLOYMENT] [--description TEXT] [VALUES]
-                [--draft KEY]: resume this draft; defaults to a new \`deploy-<id>\` draft per run
-  apply       Apply a draft with the currently active deployment, or re-apply the applied revision
-                [-a APP_CONFIG | --staged] [VALUES] [--draft KEY] [--force]
+                Stages into a new \`deploy-<id>\` draft, discarded if the deploy fails before applying it
+  apply       Apply the staged changes of a draft with the currently active deployment
+                [--draft KEY | --reapply] [--force]: --reapply re-applies the applied revision
   enable      Enable the app
   disable     Disable the app
   delete      Delete the app
-  fill        Stage declared env vars and secrets from same-named exported variables
-                --non-interactive [-a APP_CONFIG | --staged] [--draft KEY]
   env         list | set NAME VALUE [--draft KEY] | unset NAME [--draft KEY]
   secrets     list | set NAME (--from-env VAR | --stdin) [--draft KEY] | unset NAME [--draft KEY]
 
-VALUES, staged into the draft before applying:
+VALUES, supplied to a new or deployed app:
       --env NAME[=VALUE]      Set an env var; a bare NAME reads the same-named exported variable
       --secret NAME           Set a secret from the same-named exported variable
       --fill-non-interactive  Read the remaining declared values from same-named exported variables
