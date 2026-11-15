@@ -36,15 +36,19 @@ left out and a warning is shown instead.
 ## Pieces
 
 The `obelisk-agent:tools/cloud` interface has these activities
-(`packs/obelisk-control/cloud/`); all but `tenant-read` have `max_retries = 0`:
+(`packs/obelisk-control/cloud/`). `read`, `tenant-read`, `command` and
+`finish-deploy` are retried; the rest have `max_retries = 0`:
 
 - `run` (`cli.js`) runs the provisioner commands: `auth status`, `app list`,
-  `app new|status|events|stage|unstage|apply|enable|disable|delete`,
-  `env ...` and `secrets ...`. Edits go into a named draft
-  (`--draft`, default `default`) through `/v1/apps/<app>/drafts/<key>/...`
-  with `create_or_reuse=true`, and `apply` applies only what is staged in it;
-  `apply --reapply` re-applies the applied revision. It returns stdout, stderr and an
-  exit code, and its errors use the real CLI's wording.
+  `app new|status|events|stage|unstage`, `env ...` and `secrets ...`. Edits
+  go into a named draft (`--draft`, default `default`) through
+  `/v1/apps/<app>/drafts/<key>/...` with `create_or_reuse=true`. It returns
+  stdout, stderr and an exit code, and its errors use the real CLI's wording.
+- `read` (`read.js`) sends one GET to the provisioner and returns the status
+  and body. `command` (`command.js`) sends one `app apply|enable|disable|delete`
+  request with the body and Idempotency-Key the shell chose, so a retry joins
+  the command or gets its recorded result. Both return every response below
+  500; only a failed request or a server error is an error and gets retried.
 - `prepare-deploy` (`deploy.js`) and `finish-deploy` (`finish-deploy.js`)
   run the provisioner part of `app deploy`, in the real CLI's order:
   1. `prepare-deploy` exclusively creates the deploy's draft of an existing
@@ -86,6 +90,15 @@ are handled as follows:
   Deploy uploads local deployment.toml changes and applies that deployment's ID.
   Apply uses the currently active deployment with staged configuration and does
   not upload local deployment.toml changes.
+- `cloud app apply|enable|disable|delete [--command-id ID]` is ported from
+  obelisk's `src/command/cloud.rs`, in the shell. It generates the command ID
+  unless `--command-id` is given, in which case it first asks
+  `GET /v1/commands/ID` and reports a command the provisioner already accepted.
+  `apply` then reads the app row and the draft through `read` and the active
+  deployment through `tenant-read`, and builds the request: the draft
+  (`--draft`, default `default`) or, with `--reapply`, the applied revision.
+  Last, `command` sends it. When its retries run out, the error names the
+  command ID to retry with.
 - Everything else goes to `run` with the app policy's text: the `-a` file,
   else `./app.toml`. `--from-env VAR` turns into `--stdin` with the exported
   variable's value, so secret values never appear in argv. A bare

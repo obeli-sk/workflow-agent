@@ -21,10 +21,13 @@ import { randomAppName } from "./obelisk-app-names.js";
 import { DEPLOYMENT_TEMPLATE } from "./obelisk-deployment-template.js";
 import { isCasNamespacedDigest } from "./fs.js";
 import { parseToml } from "../../../packs/obelisk-control/cloud/toml.js";
-import { endpoints } from "../../../packs/obelisk-control/cloud/output.js";
+import { draftArg, endpoints, errorMessage, humanOutput, renderSummary } from "../../../packs/obelisk-control/cloud/output.js";
+import { applyRequest } from "../../../packs/obelisk-control/cloud/fill.js";
+import { validateCloudAppName } from "../../../packs/obelisk-control/cloud/policy.js";
 
 const APP_POLICY_FILE = "app.toml";
 const APP_API_GROUPS = ["execution", "component", "deployment", "admin"];
+const LIFECYCLE_COMMANDS = ["apply", "enable", "disable", "delete"];
 const DEPLOYMENT_ID = /^Dep_[0-9A-HJKMNP-TV-Z]{26}$/;
 
 const TEMPLATE_OWNER = "obeli-sk";
@@ -112,6 +115,11 @@ function executeCloud(interp, args, stdin, cloud, out) {
     if (group === "app" && sub === "deploy") {
         if (helpRequested(rest)) return done(out, cloudAppHelp);
         cloudDeploy(interp, rest.slice(2), globals, cloud, out);
+        return { ...out, exitCode: 0 };
+    }
+    if (group === "app" && LIFECYCLE_COMMANDS.includes(sub)) {
+        if (helpRequested(rest)) return done(out, cloudAppHelp);
+        cloudLifecycle(interp, sub, rest.slice(2), globals, cloud, out);
         return { ...out, exitCode: 0 };
     }
     if (helpRequested(rest)) return done(out, group === "app" ? cloudAppHelp : cloudHelp);
@@ -227,6 +235,67 @@ function cloudRun(interp, args, stdin, cloud, globals, [group, sub]) {
     const read = readEnv(interp, fill, values["--env"], values["--secret"]);
     const output = cloud.run(forwarded, input, policy, fill || read.length > 0 ? read : null);
     return { stdout: output.stdout, stderr: output.stderr, exitCode: output.exitCode };
+}
+
+// PORT: cloud.rs's `CloudApp::{Apply,Enable,Disable,Delete}`. The reads and the request body
+// are made here, so the `command` activity sends a single request and can be retried with the
+// Idempotency-Key chosen here. With `--command-id`, a command the provisioner already accepted
+// reports its result instead of being rebuilt from state the first attempt may have changed.
+function cloudLifecycle(interp, action, args, globals, cloud, out) {
+    const { opts } = parseOptions(args, action === "apply"
+        ? { "--draft": true, "--reapply": false, "--force": false, "--command-id": true }
+        : { "--command-id": true }, []);
+    if (opts["--reapply"] && opts["--draft"] !== undefined) {
+        throw new UsageError("the argument '--reapply' cannot be used with '--draft <KEY>'");
+    }
+    // PORT: args.rs's `parse_draft_key`.
+    const key = opts["--draft"] ?? "default";
+    if (!/^[a-z0-9._-]{1,64}$/.test(key)) {
+        throw new UsageError(`invalid value '${key}' for '--draft <KEY>': draft key must be 1-64 characters a-z, 0-9, '.', '_' or '-'`);
+    }
+    const name = appName(interp, globals.app);
+    validateCloudAppName(name);
+    const id = opts["--command-id"] ?? `E_${ulid()}`;
+    // PORT: cloud.rs's `Client::response`; `optional` maps 404 to null.
+    const value = (response, optional = false, command = null) => {
+        if (optional && response.status === 404) return null;
+        if (!success(response)) {
+            if (globals.verbose) throw `Cloud API returned ${response.status}: ${response.body}`;
+            const failure = `${errorMessage(response.body)} (HTTP ${response.status})`;
+            throw command === null ? failure : `${failure}. Command ID: ${command}`;
+        }
+        if (response.body.trim() === "") return null;
+        return parseBody(response);
+    };
+    const summary = action === "delete" ? { kind: "message", message: "App deleted." } : { kind: "lifecycle" };
+    const print = (result, notes = "") => {
+        if (globals.json) out.stdout += `${prettyJson(result)}\n`;
+        else out.stderr += notes + (globals.verbose ? humanOutput(result) : renderSummary(summary, result));
+    };
+    if (globals.verbose) out.stderr += `Cloud command execution ID: ${id}\n`;
+    if (opts["--command-id"] !== undefined) {
+        const accepted = value(cloud.read(["v1", "commands", id]), true, id);
+        if (accepted !== null) return print(accepted);
+    }
+    let body = null;
+    const notes = [];
+    if (action === "apply") {
+        const current = value(cloud.read(["v1", "apps", name]));
+        const draft = opts["--reapply"] ? null : value(cloud.read(["v1", "apps", name, "drafts", key]), true);
+        if (draft === null && !opts["--reapply"]) {
+            throw `Nothing staged in draft \`${key}\`; stage changes with \`obelisk cloud app stage\`, \`env set\` or \`secrets set\`${draftArg(key)}, or reconcile the applied revision with \`--reapply\``;
+        }
+        const { deployment_id: deploymentId } = getJson({ get: (path) => cloud.get(name, path) }, "/v1/info");
+        body = JSON.stringify(applyRequest(name, key, draft, current, deploymentId, opts["--force"] === true, (line) => notes.push(`${line}\n`)));
+    }
+    const [method, path] = { apply: ["POST", ["apply"]], enable: ["POST", ["enable"]], disable: ["POST", ["disable"]], delete: ["DELETE", []] }[action];
+    let response;
+    try {
+        response = cloud.command(name, method, path, body, id);
+    } catch (error) {
+        throw withContext(`Cloud request failed; retry the same command with --command-id ${id}`, error);
+    }
+    print(value(response, false, id), notes.join(""));
 }
 
 // PORT: obelisk's src/command/cloud/deploy.rs. `prepareDeploy` stages the

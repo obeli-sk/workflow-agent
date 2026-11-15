@@ -7,6 +7,8 @@ const { default: prepareDeploy } = await import("./deploy.js");
 const { default: finishDeploy } = await import("./finish-deploy.js");
 const { default: tenant } = await import("./tenant.js");
 const { default: tenantRead } = await import("./tenant-read.js");
+const { default: command } = await import("./command.js");
+const { default: read } = await import("./read.js");
 const { appConfig } = await import("./policy.js");
 
 const POLICY = `app_name = "demo"
@@ -217,58 +219,30 @@ test("finish-deploy requires a running app and suggests a retry on failure", asy
     await assert.rejects(finishDeploy("demo", "Dep_1", 1, "deploy-x", "E_01M7A0M1P2P2F1VNCPZ9S26DFJ"), /Error: Retry with `obelisk cloud app deploy --app demo`\n\nCaused by:\n {4}draft is stale/);
 });
 
-test("app apply applies the default draft with the app API's deployment id", async () => {
+test("command sends one request with the shell's Idempotency-Key; only failures are errors", async () => {
     const requests = provisioner({
-        "GET /v1/apps/demo": appRow(),
-        "GET /v1/apps/demo/drafts/default": draftView(),
-        [`GET ${APP_API}/v1/info`]: serverInfo({ deployment_id: "Dep_active" }),
-        "POST /v1/apps/demo/apply": appRow({ outcome: { configuration: "applied" } }),
+        "POST /v1/apps/demo/apply": () => new Response(JSON.stringify({ error: "draft is stale" }), { status: 409 }),
+        "DELETE /v1/apps/demo": appRow(),
+        "POST /v1/apps/demo/enable": () => new Response("upstream down", { status: 502 }),
     });
-    const applied = await run(["app", "apply", "--app", "demo", "--force"], "", POLICY);
-    assert.equal(applied.exit_code, 0, applied.stderr);
-    assert.match(applied.stderr, /^Applying draft `default` revision 2 over revision 1: app\.toml\nConfiguration applied\. /);
-    assert.ok(!requests.some((request) => request.method === "PUT"));
-    const apply = requests.find((request) => request.method === "POST");
-    assert.deepEqual(JSON.parse(apply.body), { force: true, deployment_id: "Dep_active", draft: "default" });
-    assert.equal(requests.find((request) => request.origin === APP_API).headers.authorization, "Bearer cloud-token");
+    const id = "E_01M7A0M1P2P2F1VNCPZ9S26DFJ";
+    assert.deepEqual(await command("demo", "POST", ["apply"], '{"force":false}', id), { status: 409, body: '{"error":"draft is stale"}' });
+    assert.equal(requests[0].headers["idempotency-key"], id);
+    assert.equal(requests[0].headers["content-type"], "application/json");
+    assert.equal(requests[0].body, '{"force":false}');
+    assert.equal((await command("demo", "DELETE", [], null, id)).status, 200);
+    assert.equal(requests[1].headers["content-type"], undefined);
+    await assert.rejects(command("demo", "POST", ["enable"], null, id), /Cloud API returned 502: upstream down/);
+    await assert.rejects(command("demo", "PUT", ["env"], null, id), /unsupported command method PUT/);
+    await assert.rejects(command("Demo!", "POST", ["enable"], null, id));
 });
 
-test("app apply needs a staged draft unless --reapply and refuses a stale or incomplete draft", async () => {
-    let requests = provisioner({
-        "GET /v1/apps/demo": appRow({ applied_revision: 4 }),
-        [`GET ${APP_API}/v1/info`]: serverInfo({ deployment_id: "Dep_active" }),
-        "POST /v1/apps/demo/apply": appRow(),
-    });
-    const nothing = await run(["app", "apply", "--app", "demo", "--draft", "ci"], "", null);
-    assert.equal(nothing.exit_code, 1);
-    assert.match(nothing.stderr, /Error: Nothing staged in draft `ci`; stage changes with `obelisk cloud app stage`, `env set` or `secrets set` --draft ci, or reconcile the applied revision with `--reapply`/);
-    assert.ok(!requests.some((request) => request.method === "POST"));
-    const before = requests.length;
-    const reapplied = await run(["app", "apply", "--app", "demo", "--reapply"], "", null);
-    assert.equal(reapplied.exit_code, 0, reapplied.stderr);
-    assert.match(reapplied.stderr, /^Re-applying revision 4\n/);
-    assert.deepEqual(JSON.parse(requests.find((request) => request.method === "POST").body), { force: false, revision: 4, deployment_id: "Dep_active" });
-    assert.ok(!requests.slice(before).some((request) => request.path.includes("/drafts")));
-    assert.equal((await run(["app", "apply", "--app", "demo", "--reapply", "--draft", "ci"], "", null)).exit_code, 2);
-    assert.equal((await run(["app", "apply", "--app", "demo", "--draft", "Bad"], "", null)).exit_code, 2);
-    for (const flag of ["--env", "--secret", "--fill-non-interactive", "--staged"]) {
-        assert.equal((await run(["app", "apply", "--app", "demo", flag, ...(flag.startsWith("--fill") || flag === "--staged" ? [] : ["X"])], "", null)).exit_code, 2, flag);
-    }
-
-    for (const [draft, message] of [
-        [draftView({ stale: true }), /Draft `default` was opened on revision 1, but revision 1 was applied since; discard it with `obelisk cloud app unstage --app demo`/],
-        [draftView({ values: { missing_env: ["MODE"] } }), /Missing values in draft `default`: env MODE\. Stage them with `obelisk cloud app env set` or `obelisk cloud app secrets set`/],
-    ]) {
-        requests = provisioner({
-            "GET /v1/apps/demo": appRow(),
-            "GET /v1/apps/demo/drafts/default": draft,
-            [`GET ${APP_API}/v1/info`]: serverInfo({ deployment_id: "Dep_active" }),
-        });
-        const refused = await run(["app", "apply", "--app", "demo"], "", null);
-        assert.equal(refused.exit_code, 1);
-        assert.match(refused.stderr, message);
-        assert.ok(!requests.some((request) => request.method === "POST"));
-    }
+test("read returns provisioner responses, including 404", async () => {
+    const requests = provisioner({ "GET /v1/commands/E_1": appRow() });
+    assert.equal((await read(["v1", "commands", "E_1"])).status, 200);
+    assert.equal((await read(["v1", "apps", "demo", "drafts", "ci"])).status, 404);
+    assert.equal(requests[0].headers["idempotency-key"], undefined);
+    await assert.rejects(read(["internal", "x"]), /invalid provisioner path/);
 });
 
 test("app new reads bare --env and --secret names from the shell", async () => {
@@ -399,13 +373,9 @@ test("tenant sends a request to the app API with the cloud token and returns any
     await assert.rejects(tenant("demo", "PUT", "v1/x", null, null), /invalid app API path/);
 });
 
-test("run reports provisioner errors with the command id and rejects credential flags", async () => {
-    provisioner({
-        "POST /v1/apps/demo/disable": () => new Response(JSON.stringify({ error: "app is busy" }), { status: 409 }),
-    });
-    const stopped = await run(["app", "disable", "--app", "demo", "--command-id", "E_cmd"], "", null);
-    assert.equal(stopped.exit_code, 1);
-    assert.equal(stopped.stderr, "Error: app is busy (HTTP 409). Command ID: E_cmd\n");
+test("run rejects credential flags and leaves lifecycle commands to the shell", async () => {
+    provisioner({});
+    assert.equal((await run(["app", "disable", "--app", "demo"], "", null)).exit_code, 2);
 
     const flagged = await run(["app", "list", "--api-token", "x"], "", null);
     assert.equal(flagged.exit_code, 1);

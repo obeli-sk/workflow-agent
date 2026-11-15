@@ -58,8 +58,15 @@ function fakeCloud(routes = {}) {
     };
     const cloud = {
         calls: [],
+        commands: [],
         runs: [],
         deploys: [],
+        // Provisioner requests are routed under `/api`.
+        read: (path) => respond(null, "GET", `/api/${path.join("/")}`, null, null),
+        command(app, method, path, body, commandId) {
+            cloud.commands.push(commandId);
+            return respond(app, method, `/api/v1/apps/${[app, ...path].join("/")}`, null, body);
+        },
         get: (app, path) => respond(app, "GET", path, null, null),
         send: (app, method, path, contentType, body) => respond(app, method, path, contentType, body),
         run(args, stdin, appToml, fillEnv) {
@@ -220,6 +227,103 @@ test("cloud app deploy uploads without switching, then finishes with its id", ()
 
     const json = run(i, "cloud app deploy --json", cloud);
     assert.deepEqual(JSON.parse(json.stdout).outcomes, ["applied"]);
+});
+
+// A draft view as the provisioner returns it: `default`, revision 2 over applied revision 1, app.toml changed.
+// A 200 response, for values with their own `status` field.
+function ok(body) {
+    return { status: 200, body };
+}
+
+function draftView(overrides = {}) {
+    const empty = { added: [], removed: [], changed: [] };
+    return {
+        key: "default", parent_revision: 1, revision: 2, applied_revision: 1, stale: false,
+        summary: { changed: true, app_toml: true, policy: false, cloud: false, env: empty, secrets: empty },
+        values: { missing_env: [], missing_secrets: [], unused_env: [], unused_secrets: [] },
+        ...overrides,
+    };
+}
+
+test("cloud app apply reads in the shell and sends one command with a fresh Idempotency-Key", () => {
+    const cloud = fakeCloud({
+        "GET /api/v1/apps/demo": ok({ status: "running", applied_revision: 1 }),
+        "GET /api/v1/apps/demo/drafts/default": draftView(),
+        "GET /v1/info": serverInfo({ deployment_id: "Dep_active" }),
+        "POST /api/v1/apps/demo/apply": ok({ status: "running", outcome: { configuration: "applied" } }),
+    });
+    const out = api(interp(), "apply --force", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.match(out.stderr, /^Applying draft `default` revision 2 over revision 1: app\.toml\nConfiguration applied\./);
+    assert.deepEqual(cloud.calls.map((call) => `${call.method} ${call.path}`), [
+        "GET /api/v1/apps/demo", "GET /api/v1/apps/demo/drafts/default", "GET /v1/info", "POST /api/v1/apps/demo/apply",
+    ]);
+    assert.deepEqual(JSON.parse(cloud.calls[3].body), { force: true, deployment_id: "Dep_active", draft: "default" });
+    assert.match(cloud.commands[0], /^E_[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
+    assert.equal(cloud.runs.length, 0);
+
+    const json = api(interp(), "apply --json", cloud);
+    assert.deepEqual(JSON.parse(json.stdout).outcome, { configuration: "applied" });
+    assert.equal(json.stderr, "");
+});
+
+test("cloud app apply needs a staged draft unless --reapply and rejects other flags", () => {
+    const cloud = fakeCloud({
+        "GET /api/v1/apps/demo": ok({ status: "running", applied_revision: 4 }),
+        "GET /v1/info": serverInfo({ deployment_id: "Dep_active" }),
+        "POST /api/v1/apps/demo/apply": ok({ status: "running" }),
+    });
+    const nothing = api(interp(), "apply --draft ci", cloud);
+    assert.equal(nothing.exitCode, 1);
+    assert.match(nothing.stderr, /^Error: Nothing staged in draft `ci`; stage changes with `obelisk cloud app stage`, `env set` or `secrets set` --draft ci, or reconcile the applied revision with `--reapply`/);
+    assert.equal(cloud.commands.length, 0);
+
+    const reapplied = api(interp(), "apply --reapply", cloud);
+    assert.equal(reapplied.exitCode, 0, reapplied.stderr);
+    assert.match(reapplied.stderr, /^Re-applying revision 4\n/);
+    assert.deepEqual(JSON.parse(cloud.calls.at(-1).body), { force: false, deployment_id: "Dep_active", revision: 4 });
+
+    const stale = fakeCloud({
+        "GET /api/v1/apps/demo": ok({ status: "running", applied_revision: 1 }),
+        "GET /api/v1/apps/demo/drafts/default": draftView({ stale: true }),
+        "GET /v1/info": serverInfo({ deployment_id: "Dep_active" }),
+    });
+    assert.match(api(interp(), "apply", stale).stderr, /Draft `default` was opened on revision 1, but revision 1 was applied since/);
+    assert.equal(stale.commands.length, 0);
+
+    for (const args of ["apply --reapply --draft ci", "apply --draft Bad", "apply --env X", "enable --force", "delete extra"]) {
+        assert.equal(api(interp(), args, fakeCloud()).exitCode, 2, args);
+    }
+});
+
+test("cloud app enable, disable and delete report errors with the command ID", () => {
+    const cloud = fakeCloud({
+        "POST /api/v1/apps/demo/disable": { status: 409, body: { error: "app is busy" } },
+        "DELETE /api/v1/apps/demo": ok({ status: "deleted" }),
+        "POST /api/v1/apps/demo/enable": () => { throw "Cloud API returned 503: interrupted"; },
+    });
+    const busy = api(interp(), "disable --command-id E_cmd", cloud);
+    assert.equal(busy.exitCode, 1);
+    assert.equal(busy.stderr, "Error: app is busy (HTTP 409). Command ID: E_cmd\n");
+    assert.deepEqual(cloud.calls.map((call) => `${call.method} ${call.path}`), ["GET /api/v1/commands/E_cmd", "POST /api/v1/apps/demo/disable"]);
+
+    const deleted = api(interp(), "delete", cloud);
+    assert.equal(deleted.exitCode, 0, deleted.stderr);
+    assert.equal(deleted.stderr, "App deleted.\n");
+
+    const failed = api(interp(), "enable", cloud);
+    assert.equal(failed.exitCode, 1);
+    assert.match(failed.stderr, new RegExp(`^Error: Cloud request failed; retry the same command with --command-id ${cloud.commands.at(-1)}\n\nCaused by:\n {4}Cloud API returned 503: interrupted\n$`));
+});
+
+test("cloud app apply --command-id reports an accepted command without rebuilding it", () => {
+    const id = "E_01M7A0M1P2P2F1VNCPZ9S26DFJ";
+    const cloud = fakeCloud({ [`GET /api/v1/commands/${id}`]: ok({ status: "running", outcome: { configuration: "applied" } }) });
+    const out = api(interp(), `apply --command-id ${id}`, cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.match(out.stderr, /^Configuration applied\./);
+    assert.deepEqual(cloud.calls.map((call) => call.path), [`/api/v1/commands/${id}`]);
+    assert.equal(cloud.commands.length, 0);
 });
 
 test("cloud app deploy forwards --env/--secret with only the named variables and applies its draft", () => {

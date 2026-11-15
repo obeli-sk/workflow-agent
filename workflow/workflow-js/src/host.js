@@ -46,6 +46,8 @@ export function createCloud(cloud, obelisk) {
             const deployed = plain(() => cloud.finishDeploy(app, deploymentId, revision, draft, commandId));
             return { app: JSON.parse(deployed.app_json), log: deployed.log };
         },
+        read: (path) => plain(() => cloud.read(path)),
+        command: (app, method, path, body, commandId) => plain(() => cloud.command(app, method, path, body, commandId)),
         get: (app, path) => plain(() => cloud.tenantRead(app, path)),
         send: (app, method, path, contentType, body) => plain(() => cloud.tenant(app, method, path, contentType, body)),
     };

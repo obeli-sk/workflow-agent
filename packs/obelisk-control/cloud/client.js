@@ -1,5 +1,3 @@
-import { parseApiResponse } from "../../../vendor/obelisk-api/index.js";
-
 // PORT: obelisk's cloud.rs `Client`: provisioner requests authenticated by the cloud token.
 import { errorMessage } from "./output.js";
 import { validateCloudAppName } from "./policy.js";
@@ -51,6 +49,24 @@ export async function cloudRequest(method, segments, { body, toml, kind = "read"
     }
 }
 
+// One provisioner request for the shell, which reports the response itself: every status below
+// 500 is returned, while a failed request or a server error is thrown so the activity is retried.
+export async function provisionerResponse(method, segments, body = null, commandId = null) {
+    const headers = { accept: "application/json", authorization: `Bearer ${cloudToken()}` };
+    if (commandId !== null) headers["idempotency-key"] = commandId;
+    if (body !== null) headers["content-type"] = "application/json";
+    const url = `${cloudBase()}/${segments.map(encodeURIComponent).join("/")}`;
+    let response;
+    try {
+        response = await fetch(url, { method, headers, body: body ?? undefined });
+    } catch (error) {
+        throw `Cloud request failed: ${error}`;
+    }
+    const text = await response.text();
+    if (response.status >= 500) throw `Cloud API returned ${response.status}: ${text}`;
+    return { status: response.status, body: text };
+}
+
 export function appRequest(name, method, suffix, options) {
     return cloudRequest(method, ["v1", "apps", name, ...suffix], options);
 }
@@ -63,16 +79,6 @@ export function draftRequest(name, key, method, suffix, options = {}, reuse = fa
     return appRequest(name, method, ["drafts", key, ...suffix], { ...options, kind, query });
 }
 
-// Draft `key`, or null when the caller has no such draft.
-export async function lookupDraft(name, key, options) {
-    try {
-        return await appRequest(name, "GET", ["drafts", key], options);
-    } catch (error) {
-        if (typeof error === "string" && /\(HTTP 404\)$/.test(error)) return null;
-        throw error;
-    }
-}
-
 // The app row, or null when the provisioner has no such app.
 export async function lookupApp(name) {
     try {
@@ -81,20 +87,6 @@ export async function lookupApp(name) {
         if (typeof error === "string" && /\(HTTP 404\)$/.test(error)) return null;
         throw error;
     }
-}
-
-// PORT: cloud.rs's `api_origin`.
-export function apiOrigin(value) {
-    if (typeof value !== "string") throw "Provisioner response is missing endpoints.api";
-    let url;
-    try {
-        url = new URL(value);
-    } catch {
-        throw `invalid API URL ${value}`;
-    }
-    if (!["http:", "https:"].includes(url.protocol) || !url.hostname) throw "API URL must use HTTP or HTTPS";
-    if (url.username || url.password || url.search || url.hash) throw "API URL must not contain credentials, query or fragment";
-    return value.replace(/\/+$/, "");
 }
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -110,24 +102,6 @@ export function executionIdTopLevel() {
     let random = "";
     for (let i = 0; i < 16; i++) random += CROCKFORD[Math.floor(Math.random() * 32)];
     return `E_${timePart}${random}`;
-}
-
-// GET on an app's own API, authenticated by the cloud token.
-export async function appApiGet(apiUrl, segments) {
-    const url = `${apiOrigin(apiUrl)}/${segments.map(encodeURIComponent).join("/")}`;
-    let response;
-    try {
-        response = await fetch(url, { headers: { accept: "application/json", authorization: `Bearer ${cloudToken()}` } });
-    } catch (error) {
-        throw `App API request failed: ${error}`;
-    }
-    const text = await response.text();
-    if (response.status < 200 || response.status >= 300) throw `server returned ${response.status}: ${text}`;
-    try {
-        return parseApiResponse("GET", "/" + segments.join("/"), JSON.parse(text));
-    } catch (error) {
-        throw `Cannot read app API response: ${error}`;
-    }
 }
 
 // PORT: cloud.rs's `direct_api_url`: the app's API URL follows from its name and OBELISK_CLOUD_APPS_DOMAIN.

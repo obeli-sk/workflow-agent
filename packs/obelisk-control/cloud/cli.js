@@ -4,15 +4,15 @@
 //     -> result<record { stdout: string, stderr: string, exit-code: u32 }, string>
 //
 // PORT: obelisk's src/command/cloud.rs. The provisioner half of `obelisk cloud`
-// (apps, tokens, app lifecycle, env and secrets); the shell's `obelisk` command
-// handles `app deploy` and the app API subcommands itself. `app-toml` is the
+// (apps, tokens, env and secrets); the shell's `obelisk` command handles
+// `app deploy`, `app apply|enable|disable|delete` and the app API subcommands itself. `app-toml` is the
 // policy file's text (`-a PATH`, else ./app.toml) when the shell found one;
 // `fill-env` the shell's exported variables for `--fill-non-interactive`, or
 // those that bare `--env NAME` and `--secret NAME` read.
 // Like the CLI, JSON goes to stdout and human output to stderr; errors exit 1,
 // usage errors 2.
-import { appApiGet, appRequest, cloudBase, cloudRequest, draftRequest, lookupDraft } from "./client.js";
-import { applyRequest, explicitValues, initialValues, userSuppliedPolicy } from "./fill.js";
+import { appRequest, cloudBase, cloudRequest, draftRequest } from "./client.js";
+import { explicitValues, initialValues, userSuppliedPolicy } from "./fill.js";
 import { appConfig, configName, validateCloudAppName } from "./policy.js";
 import { draftArg, humanOutput, renderSummary } from "./output.js";
 
@@ -38,7 +38,7 @@ export class UsageError extends Error {}
 const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "--from-env", "-n", "--limit", "--draft"];
 const REPEATED_FLAGS = ["--env", "--secret"];
 const BOOLEAN_FLAGS = [
-    "--json", "--verbose", "--force", "--stdin", "--reapply", "--fill", "--fill-non-interactive",
+    "--json", "--verbose", "--stdin", "--fill", "--fill-non-interactive",
 ];
 const GLOBAL_FLAGS = ["--app", "--json", "--verbose"];
 
@@ -151,7 +151,6 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     const config = appToml === null || (!POLICY_COMMANDS.includes(action) && explicit) ? null
         // Status only reports a readable discovered ./app.toml.
         : action === "status" && !explicit ? readableConfig(appToml, path) : appConfig(appToml, path);
-    const command = { ...options, kind: "command" };
     const terminal = (flag) => `\`${flag}\` requires a terminal; use \`--fill-non-interactive\` to read same-named environment variables`;
     if (action === "new") {
         allow(flags, ["-a", ...VALUES, "--command-id"]);
@@ -206,31 +205,6 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         allow(flags, ["--draft"]);
         arity(rest, 0);
         return print(await draftRequest(name, key, "DELETE", [], options), { kind: "unstaged", draft: key });
-    }
-    if (action === "apply") {
-        allow(flags, ["--draft", "--reapply", "--force", "--command-id"]);
-        arity(rest, 0);
-        if (flags["--reapply"] && flags["--draft"] !== undefined) throw new UsageError("the argument '--reapply' cannot be used with '--draft <KEY>'");
-        const current = await appRequest(name, "GET", [], options);
-        const draft = flags["--reapply"] ? null : await lookupDraft(name, key, options);
-        if (draft === null && !flags["--reapply"]) {
-            throw `Nothing staged in draft \`${key}\`; stage changes with \`obelisk cloud app stage\`, \`env set\` or \`secrets set\`${draftArg(key)}, or reconcile the applied revision with \`--reapply\``;
-        }
-        const { deployment_id: deploymentId } = await appApiGet(current?.endpoints?.api, ["v1", "info"]);
-        const notes = [];
-        const body = applyRequest(name, key, draft, current, deploymentId, flags["--force"] === true, (line) => notes.push(`${line}\n`));
-        const result = print(await appRequest(name, "POST", ["apply"], { ...command, body }), { kind: "lifecycle" });
-        return flags["--json"] ? result : { ...result, stderr: notes.join("") + result.stderr };
-    }
-    if (action === "enable" || action === "disable") {
-        allow(flags, ["--command-id"]);
-        arity(rest, 0);
-        return print(await appRequest(name, "POST", [action], command), { kind: "lifecycle" });
-    }
-    if (action === "delete") {
-        allow(flags, ["--command-id"]);
-        arity(rest, 0);
-        return print(await appRequest(name, "DELETE", [], command), { kind: "message", message: "App deleted." });
     }
     if (action === "env") return envCommand(name, key, rest, flags, options, print, apply);
     if (action === "secrets") return secretsCommand(name, key, rest, flags, stdin, options, print, apply);
