@@ -1,5 +1,8 @@
 app_name = "workflow-agent"
 
+[cloud]
+memory_mb = 512
+
 [cloud.integrations]
 llm = { type = "llm", env = "LLM_BASE_URL" }
 # /workspace/github/* mounts read through the account's GitHub integration proxy.
