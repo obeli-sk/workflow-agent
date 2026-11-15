@@ -178,7 +178,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         arity(rest, 0);
         const value = await appRequest(name, "GET", ["status"], options);
         // Older provisioners have no drafts.
-        try { value.drafts = (await appRequest(name, "GET", ["drafts"], options))?.drafts; } catch { /* no drafts */ }
+        value.drafts = (await appRequest(name, "GET", ["drafts"], options))?.drafts;
         if (local) {
             let comparison = null;
             let error = null;

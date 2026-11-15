@@ -320,7 +320,7 @@ test("app status, stage, unstage, env and secrets work on drafts", async () => {
 
 test("app status shows an idle-suspended app as resuming on request", async () => {
     const status = async (machine_state, api_ready) => {
-        provisioner({ "GET /v1/apps/demo/status": { app: appRow(), machine_state, api_ready } });
+        provisioner({ "GET /v1/apps/demo/status": { app: appRow(), machine_state, api_ready }, "GET /v1/apps/demo/drafts": { drafts: [] } });
         const result = await run(["app", "status"], "", POLICY);
         assert.equal(result.exit_code, 0, result.stderr);
         return result.stderr;
@@ -340,14 +340,14 @@ test("app status shows health and a failing wake-up", async () => {
         app: appRow(), machine_state: "started", api_ready: false,
         health: { status: "critical", critical_since: 1762180000000 },
         wake_failure: { wake_at: 1762180000000, attempts: 3, retry_after: 1762180060000, error: "host unavailable" },
-    } });
+    }, "GET /v1/apps/demo/drafts": { drafts: [] } });
     const result = await run(["app", "status"], "", POLICY);
     assert.equal(result.exit_code, 0, result.stderr);
     assert.match(result.stderr, /\nAPI: \S+ \(unavailable\)\nWeb UI: https:\/\/webui--demo\.obelisk\.works\nInternal webhooks: https:\/\/internal--demo\.obelisk\.works\n/);
     assert.doesNotMatch(result.stderr, /External webhooks|URL:/);
     assert.match(result.stderr, /\nHealth: critical since 2025-11-03 14:26:40 UTC\n/);
     assert.match(result.stderr, /\nWake-up failing: 3 attempts since 2025-11-03 14:26:40 UTC, next retry at 2025-11-03 14:27:40 UTC\nWake-up error: host unavailable\n/);
-    provisioner({ "GET /v1/apps/demo/status": { app: appRow(), machine_state: "suspended", api_ready: null, health: null, wake_failure: null } });
+    provisioner({ "GET /v1/apps/demo/status": { app: appRow(), machine_state: "suspended", api_ready: null, health: null, wake_failure: null }, "GET /v1/apps/demo/drafts": { drafts: [] } });
     const idle = await run(["app", "status"], "", POLICY);
     assert.doesNotMatch(idle.stderr, /Health|Wake-up/);
 });
@@ -371,7 +371,7 @@ test("app events lists recent events newest first", async () => {
 });
 
 test("app commands never use another app's config", async () => {
-    const requests = provisioner({ "GET /v1/apps/demo/status": { app: appRow(), api_ready: true } });
+    const requests = provisioner({ "GET /v1/apps/demo/status": { app: appRow(), api_ready: true }, "GET /v1/apps/demo/drafts": { drafts: [] } });
     const other = POLICY.replace('app_name = "demo"', 'app_name = "other"');
     for (const command of ["new", "status", "stage"]) {
         const result = await run(["app", command, "--app", "demo", "-a", "app.toml"], "", other);

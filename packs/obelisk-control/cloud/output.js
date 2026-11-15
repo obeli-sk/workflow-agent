@@ -131,23 +131,15 @@ export function lifecycleOutcome(value) {
 function configRevisions(value) {
     let out = "";
     const app = value?.app;
-    if (Array.isArray(value?.drafts)) {
-        out += `Configuration: applied revision ${JSON.stringify(app?.applied_revision ?? null)}\n`;
-        for (const draft of value.drafts) {
-            const key = text(draft, "key", "default");
-            if (draft?.stale === true) {
-                out += `Draft \`${key}\`: opened on revision ${JSON.stringify(draft?.parent_revision ?? null)}, superseded\n`;
-            } else if (draft?.summary?.changed === true) {
-                out += `Draft \`${key}\`: revision ${JSON.stringify(draft?.revision ?? null)}: ${draftChanges(draft)}. Run \`obelisk cloud app apply --app ${text(app, "app_name", "")}${draftArg(key)}\` to apply it.\n`;
-                out += draftNotes(draft);
-            }
+    out += `Configuration: applied revision ${JSON.stringify(app?.applied_revision ?? null)}\n`;
+    for (const draft of Array.isArray(value?.drafts) ? value.drafts : []) {
+        const key = text(draft, "key", "default");
+        if (draft?.stale === true) {
+            out += `Draft \`${key}\`: opened on revision ${JSON.stringify(draft?.parent_revision ?? null)}, superseded\n`;
+        } else if (draft?.summary?.changed === true) {
+            out += `Draft \`${key}\`: revision ${JSON.stringify(draft?.revision ?? null)}: ${draftChanges(draft)}. Run \`obelisk cloud app apply --app ${text(app, "app_name", "")}${draftArg(key)}\` to apply it.\n`;
+            out += draftNotes(draft);
         }
-    // backcompat: provisioners without drafts report one staged revision.
-    } else if (Number.isInteger(app?.revision)) {
-        const applied = app?.applied_revision;
-        const state = !Number.isInteger(applied) ? "not applied yet"
-            : applied === app.revision ? `applied revision ${applied}` : `applied revision ${applied} (apply pending)`;
-        out += `Configuration: staged revision ${app.revision}, ${state}\n`;
     }
     const local = value?.local_config;
     const path = text(local, "path", "app.toml");
@@ -236,7 +228,6 @@ function app(value, note) {
             ? `Intended state: ${desired}. Run \`obelisk cloud app apply --app ${name} --reapply\` to reach it.\n`
             : `Intended state: ${desired}\n`;
     }
-    if (value?.potentially_stale === true) out += `Pending changes. Run \`obelisk cloud app apply --app ${name} --reapply\` to apply them.\n`;
     if (typeof value?.state?.failure === "string") out += `Error: ${value.state.failure}\n`;
     const reason = value?.state?.startup_failure?.reason;
     if (typeof reason === "string") out += `Startup failed: ${reason}. Use --verbose for startup details.\n`;
