@@ -243,7 +243,8 @@ export class Interpreter {
             return value === "0" ? 1 : 0;
         }
         if (command.kind === "simple") return this.runSimple(command, io);
-        return this.runCompound(command.compound, io);
+        const bindings = command.redirects?.length ? this.resolveBindings(command.redirects, io) : io;
+        return this.runCompound(command.compound, bindings);
     }
 
     stringifyArithExpr(expr) {

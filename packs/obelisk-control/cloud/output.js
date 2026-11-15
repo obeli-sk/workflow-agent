@@ -64,7 +64,7 @@ export function renderSummary(summary, value) {
             const idle = status === "running" && ["suspended", "suspending"].includes(machine);
             out += app(value?.app, idle ? "suspended" : undefined);
             if (!idle && ["started", "stopped", "suspended"].includes(machine) && ((status === "running" && !up) || (status === "stopped" && up))) {
-                line(`VM is ${machine} although the app is ${status}. Run \`obelisk cloud app apply\` to reconcile it.`);
+                line(`VM is ${machine} although the app is ${status}.`);
             }
             out += configRevisions(value);
             if (Number.isInteger(value?.memory_mb)) line(`Memory: ${value.memory_mb} MB`);
@@ -98,15 +98,13 @@ export function renderSummary(summary, value) {
             break;
         case "staged":
             if (value?.changed === false) line(`Configuration unchanged at staged revision ${JSON.stringify(value?.revision ?? null)}.`);
-            else if (Number.isInteger(value?.revision) && value?.changed !== undefined) {
-                line(`Configuration staged as revision ${value.revision}. Run \`${summary.apply}\` to apply changes.`);
+            else if (Number.isInteger(value?.revision)) {
+                line(`${summary.message} Staged revision ${value.revision}; run \`${summary.apply}\` to apply changes.`);
             } else line(`${summary.message} Run \`${summary.apply}\` to apply changes.`);
+            out += draftNotes(value);
             break;
-        case "fill":
-            for (const declaration of Array.isArray(value?.declarations) ? value.declarations : []) {
-                line(`${declaration?.kind === "secrets" ? "secret" : "env"} ${text(declaration, "name", "")}: ${text(declaration, "action", "not set")}`);
-            }
-            if (value?.apply_required === true) line(`Run \`${summary.apply}\` to apply changes.`);
+        case "unstaged":
+            line(value?.discarded === true ? `Draft \`${summary.draft}\` discarded.` : `No draft \`${summary.draft}\`.`);
             break;
         default:
             throw `unknown summary ${summary.kind}`;
@@ -133,11 +131,15 @@ export function lifecycleOutcome(value) {
 function configRevisions(value) {
     let out = "";
     const app = value?.app;
-    if (Number.isInteger(app?.revision)) {
-        const applied = app?.applied_revision;
-        const state = !Number.isInteger(applied) ? "not applied yet"
-            : applied === app.revision ? `applied revision ${applied}` : `applied revision ${applied} (apply pending)`;
-        out += `Configuration: staged revision ${app.revision}, ${state}\n`;
+    out += `Configuration: applied revision ${JSON.stringify(app?.applied_revision ?? null)}\n`;
+    for (const draft of Array.isArray(value?.drafts) ? value.drafts : []) {
+        const key = text(draft, "key", "default");
+        if (draft?.stale === true) {
+            out += `Draft \`${key}\`: opened on revision ${JSON.stringify(draft?.parent_revision ?? null)}, superseded\n`;
+        } else if (draft?.summary?.changed === true) {
+            out += `Draft \`${key}\`: revision ${JSON.stringify(draft?.revision ?? null)}: ${draftChanges(draft)}. Run \`obelisk cloud app apply --app ${text(app, "app_name", "")}${draftArg(key)}\` to apply it.\n`;
+            out += draftNotes(draft);
+        }
     }
     const local = value?.local_config;
     const path = text(local, "path", "app.toml");
@@ -148,6 +150,43 @@ function configRevisions(value) {
             ? `${path}: matches the staged configuration\n`
             : `${path}: differs from the staged configuration: ${changes.join(", ")}. Run \`obelisk cloud app stage --app ${text(app, "app_name", "")}\` to stage it.\n`;
     }
+    return out;
+}
+
+// PORT: output.rs's `draft_arg`: ` --draft KEY` for a key other than the default.
+export function draftArg(key) {
+    return key === "default" ? "" : ` --draft ${key}`;
+}
+
+// PORT: output.rs's `draft_values`: `missing` or `unused` values of a draft, as `env NAME` and `secret NAME`.
+export function draftValues(draft, which) {
+    const names = (kind) => (Array.isArray(draft?.values?.[`${which}_${kind}`]) ? draft.values[`${which}_${kind}`] : [])
+        .filter((name) => typeof name === "string")
+        .map((name) => `${kind === "env" ? "env" : "secret"} ${name}`);
+    return [...names("env"), ...names("secrets")];
+}
+
+// PORT: output.rs's `draft_changes`: a draft's changes against the applied revision, by name only.
+export function draftChanges(draft) {
+    const summary = draft?.summary;
+    const changes = [["app_toml", "app.toml"], ["policy", "policy"], ["cloud", "cloud"]]
+        .filter(([key]) => summary?.[key] === true)
+        .map(([, label]) => label);
+    for (const [kind, label] of [["env", "env"], ["secrets", "secret"]]) {
+        for (const [diff, sign] of [["added", "+"], ["removed", "-"], ["changed", "~"]]) {
+            const names = Array.isArray(summary?.[kind]?.[diff]) ? summary[kind][diff] : [];
+            for (const name of names) changes.push(`${label} ${sign}${typeof name === "string" ? name : ""}`);
+        }
+    }
+    return changes.length === 0 ? "no changes" : changes.join(", ");
+}
+
+function draftNotes(draft) {
+    let out = "";
+    const missing = draftValues(draft, "missing");
+    if (missing.length > 0) out += `Missing values: ${missing.join(", ")}\n`;
+    const unused = draftValues(draft, "unused");
+    if (unused.length > 0) out += `Not declared in app.toml: ${unused.join(", ")}\n`;
     return out;
 }
 
@@ -182,14 +221,23 @@ export function endpoints(value, api) {
 
 function app(value, note) {
     let out = `${text(value, "app_name", "App")}: ${text(value, "status", "unknown")}${note ? ` (${note})` : ""}\n`;
-    const name = text(value, "app_name", "");
     const desired = value?.desired_state;
-    if (typeof desired === "string" && value?.status !== desired) {
-        out += ["running", "stopped"].includes(value?.status)
-            ? `Intended state: ${desired}. Run \`obelisk cloud app apply --app ${name}\` to reach it.\n`
-            : `Intended state: ${desired}\n`;
+    if (typeof desired === "string" && value?.status !== desired) out += `Intended state: ${desired}\n`;
+    // The provisioner retries reaching the intended state on its own.
+    const reconciliation = value?.reconciliation;
+    const attempts = reconciliation?.attempts;
+    if (Number.isInteger(attempts) && attempts > 0) {
+        if (value?.status === "failed") {
+            // The failure, reported below, carries the last error.
+            out += `Reconciliation gave up after ${attempts} attempts\n`;
+        } else {
+            out += `Reconciling: attempt ${attempts}, next at ${time(reconciliation.next_attempt_at)}\n`;
+            // A startup failure is reported below with its reason.
+            if (typeof reconciliation.error === "string" && value?.state?.startup_failure == null) {
+                out += `Reconciliation error: ${reconciliation.error}\n`;
+            }
+        }
     }
-    if (value?.potentially_stale === true) out += `Pending changes. Run \`obelisk cloud app apply --app ${name}\` to apply them.\n`;
     if (typeof value?.state?.failure === "string") out += `Error: ${value.state.failure}\n`;
     const reason = value?.state?.startup_failure?.reason;
     if (typeof reason === "string") out += `Startup failed: ${reason}. Use --verbose for startup details.\n`;

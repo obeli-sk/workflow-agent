@@ -160,6 +160,20 @@ class Parser {
     }
 
     parseCommand() {
+        const command = this.parseCommandBody();
+        if (command.kind !== "compound") return command;
+        const redirects = [];
+        while (true) {
+            this.skipInlineWs();
+            const redirect = this.tryReadRedirect();
+            if (!redirect) break;
+            redirects.push(redirect);
+        }
+        this.drainHeredocs(redirects);
+        return { ...command, redirects };
+    }
+
+    parseCommandBody() {
         this.skipInlineWs();
         if (this.peekCh() === "(") {
             this.pos++;

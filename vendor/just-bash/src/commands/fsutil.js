@@ -43,14 +43,19 @@ export const fsutil = {
     },
 
     cat(interp, args, stdin) {
-        const { rest } = flagsOf(args.slice(1));
-        if (rest.length === 0) return ok(stdin);
+        const { flags, rest } = flagsOf(args.slice(1));
         let out = "";
-        for (const t of rest) {
-            const path = interp.resolvePath(t);
-            if (!interp.vfs.isFile(path)) return fail(`cat: ${t}: No such file or directory\n`, 1);
-            out += interp.vfs.readFile(path);
+        for (const t of rest.length ? rest : ["-"]) {
+            if (t === "-") {
+                out += stdin;
+            } else {
+                const path = interp.resolvePath(t);
+                if (!interp.vfs.isFile(path)) return fail(`cat: ${t}: No such file or directory\n`, 1);
+                out += interp.vfs.readFile(path);
+            }
         }
+        if (flags.has("b")) return ok(numberLines(out, (line) => line !== ""));
+        if (flags.has("n")) return ok(numberLines(out, () => true));
         return ok(out);
     },
 
@@ -177,16 +182,21 @@ export const fsutil = {
     },
 
     tail(interp, args, stdin) {
-        const { n, bytes, rest } = countArg(args, 10);
+        const { n, bytes, fromStart, rest } = countArg(args, 10);
         if (bytes !== null && (!Number.isInteger(bytes) || bytes < 0)) return fail("tail: invalid number of bytes\n", 1);
         const text = rest.length ? interp.vfs.readFile(interp.resolvePath(rest[0])) : stdin;
         if (text === "") return ok();
-        if (bytes !== null) return ok(utf8Tail(text, bytes));
-        if (n <= 0) return ok();
+        if (bytes !== null) {
+            if (!fromStart) return ok(utf8Tail(text, bytes));
+            const data = utf8Encode(text);
+            return ok(utf8Tail(text, Math.max(0, data.length - Math.max(bytes, 1) + 1)));
+        }
+        if (n <= 0 && !fromStart) return ok();
         const lines = text.split("\n");
         const hadTrailingNl = text.endsWith("\n");
         const body = lines.slice(0, hadTrailingNl ? lines.length - 1 : lines.length);
-        const start = Math.max(0, body.length - n);
+        if (fromStart && Math.max(n, 1) > body.length) return ok();
+        const start = fromStart ? Math.max(n, 1) - 1 : Math.max(0, body.length - n);
         return ok(body.slice(start).join("\n") + (hadTrailingNl ? "\n" : ""));
     },
 
@@ -569,20 +579,35 @@ function copyDir(vfs, src, dest) {
     }
 }
 
+// `fromStart` marks a `+N` count, which `tail` reads as "starting at line/byte N".
 function countArg(args, def) {
     const rest = [];
     let n = def;
     let bytes = null;
+    let fromStart = false;
+    const lines = (value) => { fromStart = value.startsWith("+"); n = parseInt(value, 10); };
+    const byteCount = (value) => { fromStart = value.startsWith("+"); bytes = Number(value); };
     const items = args.slice(1);
     for (let i = 0; i < items.length; i++) {
-        if (items[i] === "-n" && items[i + 1] !== undefined) { n = parseInt(items[i + 1], 10); i++; }
-        else if (items[i] === "-c" && items[i + 1] !== undefined) { bytes = Number(items[i + 1]); i++; }
-        else if (items[i].startsWith("-c") && items[i].length > 2) bytes = Number(items[i].slice(2));
-        else if (items[i].startsWith("--bytes=")) bytes = Number(items[i].slice(8));
+        if (items[i] === "-n" && items[i + 1] !== undefined) { lines(items[i + 1]); i++; }
+        else if (items[i].startsWith("-n") && items[i].length > 2) lines(items[i].slice(2));
+        else if (items[i].startsWith("--lines=")) lines(items[i].slice(8));
+        else if (items[i] === "-c" && items[i + 1] !== undefined) { byteCount(items[i + 1]); i++; }
+        else if (items[i].startsWith("-c") && items[i].length > 2) byteCount(items[i].slice(2));
+        else if (items[i].startsWith("--bytes=")) byteCount(items[i].slice(8));
         else if (/^-\d+$/.test(items[i])) n = -Number(items[i]);
         else rest.push(items[i]);
     }
-    return { n, bytes, rest };
+    return { n, bytes, fromStart, rest };
+}
+
+function numberLines(text, numbered) {
+    if (text === "") return "";
+    const lines = text.split("\n");
+    const last = text.endsWith("\n") ? lines.pop() : null;
+    let count = 0;
+    const out = lines.map((line) => (numbered(line) ? `${String(++count).padStart(6)}\t${line}` : line));
+    return out.join("\n") + (last === null ? "" : "\n");
 }
 
 function utf8Head(text, count) {

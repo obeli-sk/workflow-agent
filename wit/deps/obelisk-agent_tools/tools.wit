@@ -38,7 +38,9 @@ interface cloud {
 
   record deploy-target {
     created: bool,
-    // Staged configuration revision that `finish-deploy` applies.
+    // Draft an existing app's changes were staged in, created for this deploy.
+    draft: option<string>,
+    // Configuration revision that `finish-deploy` re-applies without `draft`.
     revision: u64,
     log: string,
   }
@@ -54,15 +56,27 @@ interface cloud {
   }
 
   // `fill-env` is the shell's exported variables when `--fill-non-interactive`
-  // (or `fill --non-interactive`) asks for same-named values; none otherwise.
+  // (`cloud app new`) asks for same-named values, or those that bare
+  // `--env NAME` and `--secret NAME` read; none otherwise.
 
-  // Provisioner commands (`obelisk cloud auth|app ...` minus deploy and app API calls).
+  // Provisioner commands (`obelisk cloud auth|app ...` minus deploy, lifecycle and app API calls).
   run: func(args: list<string>, stdin: string, app-toml: option<string>, fill-env: option<list<tuple<string, string>>>) -> result<command-output, string>;
-  // Stage the app's config from `app-toml`, or create the app. The err carries the log so far.
-  prepare-deploy: func(app: string, app-toml: string, fill-env: option<list<tuple<string, string>>>) -> result<deploy-target, string>;
-  // Fill an app that was not `created`, apply the staged `revision` with the enqueued deployment and
-  // require the app to be running; returns the app row. The err carries the log so far.
-  finish-deploy: func(app: string, app-toml: string, deployment-id: string, revision: u64, created: bool, fill-env: option<list<tuple<string, string>>>) -> result<deployed, string>;
+  // Create `draft` of an existing app exclusively and stage `app-toml`, the `--env` and `--secret`
+  // arguments and, with `fill`, the declared values of `exported` into it, requiring every declared
+  // value and discarding the draft on failure, or create the app with them. `exported` holds the shell's exported variables that bare names and `fill` read.
+  // The err carries the log so far.
+  prepare-deploy: func(app: string, app-toml: string, draft: string, env: list<string>, secrets: list<string>, fill: bool, exported: list<tuple<string, string>>) -> result<deploy-target, string>;
+  // Apply `draft`, or re-apply `revision` without one, with the uploaded deployment,
+  // and require the app to be running; returns the app row. The err carries the log so far.
+  // `command-id` is the apply's Idempotency-Key, stable across retries: deploying the app this runs in
+  // interrupts the call, and the retry picks up the apply's recorded result.
+  finish-deploy: func(app: string, deployment-id: string, revision: u64, draft: option<string>, command-id: string) -> result<deployed, string>;
+  // GET `/<path>` on the provisioner; err only when no response arrived or the server failed.
+  read: func(path: list<string>) -> result<response, string>;
+  // `app apply|enable|disable|delete`: one request on `/v1/apps/<app>/<path>` with a JSON `body`.
+  // `command-id` is its Idempotency-Key, so a retry joins the command or gets its recorded result.
+  // Err only when no response arrived or the server failed.
+  command: func(app: string, method: string, path: list<string>, body: option<string>, command-id: string) -> result<response, string>;
   // GET `path` (with its query) on the app's API; err only when no response arrived.
   tenant-read: func(app: string, path: string) -> result<response, string>;
   // Any other request on the app's API, sent once.

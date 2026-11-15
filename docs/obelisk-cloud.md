@@ -36,21 +36,33 @@ left out and a warning is shown instead.
 ## Pieces
 
 The `obelisk-agent:tools/cloud` interface has these activities
-(`packs/obelisk-control/cloud/`); all but `tenant-read` have `max_retries = 0`:
+(`packs/obelisk-control/cloud/`). `read`, `tenant-read`, `command` and
+`finish-deploy` are retried; the rest have `max_retries = 0`:
 
 - `run` (`cli.js`) runs the provisioner commands: `auth status`, `app list`,
-  `app new|status|events|stage|apply|enable|disable|delete`,
-  `env ...` and `secrets ...`. It returns stdout, stderr and an
-  exit code, and its errors use the real CLI's wording.
+  `app new|status|events|stage|unstage`, `env ...` and `secrets ...`. Edits
+  go into a named draft (`--draft`, default `default`) through
+  `/v1/apps/<app>/drafts/<key>/...` with `create_or_reuse=true`. It returns
+  stdout, stderr and an exit code, and its errors use the real CLI's wording.
+- `read` (`read.js`) sends one GET to the provisioner and returns the status
+  and body. `command` (`command.js`) sends one `app apply|enable|disable|delete`
+  request with the body and Idempotency-Key the shell chose, so a retry joins
+  the command or gets its recorded result. Both return every response below
+  500; only a failed request or a server error is an error and gets retried.
 - `prepare-deploy` (`deploy.js`) and `finish-deploy` (`finish-deploy.js`)
   run the provisioner part of `app deploy`, in the real CLI's order:
-  1. `prepare-deploy` stages the config of an existing app, or creates the
-     app. A new app whose policy requires env or secrets needs
-     `--fill-non-interactive`, which reads same-named exported shell variables.
+  1. `prepare-deploy` exclusively creates the deploy's draft of an existing
+     app and stages the config, `--env`/`--secret` values and, with
+     `--fill-non-interactive`, the remaining declared values into it, then
+     checks that it has every required value. On failure it discards the
+     draft. A new app is created with those values instead.
   2. The shell uploads the deployment to the app's API, without enqueueing or switching it.
-  3. `finish-deploy` fills an existing app's values, checks the required env
-     and secrets, applies the config through the provisioner with the uploaded deployment's ID and
-     requires the app to be running.
+  3. `finish-deploy` applies the draft (or re-applies the revision of a new
+     app) with the uploaded deployment's ID and requires the app to be running.
+     A draft left by a failed apply is discarded by the next successful one.
+     The shell passes the
+     apply's Idempotency-Key, so `finish-deploy` is retried: deploying the app
+     the shell runs in interrupts it, and the retry gets the apply's result.
 - `tenant` (`tenant.js`) sends one POST, PUT or DELETE request to
   `https://api--<app>.<domain>` with the cloud token and returns the status
   and body, whatever the status. It sends no `If-Match`, so a deployment
@@ -67,9 +79,10 @@ are handled as follows:
   (`createCloud` in `workflow-js/src/host.js`) and prints the same output:
   human output on stderr, values and JSON on stdout. Errors print
   `Error: ...` and exit 1; usage errors exit 2.
-- `cloud app deploy [-a app.toml] [-d deployment.toml] [--fill-non-interactive]`
-  calls `prepare-deploy`, then uploads the deployment against
-  the app. The submit uploads only the files the server asks for and reuses the
+- `cloud app deploy [-a app.toml] [-d deployment.toml] [--env NAME[=VALUE]]...
+  [--secret NAME]... [--fill-non-interactive]` calls `prepare-deploy` with a
+  generated `deploy-<ulid>` draft, then uploads the deployment against
+  the app; a failed upload discards the draft through `run`'s `unstage`. The submit uploads only the files the server asks for and reuses the
   active deployment when nothing changed. Last, it calls `finish-deploy` with
   the deployment ID.
 - `cloud app deployment enqueue` and `cloud app deployment apply` are rejected
@@ -77,11 +90,21 @@ are handled as follows:
   Deploy uploads local deployment.toml changes and applies that deployment's ID.
   Apply uses the currently active deployment with staged configuration and does
   not upload local deployment.toml changes.
+- `cloud app apply|enable|disable|delete [--command-id ID]` is ported from
+  obelisk's `src/command/cloud.rs`, in the shell. It generates the command ID
+  unless `--command-id` is given, in which case it first asks
+  `GET /v1/commands/ID` and reports a command the provisioner already accepted.
+  `apply` then reads the app row and the draft through `read` and the active
+  deployment through `tenant-read`, and builds the request: the draft
+  (`--draft`, default `default`) or, with `--reapply`, the applied revision.
+  Last, `command` sends it. When its retries run out, the error names the
+  command ID to retry with.
 - Everything else goes to `run` with the app policy's text: the `-a` file,
   else `./app.toml`. `--from-env VAR` turns into `--stdin` with the exported
-  variable's value, so secret values never appear in argv. With
-  `--fill-non-interactive` (or `fill --non-interactive`), the exported
-  variables are passed along for the fill.
+  variable's value, so secret values never appear in argv. A bare
+  `--env NAME` and `--secret NAME` read the exported variable, so only those
+  variables are passed along; with `--fill-non-interactive`, all exported
+  variables are passed for the fill.
 
 `--json` and `--verbose` are accepted anywhere; `--app` only after the `cloud app`
 subcommand, and not by `app list`. The app is `--app`, else an exported `OBELISK_APP_NAME`, else `app_name` in `./app.toml`. As in the
@@ -101,8 +124,7 @@ other commands.
 - A deployment rejected for missing runtime configuration reports the server's
   findings without the real CLI's suggested app.toml snippet.
 - Interactive or account-level operations are rejected with a hint:
-  `--fill`, `fill` without `--non-interactive`,
-  `--api-url`, `--api-token` and `--apps-domain`.
+  `--fill`, `--api-url`, `--api-token` and `--apps-domain`.
 - `obelisk server ...` and the top-level app commands do not exist. The agent
   asks the user with the separate `ask-user QUESTION` shell command.
 

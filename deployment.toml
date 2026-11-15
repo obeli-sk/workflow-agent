@@ -430,7 +430,8 @@ replace_in = ["headers"]
 # the ObeliskNet provisioner (OBELISK_CLOUD_API_URL) and each app's own API, which
 # lives under OBELISK_CLOUD_APPS_DOMAIN.
 # max_retries = 0: commands are not idempotent across a retry (fresh
-# Idempotency-Key, auto-ID submissions).
+# Idempotency-Key, auto-ID submissions), except those that take the shell's
+# Idempotency-Key: cloud_command and cloud_finish_deploy below.
 
 [[activity_js]]
 name = "cloud_run"
@@ -475,7 +476,10 @@ replace_in = ["headers"]
 name = "cloud_finish_deploy"
 ffqn = "obelisk-agent:tools/cloud.finish-deploy"
 wit = "wit"
-max_retries = 0
+# Deploying this app closes the executor running the apply and interrupts it.
+# The workflow passes the Idempotency-Key, so a retry gets the apply's result.
+max_retries = 3
+retry_exp_backoff.seconds = 1
 # Applying waits for the app VM to come up.
 exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/finish-deploy.js"
@@ -485,7 +489,44 @@ env_vars = [
 ]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
-methods = ["GET", "POST", "PUT"]
+methods = ["POST", "DELETE"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+
+# Provisioner reads the shell makes before a lifecycle command.
+[[activity_js]]
+name = "cloud_read"
+ffqn = "obelisk-agent:tools/cloud.read"
+wit = "wit"
+# `GET /v1/commands/ID` holds the response until the command finishes.
+exec.lock_expiry.minutes = 10
+location = "packs/obelisk-control/cloud/read.js"
+env_vars = [
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
+]
+[[activity_js.allowed_host]]
+url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
+methods = ["GET"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+
+# `app apply|enable|disable|delete` as built by the shell. The shell passes the
+# Idempotency-Key, so a retry joins the command or gets its recorded result.
+[[activity_js]]
+name = "cloud_command"
+ffqn = "obelisk-agent:tools/cloud.command"
+wit = "wit"
+max_retries = 3
+retry_exp_backoff.seconds = 1
+# Applying waits for the app VM to come up.
+exec.lock_expiry.minutes = 10
+location = "packs/obelisk-control/cloud/command.js"
+env_vars = [
+  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
+]
+[[activity_js.allowed_host]]
+url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
+methods = ["POST", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 

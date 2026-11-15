@@ -1,5 +1,5 @@
 // diff [-u] [-q] [-s] [-i] FILE1 FILE2 — hand-rolled O(n*m) LCS diff emitting
-// GNU-diff-style unified hunks with 3 lines of context.
+// GNU diff's normal format, or unified hunks with 3 lines of context for -u.
 
 import { fail, unknownOption } from "./core.js";
 
@@ -84,6 +84,36 @@ function buildUnifiedDiff(f1, f2, c1, c2) {
     return out;
 }
 
+function buildNormalDiff(c1, c2) {
+    const a = splitKeepLines(c1);
+    const b = splitKeepLines(c2);
+    const edits = diffLines(a, b);
+    const range = (from, to) => (from === to ? `${from}` : `${from},${to}`);
+    let out = "";
+    let oldPos = 0, newPos = 0;
+    let i = 0;
+    while (i < edits.length) {
+        if (edits[i].kind === "equal") { oldPos++; newPos++; i++; continue; }
+        const deleted = [], inserted = [];
+        while (i < edits.length && edits[i].kind !== "equal") {
+            if (edits[i].kind === "delete") deleted.push(a[edits[i].line]);
+            else inserted.push(b[edits[i].line]);
+            i++;
+        }
+        const oldRange = range(oldPos + 1, oldPos + deleted.length);
+        const newRange = range(newPos + 1, newPos + inserted.length);
+        if (inserted.length === 0) out += `${oldRange}d${newPos}\n`;
+        else if (deleted.length === 0) out += `${oldPos}a${newRange}\n`;
+        else out += `${oldRange}c${newRange}\n`;
+        out += deleted.map((line) => `< ${line}\n`).join("");
+        if (deleted.length && inserted.length) out += "---\n";
+        out += inserted.map((line) => `> ${line}\n`).join("");
+        oldPos += deleted.length;
+        newPos += inserted.length;
+    }
+    return out;
+}
+
 function splitKeepLines(content) {
     if (content === "") return [];
     const lines = content.split("\n");
@@ -92,11 +122,11 @@ function splitKeepLines(content) {
 }
 
 export function diffCommand(interp, args, stdin) {
-    let brief = false, reportSame = false, ignoreCase = false;
+    let brief = false, reportSame = false, ignoreCase = false, unified = false;
     const files = [];
     for (let i = 1; i < args.length; i++) {
         const arg = args[i];
-        if (arg === "-u" || arg === "--unified") continue;
+        if (arg === "-u" || arg === "--unified") unified = true;
         else if (arg === "-q" || arg === "--brief") brief = true;
         else if (arg === "-s" || arg === "--report-identical-files") reportSame = true;
         else if (arg === "-i" || arg === "--ignore-case") ignoreCase = true;
@@ -120,5 +150,6 @@ export function diffCommand(interp, args, stdin) {
     }
     if (brief) return { stdout: `Files ${f1} and ${f2} differ\n`, stderr: "", exitCode: 1 };
 
-    return { stdout: buildUnifiedDiff(f1, f2, c1, c2), stderr: "", exitCode: 1 };
+    const stdout = unified ? buildUnifiedDiff(f1, f2, c1, c2) : buildNormalDiff(c1, c2);
+    return { stdout, stderr: "", exitCode: 1 };
 }

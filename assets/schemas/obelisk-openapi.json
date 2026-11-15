@@ -106,6 +106,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "`\"<node_run_id>:<switch_count>\"` from `GET /v1/info` or from a 412 response, read before the first attempt and reused on retries",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -120,7 +129,7 @@
         },
         "responses": {
           "200": {
-            "description": "Deployment switched or enqueued",
+            "description": "Deployment switched or enqueued, or the requested deployment is already active or enqueued. The latter succeeds whatever `If-Match` says, so a retry after a lost response gets 200",
             "content": {
               "application/json": {
                 "schema": {
@@ -166,6 +175,34 @@
               "text/plain": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`If-Match` does not match the current server run and switch count, and the request would change the active or enqueued deployment. The body carries the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentSwitchPreconditionFailed"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`If-Match` header is missing or malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "err"
+                  ],
+                  "properties": {
+                    "err": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }
@@ -232,6 +269,7 @@
           "obelisk_version",
           "deployment_id",
           "node_run_id",
+          "switch_count",
           "app_config_digest",
           "started_at"
         ],
@@ -260,6 +298,12 @@
           "started_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "switch_count": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Deployment switches since this server run started. A switch request must send `If-Match: \"<node_run_id>:<switch_count>\"`."
           }
         }
       },
@@ -448,7 +492,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "Optional regex restriction checked against `METHOD URL` with query params removed.\nFor example, `GET https://api.example.com/v1/items`.\nSupports `${VAR}` and `${VAR:-default}` env var interpolation.\nEnv var values are interpreted as regex syntax; use regex-escaped values when precision matters.\nOmit to allow all paths accepted by the host and method restrictions."
+                  "description": "Optional regex restriction checked against `METHOD URL` with the query string removed.\nFor example, `GET https://api.example.com/v1/items`, so a `?` never matches.\nUnanchored: use ^ and $ to match the whole text.\nSupports `${VAR}` and `${VAR:-default}` env var interpolation.\nEnv var values are interpreted as regex syntax; use regex-escaped values when precision matters.\nOmit to allow all paths accepted by the host and method restrictions."
                 },
                 "secrets": {
                   "type": "array",
@@ -491,7 +535,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "Regex fragment appended to the escaped URL prefix; leading ^ is forbidden."
+                  "description": "Regex appended to the literal URL prefix; leading ^ is forbidden, end with $ for an exact path.\nMatched without the query string, so a `?` never matches."
                 }
               },
               "additionalProperties": false,
@@ -735,6 +779,31 @@
           "switched",
           "restart_required"
         ]
+      },
+      "DeploymentSwitchPreconditionFailed": {
+        "type": "object",
+        "required": [
+          "err",
+          "if_match",
+          "deployment_id"
+        ],
+        "properties": {
+          "err": {
+            "type": "string"
+          },
+          "if_match": {
+            "type": "string",
+            "description": "Current `\"<node_run_id>:<switch_count>\"` to send in `If-Match` when retrying"
+          },
+          "deployment_id": {
+            "type": "string",
+            "description": "Deployment the server is running"
+          },
+          "enqueued_deployment_id": {
+            "type": "string",
+            "description": "Deployment that becomes active on the next restart, if any"
+          }
+        }
       }
     }
   }
