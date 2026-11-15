@@ -12,6 +12,7 @@ export interface LifecycleModels {
   DeploymentSwitchPayload: DeploymentSwitchPayload;
   DeploymentSwitchResponse: DeploymentSwitchResponse;
   DeploymentSwitchOutcome: DeploymentSwitchOutcome;
+  DeploymentSwitchPreconditionFailed: DeploymentSwitchPreconditionFailed;
 }
 export interface ServerInfoResponse {
   app_config_digest: string;
@@ -22,6 +23,10 @@ export interface ServerInfoResponse {
   node_run_id: string;
   obelisk_version: string;
   started_at: string;
+  /**
+   * Deployment switches since this server run started. A switch request must send `If-Match: "<node_run_id>:<switch_count>"`.
+   */
+  switch_count: number;
   [k: string]: unknown;
 }
 /**
@@ -84,8 +89,9 @@ export interface AppPolicyV1 {
      */
     replace_in: ("headers" | "body" | "params")[];
     /**
-     * Optional regex restriction checked against `METHOD URL` with query params removed.
-     * For example, `GET https://api.example.com/v1/items`.
+     * Optional regex restriction checked against `METHOD URL` with the query string removed.
+     * For example, `GET https://api.example.com/v1/items`, so a `?` never matches.
+     * Unanchored: use ^ and $ to match the whole text.
      * Supports `${VAR}` and `${VAR:-default}` env var interpolation.
      * Env var values are interpreted as regex syntax; use regex-escaped values when precision matters.
      * Omit to allow all paths accepted by the host and method restrictions.
@@ -109,7 +115,8 @@ export interface AppPolicyV1 {
      */
     url_prefix?: string | null;
     /**
-     * Regex fragment appended to the escaped URL prefix; leading ^ is forbidden.
+     * Regex appended to the literal URL prefix; leading ^ is forbidden, end with $ for an exact path.
+     * Matched without the query string, so a `?` never matches.
      */
     url_regex_suffix?: string | null;
   }[];
@@ -180,6 +187,22 @@ export interface DeploymentSwitchResponse {
   ok: DeploymentSwitchOutcome;
   [k: string]: unknown;
 }
+export interface DeploymentSwitchPreconditionFailed {
+  err: string;
+  /**
+   * Current `"<node_run_id>:<switch_count>"` to send in `If-Match` when retrying
+   */
+  if_match: string;
+  /**
+   * Deployment the server is running
+   */
+  deployment_id: string;
+  /**
+   * Deployment that becomes active on the next restart, if any
+   */
+  enqueued_deployment_id?: string;
+  [k: string]: unknown;
+}
 
 export function parseServerInfoResponse(value: unknown): ServerInfoResponse;
 export function parseServerInfoGc(value: unknown): ServerInfoGc;
@@ -190,4 +213,5 @@ export function parseAppPolicyV1(value: unknown): AppPolicyV1;
 export function parseDeploymentSwitchPayload(value: unknown): DeploymentSwitchPayload;
 export function parseDeploymentSwitchResponse(value: unknown): DeploymentSwitchResponse;
 export function parseDeploymentSwitchOutcome(value: unknown): DeploymentSwitchOutcome;
+export function parseDeploymentSwitchPreconditionFailed(value: unknown): DeploymentSwitchPreconditionFailed;
 export function parseApiResponse(method: string, path: string, value: unknown): unknown;
