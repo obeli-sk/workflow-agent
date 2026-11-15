@@ -11,10 +11,10 @@
 // those that bare `--env NAME` and `--secret NAME` read.
 // Like the CLI, JSON goes to stdout and human output to stderr; errors exit 1,
 // usage errors 2.
-import { appRequest, cloudBase, cloudRequest, draftRequest } from "./client.js";
-import { explicitValues, initialValues, userSuppliedPolicy } from "./fill.js";
+import { appRequest, cloudBase, cloudRequest, draftRequest, lookupApp } from "./client.js";
+import { explicitValues, initialValues, stageValues, userSuppliedPolicy } from "./fill.js";
 import { appConfig, configName, validateCloudAppName } from "./policy.js";
-import { draftArg, humanOutput, renderSummary } from "./output.js";
+import { draftArg, draftValues, humanOutput, renderSummary } from "./output.js";
 
 export default async function run(args, stdin, appToml, fillEnv) {
     const stderr = [];
@@ -35,7 +35,7 @@ export default async function run(args, stdin, appToml, fillEnv) {
 // A command-line error, reported like clap's.
 export class UsageError extends Error {}
 
-const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "--from-env", "-n", "--limit", "--draft"];
+const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "--from-env", "-n", "--limit", "--draft", "-d", "--deployment"];
 const REPEATED_FLAGS = ["--env", "--secret"];
 const BOOLEAN_FLAGS = [
     "--json", "--verbose", "--stdin", "--fill", "--fill-non-interactive",
@@ -54,7 +54,7 @@ export function parseArgs(args) {
             const value = eq !== -1 && name !== arg ? arg.slice(eq + 1) : args[++i];
             if (value === undefined) throw new UsageError(`a value is required for '${name} <VALUE>' but none was supplied`);
             if (REPEATED_FLAGS.includes(name)) (flags[name] ??= []).push(value);
-            else flags[{ "--app-config": "-a", "--limit": "-n" }[name] ?? name] = value;
+            else flags[{ "--app-config": "-a", "--limit": "-n", "--deployment": "-d" }[name] ?? name] = value;
         } else if (BOOLEAN_FLAGS.includes(arg)) {
             flags[arg] = true;
         } else if (["--api-url", "--api-token", "--apps-domain", "--account"].includes(name)) {
@@ -196,11 +196,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         }
         return print(await appRequest(name, "GET", ["events"], { ...options, query: { limit } }), { kind: "events" });
     }
-    if (action === "stage") {
-        allow(flags, ["-a", "--draft"]);
-        arity(rest, 0);
-        return print(await draftRequest(name, key, "PUT", ["config"], { ...options, toml: local.text }, true), { kind: "staged", message: "Configuration staged.", apply });
-    }
+    if (action === "stage") return stageCommand(name, key, local, rest, flags, fillEnv, options, print);
     if (action === "unstage") {
         allow(flags, ["--draft"]);
         arity(rest, 0);
@@ -209,6 +205,35 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     if (action === "env") return envCommand(name, key, rest, flags, options, print, apply);
     if (action === "secrets") return secretsCommand(name, key, rest, flags, stdin, options, print, apply);
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
+}
+
+// PORT: cloud/stage.rs. The shell submits the deployment after this stages the config, so
+// `-d` here is the submitted deployment's ID; a later call records it in the draft.
+async function stageCommand(name, key, local, rest, flags, fillEnv, options, print) {
+    allow(flags, ["-a", "--draft", "-d", ...VALUES]);
+    arity(rest, 0);
+    conflicts(flags);
+    if (flags["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
+    const deployment = flags["-d"];
+    if (deployment !== undefined && !/^Dep_[0-9A-HJKMNP-TV-Z]{26}$/.test(deployment)) throw `Invalid deployment ID ${deployment}`;
+    const explicit = explicitValues(flags["--env"] ?? [], flags["--secret"] ?? [], fillEnv);
+    let notes = "";
+    if (await lookupApp(name) === null) {
+        // A bare app runs an empty deployment, so its API can receive the submission.
+        notes += `App ${name} does not exist; creating it\n→ obelisk cloud app new\n`;
+        await cloudRequest("POST", ["v1", "apps"], { ...options, kind: "command", body: { app_toml: `app_name = ${JSON.stringify(name)}\n` } });
+    }
+    let staged = await draftRequest(name, key, "PUT", ["config"], { ...options, toml: local.text }, true);
+    ({ draft: staged } = await stageValues(name, key, staged, explicit, flags["--fill-non-interactive"] ? fillEnv ?? {} : null));
+    if (deployment !== undefined) {
+        staged = await draftRequest(name, key, "PUT", ["deployment"], { ...options, body: { deployment_id: deployment } }, true);
+    }
+    const apply = `obelisk cloud app apply --app ${name}${draftArg(key)}`;
+    const output = print(staged, { kind: "staged", message: "Changes staged.", apply });
+    if (output.stderr !== undefined && draftValues(staged, "missing").length > 0) {
+        output.stderr += `Set them with \`obelisk cloud app env set\` or \`obelisk cloud app secrets set --app ${name}${draftArg(key)}\`, or in the dashboard, before applying.\n`;
+    }
+    return { ...output, stderr: notes + (output.stderr ?? "") };
 }
 
 async function envCommand(name, draft, [action, key, value, ...extra], flags, options, print, apply) {

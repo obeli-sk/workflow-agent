@@ -42,7 +42,9 @@ The `obelisk-agent:tools/cloud` interface has these activities
 - `run` (`cli.js`) runs the provisioner commands: `auth status`, `app list`,
   `app new|status|events|stage|unstage`, `env ...` and `secrets ...`. Edits
   go into a named draft (`--draft`, default `default`) through
-  `/v1/apps/<app>/drafts/<key>/...` with `create_or_reuse=true`. It returns
+  `/v1/apps/<app>/drafts/<key>/...` with `create_or_reuse=true`. `stage`
+  creates a missing app with a bare app.toml and, with `-d ID`, records an
+  already submitted deployment in the draft. It returns
   stdout, stderr and an exit code, and its errors use the real CLI's wording.
 - `read` (`read.js`) sends one GET to the provisioner and returns the status
   and body. `command` (`command.js`) sends one `app apply|enable|disable|delete`
@@ -85,6 +87,13 @@ are handled as follows:
   the app; a failed upload discards the draft through `run`'s `unstage`. The submit uploads only the files the server asks for and reuses the
   active deployment when nothing changed. Last, it calls `finish-deploy` with
   the deployment ID.
+- `cloud app stage [-a app.toml] [-d deployment.toml | --empty-deployment]
+  [--description TEXT] [--env ...] [--secret ...] [--draft KEY]` is ported from
+  obelisk's `src/command/cloud/stage.rs`. Without a deployment it is one `run`.
+  Otherwise a first `run` creates a missing app and stages the config and
+  values, the shell submits the deployment to the app's API, and a second `run`
+  (without the value flags, so values are staged once) records its ID with `-d`.
+  It never applies.
 - `cloud app deployment enqueue` and `cloud app deployment apply` are rejected
   before any API request, with guidance to use `cloud app deploy` or `cloud app apply`.
   Deploy uploads local deployment.toml changes and applies that deployment's ID.
@@ -95,7 +104,7 @@ are handled as follows:
   unless `--command-id` is given, in which case it first asks
   `GET /v1/commands/ID` and reports a command the provisioner already accepted.
   `apply` then reads the app row and the draft through `read` and the active
-  deployment through `tenant-read`, and builds the request: the draft
+  deployment through `tenant-read` unless the draft has a staged deployment, and builds the request: the draft
   (`--draft`, default `default`) or, with `--reapply`, the applied revision.
   Last, `command` sends it. When its retries run out, the error names the
   command ID to retry with.

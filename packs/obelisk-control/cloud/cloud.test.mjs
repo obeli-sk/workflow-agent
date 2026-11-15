@@ -264,6 +264,7 @@ test("app status, stage, unstage, env and secrets work on drafts", async () => {
     const stale = draftView({ key: "old", stale: true });
     const requests = provisioner({
         "GET /v1/apps/demo/status": { app: appRow({ revision: 3, applied_revision: 2 }), api_ready: true },
+        "GET /v1/apps/demo": appRow({ revision: 3, applied_revision: 2 }),
         "GET /v1/apps/demo/drafts": { drafts: [draftView({ values: { missing_secrets: ["API_KEY"], unused_env: ["OLD"] } }), stale], applied_revision: 2 },
         "POST /v1/apps/demo/config/compare": { changes: ["/cloud/memory_mb"], revision: 3 },
         "PUT /v1/apps/demo/drafts/default/config": { ...draftView({ revision: 3 }), changed: false },
@@ -290,6 +291,36 @@ test("app status, stage, unstage, env and secrets work on drafts", async () => {
     assert.equal((await run(["app", "unstage", "--draft", "ci"], "", POLICY)).stderr, "Draft `ci` discarded.\n");
     assert.equal((await run(["app", "unstage", "--draft", "gone"], "", POLICY)).exit_code, 1);
     assert.ok(!requests.some((request) => "idempotency-key" in request.headers));
+});
+
+test("app stage creates a missing app bare and records a staged deployment", async () => {
+    const id = "Dep_01M7A0M1P2P2F1VNCPZ9S26DFJ";
+    const missing = draftView({ revision: 2, deployment_id: id, values: { missing_env: ["MODE"], missing_secrets: ["API_KEY"], unused_env: [], unused_secrets: [] } });
+    const requests = provisioner({
+        "POST /v1/apps": appRow(),
+        "PUT /v1/apps/demo/drafts/default/config": { ...missing, deployment_id: undefined, changed: true },
+        "PUT /v1/apps/demo/drafts/default/deployment": { ...missing, changed: true },
+    });
+    const staged = await run(["app", "stage", "-a", "app.toml", "-d", id], "", POLICY);
+    assert.equal(staged.exit_code, 0, staged.stderr);
+    assert.match(staged.stderr, /^App demo does not exist; creating it\n→ obelisk cloud app new\n/);
+    assert.match(staged.stderr, /Set them with `obelisk cloud app env set` or `obelisk cloud app secrets set --app demo`, or in the dashboard, before applying\.\n$/);
+    assert.deepEqual(calls(requests), [
+        "GET /v1/apps/demo",
+        "POST /v1/apps",
+        "PUT /v1/apps/demo/drafts/default/config?create_or_reuse=true",
+        "PUT /v1/apps/demo/drafts/default/deployment?create_or_reuse=true",
+    ]);
+    // The app starts bare; the real configuration goes only to the draft.
+    assert.deepEqual(JSON.parse(requests[1].body), { app_toml: 'app_name = "demo"\n' });
+    assert.equal(requests[2].body, POLICY);
+    assert.deepEqual(JSON.parse(requests[3].body), { deployment_id: id });
+    assert.ok(!calls(requests).some((call) => call.includes("/apply")));
+
+    for (const args of [["-d", "nope"], ["--fill"], ["--force"]]) {
+        provisioner({});
+        assert.notEqual((await run(["app", "stage", "--app", "demo", ...args], "", POLICY)).exit_code, 0, args.join(" "));
+    }
 });
 
 test("app status shows an idle-suspended app as resuming on request", async () => {

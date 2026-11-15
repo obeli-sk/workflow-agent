@@ -172,6 +172,7 @@ export function draftChanges(draft) {
     const changes = [["app_toml", "app.toml"], ["policy", "policy"], ["cloud", "cloud"]]
         .filter(([key]) => summary?.[key] === true)
         .map(([, label]) => label);
+    if (typeof draft?.deployment_id === "string") changes.push(`deployment ${draft.deployment_id}`);
     for (const [kind, label] of [["env", "env"], ["secrets", "secret"]]) {
         for (const [diff, sign] of [["added", "+"], ["removed", "-"], ["changed", "~"]]) {
             const names = Array.isArray(summary?.[kind]?.[diff]) ? summary[kind][diff] : [];
