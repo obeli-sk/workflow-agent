@@ -64,7 +64,7 @@ export function renderSummary(summary, value) {
             const idle = status === "running" && ["suspended", "suspending"].includes(machine);
             out += app(value?.app, idle ? "suspended" : undefined);
             if (!idle && ["started", "stopped", "suspended"].includes(machine) && ((status === "running" && !up) || (status === "stopped" && up))) {
-                line(`VM is ${machine} although the app is ${status}. Run \`obelisk cloud app apply --reapply\` to reconcile it.`);
+                line(`VM is ${machine} although the app is ${status}.`);
             }
             out += configRevisions(value);
             if (Number.isInteger(value?.memory_mb)) line(`Memory: ${value.memory_mb} MB`);
@@ -221,12 +221,22 @@ export function endpoints(value, api) {
 
 function app(value, note) {
     let out = `${text(value, "app_name", "App")}: ${text(value, "status", "unknown")}${note ? ` (${note})` : ""}\n`;
-    const name = text(value, "app_name", "");
     const desired = value?.desired_state;
-    if (typeof desired === "string" && value?.status !== desired) {
-        out += ["running", "stopped"].includes(value?.status)
-            ? `Intended state: ${desired}. Run \`obelisk cloud app apply --app ${name} --reapply\` to reach it.\n`
-            : `Intended state: ${desired}\n`;
+    if (typeof desired === "string" && value?.status !== desired) out += `Intended state: ${desired}\n`;
+    // The provisioner retries reaching the intended state on its own.
+    const reconciliation = value?.reconciliation;
+    const attempts = reconciliation?.attempts;
+    if (Number.isInteger(attempts) && attempts > 0) {
+        if (value?.status === "failed") {
+            // The failure, reported below, carries the last error.
+            out += `Reconciliation gave up after ${attempts} attempts\n`;
+        } else {
+            out += `Reconciling: attempt ${attempts}, next at ${time(reconciliation.next_attempt_at)}\n`;
+            // A startup failure is reported below with its reason.
+            if (typeof reconciliation.error === "string" && value?.state?.startup_failure == null) {
+                out += `Reconciliation error: ${reconciliation.error}\n`;
+            }
+        }
     }
     if (typeof value?.state?.failure === "string") out += `Error: ${value.state.failure}\n`;
     const reason = value?.state?.startup_failure?.reason;
