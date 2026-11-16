@@ -41,6 +41,7 @@ export function createCloud(cloud, obelisk) {
             const output = plain(() => cloud.run(args, stdin, appToml, fillEnv));
             return { stdout: output.stdout, stderr: output.stderr, exitCode: output.exit_code };
         },
+        create: (body, commandId) => plain(() => cloud.create(body, commandId)),
         prepareDeploy: (app, appToml, draft, env, fill, exported) => plain(() => cloud.prepareDeploy(app, appToml, draft, env, fill, exported)),
         finishDeploy(app, deploymentId, draft, commandId) {
             const deployed = plain(() => cloud.finishDeploy(app, deploymentId, draft, commandId));

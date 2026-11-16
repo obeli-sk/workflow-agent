@@ -20,7 +20,8 @@ export async function cloudRequest(method, segments, { body, toml, kind = "read"
     const headers = { accept: "application/json", authorization: `Bearer ${cloudToken()}` };
     let id = null;
     if (kind === "command" || kind === "secret-command") {
-        id = commandId || executionIdTopLevel();
+        if (!commandId) throw "Cloud command requires a workflow-generated command ID";
+        id = commandId;
         if (verbose && log) log(`Cloud command execution ID: ${id}`);
         headers["idempotency-key"] = id;
     }
@@ -87,21 +88,6 @@ export async function lookupApp(name) {
         if (typeof error === "string" && /\(HTTP 404\)$/.test(error)) return null;
         throw error;
     }
-}
-
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-// A fresh `E_<ULID>` top-level execution ID, the provisioner's idempotency key format.
-export function executionIdTopLevel() {
-    let time = Date.now();
-    let timePart = "";
-    for (let i = 0; i < 10; i++) {
-        timePart = CROCKFORD[time % 32] + timePart;
-        time = Math.floor(time / 32);
-    }
-    let random = "";
-    for (let i = 0; i < 16; i++) random += CROCKFORD[Math.floor(Math.random() * 32)];
-    return `E_${timePart}${random}`;
 }
 
 // PORT: cloud.rs's `direct_api_url`: the app's API URL follows from its name and OBELISK_CLOUD_APPS_DOMAIN.

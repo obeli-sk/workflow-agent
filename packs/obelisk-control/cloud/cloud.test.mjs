@@ -8,6 +8,7 @@ const { default: finishDeploy } = await import("./finish-deploy.js");
 const { default: tenant } = await import("./tenant.js");
 const { default: tenantRead } = await import("./tenant-read.js");
 const { default: command } = await import("./command.js");
+const { default: create } = await import("./create.js");
 const { default: read } = await import("./read.js");
 const { appConfig } = await import("./policy.js");
 
@@ -117,45 +118,28 @@ const deploy = (app, policy, { draft = "deploy-x", env = [], fill = false, expor
 
 const calls = (requests) => requests.map((request) => `${request.method} ${request.path}`);
 
-test("deploy refuses to create an app whose policy requires values", async () => {
-    const requests = provisioner({});
-    await assert.rejects(deploy("", ENV_POLICY), /^Deploying demo\nError: Missing required configuration: env MODE\. Retry with `--fill`/);
-    // Secrets come only from the user, so the app has to be staged for them.
-    await assert.rejects(
-        deploy("", POLICY, { env: ["MODE=prod"], exported: [["API_KEY", "k"]] }),
-        /^Deploying demo\nError: App demo requires secret\(s\) API_KEY, which only the user sets\. Stage the app with `obelisk cloud app stage --app demo -d DEPLOYMENT` \(or `--empty-deployment`\) and ask the user/,
-    );
-    assert.deepEqual(calls(requests), ["GET /v1/apps/demo", "GET /v1/apps/demo"]);
-});
-
 // Routes for staging into `deploy-x` of a missing app: the config arrives without env, and each
 // env PUT adds its value.
 function createdApp(policy, routes = {}) {
     const config = appConfig(policy);
     const staged = draftView({ key: "deploy-x", app_toml: policy, policy: config.policy, cloud: config.cloud, env: {}, secrets: [] });
     return provisioner({
-        "POST /v1/apps": appRow(),
         "POST /v1/apps/demo/drafts/deploy-x": staged,
         "PUT /v1/apps/demo/drafts/deploy-x/config": staged,
         ...routes,
     });
 }
 
-test("deploy creates a missing app bare and stages explicit and filled values in its draft", async () => {
+test("deploy preparation stages explicit and filled values on an existing app", async () => {
     const policy = 'app_name = "demo"\n[secrets]\nEXTRA = { optional = true }\n';
     const requests = createdApp(policy);
     const target = await deploy("", policy);
     assert.deepEqual(target, {
-        created: true,
-        log: "Deploying demo\nApp demo does not exist; creating it\n→ obelisk cloud app new\n→ obelisk cloud app stage --draft deploy-x\n",
+        log: "→ obelisk cloud app stage --draft deploy-x\n",
     });
     assert.deepEqual(calls(requests), [
-        "GET /v1/apps/demo", "POST /v1/apps", "POST /v1/apps/demo/drafts/deploy-x", "PUT /v1/apps/demo/drafts/deploy-x/config",
+        "POST /v1/apps/demo/drafts/deploy-x", "PUT /v1/apps/demo/drafts/deploy-x/config",
     ]);
-    const create = requests.find((request) => request.path === "/v1/apps");
-    assert.equal(create.headers.authorization, "Bearer cloud-token");
-    assert.match(create.headers["idempotency-key"], /^E_[0-9A-Z]{26}$/);
-    assert.deepEqual(JSON.parse(create.body), { app_toml: 'app_name = "demo"\n' });
     assert.equal(requests.at(-1).body, policy);
 
     const withMode = (request) => draftView({ key: "deploy-x", env: { MODE: JSON.parse(request.body).value } });
@@ -202,11 +186,10 @@ test("deploy creates its own draft and stages config and values", async () => {
     });
     const target = await deploy("demo", POLICY, { env: ["MODE=prod"], fill: true, exported: [["API_KEY", "k"]] });
     assert.deepEqual(target, {
-        created: false,
-        log: "Deploying demo\n→ obelisk cloud app stage --draft deploy-x\n→ obelisk cloud app fill\n",
+        log: "→ obelisk cloud app stage --draft deploy-x\n→ obelisk cloud app fill\n",
     });
     assert.deepEqual(calls(requests), [
-        "GET /v1/apps/demo", "POST /v1/apps/demo/drafts/deploy-x", "PUT /v1/apps/demo/drafts/deploy-x/config",
+        "POST /v1/apps/demo/drafts/deploy-x", "PUT /v1/apps/demo/drafts/deploy-x/config",
         "PUT /v1/apps/demo/drafts/deploy-x/env/MODE",
     ]);
     const [stage, env] = requests.filter((request) => request.method === "PUT");
@@ -231,7 +214,7 @@ test("deploy discards its draft when values are missing or the draft exists", as
         "POST /v1/apps/demo/drafts/deploy-x": () => new Response(JSON.stringify({ error: "draft exists" }), { status: 409 }),
     });
     await assert.rejects(deploy("demo", POLICY), /draft exists/);
-    assert.deepEqual(calls(taken), ["GET /v1/apps/demo", "POST /v1/apps/demo/drafts/deploy-x"]);
+    assert.deepEqual(calls(taken), ["POST /v1/apps/demo/drafts/deploy-x"]);
 });
 
 const COMMAND = "E_01M7A0M1P2P2F1VNCPZ9S26DFJ";
@@ -311,23 +294,37 @@ test("read returns provisioner responses, including 404", async () => {
     await assert.rejects(read(["internal", "x"]), /invalid provisioner path/);
 });
 
-test("app new reads bare --env names from the shell and takes no secret values", async () => {
-    const requests = provisioner({ "POST /v1/apps": appRow() });
-    const args = ["app", "new", "--app", "demo", "--env", "MODE", "--env=REGION=eu"];
-    const created = await run(args, "", ENV_POLICY, [["MODE", "prod"]]);
-    assert.equal(created.exit_code, 0, created.stderr);
-    const body = JSON.parse(requests.find((request) => request.method === "POST").body);
-    assert.deepEqual([body.env, body.secrets], [{ MODE: "prod", REGION: "eu" }, {}]);
+test("creation retries a lost response with the same body and command ID", async () => {
+    let accepted = false;
+    let creations = 0;
+    const requests = provisioner({ "POST /v1/apps": () => {
+        if (!accepted) {
+            accepted = true;
+            creations++;
+            throw new Error("connection lost after acceptance");
+        }
+        return appRow();
+    } });
+    const body = JSON.stringify({ app_toml: ENV_POLICY, env: { MODE: "prod" }, secrets: {} });
+    await assert.rejects(create(body, COMMAND), /Cloud request failed/);
+    const recovered = await create(body, COMMAND);
+    assert.equal(recovered.status, 200);
+    assert.equal(JSON.parse(recovered.body).app_name, "demo");
+    assert.equal(creations, 1);
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests.map((request) => [request.body, request.headers["idempotency-key"]]), [[body, COMMAND], [body, COMMAND]]);
 
-    for (const flags of [["--secret", "API_KEY"], ["--secret=API_KEY=k"]]) {
-        const rejected = await run(["app", "new", "--app", "demo", ...flags], "", POLICY, [["API_KEY", "k"]]);
-        assert.equal(rejected.exit_code, 1);
-        assert.match(rejected.stderr, /^Error: `--secret` is not available here, secret values come only from the user: ask the user to set them/);
-    }
-    const needs = await run(["app", "new", "--app", "demo", "--env", "MODE=prod"], "", POLICY, null);
-    assert.match(needs.stderr, /^Error: App demo requires secret\(s\) API_KEY, which only the user sets\. Stage the app/);
-    assert.equal(requests.length, 1);
-    assert.equal((await run(["app", "fill", "--non-interactive"], "", POLICY, [])).exit_code, 2);
+    provisioner({ "POST /v1/apps": () => new Response('{"error":"busy"}', { status: 409 }) });
+    assert.equal((await create(body, COMMAND)).status, 409);
+    provisioner({ "POST /v1/apps": () => new Response("unavailable", { status: 503 }) });
+    await assert.rejects(create(body, COMMAND), /503/);
+});
+
+test("cloud.run no longer creates apps", async () => {
+    const requests = provisioner({});
+    const result = await run(["app", "new", "--app", "demo"], "", ENV_POLICY, []);
+    assert.equal(result.exit_code, 2);
+    assert.equal(requests.length, 0);
 });
 
 test("app status, stage, unstage, env and secrets work on drafts", async () => {
@@ -368,28 +365,22 @@ test("app status, stage, unstage, env and secrets work on drafts", async () => {
     assert.ok(!requests.some((request) => "idempotency-key" in request.headers));
 });
 
-test("app stage creates a missing app bare and records a staged deployment", async () => {
+test("app stage only edits the existing app's draft and records a staged deployment", async () => {
     const id = "Dep_01M7A0M1P2P2F1VNCPZ9S26DFJ";
     const missing = draftView({ revision: 2, deployment_id: id, values: { missing_env: ["MODE"], missing_secrets: ["API_KEY"], unused_env: [], unused_secrets: [] } });
     const requests = provisioner({
-        "POST /v1/apps": appRow(),
         "PUT /v1/apps/demo/drafts/default/config": { ...missing, deployment_id: undefined, changed: true },
         "PUT /v1/apps/demo/drafts/default/deployment": { ...missing, changed: true },
     });
     const staged = await run(["app", "stage", "-a", "app.toml", "-d", id], "", POLICY);
     assert.equal(staged.exit_code, 0, staged.stderr);
-    assert.match(staged.stderr, /^App demo does not exist; creating it\n→ obelisk cloud app new\n/);
     assert.match(staged.stderr, /Set env with `obelisk cloud app env set --app demo`; for secrets, ask the user to set them with their own `obelisk cloud app secrets set` or in the dashboard, then run `obelisk cloud app apply`\n$/);
     assert.deepEqual(calls(requests), [
-        "GET /v1/apps/demo",
-        "POST /v1/apps",
         "PUT /v1/apps/demo/drafts/default/config?create_or_reuse=true",
         "PUT /v1/apps/demo/drafts/default/deployment?create_or_reuse=true",
     ]);
-    // The app starts bare; the real configuration goes only to the draft.
-    assert.deepEqual(JSON.parse(requests[1].body), { app_toml: 'app_name = "demo"\n' });
-    assert.equal(requests[2].body, POLICY);
-    assert.deepEqual(JSON.parse(requests[3].body), { deployment_id: id });
+    assert.equal(requests[0].body, POLICY);
+    assert.deepEqual(JSON.parse(requests[1].body), { deployment_id: id });
     assert.ok(!calls(requests).some((call) => call.includes("/apply")));
 
     for (const args of [["-d", "nope"], ["--fill"], ["--force"]]) {
@@ -453,7 +444,7 @@ test("app events lists recent events newest first", async () => {
 test("app commands never use another app's config", async () => {
     const requests = provisioner({ "GET /v1/apps/demo/status": { app: appRow(), api_ready: true }, "GET /v1/apps/demo/drafts": { drafts: [] } });
     const other = POLICY.replace('app_name = "demo"', 'app_name = "other"');
-    for (const command of ["new", "status", "stage"]) {
+    for (const command of ["status", "stage"]) {
         const result = await run(["app", command, "--app", "demo", "-a", "app.toml"], "", other);
         assert.equal(result.exit_code, 1, command);
         assert.match(result.stderr, /app\.toml is for app `other`, but the selected app is `demo`/, command);

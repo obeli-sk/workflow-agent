@@ -22,8 +22,8 @@ import { DEPLOYMENT_TEMPLATE } from "./obelisk-deployment-template.js";
 import { isCasNamespacedDigest } from "./fs.js";
 import { parseToml } from "../../../packs/obelisk-control/cloud/toml.js";
 import { draftArg, endpoints, errorMessage, humanOutput, renderSummary } from "../../../packs/obelisk-control/cloud/output.js";
-import { applyRequest, USER_SETS_SECRETS } from "../../../packs/obelisk-control/cloud/fill.js";
-import { validateCloudAppName } from "../../../packs/obelisk-control/cloud/policy.js";
+import { applyRequest, explicitValues, initialValues, userSuppliedPolicy, USER_SETS_SECRETS } from "../../../packs/obelisk-control/cloud/fill.js";
+import { appConfig, configForApp, validateCloudAppName } from "../../../packs/obelisk-control/cloud/policy.js";
 
 const APP_POLICY_FILE = "app.toml";
 const APP_API_GROUPS = ["execution", "component", "deployment", "admin"];
@@ -127,6 +127,10 @@ function executeCloud(interp, args, stdin, cloud, out) {
         return { ...out, exitCode: 0 };
     }
     if (helpRequested(rest)) return done(out, group === "app" ? cloudAppHelp : cloudHelp);
+    if (group === "app" && sub === "new") {
+        cloudNew(interp, rest.slice(2), globals, cloud, out);
+        return { ...out, exitCode: 0 };
+    }
     if (group === "app" && sub === "stage") return cloudStage(interp, args, stdin, cloud, globals, rest, out);
     return cloudRun(interp, args, stdin, cloud, globals, rest);
 }
@@ -135,11 +139,19 @@ function executeCloud(interp, args, stdin, cloud, out) {
 // receive the deployment, which is submitted here first; `cloud.run` then stages the config,
 // values and the deployment's ID.
 function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
+    const { opts } = parseOptions(rest.slice(2), {
+        "-a": "--app-config", "--app-config": true, "-d": "--deployment", "--deployment": true,
+        "--empty-deployment": false, "--description": true, "--env": [],
+        "--fill": false, "--fill-non-interactive": false, "--draft": true,
+    }, []);
+    if (opts["--fill"] && opts["--fill-non-interactive"]) throw new UsageError("the argument '--fill' cannot be used with '--fill-non-interactive'");
+    if (opts["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
+    if (!/^[a-z0-9._-]{1,64}$/.test(opts["--draft"] ?? "default")) throw new UsageError("draft key must be 1-64 characters a-z, 0-9, '.', '_' or '-'");
     const forwarded = [];
     let source;
     let empty = false;
     let description = null;
-    let appConfig = APP_POLICY_FILE;
+    let configPath = APP_POLICY_FILE;
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         const flag = arg.startsWith("--") ? arg.split("=")[0] : arg;
@@ -152,32 +164,29 @@ function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
         else if (flag === "--empty-deployment") empty = true;
         else if (flag === "--description") description = take();
         else {
-            if (flag === "-a" || flag === "--app-config") appConfig = args[i + 1] ?? appConfig;
-            if (arg.startsWith("--app-config=")) appConfig = arg.slice("--app-config=".length);
+            if (flag === "-a" || flag === "--app-config") configPath = args[i + 1] ?? configPath;
+            if (arg.startsWith("--app-config=")) configPath = arg.slice("--app-config=".length);
             forwarded.push(arg);
         }
     }
     if (source !== undefined && empty) throw new UsageError("the argument '--deployment <DEPLOYMENT>' cannot be used with '--empty-deployment'");
-    if (source === undefined && !empty) {
-        if (description !== null) throw "`--description` requires `--deployment` or `--empty-deployment`";
-        return cloudRun(interp, forwarded, stdin, cloud, globals, rest);
-    }
+    if (source === undefined && !empty && description !== null) throw "`--description` requires `--deployment` or `--empty-deployment`";
     const prepared = source === undefined ? null : prepareManifest(interp, source);
-    const policy = readPolicy(interp, appConfig);
-    if (policy === null) throw `Cannot read app config ${appConfig}: No such file or directory`;
-    const configured = parsePolicy(policy, appConfig).app_name;
+    const policy = readPolicy(interp, configPath);
+    if (policy === null) throw `Cannot read app config ${configPath}: No such file or directory`;
+    const config = appConfig(policy, configPath);
+    const configured = config.appName;
     const name = globals.app ?? exportedVar(interp, "OBELISK_APP_NAME") ?? configured;
     if (typeof name !== "string") throw "Set app_name in ./app.toml, --app or OBELISK_APP_NAME";
     // PORT: cloud.rs's `config_for_app`, checked before the app is created.
     if (typeof configured === "string" && configured !== name) {
-        throw `${appConfig} is for app \`${configured}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${configured}\` or fix \`app_name\``;
+        throw `${configPath} is for app \`${configured}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${configured}\` or fix \`app_name\``;
     }
-    const existing = cloud.read(["v1", "apps", name]);
-    if (existing.status !== 404) checked(existing);
-    else {
-        out.stderr += `App ${name} does not exist; creating it\n→ obelisk cloud app new\n`;
-        const created = cloud.run(["app", "new", "--app", name, "--json"], "", null, null);
-        if (created.exitCode !== 0) return { stdout: out.stdout, stderr: out.stderr + created.stderr, exitCode: created.exitCode };
+    explicitValues(opts["--env"] ?? [], Object.fromEntries(exportedEnv(interp)));
+    ensureApp(name, cloud, globals, out);
+    if (source === undefined && !empty) {
+        const staged = cloudRun(interp, forwarded, stdin, cloud, globals, rest);
+        return { ...staged, stderr: out.stderr + staged.stderr };
     }
     const context = {
         interp, out, verbose: globals.verbose,
@@ -197,6 +206,67 @@ function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
     }
     const staged = cloudRun(interp, [...forwarded, "-d", id], stdin, cloud, globals, rest);
     return { stdout: out.stdout + staged.stdout, stderr: out.stderr + staged.stderr, exitCode: staged.exitCode };
+}
+
+function cloudValue(response, globals, optional = false, commandId = null) {
+    if (optional && response.status === 404) return null;
+    if (!success(response)) {
+        const failure = globals.verbose ? `Cloud API returned ${response.status}: ${response.body}` : `${errorMessage(response.body)} (HTTP ${response.status})`;
+        throw commandId === null ? failure : `${failure}. Command ID: ${commandId}`;
+    }
+    return response.body.trim() === "" ? null : parseBody(response);
+}
+
+function createApp(name, body, commandId, cloud, globals) {
+    let response;
+    try {
+        response = cloud.create(JSON.stringify(body), commandId);
+    } catch (error) {
+        throw withContext(`Cloud request failed; recover with \`obelisk cloud app new --app ${name} --command-id ${commandId}\``, error);
+    }
+    return cloudValue(response, globals, false, commandId);
+}
+
+function ensureApp(name, cloud, globals, out, beforeCreate = () => {}) {
+    validateCloudAppName(name);
+    const existing = cloudValue(cloud.read(["v1", "apps", name]), globals, true);
+    if (existing === null) {
+        beforeCreate();
+        out.stderr += `App ${name} does not exist; creating it\n→ obelisk cloud app new\n`;
+        createApp(name, { app_toml: `app_name = ${JSON.stringify(name)}\n` }, `E_${ulid()}`, cloud, globals);
+    }
+}
+
+function cloudNew(interp, args, globals, cloud, out) {
+    const { opts } = parseOptions(args, {
+        "-a": "--app-config", "--app-config": true, "--env": [],
+        "--fill": false, "--fill-non-interactive": false, "--command-id": true,
+    }, []);
+    if (opts["--fill"] && opts["--fill-non-interactive"]) throw new UsageError("the argument '--fill' cannot be used with '--fill-non-interactive'");
+    const id = opts["--command-id"] ?? `E_${ulid()}`;
+    if (globals.verbose) out.stderr += `Cloud command execution ID: ${id}\n`;
+    const print = (row) => {
+        if (globals.json) out.stdout += `${prettyJson(row)}\n`;
+        else out.stderr += globals.verbose ? humanOutput(row) : renderSummary({ kind: "app", message: "App created." }, row);
+    };
+    if (opts["--command-id"] !== undefined) {
+        const accepted = cloudValue(cloud.read(["v1", "commands", id]), globals, true, id);
+        if (accepted !== null) return print(accepted);
+    }
+    const path = opts["--app-config"] ?? APP_POLICY_FILE;
+    const text = readPolicy(interp, path);
+    if (opts["--app-config"] !== undefined && text === null) throw `Cannot read app config ${path}: No such file or directory`;
+    const config = text === null ? null : appConfig(text, path);
+    const name = globals.app ?? exportedVar(interp, "OBELISK_APP_NAME") ?? config?.appName ?? appName(interp, globals.app);
+    validateCloudAppName(name);
+    const local = configForApp(name, config, path, opts["--app-config"] !== undefined, false);
+    const explicit = explicitValues(opts["--env"] ?? [], Object.fromEntries(exportedEnv(interp)));
+    if ((opts["--fill"] || opts["--fill-non-interactive"] || explicit.length) && !local) throw "Initial values require an app config";
+    if (opts["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
+    const body = local
+        ? { app_toml: local.text, ...initialValues(name, userSuppliedPolicy(local), explicit, opts["--fill-non-interactive"] ? Object.fromEntries(exportedEnv(interp)) : null) }
+        : { app_toml: `app_name = ${JSON.stringify(name)}\n` };
+    print(createApp(name, body, id, cloud, globals));
 }
 
 function done(out, stdout) {
@@ -364,8 +434,8 @@ function cloudLifecycle(interp, action, args, globals, cloud, out) {
     print(value(response, false, id), notes.join(""));
 }
 
-// PORT: obelisk's src/command/cloud/deploy.rs. `prepareDeploy` creates a
-// missing app bare and stages the config and values into a draft, the
+// PORT: obelisk's src/command/cloud/deploy.rs. The shell creates a missing app;
+// `prepareDeploy` stages the config and values into a draft, the
 // deployment is uploaded to the app's API here, then `finishDeploy` stages
 // it in the draft and applies.
 function cloudDeploy(interp, args, globals, cloud, out) {
@@ -409,7 +479,13 @@ function cloudDeploy(interp, args, globals, cloud, out) {
             throw ALREADY_PRINTED;
         }
     };
-    const target = activity(() => cloud.prepareDeploy(name, policy, draft, env, fill, readEnv(interp, fill, env, policy)));
+    const exported = readEnv(interp, fill, env, policy);
+    const config = appConfig(policy, configPath);
+    const variables = Object.fromEntries(exported);
+    const explicit = explicitValues(env, variables);
+    out.stderr += `Deploying ${name}\n`;
+    ensureApp(name, cloud, globals, out, () => initialValues(name, userSuppliedPolicy(config), explicit, fill ? variables : null));
+    const target = activity(() => cloud.prepareDeploy(name, policy, draft, env, fill, exported));
     out.stderr += `${target.log}→ obelisk cloud app deployment submit\n`;
     const context = {
         interp, out, verbose: globals.verbose,

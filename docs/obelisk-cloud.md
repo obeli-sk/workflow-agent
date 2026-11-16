@@ -36,20 +36,25 @@ left out and a warning is shown instead.
 ## Pieces
 
 The `obelisk-agent:tools/cloud` interface has these activities
-(`packs/obelisk-control/cloud/`). `read`, `tenant-read`, `command` and
+(`packs/obelisk-control/cloud/`). `create`, `read`, `tenant-read`, `command` and
 `finish-deploy` are retried; the rest have `max_retries = 0`:
 
 - `run` (`cli.js`) runs the provisioner commands: `auth status`, `app list`,
-  `app new|status|events|stage|unstage`, `env ...` and `secrets list|unset`.
+  `app status|events|stage|unstage`, `env ...` and `secrets list|unset`.
   No secret value passes through the agent: there is no `secrets set` and no
   `--secret`, `--fill-non-interactive` fills only env, and `new` (or `deploy`)
   of an app lacking a required secret fails with guidance to `stage` it and let
   the user set the secrets from their own CLI or the dashboard. Edits
   go into a named draft (`--draft`, default `default`) through
-  `/v1/apps/<app>/drafts/<key>/...` with `create_or_reuse=true`. `stage`
-  creates a missing app with a bare app.toml and, with `-d ID`, records an
+  `/v1/apps/<app>/drafts/<key>/...` with `create_or_reuse=true`. With `-d ID`, `stage` records an
   already submitted deployment in the draft. It returns
   stdout, stderr and an exit code, and its errors use the real CLI's wording.
+- `create` (`create.js`) sends one `POST /v1/apps` with an immutable JSON body
+  and Idempotency-Key chosen in the workflow. Transport failures, body-read
+  failures and HTTP 5xx throw so Obelisk retries the same request; other HTTP
+  responses return to the shell for formatting. The provisioner validates the
+  request fingerprint, joins accepted creation, and returns its recorded result.
+  All app creation, including bare apps needed by stage and deploy, uses this activity.
 - `read` (`read.js`) sends one GET to the provisioner and returns the status
   and body. `command` (`command.js`) sends one `app apply|enable|disable|delete`
   request with the body and Idempotency-Key the shell chose, so a retry joins
@@ -61,7 +66,9 @@ The `obelisk-agent:tools/cloud` interface has these activities
      app and stages the config, `--env` values and, with
      `--fill-non-interactive`, the remaining declared env into it, then
      checks that it has every required value. On failure it discards the
-     draft. A new app is created with those values instead.
+     draft. The shell first checks whether the app exists, validates required
+     values before creating a missing app, and creates it bare through `create`.
+     Its configuration and values are then staged in the deploy draft.
   2. The shell uploads the deployment to the app's API, without enqueueing or switching it.
   3. `finish-deploy` applies the draft (or re-applies the revision of a new
      app) with the uploaded deployment's ID and requires the app to be running.
@@ -86,18 +93,23 @@ are handled as follows:
   human output on stderr, values and JSON on stdout. Errors print
   `Error: ...` and exit 1; usage errors exit 2.
 - `cloud app deploy [-a app.toml] [-d deployment.toml | --empty-deployment] [--env NAME[=VALUE]]...
-  [--fill-non-interactive]` calls `prepare-deploy` with a
+  [--fill-non-interactive]` creates a missing app through `create`, then calls `prepare-deploy` with a
   generated `deploy-<ulid>` draft, then uploads the deployment against
   the app; a failed upload discards the draft through `run`'s `unstage`. The submit uploads only the files the server asks for and reuses the
   active deployment when nothing changed. Last, it calls `finish-deploy` with
   the deployment ID.
 - `cloud app stage [-a app.toml] [-d deployment.toml | --empty-deployment]
   [--description TEXT] [--env ...] [--draft KEY]` is ported from
-  obelisk's `src/command/cloud/stage.rs`. Without a deployment it is one `run`.
-  Otherwise a first `run` creates a missing app and stages the config and
-  values, the shell submits the deployment to the app's API, and a second `run`
-  (without the value flags, so values are staged once) records its ID with `-d`.
-  It never applies.
+  obelisk's `src/command/cloud/stage.rs`. The shell creates a missing app bare
+  through `create`. With a deployment, it submits the deployment to the app's
+  API, then calls `run` once to stage the config, values and deployment ID.
+  Without a deployment, `run` stages only config and values. It never applies.
+- `cloud app new [--command-id ID]` validates its policy and initial public
+  values in the workflow, then calls `create` with the captured JSON body and
+  a generated command ID. With an explicit ID it first reads
+  `GET /v1/commands/ID`, recovering an accepted result before rebuilding inputs
+  from files or environment that might have changed. Exhausted transport
+  retries report that recovery command, including for implicit bare creation.
 - `cloud app deployment enqueue` and `cloud app deployment apply` are rejected
   before any API request, with guidance to use `cloud app deploy` or `cloud app apply`.
   Deploy uploads local deployment.toml changes and applies that deployment's ID.
@@ -124,6 +136,31 @@ subcommand, and not by `app list`. The app is `--app`, else an exported `OBELISK
 real CLI, an app config naming a different app is an error when passed with `-a`
 or required (`stage`, `deploy`), and a discovered `./app.toml` is ignored by the
 other commands.
+
+## Retry audit (2026-11-16)
+
+`cloud.run` keeps `max_retries = 0`. Its remaining operations have different
+recovery properties; passing a command ID to the whole activity would not make
+them collectively safe. The draft webhook does not read `Idempotency-Key`, and
+its OpenAPI operations are marked as non-command endpoints.
+
+| Operations | Requests | Retry assessment |
+|---|---|---|
+| `auth status`, `app list`, `app events`, `app env list`, `app secrets list` | GET | Safe to repeat as fresh reads. A future extraction can use retryable read activities; today `run` converts failures to exit codes, and `auth status` reports token lookup failures as unknown. |
+| `app status` | GET status/drafts, POST config comparison | Read-only, including comparison. Safe as fresh reads; a comparison failure is intentionally shown in the status output. Responses can reflect newer state rather than an earlier snapshot. |
+| `app stage` | PUT config, zero or more PUT env, optional PUT deployment | Multiple commits can partially succeed. No durable aggregate result, revision precondition or draft identity binds a retry. Keep automatic retries disabled. |
+| `app env set/unset`, `app secrets unset` | PUT/DELETE draft values with `create_or_reuse=true` | Repeating against an unchanged draft can restore the same desired value, but can overwrite another edit or recreate a draft after apply/discard. No original response can be recovered by command ID. Keep retries disabled. |
+| `app unstage` | DELETE draft by label | A second call changes `discarded:true` to `false`, or deletes a replacement draft opened under the same label. Keep retries disabled. |
+
+`prepare-deploy` also stays non-retryable: its exclusive draft POST returns 409
+if the first response was lost, and later failure cleanup can discard a partially
+staged draft. App creation has been removed from it. Safely retrying draft
+mutations needs provisioner support for a stable draft identity and revision
+preconditions, or durable per-request outcomes. HTTP method alone is insufficient.
+
+`app new` and lifecycle requests already have the required durable command
+protocol. App API mutations through `tenant` remain outside this audit; they
+also retain `max_retries = 0`.
 
 ## Differences from the real CLI
 

@@ -37,8 +37,6 @@ interface cloud {
   }
 
   record deploy-target {
-    // Whether the app was missing and created bare.
-    created: bool,
     log: string,
   }
 
@@ -53,12 +51,14 @@ interface cloud {
   }
 
   // `fill-env` is the shell's exported variables when `--fill-non-interactive`
-  // (`cloud app new`) asks for same-named values, or those that bare
+  // (`cloud app stage`) asks for same-named values, or those that bare
   // `--env NAME` reads; none otherwise. Secret values never pass through here.
 
-  // Provisioner commands (`obelisk cloud auth|app ...` minus deploy, lifecycle and app API calls).
+  // Provisioner reads and draft edits; creation, lifecycle and app API calls run separately.
   run: func(args: list<string>, stdin: string, app-toml: option<string>, fill-env: option<list<tuple<string, string>>>) -> result<command-output, string>;
-  // Create a missing app bare, then create `draft` exclusively and stage `app-toml`, the `--env`
+  // One app creation request with an immutable JSON body and a workflow-chosen Idempotency-Key.
+  create: func(body: string, command-id: string) -> result<response, string>;
+  // Create `draft` exclusively on an existing app and stage `app-toml`, the `--env`
   // arguments and, with `fill`, the declared env of `exported` into it, requiring every declared
   // value and discarding the draft on failure. Secrets the app requires but lacks fail it: only
   // the user sets secrets. `exported` holds the shell's exported variables that bare names and `fill` read.

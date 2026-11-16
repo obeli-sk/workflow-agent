@@ -448,9 +448,24 @@ replace_in = ["headers"]
 # Back the shell's `obelisk cloud ...`. OBELISK_CLOUD_API_TOKEN authenticates both
 # the ObeliskNet provisioner (OBELISK_CLOUD_API_URL) and each app's own API, which
 # lives under OBELISK_CLOUD_APPS_DOMAIN.
-# max_retries = 0: commands are not idempotent across a retry (fresh
-# Idempotency-Key, auto-ID submissions), except those that take the shell's
-# Idempotency-Key: cloud_command and cloud_finish_deploy below.
+# Draft edits and app API mutations lack durable response deduplication.
+# Creation and lifecycle commands use the shell's stable Idempotency-Key.
+
+[[activity_js]]
+name = "cloud_create"
+ffqn = "obelisk-agent:tools/cloud.create"
+wit = "wit"
+max_retries = 3
+retry_exp_backoff.seconds = 1
+exec.lock_expiry.minutes = 10
+location = "packs/obelisk-control/cloud/create.js"
+env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" }]
+[[activity_js.allowed_host]]
+url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
+url_regex_suffix = "/v1/apps$"
+methods = ["POST"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "cloud_run"
@@ -479,7 +494,7 @@ name = "cloud_prepare_deploy"
 ffqn = "obelisk-agent:tools/cloud.prepare-deploy"
 wit = "wit"
 max_retries = 0
-# Creating an app waits for its VM to come up.
+# Draft preparation can partially succeed and must not restart automatically.
 exec.lock_expiry.minutes = 10
 location = "packs/obelisk-control/cloud/deploy.js"
 env_vars = [
@@ -488,7 +503,7 @@ env_vars = [
 ]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
-methods = ["GET", "POST", "PUT"]
+methods = ["GET", "POST", "PUT", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
