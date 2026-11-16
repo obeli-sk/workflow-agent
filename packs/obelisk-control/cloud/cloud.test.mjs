@@ -20,6 +20,8 @@ MODE = {}
 SELF_API = { type = "internal", source = "api-url" }
 BROWSER_UI = { type = "internal", source = "webui-url" }
 `;
+// POLICY without the required secret, which only the user sets.
+const ENV_POLICY = POLICY.replace("API_KEY = {}\n", "");
 
 test("app policy preserves internal environment sources and rejects optional", () => {
     assert.deepEqual(appConfig(POLICY).policy.public_env, [
@@ -110,15 +112,20 @@ function draftView(overrides = {}) {
     };
 }
 
-const deploy = (app, policy, { draft = "deploy-x", env = [], secrets = [], fill = false, exported = [] } = {}) =>
-    prepareDeploy(app, policy, draft, env, secrets, fill, exported);
+const deploy = (app, policy, { draft = "deploy-x", env = [], fill = false, exported = [] } = {}) =>
+    prepareDeploy(app, policy, draft, env, fill, exported);
 
 const calls = (requests) => requests.map((request) => `${request.method} ${request.path}`);
 
 test("deploy refuses to create an app whose policy requires values", async () => {
     const requests = provisioner({});
-    await assert.rejects(deploy("", POLICY), /^Deploying demo\nError: Missing required configuration: env MODE, secret API_KEY\. Retry with `--fill`/);
-    assert.deepEqual(calls(requests), ["GET /v1/apps/demo"]);
+    await assert.rejects(deploy("", ENV_POLICY), /^Deploying demo\nError: Missing required configuration: env MODE\. Retry with `--fill`/);
+    // Secrets come only from the user, so the app has to be staged for them.
+    await assert.rejects(
+        deploy("", POLICY, { env: ["MODE=prod"], exported: [["API_KEY", "k"]] }),
+        /^Deploying demo\nError: App demo requires secret\(s\) API_KEY, which only the user sets\. Stage the app with `obelisk cloud app stage --app demo -d DEPLOYMENT` \(or `--empty-deployment`\) and ask the user/,
+    );
+    assert.deepEqual(calls(requests), ["GET /v1/apps/demo", "GET /v1/apps/demo"]);
 });
 
 test("deploy creates a missing app with explicit and filled values", async () => {
@@ -132,15 +139,18 @@ test("deploy creates a missing app with explicit and filled values", async () =>
     assert.deepEqual(JSON.parse(create.body), { app_toml: policy, env: {}, secrets: {} });
 
     provisioner({ "POST /v1/apps": appRow() });
-    const exported = [["MODE", "dev"], ["API_KEY", "k"], ["EXTRA", "e"]];
-    await deploy("", POLICY, { env: ["MODE=prod"], secrets: ["API_KEY"], fill: true, exported });
-    const values = provisioner({ "POST /v1/apps": appRow() });
-    await deploy("", POLICY, { env: ["MODE"], secrets: ["API_KEY"], exported: [["MODE", "dev"], ["API_KEY", "k"]] });
-    assert.deepEqual(JSON.parse(values.find((request) => request.method === "POST").body), {
-        app_toml: POLICY, env: { MODE: "dev" }, secrets: { API_KEY: "k" },
+    // A fill reads env only, never the optional secret's same-named variable.
+    const filled = provisioner({ "POST /v1/apps": appRow() });
+    await deploy("", ENV_POLICY, { fill: true, exported: [["MODE", "dev"], ["EXTRA", "e"]] });
+    assert.deepEqual(JSON.parse(filled.find((request) => request.method === "POST").body), {
+        app_toml: ENV_POLICY, env: { MODE: "dev" }, secrets: {},
     });
-    await assert.rejects(deploy("", POLICY, { env: ["MODE"] }), /Error: Environment variable MODE is missing/);
-    await assert.rejects(deploy("", POLICY, { secrets: ["API_KEY=k"] }), /`--secret` takes only a name/);
+    const values = provisioner({ "POST /v1/apps": appRow() });
+    await deploy("", ENV_POLICY, { env: ["MODE"], exported: [["MODE", "dev"]] });
+    assert.deepEqual(JSON.parse(values.find((request) => request.method === "POST").body), {
+        app_toml: ENV_POLICY, env: { MODE: "dev" }, secrets: {},
+    });
+    await assert.rejects(deploy("", ENV_POLICY, { env: ["MODE"] }), /Error: Environment variable MODE is missing/);
 });
 
 test("deploy sends cloud integrations and does not require the env they supply", async () => {
@@ -161,10 +171,10 @@ test("deploy creates its own draft, stages config and values and warns about oth
         "PUT /v1/apps/demo/drafts/deploy-x/env/MODE": { ...staged, env: { MODE: "prod" } },
         "GET /v1/apps/demo/drafts": { drafts: [staged, draftView({ summary: { ...staged.summary, app_toml: false, env: { added: ["X"] } } })], applied_revision: 1 },
     });
-    const target = await deploy("demo", POLICY, { env: ["MODE=prod"] });
+    const target = await deploy("demo", POLICY, { env: ["MODE=prod"], fill: true, exported: [["API_KEY", "k"]] });
     assert.deepEqual(target, {
         created: false, draft: "deploy-x", revision: 1,
-        log: "Deploying demo\n→ obelisk cloud app stage\n"
+        log: "Deploying demo\n→ obelisk cloud app stage\n→ obelisk cloud app fill\n"
             + "Draft `default` (env +X) will be discarded when this deploy is applied\n"
             + "Applying draft `deploy-x` revision 2 over revision 1: app.toml\n",
     });
@@ -187,7 +197,7 @@ test("deploy discards its draft when values are missing or the draft exists", as
         "PUT /v1/apps/demo/drafts/deploy-x/config": missing,
         "DELETE /v1/apps/demo/drafts/deploy-x": { discarded: true },
     });
-    await assert.rejects(deploy("demo", POLICY), /\nError: Missing values: secret API_KEY\. Pass them with `--env NAME\[=VALUE\]` or `--secret NAME`/);
+    await assert.rejects(deploy("demo", POLICY), /\nError: App demo requires secret\(s\) API_KEY, which only the user sets\. Stage the app/);
     assert.equal(calls(requests).at(-1), "DELETE /v1/apps/demo/drafts/deploy-x");
     const taken = provisioner({
         "GET /v1/apps/demo": appRow(),
@@ -245,18 +255,22 @@ test("read returns provisioner responses, including 404", async () => {
     await assert.rejects(read(["internal", "x"]), /invalid provisioner path/);
 });
 
-test("app new reads bare --env and --secret names from the shell", async () => {
+test("app new reads bare --env names from the shell and takes no secret values", async () => {
     const requests = provisioner({ "POST /v1/apps": appRow() });
-    const args = ["app", "new", "--app", "demo", "--env", "MODE", "--env=REGION=eu", "--secret", "API_KEY"];
-    const created = await run(args, "", POLICY, [["MODE", "prod"], ["API_KEY", "k"]]);
+    const args = ["app", "new", "--app", "demo", "--env", "MODE", "--env=REGION=eu"];
+    const created = await run(args, "", ENV_POLICY, [["MODE", "prod"]]);
     assert.equal(created.exit_code, 0, created.stderr);
     const body = JSON.parse(requests.find((request) => request.method === "POST").body);
-    assert.deepEqual([body.env, body.secrets], [{ MODE: "prod", REGION: "eu" }, { API_KEY: "k" }]);
+    assert.deepEqual([body.env, body.secrets], [{ MODE: "prod", REGION: "eu" }, {}]);
 
-    const missing = await run(["app", "new", "--app", "demo", "--secret", "API_KEY"], "", POLICY, null);
-    assert.match(missing.stderr, /Error: Environment variable API_KEY is missing/);
-    const inline = await run(["app", "new", "--app", "demo", "--secret", "API_KEY=k"], "", POLICY, null);
-    assert.match(inline.stderr, /`--secret` takes only a name and reads the same-named environment variable, e\.g\. `API_KEY=\.\.\. obelisk cloud app deploy --secret API_KEY`/);
+    for (const flags of [["--secret", "API_KEY"], ["--secret=API_KEY=k"]]) {
+        const rejected = await run(["app", "new", "--app", "demo", ...flags], "", POLICY, [["API_KEY", "k"]]);
+        assert.equal(rejected.exit_code, 1);
+        assert.match(rejected.stderr, /^Error: `--secret` is not available here, secret values come only from the user: ask the user to set them/);
+    }
+    const needs = await run(["app", "new", "--app", "demo", "--env", "MODE=prod"], "", POLICY, null);
+    assert.match(needs.stderr, /^Error: App demo requires secret\(s\) API_KEY, which only the user sets\. Stage the app/);
+    assert.equal(requests.length, 1);
     assert.equal((await run(["app", "fill", "--non-interactive"], "", POLICY, [])).exit_code, 2);
 });
 
@@ -283,7 +297,7 @@ test("app status, stage, unstage, env and secrets work on drafts", async () => {
     const before = requests.length;
     const set = await run(["app", "secrets", "set", "API_KEY"], "", POLICY);
     assert.equal(set.exit_code, 1);
-    assert.match(set.stderr, /^Error: `secrets set` is not available here: ask the user to set the secret with their own `obelisk cloud app secrets set` or in the dashboard/);
+    assert.match(set.stderr, /^Error: `secrets set` is not available here, secret values come only from the user: ask the user to set them with their own `obelisk cloud app secrets set` or in the dashboard/);
     assert.equal(requests.length, before);
     const secret = await run(["app", "secrets", "unset", "API_KEY"], "", POLICY);
     assert.equal(secret.exit_code, 0, secret.stderr);
@@ -309,7 +323,7 @@ test("app stage creates a missing app bare and records a staged deployment", asy
     const staged = await run(["app", "stage", "-a", "app.toml", "-d", id], "", POLICY);
     assert.equal(staged.exit_code, 0, staged.stderr);
     assert.match(staged.stderr, /^App demo does not exist; creating it\n→ obelisk cloud app new\n/);
-    assert.match(staged.stderr, /Set them with `obelisk cloud app env set` or `obelisk cloud app secrets set --app demo`, or in the dashboard, before applying\.\n$/);
+    assert.match(staged.stderr, /Set env with `obelisk cloud app env set --app demo`; for secrets, ask the user to set them with their own `obelisk cloud app secrets set` or in the dashboard, then run `obelisk cloud app apply`\n$/);
     assert.deepEqual(calls(requests), [
         "GET /v1/apps/demo",
         "POST /v1/apps",

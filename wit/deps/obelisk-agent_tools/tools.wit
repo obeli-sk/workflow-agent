@@ -57,15 +57,16 @@ interface cloud {
 
   // `fill-env` is the shell's exported variables when `--fill-non-interactive`
   // (`cloud app new`) asks for same-named values, or those that bare
-  // `--env NAME` and `--secret NAME` read; none otherwise.
+  // `--env NAME` reads; none otherwise. Secret values never pass through here.
 
   // Provisioner commands (`obelisk cloud auth|app ...` minus deploy, lifecycle and app API calls).
   run: func(args: list<string>, stdin: string, app-toml: option<string>, fill-env: option<list<tuple<string, string>>>) -> result<command-output, string>;
-  // Create `draft` of an existing app exclusively and stage `app-toml`, the `--env` and `--secret`
-  // arguments and, with `fill`, the declared values of `exported` into it, requiring every declared
-  // value and discarding the draft on failure, or create the app with them. `exported` holds the shell's exported variables that bare names and `fill` read.
+  // Create `draft` of an existing app exclusively and stage `app-toml`, the `--env` arguments
+  // and, with `fill`, the declared env of `exported` into it, requiring every declared value
+  // and discarding the draft on failure, or create the app with them. Secrets the app requires
+  // but lacks fail it: only the user sets secrets. `exported` holds the shell's exported variables that bare names and `fill` read.
   // The err carries the log so far.
-  prepare-deploy: func(app: string, app-toml: string, draft: string, env: list<string>, secrets: list<string>, fill: bool, exported: list<tuple<string, string>>) -> result<deploy-target, string>;
+  prepare-deploy: func(app: string, app-toml: string, draft: string, env: list<string>, fill: bool, exported: list<tuple<string, string>>) -> result<deploy-target, string>;
   // Apply `draft`, or re-apply `revision` without one, with the uploaded deployment,
   // and require the app to be running; returns the app row. The err carries the log so far.
   // `command-id` is the apply's Idempotency-Key, stable across retries: deploying the app this runs in

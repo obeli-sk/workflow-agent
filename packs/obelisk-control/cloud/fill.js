@@ -3,15 +3,27 @@ import { draftRequest } from "./client.js";
 import { configName } from "./policy.js";
 import { draftArg, draftChanges, draftValues } from "./output.js";
 
-// The policy's env and secret names that the app supplies values for.
+// The policy's env names that the app supplies values for.
 function declarations(policy) {
-    const env = policy.public_env
+    return policy.public_env
         .filter((entry) => entry.type !== "internal")
         .map((entry) => (typeof entry === "string" ? { name: entry, optional: false } : entry));
-    const secrets = Object.entries(policy.secrets)
-        .filter(([, secret]) => secret.type !== "internal")
-        .map(([name, secret]) => ({ name, optional: secret.optional === true }));
-    return { env, secrets };
+}
+
+// Secret values come from the user, never through the agent.
+export const USER_SETS_SECRETS = "ask the user to set them with their own `obelisk cloud app secrets set` or in the dashboard, then run `obelisk cloud app apply`";
+
+// The policy's required secrets that the app supplies, which a new app cannot start without.
+export function requiredSecrets(policy) {
+    return Object.entries(policy.secrets ?? {})
+        .filter(([, secret]) => secret.type !== "internal" && secret.optional !== true)
+        .map(([name]) => name);
+}
+
+// The error for an app whose required secrets the user has not set: stage instead, so the user
+// can set them before applying.
+export function needsUserSecrets(name, secrets) {
+    return `App ${name} requires secret(s) ${secrets.join(", ")}, which only the user sets. Stage the app with \`obelisk cloud app stage --app ${name} -d DEPLOYMENT\` (or \`--empty-deployment\`) and ${USER_SETS_SECRETS}`;
 }
 
 // PORT: cloud.rs's `user_supplied_policy`: the policy minus env vars that cloud integrations supply.
@@ -21,22 +33,17 @@ export function userSuppliedPolicy(config) {
     return { ...config.policy, public_env: publicEnv };
 }
 
-// PORT: cloud.rs's `collect_values` without the prompt. `fillEnv` is the
-// shell's exported variables for `--fill-non-interactive`, else null (only
-// check that required values are set).
-function collectValues(fillHint, policy, envValues, secretNames, fillEnv) {
-    const { env, secrets } = declarations(policy);
-    const all = [
-        ...env.map((entry) => ({ kind: "env", ...entry, exists: hasOwn(envValues, entry.name), current: envValues[entry.name] })),
-        ...secrets.map((entry) => ({ kind: "secrets", ...entry, exists: secretNames.includes(entry.name) })),
-    ];
+// PORT: cloud.rs's `collect_values` without the prompt, for env only: secrets are left to the
+// user. `fillEnv` is the shell's exported variables for `--fill-non-interactive`, else null
+// (only check that required values are set).
+function collectValues(fillHint, policy, envValues, fillEnv) {
+    const all = declarations(policy).map((entry) => ({ kind: "env", ...entry, exists: hasOwn(envValues, entry.name), current: envValues[entry.name] }));
     const pending = [];
     const report = [];
     const missing = [];
     for (const { kind, name, optional, exists, current } of all) {
         configName(name);
         const source = fillEnv !== null && hasOwn(fillEnv, name) ? fillEnv[name] : undefined;
-        const label = kind === "secrets" ? "secret" : "env";
         let action;
         if (exists && current !== undefined && current === source) {
             action = "unchanged";
@@ -48,7 +55,7 @@ function collectValues(fillHint, policy, envValues, secretNames, fillEnv) {
         } else if (optional) {
             action = "unset";
         } else {
-            missing.push(`${label} ${name}`);
+            missing.push(`env ${name}`);
             action = "missing";
         }
         report.push({ kind, name, optional, action });
@@ -59,9 +66,9 @@ function collectValues(fillHint, policy, envValues, secretNames, fillEnv) {
     return { report, pending };
 }
 
-// PORT: cloud.rs's `explicit_values`: `--env` and `--secret` values; a bare name reads
-// the same-named variable of `env`, the shell's exported variables.
-export function explicitValues(envFlags, secretFlags, env) {
+// PORT: cloud.rs's `explicit_values`: `--env` values; a bare name reads the same-named
+// variable of `env`, the shell's exported variables.
+export function explicitValues(envFlags, env) {
     const read = (name) => {
         if (env === null || !hasOwn(env, name)) throw `Environment variable ${name} is missing or not UTF-8`;
         return env[name];
@@ -73,15 +80,6 @@ export function explicitValues(envFlags, secretFlags, env) {
         configName(name);
         pending.push({ kind: "env", name, value: eq === -1 ? read(name) : item.slice(eq + 1) });
     }
-    for (const item of secretFlags) {
-        const eq = item.indexOf("=");
-        if (eq !== -1) {
-            const name = item.slice(0, eq);
-            throw `\`--secret\` takes only a name and reads the same-named environment variable, e.g. \`${name}=... obelisk cloud app deploy --secret ${name}\``;
-        }
-        configName(item);
-        pending.push({ kind: "secrets", name: item, value: read(item) });
-    }
     return pending;
 }
 
@@ -91,7 +89,6 @@ function without(policy, explicit) {
     return {
         ...policy,
         public_env: (policy.public_env ?? []).filter((entry) => !given("env", typeof entry === "string" ? entry : entry.name)),
-        secrets: Object.fromEntries(Object.entries(policy.secrets ?? {}).filter(([name]) => !given("secrets", name))),
     };
 }
 
@@ -105,7 +102,7 @@ export async function stageValues(app, key, draft, explicit, fillEnv) {
         try {
             view = await draftRequest(app, key, "PUT", [kind, name], { body: { value } });
         } catch (error) {
-            throw `Could not stage ${kind === "secrets" ? "secret" : "env"} ${name} in draft \`${key}\`; earlier values may already be staged\n\nCaused by:\n    ${error}`;
+            throw `Could not stage ${kind} ${name} in draft \`${key}\`; earlier values may already be staged\n\nCaused by:\n    ${error}`;
         }
         staged.push({ kind, name });
         return view;
@@ -114,11 +111,10 @@ export async function stageValues(app, key, draft, explicit, fillEnv) {
     let report = [];
     if (fillEnv !== null) {
         if (draft?.env === null || typeof draft?.env !== "object" || Array.isArray(draft.env)) throw "Invalid cloud draft environment";
-        if (!Array.isArray(draft?.secrets)) throw "Invalid cloud draft secrets";
         let pending;
         ({ report, pending } = collectValues(
             "Retry with `--fill` or `--fill-non-interactive`",
-            without(userSuppliedPolicy(draft), explicit), draft.env, draft.secrets, fillEnv,
+            without(userSuppliedPolicy(draft), explicit), draft.env, fillEnv,
         ));
         for (const value of pending) draft = await put(value);
     }
@@ -139,7 +135,7 @@ export function applyRequest(name, key, draft, current, deploymentId, force, not
     }
     const missing = draftValues(draft, "missing");
     if (missing.length > 0) {
-        throw `Missing values in draft \`${key}\`: ${missing.join(", ")}. Stage them with \`obelisk cloud app env set\` or \`obelisk cloud app secrets set\`${draftArg(key)}`;
+        throw `Missing values in draft \`${key}\`: ${missing.join(", ")}. Stage env with \`obelisk cloud app env set\`${draftArg(key)}; for secrets, ${USER_SETS_SECRETS}`;
     }
     note(`Applying draft \`${key}\` revision ${JSON.stringify(draft.revision ?? null)} over revision ${applied}: ${draftChanges(draft)}`);
     const unused = draftValues(draft, "unused");
@@ -147,22 +143,25 @@ export function applyRequest(name, key, draft, current, deploymentId, force, not
     return { ...body, draft: key };
 }
 
-// PORT: cloud.rs's `initial_values`: a new app's env and secrets.
-export function initialValues(policy, explicit, fillEnv) {
+// PORT: cloud.rs's `initial_values`: a new app's env. `name` is the app, for the error when
+// the policy requires secrets, which only the user sets.
+export function initialValues(name, policy, explicit, fillEnv) {
+    const secrets = requiredSecrets(policy);
+    if (secrets.length > 0) throw needsUserSecrets(name, secrets);
     const { pending } = collectValues(
         "Retry with `--fill`, or `--fill-non-interactive` to read same-named environment variables",
-        without(policy, explicit), {}, [], fillEnv,
+        without(policy, explicit), {}, fillEnv,
     );
-    const values = { env: {}, secrets: {} };
-    for (const { kind, name, value } of [...explicit, ...pending]) values[kind][name] = value;
-    return values;
+    const env = {};
+    for (const { name: key, value } of [...explicit, ...pending]) env[key] = value;
+    return { env, secrets: {} };
 }
 
 // PORT: deploy.rs's `optional_unset`: optional declarations left unset by a fill.
 export function unsetOptional(filled) {
     return filled.declarations
         .filter((declaration) => declaration.action === "unset")
-        .map((declaration) => `${declaration.kind === "secrets" ? "secret" : "env"} ${declaration.name}`);
+        .map((declaration) => `env ${declaration.name}`);
 }
 
 function hasOwn(object, key) {
