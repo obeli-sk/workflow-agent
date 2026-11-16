@@ -448,15 +448,31 @@ replace_in = ["headers"]
 # Back the shell's `obelisk cloud ...`. OBELISK_CLOUD_API_TOKEN authenticates both
 # the ObeliskNet provisioner (OBELISK_CLOUD_API_URL) and each app's own API, which
 # lives under OBELISK_CLOUD_APPS_DOMAIN.
-# max_retries = 0: commands are not idempotent across a retry (fresh
-# Idempotency-Key, auto-ID submissions), except those that take the shell's
-# Idempotency-Key: cloud_command and cloud_finish_deploy below.
+# Draft edits and app API mutations lack durable response deduplication.
+# Creation and lifecycle commands use the shell's stable Idempotency-Key.
+
+[[activity_js]]
+name = "cloud_create"
+ffqn = "obelisk-agent:tools/cloud.create"
+wit = "wit"
+max_retries = 3
+retry_exp_backoff.seconds = 1
+exec.lock_expiry.minutes = 1
+location = "packs/obelisk-control/cloud/create.js"
+env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" }]
+[[activity_js.allowed_host]]
+url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
+url_regex_suffix = "/v1/apps$"
+methods = ["POST"]
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
 
 [[activity_js]]
 name = "cloud_run"
 ffqn = "obelisk-agent:tools/cloud.run"
 wit = "wit"
 max_retries = 0
+exec.lock_expiry.minutes = 1
 location = "packs/obelisk-control/cloud/cli.js"
 env_vars = [
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
@@ -474,41 +490,34 @@ secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 [[activity_js]]
-name = "cloud_prepare_deploy"
-ffqn = "obelisk-agent:tools/cloud.prepare-deploy"
+name = "cloud_draft_open"
+ffqn = "obelisk-agent:tools/cloud.draft-open"
 wit = "wit"
-max_retries = 0
-# Creating an app waits for its VM to come up.
-exec.lock_expiry.minutes = 10
-location = "packs/obelisk-control/cloud/deploy.js"
-env_vars = [
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
-  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
-]
+max_retries = 3
+retry_exp_backoff.seconds = 1
+exec.lock_expiry.minutes = 1
+location = "packs/obelisk-control/cloud/draft-open.js"
+env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
-methods = ["GET", "POST", "PUT"]
+url_regex_suffix = "/v1/apps/[^/]+/drafts/[a-z0-9._-]+$"
+methods = ["PUT"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 [[activity_js]]
-name = "cloud_finish_deploy"
-ffqn = "obelisk-agent:tools/cloud.finish-deploy"
+name = "cloud_draft_request"
+ffqn = "obelisk-agent:tools/cloud.draft-request"
 wit = "wit"
-# Deploying this app closes the executor running the apply and interrupts it.
-# The workflow passes the Idempotency-Key, so a retry gets the apply's result.
 max_retries = 3
 retry_exp_backoff.seconds = 1
-# Applying waits for the app VM to come up.
-exec.lock_expiry.minutes = 10
-location = "packs/obelisk-control/cloud/finish-deploy.js"
-env_vars = [
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
-  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
-]
+exec.lock_expiry.minutes = 1
+location = "packs/obelisk-control/cloud/draft-request.js"
+env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
-methods = ["GET", "PUT", "POST", "DELETE"]
+url_regex_suffix = "/v1/apps/[^/]+/drafts/[a-z0-9._-]+(/(config|deployment|env/[^/]+))?$"
+methods = ["GET", "PUT", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
@@ -549,8 +558,24 @@ methods = ["POST", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
-# A request that changes the app: deployment submits and switches, execution
-# controls, admin maintenance.
+# Content-addressed files and fixed-ID deployment submissions are safe to resend.
+[[activity_js]]
+name = "cloud_upload"
+ffqn = "obelisk-agent:tools/cloud.upload"
+wit = "wit"
+max_retries = 3
+retry_exp_backoff.seconds = 1
+exec.lock_expiry.minutes = 10
+location = "packs/obelisk-control/cloud/upload.js"
+env_vars = [{ key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" }]
+[[activity_js.allowed_host]]
+pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
+methods = ["PUT"]
+request_url_regex = "^PUT https://[^/]+/v1/(files/sha256:[0-9a-f]{64}|deployments/Dep_[0-7][0-9A-HJKMNP-TV-Z]{25})$"
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+
+# Other app mutations: execution controls and admin maintenance.
 [[activity_js]]
 name = "cloud_tenant"
 ffqn = "obelisk-agent:tools/cloud.tenant"

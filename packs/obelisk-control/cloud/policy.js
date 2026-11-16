@@ -5,6 +5,20 @@ import { parseToml } from "./toml.js";
 const TOP_LEVEL = ["app_name", "cloud", "secrets", "public_env", "public_http_servers", "allowed_exec_activities", "outbound_http"];
 const HOST_FIELDS = ["pattern", "url_prefix", "url_regex_suffix", "methods", "request_url_regex", "secrets", "replace_in"];
 
+export function configForApp(name, config, path, explicit, required) {
+    if (!config) {
+        if (required) throw "No app config: ./app.toml not found; pass --app-config";
+        return null;
+    }
+    if (config.appName !== name) {
+        if (explicit || required) {
+            throw `${path} is for app \`${config.appName}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${config.appName}\` or fix \`app_name\``;
+        }
+        return null;
+    }
+    return config;
+}
+
 export function appConfig(text, path = "app.toml") {
     let toml;
     try {

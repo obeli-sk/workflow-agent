@@ -2,7 +2,7 @@
 //   func(app: string, method: string, path: string, content-type: option<string>, body: option<string>)
 //     -> result<record { status: u16, body: string }, string>
 //
-// A request that changes the app (submits, execution controls), sent once:
+// Other app mutations (execution controls and admin operations), sent once:
 // max_retries = 0, as a retry could repeat it. Deployment switches need an
 // `If-Match` header this tool cannot send; `cloud app apply` activates instead.
 import { appApiRequest } from "./client.js";

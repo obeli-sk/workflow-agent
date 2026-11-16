@@ -1,5 +1,4 @@
 // PORT: obelisk's cloud.rs `explicit_values`, `stage_values`, `apply_request` and `initial_values` (non-interactive).
-import { draftRequest } from "./client.js";
 import { configName } from "./policy.js";
 import { draftArg, draftChanges, draftValues } from "./output.js";
 
@@ -92,33 +91,13 @@ function without(policy, explicit) {
     };
 }
 
-// PORT: cloud.rs's `stage_values`: stages `explicit` values into the existing draft `key` (whose
-// view is `draft`), then the remaining declared values of `fillEnv`; a null `fillEnv` stages only
-// `explicit`. Returns the latest draft view and the fill report.
-export async function stageValues(app, key, draft, explicit, fillEnv) {
-    const staged = [];
-    const put = async ({ kind, name, value }) => {
-        let view;
-        try {
-            view = await draftRequest(app, key, "PUT", [kind, name], { body: { value } });
-        } catch (error) {
-            throw `Could not stage ${kind} ${name} in draft \`${key}\`; earlier values may already be staged\n\nCaused by:\n    ${error}`;
-        }
-        staged.push({ kind, name });
-        return view;
-    };
-    for (const value of explicit) draft = await put(value);
-    let report = [];
-    if (fillEnv !== null) {
-        if (draft?.env === null || typeof draft?.env !== "object" || Array.isArray(draft.env)) throw "Invalid cloud draft environment";
-        let pending;
-        ({ report, pending } = collectValues(
-            "Retry with `--fill` or `--fill-non-interactive`",
-            without(userSuppliedPolicy(draft), explicit), draft.env, fillEnv,
-        ));
-        for (const value of pending) draft = await put(value);
-    }
-    return { draft, filled: { draft: key, staged, declarations: report } };
+export function remainingValues(draft, explicit, fillEnv) {
+    if (fillEnv === null) return { report: [], pending: [] };
+    if (draft?.env === null || typeof draft?.env !== "object" || Array.isArray(draft.env)) throw "Invalid cloud draft environment";
+    return collectValues(
+        "Retry with `--fill` or `--fill-non-interactive`",
+        without(userSuppliedPolicy(draft), explicit), draft.env, fillEnv,
+    );
 }
 
 // PORT: cloud.rs's `apply_request`: applies the current contents of draft `key`, or re-applies

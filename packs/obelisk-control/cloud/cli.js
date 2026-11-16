@@ -5,15 +5,15 @@
 //
 // PORT: obelisk's src/command/cloud.rs. The provisioner half of `obelisk cloud`
 // (apps, tokens, env and secrets); the shell's `obelisk` command handles
-// `app deploy`, `app apply|enable|disable|delete` and the app API subcommands itself. `app-toml` is the
+// `app new|deploy|apply|enable|disable|delete` and the app API subcommands itself. `app-toml` is the
 // policy file's text (`-a PATH`, else ./app.toml) when the shell found one;
 // `fill-env` the shell's exported variables for `--fill-non-interactive`, or
 // those that bare `--env NAME` reads. Secret values never pass through here.
 // Like the CLI, JSON goes to stdout and human output to stderr; errors exit 1,
 // usage errors 2.
-import { appRequest, cloudBase, cloudRequest, draftRequest, lookupApp } from "./client.js";
-import { explicitValues, initialValues, USER_SETS_SECRETS, stageValues, userSuppliedPolicy } from "./fill.js";
-import { appConfig, configName, validateCloudAppName } from "./policy.js";
+import { appRequest, cloudBase, cloudRequest, discardDraft, draftRequest } from "./client.js";
+import { USER_SETS_SECRETS } from "./fill.js";
+import { appConfig, configForApp, configName, validateCloudAppName } from "./policy.js";
 import { draftArg, draftValues, humanOutput, renderSummary } from "./output.js";
 
 export default async function run(args, stdin, appToml, fillEnv) {
@@ -35,7 +35,7 @@ export default async function run(args, stdin, appToml, fillEnv) {
 // A command-line error, reported like clap's.
 export class UsageError extends Error {}
 
-const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "-n", "--limit", "--draft", "-d", "--deployment"];
+const VALUE_FLAGS = ["--app", "-a", "--app-config", "-n", "--limit", "--draft", "-d", "--deployment"];
 const REPEATED_FLAGS = ["--env"];
 const BOOLEAN_FLAGS = [
     "--json", "--verbose", "--fill", "--fill-non-interactive",
@@ -84,7 +84,7 @@ function arity(rest, count) {
 
 async function execute({ positionals, flags }, stdin, appToml, fillEnv) {
     const [group, ...rest] = positionals;
-    const options = { verbose: flags["--verbose"] === true, commandId: flags["--command-id"] };
+    const options = { verbose: flags["--verbose"] === true };
     const print = (value, summary) => {
         if (flags["--json"]) return { stdout: `${JSON.stringify(value, null, 2)}\n` };
         return { stderr: options.verbose ? humanOutput(value) : renderSummary(summary, value) };
@@ -134,8 +134,7 @@ async function tokenState() {
     }
 }
 
-const POLICY_COMMANDS = ["new", "status", "stage"];
-const VALUES = ["--env", "--fill", "--fill-non-interactive"];
+const POLICY_COMMANDS = ["status"];
 
 // PORT: args.rs's `parse_draft_key`.
 function draftKey(flags) {
@@ -152,23 +151,6 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     const config = appToml === null || (!POLICY_COMMANDS.includes(action) && explicit) ? null
         // Status only reports a readable discovered ./app.toml.
         : action === "status" && !explicit ? readableConfig(appToml, path) : appConfig(appToml, path);
-    const terminal = (flag) => `\`${flag}\` requires a terminal; use \`--fill-non-interactive\` to read same-named environment variables`;
-    if (action === "new") {
-        allow(flags, ["-a", ...VALUES, "--command-id"]);
-        arity(rest, 0);
-        conflicts(flags);
-        const name = appName(flags["--app"] ?? config?.appName);
-        const local = configForApp(name, config, path, explicit, false);
-        const explicitList = explicitValues(flags["--env"] ?? [], fillEnv);
-        if ((flags["--fill"] || flags["--fill-non-interactive"] || explicitList.length > 0) && !local) throw "Initial values require an app config";
-        const body = { app_toml: `app_name = ${JSON.stringify(name)}\n` };
-        if (local) {
-            if (flags["--fill"]) throw terminal("--fill");
-            const values = initialValues(name, userSuppliedPolicy(local), explicitList, flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
-            Object.assign(body, { app_toml: local.text, env: values.env, secrets: values.secrets });
-        }
-        return print(await cloudRequest("POST", ["v1", "apps"], { ...options, kind: "secret-command", body }), { kind: "app", message: "App created." });
-    }
     const name = appName(flags["--app"] ?? config?.appName);
     const local = configForApp(name, config, path, explicit, action === "stage");
     const key = draftKey(flags);
@@ -197,44 +179,14 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         }
         return print(await appRequest(name, "GET", ["events"], { ...options, query: { limit } }), { kind: "events" });
     }
-    if (action === "stage") return stageCommand(name, key, local, rest, flags, fillEnv, options, print);
     if (action === "unstage") {
         allow(flags, ["--draft"]);
         arity(rest, 0);
-        return print(await draftRequest(name, key, "DELETE", [], options), { kind: "unstaged", draft: key });
+        return print(await discardDraft(name, key, options), { kind: "unstaged", draft: key });
     }
     if (action === "env") return envCommand(name, key, rest, flags, options, print, apply);
     if (action === "secrets") return secretsCommand(name, key, rest, flags, options, print, apply);
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
-}
-
-// PORT: cloud/stage.rs. The shell submits the deployment before this stages the config, so
-// `-d` here is the submitted deployment's ID.
-async function stageCommand(name, key, local, rest, flags, fillEnv, options, print) {
-    allow(flags, ["-a", "--draft", "-d", ...VALUES]);
-    arity(rest, 0);
-    conflicts(flags);
-    if (flags["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
-    const deployment = flags["-d"];
-    if (deployment !== undefined && !/^Dep_[0-9A-HJKMNP-TV-Z]{26}$/.test(deployment)) throw `Invalid deployment ID ${deployment}`;
-    const explicit = explicitValues(flags["--env"] ?? [], fillEnv);
-    let notes = "";
-    if (await lookupApp(name) === null) {
-        // A bare app runs an empty deployment, so its API can receive the submission.
-        notes += `App ${name} does not exist; creating it\n→ obelisk cloud app new\n`;
-        await cloudRequest("POST", ["v1", "apps"], { ...options, kind: "command", body: { app_toml: `app_name = ${JSON.stringify(name)}\n` } });
-    }
-    let staged = await draftRequest(name, key, "PUT", ["config"], { ...options, toml: local.text }, true);
-    ({ draft: staged } = await stageValues(name, key, staged, explicit, flags["--fill-non-interactive"] ? fillEnv ?? {} : null));
-    if (deployment !== undefined) {
-        staged = await draftRequest(name, key, "PUT", ["deployment"], { ...options, body: { deployment_id: deployment } }, true);
-    }
-    const apply = `obelisk cloud app apply --app ${name}${draftArg(key)}`;
-    const output = print(staged, { kind: "staged", message: "Changes staged.", apply });
-    if (output.stderr !== undefined && draftValues(staged, "missing").length > 0) {
-        output.stderr += `Set env with \`obelisk cloud app env set --app ${name}${draftArg(key)}\`; for secrets, ${USER_SETS_SECRETS}\n`;
-    }
-    return { ...output, stderr: notes + (output.stderr ?? "") };
 }
 
 async function envCommand(name, draft, [action, key, value, ...extra], flags, options, print, apply) {
@@ -248,7 +200,7 @@ async function envCommand(name, draft, [action, key, value, ...extra], flags, op
         if (value === undefined) throw new UsageError("the following required arguments were not provided:\n  <NAME>\n  <VALUE>");
         arity(extra, 0);
         configName(key);
-        const result = await draftRequest(name, draft, "PUT", ["env", key], { ...options, body: { value } }, true);
+        const result = await draftRequest(name, draft, "PUT", ["env", key], { ...options, body: { value } });
         return print(result, { kind: "staged", message: "Environment staged.", apply });
     }
     if (action === "unset") {
@@ -256,7 +208,7 @@ async function envCommand(name, draft, [action, key, value, ...extra], flags, op
         if (key === undefined) throw new UsageError("the following required arguments were not provided:\n  <NAME>");
         arity([value], 0);
         configName(key);
-        return print(await draftRequest(name, draft, "DELETE", ["env", key], options, true), { kind: "staged", message: "Environment staged.", apply });
+        return print(await draftRequest(name, draft, "DELETE", ["env", key], options), { kind: "staged", message: "Environment staged.", apply });
     }
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
 }
@@ -277,7 +229,7 @@ async function secretsCommand(name, draft, [action, key, ...extra], flags, optio
         if (key === undefined) throw new UsageError("the following required arguments were not provided:\n  <NAME>");
         arity(extra, 0);
         configName(key);
-        const result = await draftRequest(name, draft, "DELETE", ["secrets", key], options, true);
+        const result = await draftRequest(name, draft, "DELETE", ["secrets", key], options);
         return print(result, { kind: "staged", message: "Secret change staged.", apply });
     }
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
@@ -292,22 +244,6 @@ function appName(name) {
     return name;
 }
 
-// PORT: cloud.rs's `config_for_app`: never use another app's config; an explicit
-// or required one is an error, a discovered optional one is ignored.
-export function configForApp(name, config, path, explicit, required) {
-    if (!config) {
-        if (required) throw "No app config: ./app.toml not found; pass --app-config";
-        return null;
-    }
-    if (config.appName !== name) {
-        if (explicit || required) {
-            throw `${path} is for app \`${config.appName}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${config.appName}\` or fix \`app_name\``;
-        }
-        return null;
-    }
-    return config;
-}
-
 function readableConfig(appToml, path) {
     try { return appConfig(appToml, path); } catch { return null; }
 }
@@ -315,8 +251,4 @@ function readableConfig(appToml, path) {
 // PORT: cloud.rs's `compare_config`: the provisioner diffs `appToml` against staging.
 function compareConfig(name, appToml, options) {
     return appRequest(name, "POST", ["config", "compare"], { ...options, toml: appToml });
-}
-
-function conflicts(flags) {
-    if (flags["--fill"] && flags["--fill-non-interactive"]) throw new UsageError("the argument '--fill' cannot be used with '--fill-non-interactive'");
 }

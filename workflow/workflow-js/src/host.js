@@ -5,6 +5,8 @@
 // `createCloud` backs obelisk-pack.js's `obelisk cloud` with the cloud
 // activities, turning child errors into plain messages.
 
+import { isDeploymentUpload } from "../../../shared/deployment-upload.js";
+
 export function createHost(dynamic, obelisk) {
     return {
         callJson(ffqn, paramsJson) {
@@ -41,15 +43,15 @@ export function createCloud(cloud, obelisk) {
             const output = plain(() => cloud.run(args, stdin, appToml, fillEnv));
             return { stdout: output.stdout, stderr: output.stderr, exitCode: output.exit_code };
         },
-        prepareDeploy: (app, appToml, draft, env, fill, exported) => plain(() => cloud.prepareDeploy(app, appToml, draft, env, fill, exported)),
-        finishDeploy(app, deploymentId, draft, commandId) {
-            const deployed = plain(() => cloud.finishDeploy(app, deploymentId, draft, commandId));
-            return { app: JSON.parse(deployed.app_json), log: deployed.log };
-        },
+        create: (body, commandId) => plain(() => cloud.create(body, commandId)),
+        openDraft: (app, key, parentRevision) => plain(() => cloud.draftOpen(app, key, parentRevision)),
+        draftRequest: (app, key, draftId, method, section, contentType, body) => plain(() => cloud.draftRequest(app, key, draftId, method, section, contentType, body)),
         read: (path) => plain(() => cloud.read(path)),
-        command: (app, method, path, body, commandId) => plain(() => cloud.command(app, method, path, body, commandId)),
+        command: (app, method, path, body, commandId, draftId = null) => plain(() => cloud.command(app, method, path, body, commandId, draftId)),
         get: (app, path) => plain(() => cloud.tenantRead(app, path)),
-        send: (app, method, path, contentType, body) => plain(() => cloud.tenant(app, method, path, contentType, body)),
+        send: (app, method, path, contentType, body) => plain(() => method === "PUT" && isDeploymentUpload(path)
+            ? cloud.upload(app, path, contentType, body)
+            : cloud.tenant(app, method, path, contentType, body)),
     };
 }
 

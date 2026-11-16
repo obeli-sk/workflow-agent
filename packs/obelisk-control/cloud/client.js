@@ -16,11 +16,13 @@ export function cloudToken() {
 
 // `kind`: "read", "command" (sends an Idempotency-Key), "secret" (redacts error bodies) or "secret-command" (both).
 // `toml` sends a verbatim app.toml instead of a JSON `body`.
-export async function cloudRequest(method, segments, { body, toml, kind = "read", commandId, verbose = false, log, query } = {}) {
+export async function cloudRequest(method, segments, { body, toml, kind = "read", commandId, verbose = false, log, query, draftId = null } = {}) {
     const headers = { accept: "application/json", authorization: `Bearer ${cloudToken()}` };
+    if (draftId !== null) headers["if-match"] = `"draft-${draftId}"`;
     let id = null;
     if (kind === "command" || kind === "secret-command") {
-        id = commandId || executionIdTopLevel();
+        if (!commandId) throw "Cloud command requires a workflow-generated command ID";
+        id = commandId;
         if (verbose && log) log(`Cloud command execution ID: ${id}`);
         headers["idempotency-key"] = id;
     }
@@ -51,10 +53,11 @@ export async function cloudRequest(method, segments, { body, toml, kind = "read"
 
 // One provisioner request for the shell, which reports the response itself: every status below
 // 500 is returned, while a failed request or a server error is thrown so the activity is retried.
-export async function provisionerResponse(method, segments, body = null, commandId = null) {
+export async function provisionerResponse(method, segments, body = null, commandId = null, contentType = "application/json", draftId = null) {
     const headers = { accept: "application/json", authorization: `Bearer ${cloudToken()}` };
     if (commandId !== null) headers["idempotency-key"] = commandId;
-    if (body !== null) headers["content-type"] = "application/json";
+    if (draftId !== null) headers["if-match"] = `"draft-${draftId}"`;
+    if (body !== null) headers["content-type"] = contentType;
     const url = `${cloudBase()}/${segments.map(encodeURIComponent).join("/")}`;
     let response;
     try {
@@ -71,12 +74,35 @@ export function appRequest(name, method, suffix, options) {
     return cloudRequest(method, ["v1", "apps", name, ...suffix], options);
 }
 
-// PORT: cloud.rs's `Client::draft`: a request on draft `key`; `reuse` lets an edit create a
-// missing draft. Edits take no idempotency key.
-export function draftRequest(name, key, method, suffix, options = {}, reuse = false) {
+function isNotFound(error) {
+    return /\(HTTP 404\)$/.test(String(error));
+}
+
+// PORT: cloud.rs's `Client::draft`: an edit of draft `key`, opening it on the applied revision
+// when missing. Edits take no idempotency key.
+export async function draftRequest(name, key, method, suffix, options = {}) {
     const kind = method === "PUT" && suffix[0] === "secrets" ? "secret" : "read";
-    const query = reuse && suffix.length > 0 ? { ...options.query, create_or_reuse: "true" } : options.query;
-    return appRequest(name, method, ["drafts", key, ...suffix], { ...options, kind, query });
+    let draft;
+    try {
+        draft = await appRequest(name, "GET", ["drafts", key], options);
+    } catch (error) {
+        if (!isNotFound(error)) throw error;
+        const current = await appRequest(name, "GET", [], options);
+        draft = await appRequest(name, "PUT", ["drafts", key], { ...options, body: { parent_revision: appliedRevision(current) } });
+    }
+    return appRequest(name, method, ["drafts", key, ...suffix], { ...options, kind, draftId: draft.draft_id });
+}
+
+// PORT: cloud.rs's `unstage`: discards draft `key` by its ID.
+export async function discardDraft(name, key, options = {}) {
+    let draft;
+    try {
+        draft = await appRequest(name, "GET", ["drafts", key], options);
+    } catch (error) {
+        if (!isNotFound(error)) throw error;
+        return { discarded: false };
+    }
+    return appRequest(name, "DELETE", ["drafts", key], { ...options, draftId: draft.draft_id });
 }
 
 // The app row, or null when the provisioner has no such app.
@@ -87,21 +113,6 @@ export async function lookupApp(name) {
         if (typeof error === "string" && /\(HTTP 404\)$/.test(error)) return null;
         throw error;
     }
-}
-
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-// A fresh `E_<ULID>` top-level execution ID, the provisioner's idempotency key format.
-export function executionIdTopLevel() {
-    let time = Date.now();
-    let timePart = "";
-    for (let i = 0; i < 10; i++) {
-        timePart = CROCKFORD[time % 32] + timePart;
-        time = Math.floor(time / 32);
-    }
-    let random = "";
-    for (let i = 0; i < 16; i++) random += CROCKFORD[Math.floor(Math.random() * 32)];
-    return `E_${timePart}${random}`;
 }
 
 // PORT: cloud.rs's `direct_api_url`: the app's API URL follows from its name and OBELISK_CLOUD_APPS_DOMAIN.
