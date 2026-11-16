@@ -10,8 +10,8 @@
 import { provisionerResponse } from "./client.js";
 import { validateCloudAppName } from "./policy.js";
 
-export default async function command(app, method, path, body, commandId) {
+export default async function command(app, method, path, body, commandId, draftId) {
     validateCloudAppName(app);
     if (method !== "POST" && method !== "DELETE") throw `unsupported command method ${method}`;
-    return provisionerResponse(method, ["v1", "apps", app, ...path], body, commandId);
+    return provisionerResponse(method, ["v1", "apps", app, ...path], body, commandId, "application/json", draftId ?? null);
 }

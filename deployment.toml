@@ -490,41 +490,34 @@ secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 [[activity_js]]
-name = "cloud_prepare_deploy"
-ffqn = "obelisk-agent:tools/cloud.prepare-deploy"
+name = "cloud_draft_open"
+ffqn = "obelisk-agent:tools/cloud.draft-open"
 wit = "wit"
-max_retries = 0
-# Draft preparation can partially succeed and must not restart automatically.
-exec.lock_expiry.minutes = 10
-location = "packs/obelisk-control/cloud/deploy.js"
-env_vars = [
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
-  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
-]
+max_retries = 3
+retry_exp_backoff.seconds = 1
+exec.lock_expiry.minutes = 1
+location = "packs/obelisk-control/cloud/draft-open.js"
+env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
-methods = ["GET", "POST", "PUT", "DELETE"]
+url_regex_suffix = "/v1/apps/[^/]+/drafts/[a-z0-9._-]+(/(config|deployment|env/[^/]+))?$"
+methods = ["GET", "POST"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 [[activity_js]]
-name = "cloud_finish_deploy"
-ffqn = "obelisk-agent:tools/cloud.finish-deploy"
+name = "cloud_draft_request"
+ffqn = "obelisk-agent:tools/cloud.draft-request"
 wit = "wit"
-# Deploying this app closes the executor running the apply and interrupts it.
-# The workflow passes the Idempotency-Key, so a retry gets the apply's result.
 max_retries = 3
 retry_exp_backoff.seconds = 1
-# Applying waits for the app VM to come up.
-exec.lock_expiry.minutes = 10
-location = "packs/obelisk-control/cloud/finish-deploy.js"
-env_vars = [
-  { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
-  { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
-]
+exec.lock_expiry.minutes = 1
+location = "packs/obelisk-control/cloud/draft-request.js"
+env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
-methods = ["GET", "PUT", "POST", "DELETE"]
+url_regex_suffix = "/v1/apps/[^/]+/drafts/[a-z0-9._-]+(/(config|deployment|env/[^/]+))?$"
+methods = ["GET", "PUT", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 

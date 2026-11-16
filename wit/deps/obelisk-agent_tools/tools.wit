@@ -36,15 +36,6 @@ interface cloud {
     exit-code: u32,
   }
 
-  record deploy-target {
-    log: string,
-  }
-
-  record deployed {
-    app-json: string,
-    log: string,
-  }
-
   record response {
     status: u16,
     body: string,
@@ -58,23 +49,16 @@ interface cloud {
   run: func(args: list<string>, stdin: string, app-toml: option<string>, fill-env: option<list<tuple<string, string>>>) -> result<command-output, string>;
   // One app creation request with an immutable JSON body and a workflow-chosen Idempotency-Key.
   create: func(body: string, command-id: string) -> result<response, string>;
-  // Create `draft` exclusively on an existing app and stage `app-toml`, the `--env`
-  // arguments and, with `fill`, the declared env of `exported` into it, requiring every declared
-  // value and discarding the draft on failure. Secrets the app requires but lacks fail it: only
-  // the user sets secrets. `exported` holds the shell's exported variables that bare names and `fill` read.
-  // The err carries the log so far.
-  prepare-deploy: func(app: string, app-toml: string, draft: string, env: list<string>, fill: bool, exported: list<tuple<string, string>>) -> result<deploy-target, string>;
-  // Stage the uploaded deployment in `draft`, apply the draft and require the app to be
-  // running; returns the app row. The err carries the log so far.
-  // `command-id` is the apply's Idempotency-Key, stable across retries: deploying the app this runs in
-  // interrupts the call, and the retry picks up the apply's recorded result.
-  finish-deploy: func(app: string, deployment-id: string, draft: string, command-id: string) -> result<deployed, string>;
+  // Reuse a stage draft, or recover a unique deploy draft opened on the captured parent.
+  draft-open: func(app: string, draft: string, parent-revision: u64, reuse: bool) -> result<response, string>;
+  // One retryable edit to an existing draft, without implicit draft recreation.
+  draft-request: func(app: string, draft: string, draft-id: u64, method: string, section: list<string>, content-type: option<string>, body: option<string>) -> result<response, string>;
   // GET `/<path>` on the provisioner; err only when no response arrived or the server failed.
   read: func(path: list<string>) -> result<response, string>;
   // `app apply|enable|disable|delete`: one request on `/v1/apps/<app>/<path>` with a JSON `body`.
   // `command-id` is its Idempotency-Key, so a retry joins the command or gets its recorded result.
   // Err only when no response arrived or the server failed.
-  command: func(app: string, method: string, path: list<string>, body: option<string>, command-id: string) -> result<response, string>;
+  command: func(app: string, method: string, path: list<string>, body: option<string>, command-id: string, draft-id: option<u64>) -> result<response, string>;
   // GET `path` (with its query) on the app's API; err only when no response arrived.
   tenant-read: func(app: string, path: string) -> result<response, string>;
   // One retryable PUT of a content-addressed file or a workflow-chosen deployment ID.

@@ -16,8 +16,9 @@ export function cloudToken() {
 
 // `kind`: "read", "command" (sends an Idempotency-Key), "secret" (redacts error bodies) or "secret-command" (both).
 // `toml` sends a verbatim app.toml instead of a JSON `body`.
-export async function cloudRequest(method, segments, { body, toml, kind = "read", commandId, verbose = false, log, query } = {}) {
+export async function cloudRequest(method, segments, { body, toml, kind = "read", commandId, verbose = false, log, query, draftId = null } = {}) {
     const headers = { accept: "application/json", authorization: `Bearer ${cloudToken()}` };
+    if (draftId !== null) headers["if-match"] = `"draft-${draftId}"`;
     let id = null;
     if (kind === "command" || kind === "secret-command") {
         if (!commandId) throw "Cloud command requires a workflow-generated command ID";
@@ -52,10 +53,11 @@ export async function cloudRequest(method, segments, { body, toml, kind = "read"
 
 // One provisioner request for the shell, which reports the response itself: every status below
 // 500 is returned, while a failed request or a server error is thrown so the activity is retried.
-export async function provisionerResponse(method, segments, body = null, commandId = null) {
+export async function provisionerResponse(method, segments, body = null, commandId = null, contentType = "application/json", draftId = null) {
     const headers = { accept: "application/json", authorization: `Bearer ${cloudToken()}` };
     if (commandId !== null) headers["idempotency-key"] = commandId;
-    if (body !== null) headers["content-type"] = "application/json";
+    if (draftId !== null) headers["if-match"] = `"draft-${draftId}"`;
+    if (body !== null) headers["content-type"] = contentType;
     const url = `${cloudBase()}/${segments.map(encodeURIComponent).join("/")}`;
     let response;
     try {
@@ -74,10 +76,20 @@ export function appRequest(name, method, suffix, options) {
 
 // PORT: cloud.rs's `Client::draft`: a request on draft `key`; `reuse` lets an edit create a
 // missing draft. Edits take no idempotency key.
-export function draftRequest(name, key, method, suffix, options = {}, reuse = false) {
+export async function draftRequest(name, key, method, suffix, options = {}, reuse = false) {
     const kind = method === "PUT" && suffix[0] === "secrets" ? "secret" : "read";
-    const query = reuse && suffix.length > 0 ? { ...options.query, create_or_reuse: "true" } : options.query;
-    return appRequest(name, method, ["drafts", key, ...suffix], { ...options, kind, query });
+    if (method === "GET" || method === "POST") return appRequest(name, method, ["drafts", key, ...suffix], options);
+    let draft;
+    try {
+        draft = await appRequest(name, "GET", ["drafts", key], options);
+    } catch (error) {
+        if (!/\(HTTP 404\)$/.test(String(error))) throw error;
+        if (method === "DELETE" && suffix.length === 0) return { discarded: false };
+        if (!reuse) throw error;
+        const current = await appRequest(name, "GET", [], options);
+        draft = await appRequest(name, "POST", ["drafts", key], { ...options, body: { parent_revision: appliedRevision(current), reuse: true } });
+    }
+    return appRequest(name, method, ["drafts", key, ...suffix], { ...options, kind, draftId: draft.draft_id });
 }
 
 // The app row, or null when the provisioner has no such app.

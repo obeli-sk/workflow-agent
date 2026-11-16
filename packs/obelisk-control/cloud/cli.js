@@ -12,7 +12,7 @@
 // Like the CLI, JSON goes to stdout and human output to stderr; errors exit 1,
 // usage errors 2.
 import { appRequest, cloudBase, cloudRequest, draftRequest } from "./client.js";
-import { explicitValues, USER_SETS_SECRETS, stageValues } from "./fill.js";
+import { USER_SETS_SECRETS } from "./fill.js";
 import { appConfig, configForApp, configName, validateCloudAppName } from "./policy.js";
 import { draftArg, draftValues, humanOutput, renderSummary } from "./output.js";
 
@@ -134,8 +134,7 @@ async function tokenState() {
     }
 }
 
-const POLICY_COMMANDS = ["status", "stage"];
-const VALUES = ["--env", "--fill", "--fill-non-interactive"];
+const POLICY_COMMANDS = ["status"];
 
 // PORT: args.rs's `parse_draft_key`.
 function draftKey(flags) {
@@ -180,7 +179,6 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         }
         return print(await appRequest(name, "GET", ["events"], { ...options, query: { limit } }), { kind: "events" });
     }
-    if (action === "stage") return stageCommand(name, key, local, rest, flags, fillEnv, options, print);
     if (action === "unstage") {
         allow(flags, ["--draft"]);
         arity(rest, 0);
@@ -189,29 +187,6 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     if (action === "env") return envCommand(name, key, rest, flags, options, print, apply);
     if (action === "secrets") return secretsCommand(name, key, rest, flags, options, print, apply);
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
-}
-
-// PORT: cloud/stage.rs. The shell submits the deployment before this stages the config, so
-// `-d` here is the submitted deployment's ID.
-async function stageCommand(name, key, local, rest, flags, fillEnv, options, print) {
-    allow(flags, ["-a", "--draft", "-d", ...VALUES]);
-    arity(rest, 0);
-    conflicts(flags);
-    if (flags["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
-    const deployment = flags["-d"];
-    if (deployment !== undefined && !/^Dep_[0-9A-HJKMNP-TV-Z]{26}$/.test(deployment)) throw `Invalid deployment ID ${deployment}`;
-    const explicit = explicitValues(flags["--env"] ?? [], fillEnv);
-    let staged = await draftRequest(name, key, "PUT", ["config"], { ...options, toml: local.text }, true);
-    ({ draft: staged } = await stageValues(name, key, staged, explicit, flags["--fill-non-interactive"] ? fillEnv ?? {} : null));
-    if (deployment !== undefined) {
-        staged = await draftRequest(name, key, "PUT", ["deployment"], { ...options, body: { deployment_id: deployment } }, true);
-    }
-    const apply = `obelisk cloud app apply --app ${name}${draftArg(key)}`;
-    const output = print(staged, { kind: "staged", message: "Changes staged.", apply });
-    if (output.stderr !== undefined && draftValues(staged, "missing").length > 0) {
-        output.stderr += `Set env with \`obelisk cloud app env set --app ${name}${draftArg(key)}\`; for secrets, ${USER_SETS_SECRETS}\n`;
-    }
-    return output;
 }
 
 async function envCommand(name, draft, [action, key, value, ...extra], flags, options, print, apply) {
@@ -276,8 +251,4 @@ function readableConfig(appToml, path) {
 // PORT: cloud.rs's `compare_config`: the provisioner diffs `appToml` against staging.
 function compareConfig(name, appToml, options) {
     return appRequest(name, "POST", ["config", "compare"], { ...options, toml: appToml });
-}
-
-function conflicts(flags) {
-    if (flags["--fill"] && flags["--fill-non-interactive"]) throw new UsageError("the argument '--fill' cannot be used with '--fill-non-interactive'");
 }

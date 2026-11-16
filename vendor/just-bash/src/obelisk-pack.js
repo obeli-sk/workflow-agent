@@ -3,7 +3,7 @@
 //
 // `cloud` (host.js's `createCloud`) backs `obelisk cloud ...`:
 // `run(args, stdin, appToml, fillEnv)` runs the provisioner commands,
-// `prepareDeploy`/`finishDeploy` wrap `app deploy`'s upload, and
+// `openDraft`/`draftRequest` stage configuration through identity-fenced activities, and
 // `get(app, path)`/`send(app, method, path, contentType, body)` call the app's
 // own API, returning `{ status, body }`. The app API subcommands (`execution`,
 // `component`, `deployment`, `admin`) are ported here from obelisk's
@@ -21,9 +21,10 @@ import { randomAppName } from "./obelisk-app-names.js";
 import { DEPLOYMENT_TEMPLATE } from "./obelisk-deployment-template.js";
 import { isCasNamespacedDigest } from "./fs.js";
 import { parseToml } from "../../../packs/obelisk-control/cloud/toml.js";
-import { draftArg, endpoints, errorMessage, humanOutput, renderSummary } from "../../../packs/obelisk-control/cloud/output.js";
-import { applyRequest, explicitValues, initialValues, userSuppliedPolicy, USER_SETS_SECRETS } from "../../../packs/obelisk-control/cloud/fill.js";
+import { draftArg, draftChanges, draftValues, endpoints, errorMessage, humanOutput, lifecycleOutcome, renderSummary } from "../../../packs/obelisk-control/cloud/output.js";
+import { applyRequest, explicitValues, initialValues, needsUserSecrets, remainingValues, unsetOptional, userSuppliedPolicy, USER_SETS_SECRETS } from "../../../packs/obelisk-control/cloud/fill.js";
 import { appConfig, configForApp, validateCloudAppName } from "../../../packs/obelisk-control/cloud/policy.js";
+import { appliedRevision } from "../../../packs/obelisk-control/cloud/client.js";
 
 const APP_POLICY_FILE = "app.toml";
 const APP_API_GROUPS = ["execution", "component", "deployment", "admin"];
@@ -147,28 +148,10 @@ function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
     if (opts["--fill"] && opts["--fill-non-interactive"]) throw new UsageError("the argument '--fill' cannot be used with '--fill-non-interactive'");
     if (opts["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
     if (!/^[a-z0-9._-]{1,64}$/.test(opts["--draft"] ?? "default")) throw new UsageError("draft key must be 1-64 characters a-z, 0-9, '.', '_' or '-'");
-    const forwarded = [];
-    let source;
-    let empty = false;
-    let description = null;
-    let configPath = APP_POLICY_FILE;
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        const flag = arg.startsWith("--") ? arg.split("=")[0] : arg;
-        const take = () => {
-            const value = arg.includes("=") && flag !== arg ? arg.slice(flag.length + 1) : args[++i];
-            if (value === undefined) throw new UsageError(`a value is required for '${flag} <${valueName(flag)}>' but none was supplied`);
-            return value;
-        };
-        if (flag === "-d" || flag === "--deployment") source = take();
-        else if (flag === "--empty-deployment") empty = true;
-        else if (flag === "--description") description = take();
-        else {
-            if (flag === "-a" || flag === "--app-config") configPath = args[i + 1] ?? configPath;
-            if (arg.startsWith("--app-config=")) configPath = arg.slice("--app-config=".length);
-            forwarded.push(arg);
-        }
-    }
+    const source = opts["--deployment"];
+    const empty = opts["--empty-deployment"] === true;
+    const description = opts["--description"] ?? null;
+    const configPath = opts["--app-config"] ?? APP_POLICY_FILE;
     if (source !== undefined && empty) throw new UsageError("the argument '--deployment <DEPLOYMENT>' cannot be used with '--empty-deployment'");
     if (source === undefined && !empty && description !== null) throw "`--description` requires `--deployment` or `--empty-deployment`";
     const prepared = source === undefined ? null : prepareManifest(interp, source);
@@ -182,12 +165,9 @@ function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
     if (typeof configured === "string" && configured !== name) {
         throw `${configPath} is for app \`${configured}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${configured}\` or fix \`app_name\``;
     }
-    explicitValues(opts["--env"] ?? [], Object.fromEntries(exportedEnv(interp)));
-    ensureApp(name, cloud, globals, out);
-    if (source === undefined && !empty) {
-        const staged = cloudRun(interp, forwarded, stdin, cloud, globals, rest);
-        return { ...staged, stderr: out.stderr + staged.stderr };
-    }
+    const variables = Object.fromEntries(exportedEnv(interp));
+    const explicit = explicitValues(opts["--env"] ?? [], variables);
+    const current = ensureApp(name, cloud, globals, out);
     const context = {
         interp, out, verbose: globals.verbose,
         api: {
@@ -195,17 +175,42 @@ function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
             send: (method, path, contentType = null, body = null) => cloud.send(name, method, path, contentType, body),
         },
     };
-    out.stderr += "→ obelisk cloud app deployment submit\n";
-    let id;
-    try {
-        id = prepared === null
-            ? submitDeployment(context, null, true, description, null)
-            : submitPrepared(context, prepared, true, description, null);
-    } catch (error) {
-        throw withContext("The deployment was not submitted, nothing was staged", error);
+    let id = null;
+    if (source !== undefined || empty) {
+        out.stderr += "→ obelisk cloud app deployment submit\n";
+        try {
+            id = prepared === null
+                ? submitDeployment(context, null, true, description, null)
+                : submitPrepared(context, prepared, true, description, null);
+        } catch (error) {
+            throw withContext("The deployment was not submitted, nothing was staged", error);
+        }
     }
-    const staged = cloudRun(interp, [...forwarded, "-d", id], stdin, cloud, globals, rest);
-    return { stdout: out.stdout + staged.stdout, stderr: out.stderr + staged.stderr, exitCode: staged.exitCode };
+    const key = opts["--draft"] ?? "default";
+    const opened = cloudValue(cloud.openDraft(name, key, appliedRevision(current), true), globals);
+    let { draft } = stageDraft(name, opened, policy, explicit, opts["--fill-non-interactive"] ? variables : null, cloud, globals);
+    if (id !== null) draft = writeDraft(name, opened, ["deployment"], { deployment_id: id }, cloud, globals);
+    if (globals.json) out.stdout += `${prettyJson(draft)}\n`;
+    else {
+        out.stderr += renderSummary({ kind: "staged", message: "Changes staged.", apply: `obelisk cloud app apply --app ${name}${draftArg(key)}` }, draft);
+        if (draftValues(draft, "missing").length) out.stderr += `Set env with \`obelisk cloud app env set --app ${name}${draftArg(key)}\`; for secrets, ${USER_SETS_SECRETS}\n`;
+    }
+    return { ...out, exitCode: 0 };
+}
+
+function writeDraft(app, draft, section, value, cloud, globals) {
+    const toml = section[0] === "config";
+    return cloudValue(cloud.draftRequest(app, draft.key, draft.draft_id, "PUT", section, toml ? "application/toml" : "application/json", toml ? value : JSON.stringify(value)), globals);
+}
+
+function stageDraft(app, draft, policy, explicit, fillEnv, cloud, globals, log = () => {}) {
+    const target = draft;
+    draft = writeDraft(app, target, ["config"], policy, cloud, globals);
+    for (const { name, value } of explicit) draft = writeDraft(app, target, ["env", name], { value }, cloud, globals);
+    if (fillEnv !== null) log("→ obelisk cloud app fill");
+    const { report, pending } = remainingValues(draft, explicit, fillEnv);
+    for (const { name, value } of pending) draft = writeDraft(app, target, ["env", name], { value }, cloud, globals);
+    return { draft, filled: { declarations: report } };
 }
 
 function cloudValue(response, globals, optional = false, commandId = null) {
@@ -233,8 +238,9 @@ function ensureApp(name, cloud, globals, out, beforeCreate = () => {}) {
     if (existing === null) {
         beforeCreate();
         out.stderr += `App ${name} does not exist; creating it\n→ obelisk cloud app new\n`;
-        createApp(name, { app_toml: `app_name = ${JSON.stringify(name)}\n` }, `E_${ulid()}`, cloud, globals);
+        return createApp(name, { app_toml: `app_name = ${JSON.stringify(name)}\n` }, `E_${ulid()}`, cloud, globals);
     }
+    return existing;
 }
 
 function cloudNew(interp, args, globals, cloud, out) {
@@ -415,10 +421,12 @@ function cloudLifecycle(interp, action, args, globals, cloud, out) {
         if (accepted !== null) return print(accepted);
     }
     let body = null;
+    let draftId = null;
     const notes = [];
     if (action === "apply") {
         const current = value(cloud.read(["v1", "apps", name]));
         const draft = opts["--reapply"] ? null : value(cloud.read(["v1", "apps", name, "drafts", key]), true);
+        draftId = draft?.draft_id ?? null;
         if (draft === null && !opts["--reapply"]) {
             throw `Nothing staged in draft \`${key}\`; stage changes with \`obelisk cloud app stage\` or \`env set\`${draftArg(key)}, or reconcile the applied revision with \`--reapply\``;
         }
@@ -427,17 +435,14 @@ function cloudLifecycle(interp, action, args, globals, cloud, out) {
     const [method, path] = { apply: ["POST", ["apply"]], enable: ["POST", ["enable"]], disable: ["POST", ["disable"]], delete: ["DELETE", []] }[action];
     let response;
     try {
-        response = cloud.command(name, method, path, body, id);
+        response = cloud.command(name, method, path, body, id, draftId);
     } catch (error) {
         throw withContext(`Cloud request failed; retry the same command with --command-id ${id}`, error);
     }
     print(value(response, false, id), notes.join(""));
 }
 
-// PORT: obelisk's src/command/cloud/deploy.rs. The shell creates a missing app;
-// `prepareDeploy` stages the config and values into a draft, the
-// deployment is uploaded to the app's API here, then `finishDeploy` stages
-// it in the draft and applies.
+// PORT: obelisk's src/command/cloud/deploy.rs, with each draft mutation recorded separately.
 function cloudDeploy(interp, args, globals, cloud, out) {
     const { opts } = parseOptions(args, {
         "-a": "--app-config", "--app-config": true, "-d": "--deployment", "--deployment": true,
@@ -471,22 +476,14 @@ function cloudDeploy(interp, args, globals, cloud, out) {
         : prepareManifest(interp, opts["--deployment"] ?? "deployment.toml");
     const fill = opts["--fill-non-interactive"] === true;
     const env = opts["--env"] ?? [];
-    const activity = (call) => {
-        try {
-            return call();
-        } catch (error) {
-            out.stderr += `${message(error)}\n`;
-            throw ALREADY_PRINTED;
-        }
-    };
     const exported = readEnv(interp, fill, env, policy);
     const config = appConfig(policy, configPath);
     const variables = Object.fromEntries(exported);
     const explicit = explicitValues(env, variables);
     out.stderr += `Deploying ${name}\n`;
-    ensureApp(name, cloud, globals, out, () => initialValues(name, userSuppliedPolicy(config), explicit, fill ? variables : null));
-    const target = activity(() => cloud.prepareDeploy(name, policy, draft, env, fill, exported));
-    out.stderr += `${target.log}→ obelisk cloud app deployment submit\n`;
+    const current = ensureApp(name, cloud, globals, out, () => initialValues(name, userSuppliedPolicy(config), explicit, fill ? variables : null));
+    out.stderr += `→ obelisk cloud app stage --draft ${draft}\n`;
+    const opened = cloudValue(cloud.openDraft(name, draft, appliedRevision(current), false), globals);
     const context = {
         interp, out, verbose: globals.verbose,
         api: {
@@ -495,18 +492,41 @@ function cloudDeploy(interp, args, globals, cloud, out) {
         },
     };
     let id;
+    let staged;
     try {
+        let filled;
+        ({ draft: staged, filled } = stageDraft(name, opened, policy, explicit, fill ? variables : null, cloud, globals, (line) => { out.stderr += `${line}\n`; }));
+        const missing = draftValues(staged, "missing");
+        const secrets = missing.filter((value) => value.startsWith("secret ")).map((value) => value.slice(7));
+        if (secrets.length) throw needsUserSecrets(name, secrets);
+        if (missing.length) throw `Missing values: ${missing.join(", ")}. Pass them with \`--env NAME[=VALUE]\`, or retry with \`--fill-non-interactive\``;
+        const unset = unsetOptional(filled);
+        if (unset.length) out.stderr += `Optional configuration not set: ${unset.join(", ")}. Pass them with \`--env\`, or deploy with \`--fill-non-interactive\`.\n`;
+        out.stderr += "→ obelisk cloud app deployment submit\n";
         id = submitPrepared(context, prepared, true, opts["--description"] ?? null, null);
+        staged = writeDraft(name, opened, ["deployment"], { deployment_id: id }, cloud, globals);
     } catch (error) {
-        // Best effort, like the CLI.
-        try { cloud.run(["app", "unstage", "--app", name, "--draft", draft], "", null, null); } catch { /* ignored */ }
+        try { cloud.draftRequest(name, draft, opened.draft_id, "DELETE", [], null, null); } catch { /* best effort after retries end */ }
         throw withContext(`Deployment staging failed; inspect \`obelisk cloud app status --app ${name}\` and retry deploy`, error);
     }
-    // Chosen here so that retrying the apply after it redeploys this app reuses the Idempotency-Key.
+    try {
+        const peers = cloudValue(cloud.read(["v1", "apps", name, "drafts"]), globals);
+        for (const other of peers?.drafts ?? []) {
+            if (other.key !== draft && other.summary?.changed) out.stderr += `Draft \`${other.key}\` (${draftChanges(other)}) will be discarded when this deploy is applied\n`;
+        }
+    } catch { /* warning only */ }
+    const body = JSON.stringify(applyRequest(name, draft, staged, current, false, (line) => { out.stderr += `${line}\n`; }));
     const commandId = `E_${ulid()}`;
-    const deployed = activity(() => cloud.finishDeploy(name, id, draft, commandId));
-    out.stderr += deployed.log;
-    const row = deployed.app;
+    out.stderr += `→ obelisk cloud app apply --draft ${draft}\n`;
+    let response;
+    try {
+        response = cloud.command(name, "POST", ["apply"], body, commandId, opened.draft_id);
+    } catch (error) {
+        throw withContext(`Cloud request failed; retry \`obelisk cloud app apply --app ${name} --command-id ${commandId}\``, error);
+    }
+    const row = cloudValue(response, globals, false, commandId);
+    out.stderr += `${lifecycleOutcome(row)}\n`;
+    if (row?.status !== "running") throw `App is ${JSON.stringify(row?.status ?? null)}; inspect it with \`obelisk cloud app status --app ${name}\``;
     if (globals.json) {
         out.stdout += `${prettyJson({ app: row, deployment_id: id, outcomes: row.outcome === undefined ? [] : [row.outcome] })}\n`;
     } else {

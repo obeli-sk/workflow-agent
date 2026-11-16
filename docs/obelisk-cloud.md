@@ -35,142 +35,109 @@ left out and a warning is shown instead.
 
 ## Pieces
 
-The `obelisk-agent:tools/cloud` interface has these activities
-(`packs/obelisk-control/cloud/`). `create`, `upload`, `read`, `tenant-read`, `command` and
-`finish-deploy` are retried; the rest have `max_retries = 0`:
+The shell implements `stage` and `deploy` as workflow orchestration over separate
+`obelisk-agent:tools/cloud` activities. Each completed activity is recorded, so a
+retry resumes the failed request without repeating earlier successful requests.
 
-- `run` (`cli.js`) runs the provisioner commands: `auth status`, `app list`,
-  `app status|events|stage|unstage`, `env ...` and `secrets list|unset`.
-  No secret value passes through the agent: there is no `secrets set` and no
-  `--secret`, `--fill-non-interactive` fills only env, and `new` (or `deploy`)
-  of an app lacking a required secret fails with guidance to `stage` it and let
-  the user set the secrets from their own CLI or the dashboard. Edits
-  go into a named draft (`--draft`, default `default`) through
-  `/v1/apps/<app>/drafts/<key>/...` with `create_or_reuse=true`. With `-d ID`, `stage` records an
-  already submitted deployment in the draft. It returns
-  stdout, stderr and an exit code, and its errors use the real CLI's wording.
-- `create` (`create.js`) sends one `POST /v1/apps` with an immutable JSON body
-  and Idempotency-Key chosen in the workflow. Transport failures, body-read
-  failures and HTTP 5xx throw so Obelisk retries the same request; other HTTP
-  responses return to the shell for formatting. The provisioner validates the
-  request fingerprint, joins accepted creation, and returns its recorded result.
-  All app creation, including bare apps needed by stage and deploy, uses this activity.
-- `read` (`read.js`) sends one GET to the provisioner and returns the status
-  and body. `command` (`command.js`) sends one `app apply|enable|disable|delete`
-  request with the body and Idempotency-Key the shell chose, so a retry joins
-  the command or gets its recorded result. Both return every response below
-  500; only a failed request or a server error is an error and gets retried.
-- `prepare-deploy` (`deploy.js`) and `finish-deploy` (`finish-deploy.js`)
-  run the provisioner part of `app deploy`, in the real CLI's order:
-  1. `prepare-deploy` exclusively creates the deploy's draft of an existing
-     app and stages the config, `--env` values and, with
-     `--fill-non-interactive`, the remaining declared env into it, then
-     checks that it has every required value. On failure it discards the
-     draft. The shell first checks whether the app exists, validates required
-     values before creating a missing app, and creates it bare through `create`.
-     Its configuration and values are then staged in the deploy draft.
-  2. The shell uploads the deployment to the app's API, without enqueueing or switching it.
-  3. `finish-deploy` applies the draft (or re-applies the revision of a new
-     app) with the uploaded deployment's ID and requires the app to be running.
-     A draft left by a failed apply is discarded by the next successful one.
-     The shell passes the
-     apply's Idempotency-Key, so `finish-deploy` is retried: deploying the app
-     the shell runs in interrupts it, and the retry gets the apply's result.
-- `upload` (`upload.js`) sends one PUT to `/v1/files/{digest}` or
-  `/v1/deployments/{id}` on the app API. Each file the server requests is a
-  separate activity; manifest submissions and resubmissions are separate
-  activities too. The workflow captures the digest or deployment ID and body
-  before invoking the activity, so a transport failure or HTTP 5xx retries the
-  same upload. File contents are addressed by digest and the server accepts
-  the same deployment content under the same ID. Other responses, including
-  409 missing-file reports, return to the workflow to drive the upload loop.
-- `tenant` (`tenant.js`) sends other POST, PUT or DELETE requests to
-  `https://api--<app>.<domain>` with the cloud token and returns the status
-  and body, whatever the status. It sends no `If-Match`, so a deployment
-  switch gets `428`; deployments are activated by the provisioner's apply.
-- `tenant-read` (`tenant-read.js`) does the same for GET and is retried on
-  transient errors.
+- `create` sends app creation with a workflow-generated command ID and captured
+  JSON body. Transport failures and HTTP 5xx retry the same command.
+- `draft-open` accepts the workflow's draft label and captured applied revision.
+  It recovers an existing draft after a lost creation response. Stage accepts an
+  existing `default` (or `--draft`) and preserves its original parent and ID;
+  deploy generates a unique `deploy-<ulid>` label and requires its captured parent.
+  New drafts are opened with `{parent_revision, reuse:true}`; a changed applied
+  revision fails rather than silently rebasing the draft.
+- `draft-request` sends one GET, PUT or DELETE on the captured draft. Every call
+  carries `If-Match: "draft-<id>"`. Config, each public value, the deployment ID
+  and cleanup are separate retryable activities. Edits never implicitly create
+  a draft. The ID stays fixed even if another caller discards and recreates its
+  label; the replacement produces 412. Conditional discard also pins the ID,
+  and repeating it while the draft is absent succeeds without deleting a replacement.
+- `upload` sends one content-addressed file PUT or fixed-ID deployment PUT.
+  Each file the server requests is a separate activity. Missing-file responses
+  return to the workflow upload loop; transport failures and HTTP 5xx retry the
+  same digest or deployment ID and body.
+- `command` sends one lifecycle request with the workflow's command ID and body.
+  Draft apply also carries the captured draft's `If-Match`. The provisioner
+  joins an accepted command or returns its recorded result, even when apply has
+  consumed the draft or restarted the calling app.
+- `read` and `tenant-read` make provisioner and app API reads. `tenant` sends
+  other app API mutations once; execution controls and admin operations do not
+  gain upload retries.
+- `run` handles `auth status`, app inspection, `env ...`, `secrets list|unset`
+  and `unstage`. It keeps `max_retries = 0` and returns shell output and an exit
+  code. Draft mutations resolve an ID and send `If-Match` before editing or
+  discarding; a missing draft can be opened explicitly before an env edit.
 
-In the shell (`vendor/just-bash/src/obelisk-pack.js`), `obelisk cloud` commands
-are handled as follows:
+No secret value passes through the shell. There is no `secrets set` or `--secret`.
+`--fill-non-interactive` fills only declared public env; bare `--env NAME` reads
+only the named exported variable. Required secrets must be set by the user from
+their CLI or dashboard before deployment can proceed.
 
-- `cloud app execution|component|deployment|admin ... [--app NAME]` is ported
-  from obelisk's `src/command/{execution,component,deployment,admin}.rs`. It
-  sends the same requests through `tenant`/`tenant-read`
-  (`createCloud` in `workflow-js/src/host.js`) and prints the same output:
-  human output on stderr, values and JSON on stdout. Errors print
-  `Error: ...` and exit 1; usage errors exit 2.
-- `cloud app deploy [-a app.toml] [-d deployment.toml | --empty-deployment] [--env NAME[=VALUE]]...
-  [--fill-non-interactive]` creates a missing app through `create`, then calls `prepare-deploy` with a
-  generated `deploy-<ulid>` draft, then uploads the deployment against
-  the app; a failed upload discards the draft through `run`'s `unstage`. The submit uploads only the files the server asks for and reuses the
-  active deployment when nothing changed. Last, it calls `finish-deploy` with
-  the deployment ID.
-- `cloud app stage [-a app.toml] [-d deployment.toml | --empty-deployment]
-  [--description TEXT] [--env ...] [--draft KEY]` is ported from
-  obelisk's `src/command/cloud/stage.rs`. The shell creates a missing app bare
-  through `create`. With a deployment, it submits the deployment to the app's
-  API, then calls `run` once to stage the config, values and deployment ID.
-  Without a deployment, `run` stages only config and values. It never applies.
-- `cloud app new [--command-id ID]` validates its policy and initial public
-  values in the workflow, then calls `create` with the captured JSON body and
-  a generated command ID. With an explicit ID it first reads
-  `GET /v1/commands/ID`, recovering an accepted result before rebuilding inputs
-  from files or environment that might have changed. Exhausted transport
-  retries report that recovery command, including for implicit bare creation.
-- `cloud app deployment enqueue` and `cloud app deployment apply` are rejected
-  before any API request, with guidance to use `cloud app deploy` or `cloud app apply`.
-  Deploy uploads local deployment.toml changes and applies that deployment's ID.
-  Apply uses the currently active deployment with staged configuration and does
-  not upload local deployment.toml changes.
-- `cloud app apply|enable|disable|delete [--command-id ID]` is ported from
-  obelisk's `src/command/cloud.rs`, in the shell. It generates the command ID
-  unless `--command-id` is given, in which case it first asks
-  `GET /v1/commands/ID` and reports a command the provisioner already accepted.
-  `apply` then reads the app row and the draft through `read` and the active
-  deployment through `tenant-read` unless the draft has a staged deployment, and builds the request: the draft
-  (`--draft`, default `default`) or, with `--reapply`, the applied revision.
-  Last, `command` sends it. When its retries run out, the error names the
-  command ID to retry with.
-- Everything else goes to `run` with the app policy's text: the `-a` file,
-  else `./app.toml`. A bare
-  `--env NAME` reads the exported variable, so only those
-  variables are passed along; with `--fill-non-interactive`, also the
-  exported variables that app.toml declares under `[public_env]`. No other
-  variable, so no secret value, leaves the shell.
+## Stage and deploy
 
-`--json` and `--verbose` are accepted anywhere; `--app` only after the `cloud app`
-subcommand, and not by `app list`. The app is `--app`, else an exported `OBELISK_APP_NAME`, else `app_name` in `./app.toml`. As in the
-real CLI, an app config naming a different app is an error when passed with `-a`
-or required (`stage`, `deploy`), and a discovered `./app.toml` is ignored by the
-other commands.
+`cloud app stage [-a app.toml] [-d deployment.toml | --empty-deployment]
+[--description TEXT] [--env NAME[=VALUE]]... [--fill-non-interactive] [--draft KEY]`
+creates a missing app bare, submits an optional deployment first, then opens or
+reuses the named draft and stages config, values and the submitted deployment ID.
+A failed upload leaves the draft untouched. Stage permits missing values so the
+user can fill them later, and never applies. Without `-d` or `--empty-deployment`,
+the draft keeps its already-staged deployment, matching the Obelisk CLI.
+
+`cloud app deploy [-a app.toml] [-d deployment.toml | --empty-deployment]
+[--env NAME[=VALUE]]... [--fill-non-interactive]` generates its unique draft label
+in the workflow, captures the applied revision, opens the draft, stages config
+and values, and checks required values before uploading. It then uploads, stages
+the deployment ID, and applies through `command`. Cleanup happens only after a
+request exhausts its retries or a permanent preparation error occurs, and uses
+the captured draft ID. Failed applies leave their draft for inspection.
+
+The provisioner allocates `draft_id` with SQLite `AUTOINCREMENT`. Unstage deletes
+the row; reopening the same label gets a new, never-reused ID. `If-Match` pins
+identity, not the edit version, so shared edits of the same stage draft remain
+possible. Parent revision checks and apply's atomic draft capture protect against
+applying staging based on a superseded configuration.
+
+These flows require the provisioner version supporting draft identity
+preconditions, reusable draft creation and its explicit parent revision.
+
+## Other commands
+
+`cloud app new [--command-id ID]` captures its initial public values in the
+workflow and uses `create`. With an explicit ID, it first reads
+`GET /v1/commands/ID`, recovering a result before rebuilding inputs from files
+or environment that might have changed.
+
+`cloud app apply|enable|disable|delete [--command-id ID]` builds its request in
+the workflow and uses `command`. Apply reads the selected draft (default
+`default`) and pins its ID, or uses the applied revision with `--reapply`.
+An explicit command ID first reads the accepted command's result. Exhausted
+transport retries report a recovery command with the original ID.
+
+`cloud app execution|component|deployment|admin ... [--app NAME]` uses the app
+API through `tenant-read`, `upload` or `tenant`. Deployment enqueue and switch
+are rejected with guidance to use `cloud app deploy` or `cloud app apply`.
+Pull writes app.toml, deployment.toml and lazily fetched deployment files.
+
+`--json` and `--verbose` are accepted anywhere. `--app` follows the app subcommand
+and is rejected by `app list`. Selection uses `--app`, then exported
+`OBELISK_APP_NAME`, then `app_name` in ./app.toml. An explicit or required config
+must name the selected app; a mismatching optional discovered config is ignored.
 
 ## Retry audit (2026-11-16)
 
-`cloud.run` keeps `max_retries = 0`. Its remaining operations have different
-recovery properties; passing a command ID to the whole activity would not make
-them collectively safe. The draft webhook does not read `Idempotency-Key`, and
-its OpenAPI operations are marked as non-command endpoints.
+Stage and deploy no longer run as compound activities. Draft opening, each edit,
+each upload and apply have independent retries with captured inputs and identity.
+The draft protocol does not cache original edit responses: a repeated PUT can
+return `changed:false` after the original returned `changed:true`, while restoring
+the same desired contents in the same draft. A replaced draft fails the identity
+precondition. Command ID deduplication remains responsible for creation and apply.
 
-| Operations | Requests | Retry assessment |
-|---|---|---|
-| `auth status`, `app list`, `app events`, `app env list`, `app secrets list` | GET | Safe to repeat as fresh reads. A future extraction can use retryable read activities; today `run` converts failures to exit codes, and `auth status` reports token lookup failures as unknown. |
-| `app status` | GET status/drafts, POST config comparison | Read-only, including comparison. Safe as fresh reads; a comparison failure is intentionally shown in the status output. Responses can reflect newer state rather than an earlier snapshot. |
-| `app stage` | PUT config, zero or more PUT env, optional PUT deployment | Multiple commits can partially succeed. No durable aggregate result, revision precondition or draft identity binds a retry. Keep automatic retries disabled. |
-| `app env set/unset`, `app secrets unset` | PUT/DELETE draft values with `create_or_reuse=true` | Repeating against an unchanged draft can restore the same desired value, but can overwrite another edit or recreate a draft after apply/discard. No original response can be recovered by command ID. Keep retries disabled. |
-| `app unstage` | DELETE draft by label | A second call changes `discarded:true` to `false`, or deletes a replacement draft opened under the same label. Keep retries disabled. |
-
-`prepare-deploy` also stays non-retryable: its exclusive draft POST returns 409
-if the first response was lost, and later failure cleanup can discard a partially
-staged draft. App creation has been removed from it. Safely retrying draft
-mutations needs provisioner support for a stable draft identity and revision
-preconditions, or durable per-request outcomes. HTTP method alone is insufficient.
-
-`app new` and lifecycle requests already have the required durable command
-protocol. File uploads and deployment submissions are retryable through `upload`:
-their digest or deployment ID and request body are workflow inputs and stay fixed
-across retries. Other app API mutations through `tenant` remain outside this audit
-and retain `max_retries = 0`.
+The remaining `run` inspection commands are safe to repeat as fresh reads, but
+still convert failures into shell exit codes. `auth status` reports failed token
+lookups as unknown, and `app status` reports config-comparison failures in its
+output. A future extraction can give those reads automatic activity retries.
+Other app API mutations retain `max_retries = 0`.
 
 ## Differences from the real CLI
 
