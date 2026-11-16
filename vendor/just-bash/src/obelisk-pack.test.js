@@ -320,6 +320,26 @@ test("cloud app stage creates a missing app bare, submits, then edits one captur
     }
 });
 
+test("cloud app stage stages an existing deployment ID without app.toml", () => {
+    const i = interp("/workspace/empty");
+    const id = "Dep_01M7K4M11EH34V1WVJYFZ4JSS2";
+    const cloud = fakeCloud({ "GET /api/v1/apps/demo": ok({ applied_revision: 1, status: "running" }) });
+    const out = run(i, `cloud app stage --app demo -d ${id}`, cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    // Nothing is submitted, and the draft keeps its config.
+    assert.ok(!cloud.calls.some((call) => call.path.startsWith("/v1/deployments/")));
+    assert.deepEqual(cloud.draftRequests.map(({ section }) => section), [["deployment"]]);
+    assert.equal(JSON.parse(cloud.draftRequests[0].body).deployment_id, id);
+
+    // A missing app has no deployment to stage; nothing at all is refused before any request.
+    const missing = fakeCloud();
+    assert.match(run(i, `cloud app stage --app demo -d ${id}`, missing).stderr, /App demo does not exist, so it has no deployment to stage/);
+    assert.equal(missing.creates.length, 0);
+    assert.match(run(i, "cloud app stage --app demo", fakeCloud()).stderr, /Nothing to stage/);
+    assert.notEqual(run(i, `cloud app stage --app demo -d ${id} --description x`, fakeCloud()).exitCode, 0);
+    assert.match(run(i, "cloud app stage --app demo -a missing.toml", fakeCloud()).stderr, /Cannot read app config missing\.toml/);
+});
+
 test("stage reuses default's captured identity and parent without recreating it", () => {
     const i = interp();
     i.vfs.writeFile("/workspace/app.toml", 'app_name = "demo"\n');

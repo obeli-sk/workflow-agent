@@ -77,13 +77,15 @@ their CLI or dashboard before deployment can proceed.
 
 ## Stage and deploy
 
-`cloud app stage [-a app.toml] [-d deployment.toml | --empty-deployment]
+`cloud app stage [-a app.toml] [-d deployment.toml|Dep_ID | --empty-deployment]
 [--description TEXT] [--env NAME[=VALUE]]... [--fill-non-interactive] [--draft KEY]`
 creates a missing app bare, submits an optional deployment first, then opens or
 reuses the named draft and stages config, values and the submitted deployment ID.
-A failed upload leaves the draft untouched. Stage permits missing values so the
-user can fill them later, and never applies. Without `-d` or `--empty-deployment`,
-the draft keeps its already-staged deployment, matching the Obelisk CLI.
+An existing `Dep_` ID is staged without a submission, and without app.toml the
+draft keeps its config. A failed upload leaves the draft untouched. Stage permits
+missing values so the user can fill them later, and never applies. Without `-d`
+or `--empty-deployment`, the draft keeps its already-staged deployment, matching
+the Obelisk CLI.
 
 `cloud app deploy [-a app.toml] [-d deployment.toml | --empty-deployment]
 [--env NAME[=VALUE]]... [--fill-non-interactive]` generates its unique draft label

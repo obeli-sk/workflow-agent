@@ -137,8 +137,9 @@ function executeCloud(interp, args, stdin, cloud, out) {
 }
 
 // PORT: obelisk's src/command/cloud/stage.rs. A missing app is created bare so its API can
-// receive the deployment, which is submitted here first; `cloud.run` then stages the config,
-// values and the deployment's ID.
+// receive the deployment, which is submitted here first; then the config, values and the
+// deployment's ID are staged. An existing `Dep_` ID is staged as is, and without app.toml
+// the draft's config is kept.
 function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
     const { opts } = parseOptions(rest.slice(2), {
         "-a": "--app-config", "--app-config": true, "-d": "--deployment", "--deployment": true,
@@ -153,12 +154,12 @@ function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
     const description = opts["--description"] ?? null;
     const configPath = opts["--app-config"] ?? APP_POLICY_FILE;
     if (source !== undefined && empty) throw new UsageError("the argument '--deployment <DEPLOYMENT>' cannot be used with '--empty-deployment'");
-    if (source === undefined && !empty && description !== null) throw "`--description` requires `--deployment` or `--empty-deployment`";
-    const prepared = source === undefined ? null : prepareManifest(interp, source);
+    const existing = source !== undefined && DEPLOYMENT_ID.test(source);
+    if ((source === undefined || existing) && !empty && description !== null) throw "`--description` requires a deployment manifest or `--empty-deployment`";
+    const prepared = source === undefined || existing ? null : prepareManifest(interp, source);
     const policy = readPolicy(interp, configPath);
-    if (policy === null) throw `Cannot read app config ${configPath}: No such file or directory`;
-    const config = appConfig(policy, configPath);
-    const configured = config.appName;
+    if (policy === null && opts["--app-config"] !== undefined) throw `Cannot read app config ${configPath}: No such file or directory`;
+    const configured = policy === null ? null : appConfig(policy, configPath).appName;
     const name = globals.app ?? exportedVar(interp, "OBELISK_APP_NAME") ?? configured;
     if (typeof name !== "string") throw "Set app_name in ./app.toml, --app or OBELISK_APP_NAME";
     // PORT: cloud.rs's `config_for_app`, checked before the app is created.
@@ -167,7 +168,12 @@ function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
     }
     const variables = Object.fromEntries(exportedEnv(interp));
     const explicit = explicitValues(opts["--env"] ?? [], variables);
-    const current = ensureApp(name, cloud, globals, out);
+    if (policy === null && source === undefined && !empty && !opts["--fill-non-interactive"] && explicit.length === 0) {
+        throw "Nothing to stage: ./app.toml not found; pass --app-config, --deployment or values";
+    }
+    const current = ensureApp(name, cloud, globals, out, () => {
+        if (existing) throw `App ${name} does not exist, so it has no deployment to stage`;
+    });
     const context = {
         interp, out, verbose: globals.verbose,
         api: {
@@ -175,8 +181,8 @@ function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
             send: (method, path, contentType = null, body = null) => cloud.send(name, method, path, contentType, body),
         },
     };
-    let id = null;
-    if (source !== undefined || empty) {
+    let id = existing ? source : null;
+    if (prepared !== null || empty) {
         out.stderr += "→ obelisk cloud app deployment submit\n";
         try {
             id = prepared === null
@@ -207,7 +213,7 @@ function writeDraft(app, draft, section, value, cloud, globals) {
 
 function stageDraft(app, draft, policy, explicit, fillEnv, cloud, globals, log = () => {}) {
     const target = draft;
-    draft = writeDraft(app, target, ["config"], policy, cloud, globals);
+    if (policy !== null) draft = writeDraft(app, target, ["config"], policy, cloud, globals);
     for (const { name, value } of explicit) draft = writeDraft(app, target, ["env", name], { value }, cloud, globals);
     if (fillEnv !== null) log("→ obelisk cloud app fill");
     const { report, pending } = remainingValues(draft, explicit, fillEnv);
