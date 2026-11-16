@@ -56,7 +56,7 @@ async function loadRenderer(globals = {}) {
     const open = html.indexOf(">", start) + 1;
     const end = html.indexOf("</script>", open);
     const code = html.slice(open, end)
-        + "\n;globalThis.__render = { state, buildCachedTurns, groupTurns, renderTurnGroup, renderDetail, renderComposer, composerMode, sendComposer, stopAgent, toggleSysprompt, ensureWatch, document };";
+        + "\n;globalThis.__render = { state, buildCachedTurns, groupTurns, renderTurnGroup, renderDetail, renderComposer, composerMode, sendComposer, stopAgent, toggleSysprompt, ensureWatch, captureCallScroll, restoreCallScroll, document };";
     const sandboxObj = { ...sandbox(), ...globals };
     const ctx = vm.createContext(sandboxObj);
     vm.runInContext(code, ctx);
@@ -686,4 +686,20 @@ test("one watch stream per tab drives detail refreshes and closes on end", async
     r.ensureWatch();
     assert.equal(FakeEventSource.instances.length, 2);
     assert.equal(FakeEventSource.instances[1].url, "/api/watch?run=E_1&cursor=5&ids=E_2%2CE_4");
+});
+
+test("call output scroll positions survive a transcript rebuild", async () => {
+    const r = await loadRenderer();
+    const pre = (scrollTop) => ({ scrollTop, scrollLeft: 0 });
+    const pane = (cards) => ({
+        querySelectorAll: () => cards.map(([key, pres]) => ({ dataset: { key }, querySelectorAll: () => pres })),
+    });
+    const before = pane([["E_a", [pre(0), pre(120)]], ["E_b", [pre(0)]]]);
+    const saved = r.captureCallScroll(before);
+    const rebuilt = [pre(0), pre(0)];
+    const other = pre(0);
+    r.restoreCallScroll(pane([["E_a", rebuilt], ["E_b", [other]]]), saved);
+    assert.equal(rebuilt[1].scrollTop, 120);
+    assert.equal(rebuilt[0].scrollTop, 0);
+    assert.equal(other.scrollTop, 0);
 });

@@ -1028,13 +1028,14 @@ function renderDetail(forceScroll = false) {
     return;
   }
 
-  // Capture which call cards are currently open, and the logs pane's scroll
-  // position, so we can restore both across the innerHTML rebuild below.
+  // Capture which call cards are currently open, and the logs pane's and call
+  // outputs' scroll positions, so we can restore them across the rebuild below.
   const openKeys = new Set();
   for (const el of main.querySelectorAll('details.call[open]')) {
     if (el.dataset.key) openKeys.add(el.dataset.key);
   }
   const savedLogsScroll = captureLogsScroll();
+  const savedCallScroll = captureCallScroll(main);
 
   state.lastSig = sig;
 
@@ -1108,6 +1109,7 @@ function renderDetail(forceScroll = false) {
   for (const el of main.querySelectorAll('details.call')) {
     if (el.dataset.key && openKeys.has(el.dataset.key)) el.open = true;
   }
+  restoreCallScroll(main, savedCallScroll);
 
   for (const f of main.querySelectorAll('form.ask')) {
     f.addEventListener('submit', (ev) => {
@@ -1299,6 +1301,31 @@ function restoreLogsScroll(saved) {
   const pre = document.getElementById('logs-slot')?.querySelector('pre');
   if (!pre) return;
   pre.scrollTop = saved.atBottom ? pre.scrollHeight : saved.scrollTop;
+}
+
+// Call outputs are <pre> boxes with their own scrollbars, keyed by the call
+// card and the box's position in it.
+function callScrollBoxes(main) {
+  const boxes = new Map();
+  for (const card of main.querySelectorAll('details.call')) {
+    if (!card.dataset.key) continue;
+    card.querySelectorAll('pre').forEach((pre, i) => boxes.set(card.dataset.key + '/' + i, pre));
+  }
+  return boxes;
+}
+function captureCallScroll(main) {
+  const saved = new Map();
+  for (const [key, pre] of callScrollBoxes(main)) {
+    if (pre.scrollTop > 0 || pre.scrollLeft > 0) saved.set(key, [pre.scrollTop, pre.scrollLeft]);
+  }
+  return saved;
+}
+function restoreCallScroll(main, saved) {
+  if (saved.size === 0) return;
+  for (const [key, pre] of callScrollBoxes(main)) {
+    const position = saved.get(key);
+    if (position) [pre.scrollTop, pre.scrollLeft] = position;
+  }
 }
 
 function focusComposer() {
