@@ -457,6 +457,7 @@ name = "cloud_run"
 ffqn = "obelisk-agent:tools/cloud.run"
 wit = "wit"
 max_retries = 0
+exec.lock_expiry.minutes = 1
 location = "packs/obelisk-control/cloud/cli.js"
 env_vars = [
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
