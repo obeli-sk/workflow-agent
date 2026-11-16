@@ -561,6 +561,19 @@ export class Vfs {
             this.executable.delete(fromResolved);
             this.executable.add(toResolved);
         }
+        // The digest follows the bytes: a replaced target must not keep the old file's digest.
+        const fromPrefix = `${fromResolved}/`;
+        const toPrefix = `${toResolved}/`;
+        const moved = [];
+        for (const [path, digest] of [...this.contentDigestCache]) {
+            if (path === fromResolved || path.startsWith(fromPrefix)) {
+                moved.push([toResolved + path.slice(fromResolved.length), digest]);
+                this.contentDigestCache.delete(path);
+            } else if (path === toResolved || path.startsWith(toPrefix)) {
+                this.contentDigestCache.delete(path);
+            }
+        }
+        for (const [path, digest] of moved) this.contentDigestCache.set(path, digest);
     }
 
     // Copy a single file from `from` to `to`. A lazily-mounted, unmodified
