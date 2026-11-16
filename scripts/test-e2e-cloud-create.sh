@@ -24,13 +24,14 @@ createServer(async (request, response) => {
     } else if (request.method === 'GET' && request.url === '/api/v1/apps/demo/drafts/default') {
         if (draft) response.end(JSON.stringify(draft));
         else response.writeHead(404).end('{}');
-    } else if (request.method === 'POST' && request.url === '/api/v1/apps/demo/drafts/default') {
+    } else if (request.method === 'PUT' && request.url === '/api/v1/apps/demo/drafts/default') {
         let body = '';
         for await (const part of request) body += part;
-        assert.deepEqual(JSON.parse(body), { parent_revision: 7, reuse: true });
+        assert.deepEqual(JSON.parse(body), { parent_revision: 7 });
         draftAttempts.open++;
-        draft = { draft_id: 42, key: 'default', parent_revision: 7, revision: 8, env: {}, values: {}, summary: { changed: true } };
-        request.socket.destroy();
+        draft ??= { draft_id: 42, key: 'default', parent_revision: 7, revision: 8, env: {}, values: {}, summary: { changed: true } };
+        if (draftAttempts.open === 1) request.socket.destroy();
+        else response.end(JSON.stringify(draft));
     } else if (request.method === 'PUT' && request.url.startsWith('/api/v1/apps/demo/drafts/default/')) {
         assert.equal(request.headers['if-match'], '"draft-42"');
         let body = '';
@@ -92,5 +93,5 @@ params="$(jq -cn --arg script "$script" '["$ " + $script, null, null, null, null
 e2e_wait_until e2e_opened_shell_done http://127.0.0.1:28191 "$session_id"
 node scripts/e2e-json.js check-shell-script "$script" <<<"$PROJECTION"
 node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION" | jq -e '.draft_id == 42 and .env.MODE == "prod" and .parent_revision == 7'
-curl --fail --silent http://127.0.0.1:28195/stats | jq -e '.draftAttempts == {open:1,config:2,env:2}'
+curl --fail --silent http://127.0.0.1:28195/stats | jq -e '.draftAttempts == {open:2,config:2,env:2}'
 "$OBELISK" execution cancel --api-url "$E2E_API_URL" "$session_id" >/dev/null

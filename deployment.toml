@@ -457,7 +457,7 @@ ffqn = "obelisk-agent:tools/cloud.create"
 wit = "wit"
 max_retries = 3
 retry_exp_backoff.seconds = 1
-exec.lock_expiry.minutes = 10
+exec.lock_expiry.minutes = 1
 location = "packs/obelisk-control/cloud/create.js"
 env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" }]
 [[activity_js.allowed_host]]
