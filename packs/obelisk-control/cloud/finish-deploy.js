@@ -14,7 +14,7 @@ export default async function finish_deploy(app, deploymentId, revision, draft, 
     const log = (line) => lines.push(`${line}\n`);
     validateCloudAppName(app);
     try {
-        log("→ obelisk cloud app apply");
+        log(`→ obelisk cloud app apply ${draft ? `--draft ${draft}` : "--reapply"}`);
         const body = { force: false, deployment_id: deploymentId, ...(draft ? { draft } : { revision }) };
         let row;
         try {

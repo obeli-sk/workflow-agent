@@ -174,7 +174,7 @@ test("deploy creates its own draft, stages config and values and warns about oth
     const target = await deploy("demo", POLICY, { env: ["MODE=prod"], fill: true, exported: [["API_KEY", "k"]] });
     assert.deepEqual(target, {
         created: false, draft: "deploy-x", revision: 1,
-        log: "Deploying demo\n→ obelisk cloud app stage\n→ obelisk cloud app fill\n"
+        log: "Deploying demo\n→ obelisk cloud app stage --draft deploy-x\n→ obelisk cloud app fill\n"
             + "Draft `default` (env +X) will be discarded when this deploy is applied\n"
             + "Applying draft `deploy-x` revision 2 over revision 1: app.toml\n",
     });
@@ -213,7 +213,7 @@ test("finish-deploy applies the draft with the uploaded deployment, or re-applie
     });
     const deployed = await finishDeploy("demo", "Dep_1", 1, "deploy-x", "E_01M7A0M1P2P2F1VNCPZ9S26DFJ");
     assert.equal(JSON.parse(deployed.app_json).endpoints.internal, "https://internal--demo.obelisk.works");
-    assert.equal(deployed.log, "→ obelisk cloud app apply\nConfiguration applied. App started.\n");
+    assert.equal(deployed.log, "→ obelisk cloud app apply --draft deploy-x\nConfiguration applied. App started.\n");
     assert.deepEqual(JSON.parse(requests[0].body), { force: false, deployment_id: "Dep_1", draft: "deploy-x" });
     assert.equal(requests[0].headers["idempotency-key"], "E_01M7A0M1P2P2F1VNCPZ9S26DFJ");
     requests = provisioner({ "POST /v1/apps/demo/apply": appRow() });

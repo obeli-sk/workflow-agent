@@ -22,7 +22,7 @@ export default async function prepare_deploy(app, appToml, draft, env, fill, exp
         const explicit = explicitValues(env, variables);
         const current = await lookupApp(name);
         if (current !== null) {
-            step("stage");
+            step(`stage --draft ${draft}`);
             await draftRequest(name, draft, "POST", []);
             let staged;
             try {
