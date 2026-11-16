@@ -489,7 +489,7 @@ env_vars = [
 ]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
-methods = ["POST", "DELETE"]
+methods = ["GET", "PUT", "POST", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
