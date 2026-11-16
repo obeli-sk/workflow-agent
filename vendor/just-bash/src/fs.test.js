@@ -177,6 +177,23 @@ test("content digest cache is invalidated by a write or a remove", () => {
     assert.equal(fs.cachedContentDigest("/a.txt"), null);
 });
 
+test("content digest cache follows rename and drops the replaced target", () => {
+    const fs = new Vfs();
+    fs.writeFile("/app/shell.js", "old");
+    fs.cacheContentDigest("/app/shell.js", "sha256:old");
+    // `cat > shell.js.new && mv shell.js.new shell.js` must not keep the old digest.
+    fs.writeFile("/app/shell.js.new", "new");
+    fs.rename("/app/shell.js.new", "/app/shell.js");
+    assert.equal(fs.readFile("/app/shell.js"), "new");
+    assert.equal(fs.cachedContentDigest("/app/shell.js"), null);
+
+    fs.cacheContentDigest("/app/shell.js", "sha256:new");
+    fs.rename("/app", "/moved");
+    assert.equal(fs.cachedContentDigest("/moved/shell.js"), "sha256:new");
+    fs.writeFile("/app/shell.js", "other");
+    assert.equal(fs.cachedContentDigest("/app/shell.js"), null);
+});
+
 test("oversized lazy file reports TOO_LARGE without ever calling the loader", () => {
     const fs = new Vfs();
     const loader = countingLoader({ "sha256:big": "x".repeat(8) });
