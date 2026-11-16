@@ -120,12 +120,9 @@ function cloudIntegrations(value, fail) {
     for (const name of Object.keys(table(value, "cloud.integrations", fail)).sort()) {
         const label = `cloud.integrations.${name}`;
         const integration = table(value[name], label, fail);
-        for (const key of Object.keys(integration)) {
-            if (!["type", "env"].includes(key)) fail(`unknown field \`${label}.${key}\``);
-        }
         if (typeof integration.type !== "string") fail(`${label}.type must be a string`);
         if (typeof integration.env !== "string") fail(`${label}.env must be a string`);
-        out[name] = { type: integration.type, env: integration.env };
+        out[name] = { ...integration };
     }
     return out;
 }

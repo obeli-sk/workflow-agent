@@ -180,6 +180,18 @@ test("deploy stages cloud integrations and does not require the env they supply"
     assert.throws(() => appConfig('app_name = "demo"\n[cloud.integrations]\nllm = { type = "llm", env = "MISSING" }\n'), /environment-backed/);
 });
 
+test("deploy preserves browser integration settings and skips its supplied URL", async () => {
+    const policy = 'app_name = "demo"\n[cloud]\nmemory_mb = 512\n[cloud.integrations.browser]\ntype = "browser"\nenv = "BROWSER_URL"\nallowed_hosts = ["https://app.example.com"]\nmax_sessions = 1\nsession_memory_mb = 128\nmax_ttl = "30m"\n[public_env]\nBROWSER_URL = { optional = true }\n';
+    assert.deepEqual(appConfig(policy).cloud.integrations.browser, {
+        type: "browser", env: "BROWSER_URL", allowed_hosts: ["https://app.example.com"],
+        max_sessions: 1, session_memory_mb: 128, max_ttl: "30m",
+    });
+    const requests = createdApp(policy);
+    await deploy("", policy);
+    assert.equal(requests.find((request) => request.path.endsWith("/config")).body, policy);
+    assert.ok(!requests.some((request) => request.path.includes("/env/")));
+});
+
 test("deploy creates its own draft and stages config and values", async () => {
     const staged = draftView({ key: "deploy-x", env: {} });
     const requests = provisioner({

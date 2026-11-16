@@ -4,7 +4,7 @@ import discover from "./config-discover.js";
 
 // Isolate each test from whatever the real environment (or a prior test)
 // left behind; config-discover.js reads these lazily on every call.
-const ENV_KEYS = ["MAX_STEPS", "PROGRAMS_JSON", "APPS_JSON", "OBELISK_VERSION", "APP_NAME"];
+const ENV_KEYS = ["MAX_STEPS", "PROGRAMS_JSON", "APPS_JSON", "OBELISK_VERSION", "APP_NAME", "BROWSER_URL"];
 
 function withEnv(overrides, fn) {
     const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -39,6 +39,18 @@ test("discover parses PROGRAMS_JSON/APPS_JSON", async () => {
     assert.deepEqual(config.apps, [
         { name: "components", owner: "obeli-sk", repo: "components", ref: "main", description: "" },
     ]);
+});
+
+test("browser registration follows BROWSER_URL, including registry overrides", async () => {
+    const browser = { name: "browser", ffqn: "obelisk-agent:programs/program.browser", description: "browser" };
+    const alias = { ...browser, name: "browser-alias" };
+    const curl = { name: "curl", ffqn: "ns:programs/program.curl", description: "fetch" };
+    const disabled = await withEnv({ PROGRAMS_JSON: JSON.stringify([curl, browser, alias]) }, () => discover("E_1", "", "", null));
+    assert.deepEqual(disabled.programs, [curl]);
+    const enabled = await withEnv({ BROWSER_URL: "http://127.0.0.1:9195", PROGRAMS_JSON: JSON.stringify([curl]) }, () => discover("E_1", "", "", null));
+    assert.deepEqual(enabled.programs.map((program) => program.name), ["curl", "browser"]);
+    const explicit = await withEnv({ BROWSER_URL: "http://127.0.0.1:9195", PROGRAMS_JSON: JSON.stringify([browser]) }, () => discover("E_1", "", "", null));
+    assert.deepEqual(explicit.programs, [browser]);
 });
 
 test("discover's prompt_tail renders the static sections then This session, with identity and parent", async () => {

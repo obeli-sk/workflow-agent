@@ -8,6 +8,15 @@ llm = { type = "llm", env = "LLM_BASE_URL" }
 # /workspace/github/* mounts read through the account's GitHub integration proxy.
 github = { type = "github", env = "GITHUB_API_URL" }
 
+# Uncomment and choose allowed destinations to enable the agent's browser command.
+# [cloud.integrations.browser]
+# type = "browser"
+# env = "BROWSER_URL"
+# allowed_hosts = ["https://app.example.com"]
+# max_sessions = 1
+# session_memory_mb = 128
+# max_ttl = "30m"
+
 [secrets]
 LLM_API_KEY = { optional = true }
 # The agent's own Obelisk server, accessed e.g. by the UI to get execution state.
@@ -25,6 +34,7 @@ APPS_JSON = { optional = true }
 OBELISK_API_URL = { type = "internal", source = "api-url" }
 AGENT_MODELS = { optional = true }
 GITHUB_API_URL = { optional = true }
+BROWSER_URL = { optional = true }
 LLM_BASE_URL = {}
 OBELISK_UI_URL = { type = "internal", source = "webui-url" }
 OBELISK_CLOUD_API_URL = { optional = true }
@@ -34,6 +44,12 @@ OBELISK_CLOUD_APPS_DOMAIN = { optional = true }
 [[outbound_http.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
+
+# Browser control; page destinations are restricted by the integration's allowed_hosts.
+[[outbound_http.allowed_host]]
+url_prefix = "${BROWSER_URL:-http://browser-disabled.invalid}"
+url_regex_suffix = "/v1/sessions(/[A-Za-z0-9_-]+(/steps)?)?$"
+methods = ["GET", "POST", "DELETE"]
 
 # Agent's own instance. These mirror the components' declarations in
 # deployment.toml one-for-one rather than being consolidated into one
