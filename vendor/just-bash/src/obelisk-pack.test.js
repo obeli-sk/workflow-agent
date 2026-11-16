@@ -73,8 +73,8 @@ function fakeCloud(routes = {}) {
             cloud.runs.push({ args, stdin, appToml, fillEnv });
             return { stdout: "ok\n", stderr: "", exitCode: 0 };
         },
-        prepareDeploy(app, appToml, draft, env, secrets, fill, exported) {
-            cloud.deploys.push({ app, appToml, draft, env, secrets, fill, exported });
+        prepareDeploy(app, appToml, draft, env, fill, exported) {
+            cloud.deploys.push({ app, appToml, draft, env, fill, exported });
             return cloud.target ?? { created: true, draft: null, revision: 1, log: "→ prepare\n" };
         },
         finishDeploy(app, deploymentId, revision, draft, commandId) {
@@ -177,22 +177,21 @@ test("commandHandler strips the command name and runs inside the shell", () => {
 
 // -- provisioner commands and deploy --
 
-test("provisioner commands forward args, policy, OBELISK_APP_NAME and --from-env", () => {
-    const i = interp("/workspace", { OBELISK_APP_NAME: "demo", API_KEY: "s3cret" });
-    i.vfs.writeFile("/workspace/app.toml", 'app_name = "demo"\n');
+test("provisioner commands forward args, policy and OBELISK_APP_NAME", () => {
+    const i = interp("/workspace", { OBELISK_APP_NAME: "demo", API_KEY: "s3cret", MODE: "prod" });
+    const policy = 'app_name = "demo"\n[secrets]\nAPI_KEY = {}\n[public_env]\nMODE = {}\n';
+    i.vfs.writeFile("/workspace/app.toml", policy);
     const cloud = fakeCloud();
-    let out = run(i, "cloud app secrets set API_KEY --from-env API_KEY", cloud);
+    let out = run(i, "cloud app env set MODE prod", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.deepEqual(cloud.runs[0], {
-        args: words("app secrets set API_KEY --stdin --app demo"), stdin: "s3cret", appToml: 'app_name = "demo"\n', fillEnv: null,
+        args: words("app env set MODE prod --app demo"), stdin: "", appToml: policy, fillEnv: null,
     });
 
+    // A fill passes only the declared env, never the secret's same-named variable.
     out = run(i, "cloud app new --fill-non-interactive", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
-    assert.deepEqual(new Map(cloud.runs[1].fillEnv).get("API_KEY"), "s3cret");
-
-    out = run(i, "cloud app secrets set X --from-env MISSING", cloud);
-    assert.equal(out.stderr, "Error: environment variable MISSING is not set\n");
+    assert.deepEqual(cloud.runs[1].fillEnv, [["MODE", "prod"]]);
 });
 
 test("cloud app deploy uploads without switching, then finishes with its id", () => {
@@ -212,7 +211,7 @@ test("cloud app deploy uploads without switching, then finishes with its id", ()
     const commandId = cloud.deploys[1].commandId;
     assert.match(commandId, /^E_[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
     assert.deepEqual(cloud.deploys, [
-        { app: "demo", appToml: 'app_name = "demo"\n', draft, env: [], secrets: [], fill: false, exported: [] },
+        { app: "demo", appToml: 'app_name = "demo"\n', draft, env: [], fill: false, exported: [] },
         { app: "demo", deploymentId: id, revision: 1, draft: null, commandId },
     ]);
     const submit = cloud.calls.find((call) => call.path === `/v1/deployments/${id}`);
@@ -227,6 +226,77 @@ test("cloud app deploy uploads without switching, then finishes with its id", ()
 
     const json = run(i, "cloud app deploy --json", cloud);
     assert.deepEqual(JSON.parse(json.stdout).outcomes, ["applied"]);
+});
+
+test("cloud app stage submits the deployment between two cloud.run calls and stages values once", () => {
+    const i = interp("/workspace/app", { MODE: "prod" });
+    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n[public_env]\nMODE = {}\n');
+    i.vfs.writeFile("/workspace/app/deployment.toml", '[[activity_js]]\nlocation = "a.js"\n');
+    i.vfs.writeFile("/workspace/app/a.js", "a");
+    const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
+    cloud.run = (args, stdin, appToml, fillEnv) => {
+        cloud.runs.push({ args, stdin, appToml, fillEnv });
+        return { stdout: '{"key":"default"}\n', stderr: cloud.runs.length === 1 ? "App demo does not exist; creating it\n" : "Changes staged.\n", exitCode: 0 };
+    };
+    const out = run(i, "cloud app stage --env MODE -d deployment.toml --description first", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    const submit = cloud.calls.find((call) => call.method === "PUT");
+    const id = submit.path.slice("/v1/deployments/".length);
+    assert.match(id, /^Dep_[0-9A-Z]{26}$/);
+    assert.deepEqual(JSON.parse(submit.body), {
+        deployment_toml: `[[activity_js]]\nlocation = "a.js"\ncontent_digest = "${sha256("a")}"\n`,
+        description: "first",
+        allow_unavailable_runtime_config: true,
+    });
+    assert.deepEqual(cloud.runs.map((r) => r.args), [
+        ["app", "stage", "--env", "MODE", "--json"],
+        ["app", "stage", "-d", id],
+    ]);
+    assert.equal(out.stderr, `App demo does not exist; creating it\n→ obelisk cloud app deployment submit\nSubmitted as ${id}\nChanges staged.\n`);
+    assert.ok(!cloud.calls.some((call) => call.path.endsWith("/switch")));
+
+    // An empty deployment needs no deployment.toml.
+    const empty = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
+    assert.equal(run(i, "cloud app stage --empty-deployment", empty).exitCode, 0);
+    const emptyId = empty.calls.find((call) => call.method === "PUT").path.slice("/v1/deployments/".length);
+    assert.deepEqual(empty.runs.map((r) => r.args.at(-1)), ["--json", emptyId]);
+
+    // Without a deployment, stage is a single cloud.run.
+    const plain = fakeCloud();
+    assert.equal(run(i, "cloud app stage", plain).exitCode, 0);
+    assert.deepEqual(plain.runs.map((r) => r.args), [["app", "stage"]]);
+    assert.equal(plain.calls.length, 0);
+
+    for (const args of ["cloud app stage -d deployment.toml --empty-deployment", "cloud app stage --description x"]) {
+        assert.notEqual(run(i, args, fakeCloud()).exitCode, 0, args);
+    }
+});
+
+test("cloud app deploy --empty-deployment and deployment submit --empty skip deployment.toml", () => {
+    const i = interp("/workspace/app");
+    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
+    // Never read: an empty deployment ignores the manifest.
+    i.vfs.writeFile("/workspace/app/deployment.toml", "invalid TOML");
+    for (const args of ["cloud app deploy --empty-deployment", "cloud app deployment submit --empty-deployment", "cloud app deployment submit --empty"]) {
+        const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
+        const out = run(i, args, cloud);
+        assert.equal(out.exitCode, 0, `${args}: ${out.stderr}`);
+        const submit = cloud.calls.find((call) => call.method === "PUT");
+        assert.equal(JSON.parse(submit.body).deployment_toml, "", args);
+    }
+    assert.equal(run(i, "cloud app deploy -d deployment.toml --empty-deployment", fakeCloud()).exitCode, 2);
+});
+
+test("cloud app apply sends the draft's staged deployment", () => {
+    const cloud = fakeCloud({
+        "GET /api/v1/apps/demo": ok({ status: "running", applied_revision: 1 }),
+        "GET /api/v1/apps/demo/drafts/default": draftView({ deployment_id: "Dep_staged" }),
+        "POST /api/v1/apps/demo/apply": ok({ status: "running", outcome: { configuration: "applied" } }),
+    });
+    const out = api(interp(), "apply", cloud);
+    assert.equal(out.exitCode, 0, out.stderr);
+    assert.ok(!cloud.calls.some((call) => call.path === "/v1/info"));
+    assert.deepEqual(JSON.parse(cloud.calls.at(-1).body), { force: false, deployment_id: "Dep_staged", draft: "default" });
 });
 
 // A draft view as the provisioner returns it: `default`, revision 2 over applied revision 1, app.toml changed.
@@ -275,7 +345,7 @@ test("cloud app apply needs a staged draft unless --reapply and rejects other fl
     });
     const nothing = api(interp(), "apply --draft ci", cloud);
     assert.equal(nothing.exitCode, 1);
-    assert.match(nothing.stderr, /^Error: Nothing staged in draft `ci`; stage changes with `obelisk cloud app stage`, `env set` or `secrets set` --draft ci, or reconcile the applied revision with `--reapply`/);
+    assert.match(nothing.stderr, /^Error: Nothing staged in draft `ci`; stage changes with `obelisk cloud app stage` or `env set` --draft ci, or reconcile the applied revision with `--reapply`/);
     assert.equal(cloud.commands.length, 0);
 
     const reapplied = api(interp(), "apply --reapply", cloud);
@@ -326,23 +396,24 @@ test("cloud app apply --command-id reports an accepted command without rebuildin
     assert.equal(cloud.commands.length, 0);
 });
 
-test("cloud app deploy forwards --env/--secret with only the named variables and applies its draft", () => {
+test("cloud app deploy forwards --env with only the named variables and applies its draft", () => {
     const i = interp("/workspace/app", { MODE: "prod", API_KEY: "s3cret", OTHER: "x" });
     i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
     i.vfs.writeFile("/workspace/app/deployment.toml", "");
     const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
     cloud.target = { created: false, draft: "deploy-1", revision: 5, log: "→ prepare\n" };
-    const out = run(i, "cloud app deploy --env MODE --env REGION=eu --secret API_KEY", cloud);
+    const out = run(i, "cloud app deploy --env MODE --env REGION=eu", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
     const [prepare, finish] = cloud.deploys;
     assert.match(prepare.draft, /^deploy-[0-9a-z]{26}$/);
-    assert.deepEqual([prepare.env, prepare.secrets, prepare.fill], [["MODE", "REGION=eu"], ["API_KEY"], false]);
-    assert.deepEqual(new Map(prepare.exported), new Map([["MODE", "prod"], ["API_KEY", "s3cret"]]));
+    assert.deepEqual([prepare.env, prepare.fill], [["MODE", "REGION=eu"], false]);
+    assert.deepEqual(new Map(prepare.exported), new Map([["MODE", "prod"]]));
     assert.deepEqual([finish.revision, finish.draft], [5, "deploy-1"]);
 
+    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n[secrets]\nAPI_KEY = {}\n[public_env]\nOTHER = {}\n');
     const filled = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
     run(i, "cloud app deploy --fill-non-interactive", filled);
-    assert.equal(new Map(filled.deploys[0].exported).get("OTHER"), "x");
+    assert.deepEqual(filled.deploys[0].exported, [["OTHER", "x"]]);
     assert.equal(run(i, "cloud app deploy --draft ci", fakeCloud()).exitCode, 2);
 });
 
@@ -359,14 +430,27 @@ test("cloud app deploy discards its draft when the submission fails", () => {
     assert.equal(cloud.deploys.length, 1);
 });
 
-test("cloud app new forwards the variables named by bare --env and --secret", () => {
+test("cloud app new forwards the variables named by bare --env", () => {
     const i = interp("/workspace", { OBELISK_APP_NAME: "demo", MODE: "prod", API_KEY: "s3cret", OTHER: "x" });
     i.vfs.writeFile("/workspace/app.toml", 'app_name = "demo"\n');
     const cloud = fakeCloud();
-    const out = run(i, "cloud app new --env MODE --env REGION=eu --secret API_KEY", cloud);
+    const out = run(i, "cloud app new --env MODE --env REGION=eu", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
-    assert.deepEqual(cloud.runs[0].args, words("app new --env MODE --env REGION=eu --secret API_KEY --app demo"));
-    assert.deepEqual(new Map(cloud.runs[0].fillEnv), new Map([["MODE", "prod"], ["API_KEY", "s3cret"]]));
+    assert.deepEqual(cloud.runs[0].args, words("app new --env MODE --env REGION=eu --app demo"));
+    assert.deepEqual(new Map(cloud.runs[0].fillEnv), new Map([["MODE", "prod"]]));
+});
+
+test("cloud app commands never take secret values", () => {
+    const i = interp("/workspace/app", { OBELISK_APP_NAME: "demo", API_KEY: "s3cret" });
+    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
+    i.vfs.writeFile("/workspace/app/deployment.toml", "");
+    for (const args of ["new --secret API_KEY", "stage --secret=API_KEY -d deployment.toml", "deploy --secret API_KEY"]) {
+        const cloud = fakeCloud();
+        const out = run(i, `cloud app ${args}`, cloud);
+        assert.equal(out.exitCode, 1, args);
+        assert.match(out.stderr, /^Error: `--secret` is not available here, secret values come only from the user: ask the user to set them/, args);
+        assert.deepEqual([cloud.runs, cloud.deploys, cloud.calls], [[], [], []], args);
+    }
 });
 
 test("cloud app deploy refuses another app's config or a missing one", () => {
@@ -779,7 +863,7 @@ test("deployment submit rejects generated metadata and missing files", () => {
 test("cloud deployment enqueue and apply reject activation before any API calls", () => {
     const id = "Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV";
     for (const action of ["enqueue", "apply"]) {
-        for (const source of [id, "--empty", "missing.toml"]) {
+        for (const source of [id, "--empty", "--empty-deployment", "missing.toml"]) {
             const cloud = fakeCloud();
             const out = run(interp(), `cloud app deployment ${action} ${source}`, cloud);
             assert.equal(out.exitCode, 1);

@@ -1,15 +1,15 @@
 // obelisk-agent:tools/cloud.prepare-deploy:
-//   func(app: string, app-toml: string, draft: string, env: list<string>, secrets: list<string>,
-//        fill: bool, exported: list<tuple<string, string>>)
+//   func(app: string, app-toml: string, draft: string, env: list<string>, fill: bool,
+//        exported: list<tuple<string, string>>)
 //     -> result<record { created: bool, draft: option<string>, revision: u64, log: string }, string>
 //
 // PORT: obelisk's src/command/cloud/deploy.rs before deployment upload.
 import { appliedRevision, cloudRequest, draftRequest, lookupApp, appRequest } from "./client.js";
 import { appConfig, validateCloudAppName } from "./policy.js";
-import { applyRequest, explicitValues, initialValues, stageValues, unsetOptional, userSuppliedPolicy } from "./fill.js";
+import { applyRequest, explicitValues, initialValues, needsUserSecrets, stageValues, unsetOptional, userSuppliedPolicy } from "./fill.js";
 import { draftChanges, draftValues } from "./output.js";
 
-export default async function prepare_deploy(app, appToml, draft, env, secrets, fill, exported) {
+export default async function prepare_deploy(app, appToml, draft, env, fill, exported) {
     const lines = [];
     const log = (line) => lines.push(`${line}\n`);
     const config = appConfig(appToml);
@@ -19,7 +19,7 @@ export default async function prepare_deploy(app, appToml, draft, env, secrets, 
     log(`Deploying ${name}`);
     const step = (command) => log(`→ obelisk cloud app ${command}`);
     try {
-        const explicit = explicitValues(env, secrets, variables);
+        const explicit = explicitValues(env, variables);
         const current = await lookupApp(name);
         if (current !== null) {
             step("stage");
@@ -31,12 +31,14 @@ export default async function prepare_deploy(app, appToml, draft, env, secrets, 
                 let filled;
                 ({ draft: staged, filled } = await stageValues(name, draft, staged, explicit, fill ? variables : null));
                 const missing = draftValues(staged, "missing");
+                const secrets = missing.filter((value) => value.startsWith("secret ")).map((value) => value.slice("secret ".length));
+                if (secrets.length > 0) throw needsUserSecrets(name, secrets);
                 if (missing.length > 0) {
-                    throw `Missing values: ${missing.join(", ")}. Pass them with \`--env NAME[=VALUE]\` or \`--secret NAME\`, or retry with \`--fill\` or \`--fill-non-interactive\``;
+                    throw `Missing values: ${missing.join(", ")}. Pass them with \`--env NAME[=VALUE]\`, or retry with \`--fill-non-interactive\``;
                 }
                 const unset = unsetOptional(filled);
                 if (unset.length > 0) {
-                    log(`Optional configuration not set: ${unset.join(", ")}. Pass them with \`--env\` or \`--secret\`, or deploy with \`--fill\`.`);
+                    log(`Optional configuration not set: ${unset.join(", ")}. Pass them with \`--env\`, or deploy with \`--fill-non-interactive\`.`);
                 }
             } catch (error) {
                 try { await draftRequest(name, draft, "DELETE", []); } catch { /* best effort, like the CLI */ }
@@ -54,7 +56,7 @@ export default async function prepare_deploy(app, appToml, draft, env, secrets, 
             return { created: false, draft, revision: appliedRevision(current), log: lines.join("") };
         }
         if (fill) step("fill");
-        const values = initialValues(userSuppliedPolicy(config), explicit, fill ? variables : null);
+        const values = initialValues(name, userSuppliedPolicy(config), explicit, fill ? variables : null);
         step("new");
         const created = await cloudRequest("POST", ["v1", "apps"], {
             kind: "secret-command",

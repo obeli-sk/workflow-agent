@@ -8,13 +8,13 @@
 // `app deploy`, `app apply|enable|disable|delete` and the app API subcommands itself. `app-toml` is the
 // policy file's text (`-a PATH`, else ./app.toml) when the shell found one;
 // `fill-env` the shell's exported variables for `--fill-non-interactive`, or
-// those that bare `--env NAME` and `--secret NAME` read.
+// those that bare `--env NAME` reads. Secret values never pass through here.
 // Like the CLI, JSON goes to stdout and human output to stderr; errors exit 1,
 // usage errors 2.
-import { appRequest, cloudBase, cloudRequest, draftRequest } from "./client.js";
-import { explicitValues, initialValues, userSuppliedPolicy } from "./fill.js";
+import { appRequest, cloudBase, cloudRequest, draftRequest, lookupApp } from "./client.js";
+import { explicitValues, initialValues, USER_SETS_SECRETS, stageValues, userSuppliedPolicy } from "./fill.js";
 import { appConfig, configName, validateCloudAppName } from "./policy.js";
-import { draftArg, humanOutput, renderSummary } from "./output.js";
+import { draftArg, draftValues, humanOutput, renderSummary } from "./output.js";
 
 export default async function run(args, stdin, appToml, fillEnv) {
     const stderr = [];
@@ -35,10 +35,10 @@ export default async function run(args, stdin, appToml, fillEnv) {
 // A command-line error, reported like clap's.
 export class UsageError extends Error {}
 
-const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "--from-env", "-n", "--limit", "--draft"];
-const REPEATED_FLAGS = ["--env", "--secret"];
+const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "-n", "--limit", "--draft", "-d", "--deployment"];
+const REPEATED_FLAGS = ["--env"];
 const BOOLEAN_FLAGS = [
-    "--json", "--verbose", "--stdin", "--fill", "--fill-non-interactive",
+    "--json", "--verbose", "--fill", "--fill-non-interactive",
 ];
 const GLOBAL_FLAGS = ["--app", "--json", "--verbose"];
 
@@ -50,11 +50,12 @@ export function parseArgs(args) {
         const arg = args[i];
         const eq = arg.indexOf("=");
         const name = arg.startsWith("--") && eq !== -1 ? arg.slice(0, eq) : arg;
+        if (name === "--secret") throw `\`--secret\` is not available here, secret values come only from the user: ${USER_SETS_SECRETS}`;
         if (VALUE_FLAGS.includes(name) || REPEATED_FLAGS.includes(name)) {
             const value = eq !== -1 && name !== arg ? arg.slice(eq + 1) : args[++i];
             if (value === undefined) throw new UsageError(`a value is required for '${name} <VALUE>' but none was supplied`);
             if (REPEATED_FLAGS.includes(name)) (flags[name] ??= []).push(value);
-            else flags[{ "--app-config": "-a", "--limit": "-n" }[name] ?? name] = value;
+            else flags[{ "--app-config": "-a", "--limit": "-n", "--deployment": "-d" }[name] ?? name] = value;
         } else if (BOOLEAN_FLAGS.includes(arg)) {
             flags[arg] = true;
         } else if (["--api-url", "--api-token", "--apps-domain", "--account"].includes(name)) {
@@ -134,7 +135,7 @@ async function tokenState() {
 }
 
 const POLICY_COMMANDS = ["new", "status", "stage"];
-const VALUES = ["--env", "--secret", "--fill", "--fill-non-interactive"];
+const VALUES = ["--env", "--fill", "--fill-non-interactive"];
 
 // PORT: args.rs's `parse_draft_key`.
 function draftKey(flags) {
@@ -158,12 +159,12 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         conflicts(flags);
         const name = appName(flags["--app"] ?? config?.appName);
         const local = configForApp(name, config, path, explicit, false);
-        const explicitList = explicitValues(flags["--env"] ?? [], flags["--secret"] ?? [], fillEnv);
+        const explicitList = explicitValues(flags["--env"] ?? [], fillEnv);
         if ((flags["--fill"] || flags["--fill-non-interactive"] || explicitList.length > 0) && !local) throw "Initial values require an app config";
         const body = { app_toml: `app_name = ${JSON.stringify(name)}\n` };
         if (local) {
             if (flags["--fill"]) throw terminal("--fill");
-            const values = initialValues(userSuppliedPolicy(local), explicitList, flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
+            const values = initialValues(name, userSuppliedPolicy(local), explicitList, flags["--fill-non-interactive"] ? fillEnv ?? {} : null);
             Object.assign(body, { app_toml: local.text, env: values.env, secrets: values.secrets });
         }
         return print(await cloudRequest("POST", ["v1", "apps"], { ...options, kind: "secret-command", body }), { kind: "app", message: "App created." });
@@ -196,19 +197,44 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         }
         return print(await appRequest(name, "GET", ["events"], { ...options, query: { limit } }), { kind: "events" });
     }
-    if (action === "stage") {
-        allow(flags, ["-a", "--draft"]);
-        arity(rest, 0);
-        return print(await draftRequest(name, key, "PUT", ["config"], { ...options, toml: local.text }, true), { kind: "staged", message: "Configuration staged.", apply });
-    }
+    if (action === "stage") return stageCommand(name, key, local, rest, flags, fillEnv, options, print);
     if (action === "unstage") {
         allow(flags, ["--draft"]);
         arity(rest, 0);
         return print(await draftRequest(name, key, "DELETE", [], options), { kind: "unstaged", draft: key });
     }
     if (action === "env") return envCommand(name, key, rest, flags, options, print, apply);
-    if (action === "secrets") return secretsCommand(name, key, rest, flags, stdin, options, print, apply);
+    if (action === "secrets") return secretsCommand(name, key, rest, flags, options, print, apply);
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
+}
+
+// PORT: cloud/stage.rs. The shell submits the deployment after this stages the config, so
+// `-d` here is the submitted deployment's ID; a later call records it in the draft.
+async function stageCommand(name, key, local, rest, flags, fillEnv, options, print) {
+    allow(flags, ["-a", "--draft", "-d", ...VALUES]);
+    arity(rest, 0);
+    conflicts(flags);
+    if (flags["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
+    const deployment = flags["-d"];
+    if (deployment !== undefined && !/^Dep_[0-9A-HJKMNP-TV-Z]{26}$/.test(deployment)) throw `Invalid deployment ID ${deployment}`;
+    const explicit = explicitValues(flags["--env"] ?? [], fillEnv);
+    let notes = "";
+    if (await lookupApp(name) === null) {
+        // A bare app runs an empty deployment, so its API can receive the submission.
+        notes += `App ${name} does not exist; creating it\n→ obelisk cloud app new\n`;
+        await cloudRequest("POST", ["v1", "apps"], { ...options, kind: "command", body: { app_toml: `app_name = ${JSON.stringify(name)}\n` } });
+    }
+    let staged = await draftRequest(name, key, "PUT", ["config"], { ...options, toml: local.text }, true);
+    ({ draft: staged } = await stageValues(name, key, staged, explicit, flags["--fill-non-interactive"] ? fillEnv ?? {} : null));
+    if (deployment !== undefined) {
+        staged = await draftRequest(name, key, "PUT", ["deployment"], { ...options, body: { deployment_id: deployment } }, true);
+    }
+    const apply = `obelisk cloud app apply --app ${name}${draftArg(key)}`;
+    const output = print(staged, { kind: "staged", message: "Changes staged.", apply });
+    if (output.stderr !== undefined && draftValues(staged, "missing").length > 0) {
+        output.stderr += `Set env with \`obelisk cloud app env set --app ${name}${draftArg(key)}\`; for secrets, ${USER_SETS_SECRETS}\n`;
+    }
+    return { ...output, stderr: notes + (output.stderr ?? "") };
 }
 
 async function envCommand(name, draft, [action, key, value, ...extra], flags, options, print, apply) {
@@ -235,22 +261,17 @@ async function envCommand(name, draft, [action, key, value, ...extra], flags, op
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
 }
 
-async function secretsCommand(name, draft, [action, key, ...extra], flags, stdin, options, print, apply) {
+const SECRETS_SET_UNSUPPORTED = `\`secrets set\` is not available here, secret values come only from the user: ${USER_SETS_SECRETS}`;
+
+async function secretsCommand(name, draft, [action, key, ...extra], flags, options, print, apply) {
     const secret = { ...options, kind: "secret" };
     if (action === "list") {
         allow(flags, []);
         arity([key], 0);
         return print(await appRequest(name, "GET", ["secrets"], secret), { kind: "secrets" });
     }
-    if (action === "set") {
-        allow(flags, ["--stdin", "--draft"]);
-        if (key === undefined) throw new UsageError("the following required arguments were not provided:\n  <NAME>");
-        if (flags["--stdin"] !== true) throw new UsageError("the following required arguments were not provided:\n  --from-env <FROM_ENV>");
-        arity(extra, 0);
-        configName(key);
-        const result = await draftRequest(name, draft, "PUT", ["secrets", key], { ...options, body: { value: stdin } }, true);
-        return print(result, { kind: "staged", message: "Secret change staged.", apply });
-    }
+    // Secret values come from the user, never through the agent.
+    if (action === "set") throw SECRETS_SET_UNSUPPORTED;
     if (action === "unset") {
         allow(flags, ["--draft"]);
         if (key === undefined) throw new UsageError("the following required arguments were not provided:\n  <NAME>");
