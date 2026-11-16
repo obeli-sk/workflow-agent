@@ -565,8 +565,24 @@ methods = ["POST", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 
-# A request that changes the app: deployment submits and switches, execution
-# controls, admin maintenance.
+# Content-addressed files and fixed-ID deployment submissions are safe to resend.
+[[activity_js]]
+name = "cloud_upload"
+ffqn = "obelisk-agent:tools/cloud.upload"
+wit = "wit"
+max_retries = 3
+retry_exp_backoff.seconds = 1
+exec.lock_expiry.minutes = 10
+location = "packs/obelisk-control/cloud/upload.js"
+env_vars = [{ key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" }]
+[[activity_js.allowed_host]]
+pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
+methods = ["PUT"]
+request_url_regex = "^PUT https://[^/]+/v1/(files/sha256:[0-9a-f]{64}|deployments/Dep_[0-7][0-9A-HJKMNP-TV-Z]{25})$"
+secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+replace_in = ["headers"]
+
+# Other app mutations: execution controls and admin maintenance.
 [[activity_js]]
 name = "cloud_tenant"
 ffqn = "obelisk-agent:tools/cloud.tenant"

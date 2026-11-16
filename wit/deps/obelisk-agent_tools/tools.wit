@@ -77,6 +77,8 @@ interface cloud {
   command: func(app: string, method: string, path: list<string>, body: option<string>, command-id: string) -> result<response, string>;
   // GET `path` (with its query) on the app's API; err only when no response arrived.
   tenant-read: func(app: string, path: string) -> result<response, string>;
+  // One retryable PUT of a content-addressed file or a workflow-chosen deployment ID.
+  upload: func(app: string, path: string, content-type: option<string>, body: option<string>) -> result<response, string>;
   // Any other request on the app's API, sent once.
   tenant: func(app: string, method: string, path: string, content-type: option<string>, body: option<string>) -> result<response, string>;
 }

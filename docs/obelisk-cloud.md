@@ -36,7 +36,7 @@ left out and a warning is shown instead.
 ## Pieces
 
 The `obelisk-agent:tools/cloud` interface has these activities
-(`packs/obelisk-control/cloud/`). `create`, `read`, `tenant-read`, `command` and
+(`packs/obelisk-control/cloud/`). `create`, `upload`, `read`, `tenant-read`, `command` and
 `finish-deploy` are retried; the rest have `max_retries = 0`:
 
 - `run` (`cli.js`) runs the provisioner commands: `auth status`, `app list`,
@@ -76,7 +76,15 @@ The `obelisk-agent:tools/cloud` interface has these activities
      The shell passes the
      apply's Idempotency-Key, so `finish-deploy` is retried: deploying the app
      the shell runs in interrupts it, and the retry gets the apply's result.
-- `tenant` (`tenant.js`) sends one POST, PUT or DELETE request to
+- `upload` (`upload.js`) sends one PUT to `/v1/files/{digest}` or
+  `/v1/deployments/{id}` on the app API. Each file the server requests is a
+  separate activity; manifest submissions and resubmissions are separate
+  activities too. The workflow captures the digest or deployment ID and body
+  before invoking the activity, so a transport failure or HTTP 5xx retries the
+  same upload. File contents are addressed by digest and the server accepts
+  the same deployment content under the same ID. Other responses, including
+  409 missing-file reports, return to the workflow to drive the upload loop.
+- `tenant` (`tenant.js`) sends other POST, PUT or DELETE requests to
   `https://api--<app>.<domain>` with the cloud token and returns the status
   and body, whatever the status. It sends no `If-Match`, so a deployment
   switch gets `428`; deployments are activated by the provisioner's apply.
@@ -159,8 +167,10 @@ mutations needs provisioner support for a stable draft identity and revision
 preconditions, or durable per-request outcomes. HTTP method alone is insufficient.
 
 `app new` and lifecycle requests already have the required durable command
-protocol. App API mutations through `tenant` remain outside this audit; they
-also retain `max_retries = 0`.
+protocol. File uploads and deployment submissions are retryable through `upload`:
+their digest or deployment ID and request body are workflow inputs and stay fixed
+across retries. Other app API mutations through `tenant` remain outside this audit
+and retain `max_retries = 0`.
 
 ## Differences from the real CLI
 

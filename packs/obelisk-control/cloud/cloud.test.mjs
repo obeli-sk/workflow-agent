@@ -9,6 +9,7 @@ const { default: tenant } = await import("./tenant.js");
 const { default: tenantRead } = await import("./tenant-read.js");
 const { default: command } = await import("./command.js");
 const { default: create } = await import("./create.js");
+const { default: upload } = await import("./upload.js");
 const { default: read } = await import("./read.js");
 const { appConfig } = await import("./policy.js");
 
@@ -455,6 +456,37 @@ test("app commands never use another app's config", async () => {
     const status = await run(["app", "status", "--app", "demo"], "", other);
     assert.equal(status.exit_code, 0, status.stderr);
     assert.doesNotMatch(status.stderr, /app\.toml/);
+});
+
+test("uploads preserve the digest or deployment ID and body after a lost response", async () => {
+    const file = `/v1/files/sha256:${"a".repeat(64)}`;
+    const deployment = `/v1/deployments/Dep_01M7A0M1P2P2F1VNCPZ9S26DFJ`;
+    const accepted = new Map();
+    const respond = (request) => {
+        if (!accepted.has(request.path)) {
+            accepted.set(request.path, request.body);
+            throw new Error("response lost after storage");
+        }
+        assert.equal(request.body, accepted.get(request.path));
+        return new Response(null, { status: 204 });
+    };
+    const requests = provisioner({
+        [`PUT ${APP_API}${file}`]: respond,
+        [`PUT ${APP_API}${deployment}`]: respond,
+    });
+    for (const [path, contentType, body] of [[file, "application/octet-stream", "source bytes"], [deployment, "application/json", '{"deployment_toml":""}']]) {
+        await assert.rejects(upload("demo", path, contentType, body), /error sending request/);
+        assert.equal((await upload("demo", path, contentType, body)).status, 204);
+    }
+    assert.equal(accepted.size, 2);
+    assert.equal(requests.length, 4);
+    await assert.rejects(upload("demo", `${deployment}/switch`, null, "{}"), /unsupported upload path/);
+    assert.equal(requests.length, 4);
+
+    provisioner({ [`PUT ${APP_API}${deployment}`]: () => new Response('{"missing_files":[]}', { status: 409 }) });
+    assert.equal((await upload("demo", deployment, "application/json", "{}")).status, 409);
+    provisioner({ [`PUT ${APP_API}${file}`]: () => new Response("busy", { status: 503 }) });
+    await assert.rejects(upload("demo", file, null, "source"), /503/);
 });
 
 test("tenant sends a request to the app API with the cloud token and returns any status", async () => {

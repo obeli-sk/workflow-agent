@@ -5,6 +5,8 @@
 // `createCloud` backs obelisk-pack.js's `obelisk cloud` with the cloud
 // activities, turning child errors into plain messages.
 
+import { isDeploymentUpload } from "../../../shared/deployment-upload.js";
+
 export function createHost(dynamic, obelisk) {
     return {
         callJson(ffqn, paramsJson) {
@@ -50,7 +52,9 @@ export function createCloud(cloud, obelisk) {
         read: (path) => plain(() => cloud.read(path)),
         command: (app, method, path, body, commandId) => plain(() => cloud.command(app, method, path, body, commandId)),
         get: (app, path) => plain(() => cloud.tenantRead(app, path)),
-        send: (app, method, path, contentType, body) => plain(() => cloud.tenant(app, method, path, contentType, body)),
+        send: (app, method, path, contentType, body) => plain(() => method === "PUT" && isDeploymentUpload(path)
+            ? cloud.upload(app, path, contentType, body)
+            : cloud.tenant(app, method, path, contentType, body)),
     };
 }
 
