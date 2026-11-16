@@ -40,7 +40,9 @@ The `obelisk-agent:tools/cloud` interface has these activities
 `finish-deploy` are retried; the rest have `max_retries = 0`:
 
 - `run` (`cli.js`) runs the provisioner commands: `auth status`, `app list`,
-  `app new|status|events|stage|unstage`, `env ...` and `secrets ...`. Edits
+  `app new|status|events|stage|unstage`, `env ...` and `secrets list|unset`.
+  There is no `secrets set`: secret values come from the user's own CLI or the
+  dashboard, never through the agent. Edits
   go into a named draft (`--draft`, default `default`) through
   `/v1/apps/<app>/drafts/<key>/...` with `create_or_reuse=true`. `stage`
   creates a missing app with a bare app.toml and, with `-d ID`, records an
@@ -81,7 +83,7 @@ are handled as follows:
   (`createCloud` in `workflow-js/src/host.js`) and prints the same output:
   human output on stderr, values and JSON on stdout. Errors print
   `Error: ...` and exit 1; usage errors exit 2.
-- `cloud app deploy [-a app.toml] [-d deployment.toml] [--env NAME[=VALUE]]...
+- `cloud app deploy [-a app.toml] [-d deployment.toml | --empty-deployment] [--env NAME[=VALUE]]...
   [--secret NAME]... [--fill-non-interactive]` calls `prepare-deploy` with a
   generated `deploy-<ulid>` draft, then uploads the deployment against
   the app; a failed upload discards the draft through `run`'s `unstage`. The submit uploads only the files the server asks for and reuses the
@@ -109,8 +111,7 @@ are handled as follows:
   Last, `command` sends it. When its retries run out, the error names the
   command ID to retry with.
 - Everything else goes to `run` with the app policy's text: the `-a` file,
-  else `./app.toml`. `--from-env VAR` turns into `--stdin` with the exported
-  variable's value, so secret values never appear in argv. A bare
+  else `./app.toml`. A bare
   `--env NAME` and `--secret NAME` read the exported variable, so only those
   variables are passed along; with `--fill-non-interactive`, all exported
   variables are passed for the fill.

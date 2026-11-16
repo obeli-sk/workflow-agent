@@ -275,7 +275,7 @@ function readPolicy(interp, path) {
 // OBELISK_APP_NAME as `--app`, and the exported variables for `fill`.
 function cloudRun(interp, args, stdin, cloud, globals, [group, sub]) {
     const forwarded = [];
-    let input = stdin ?? "";
+    const input = stdin ?? "";
     let appConfig = null;
     let fill = false;
     const values = { "--env": [], "--secret": [] };
@@ -283,15 +283,6 @@ function cloudRun(interp, args, stdin, cloud, globals, [group, sub]) {
         const arg = args[i];
         const flag = arg.split("=")[0];
         if (flag in values) values[flag].push(arg.includes("=") ? arg.slice(flag.length + 1) : args[i + 1] ?? "");
-        if (arg === "--from-env") {
-            const name = args[++i];
-            if (name === undefined) throw new UsageError("a value is required for '--from-env <FROM_ENV>' but none was supplied");
-            const value = exportedVar(interp, name);
-            if (value === undefined) throw `environment variable ${name} is not set`;
-            input = value;
-            forwarded.push("--stdin");
-            continue;
-        }
         if (arg === "-a" || arg === "--app-config") appConfig = args[i + 1];
         if (arg.startsWith("--app-config=")) appConfig = arg.slice("--app-config=".length);
         if (arg === "--fill-non-interactive") fill = true;
@@ -376,7 +367,7 @@ function cloudLifecycle(interp, action, args, globals, cloud, out) {
 function cloudDeploy(interp, args, globals, cloud, out) {
     const { opts } = parseOptions(args, {
         "-a": "--app-config", "--app-config": true, "-d": "--deployment", "--deployment": true,
-        "--fill": false, "--fill-non-interactive": false, "--description": true,
+        "--empty-deployment": false, "--fill": false, "--fill-non-interactive": false, "--description": true,
         "--env": [], "--secret": [],
     }, []);
     if (opts["--fill"] && opts["--fill-non-interactive"]) {
@@ -396,9 +387,14 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     if (typeof configured === "string" && configured !== name) {
         throw `${configPath} is for app \`${configured}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${configured}\` or fix \`app_name\``;
     }
+    if (opts["--deployment"] !== undefined && opts["--empty-deployment"]) {
+        throw new UsageError("the argument '--deployment <DEPLOYMENT>' cannot be used with '--empty-deployment'");
+    }
     if (opts["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
     const draft = `deploy-${ulid().toLowerCase()}`;
-    const prepared = prepareManifest(interp, opts["--deployment"] ?? "deployment.toml");
+    const prepared = opts["--empty-deployment"]
+        ? emptyManifest(interp)
+        : prepareManifest(interp, opts["--deployment"] ?? "deployment.toml");
     const fill = opts["--fill-non-interactive"] === true;
     const env = opts["--env"] ?? [];
     const secrets = opts["--secret"] ?? [];
@@ -1347,13 +1343,13 @@ function deploymentCommand(context, [action, ...args]) {
     const json = (opts) => context.json || opts["--json"] === true;
     switch (action) {
         case "submit": {
-            const spec = { "--empty": false, "--description": true, "--deployment-id": true, "--json": false };
+            const spec = { "--empty-deployment": false, "--empty": "--empty-deployment", "--description": true, "--deployment-id": true, "--json": false };
             spec["--allow-unavailable-runtime-config"] = false;
             const { opts, positionals } = parseOptions(args, spec, ["PATH"]);
-            if (opts["--empty"] && positionals.length > 0) {
-                throw new UsageError("the argument '--empty' cannot be used with '[PATH]'");
+            if (opts["--empty-deployment"] && positionals.length > 0) {
+                throw new UsageError("the argument '--empty-deployment' cannot be used with '[PATH]'");
             }
-            const source = opts["--empty"] ? null : positionals[0] ?? "deployment.toml";
+            const source = opts["--empty-deployment"] ? null : positionals[0] ?? "deployment.toml";
             const allow = opts["--allow-unavailable-runtime-config"] === true;
             const id = submitDeployment(context, source, allow, opts["--description"] ?? null, opts["--deployment-id"] ?? null);
             return printValue(out, id, json(opts));
@@ -1500,14 +1496,18 @@ function fetchFile(api, digest) {
     }
 }
 
-// An existing `Dep_` ID is returned as is; a manifest (or `--empty`) is submitted.
+function emptyManifest(interp) {
+    return { dir: interp.cwd, toml: "" };
+}
+
+// An existing `Dep_` ID is returned as is; a manifest (or `--empty-deployment`) is submitted.
 function submitDeployment(context, source, allow, description, deploymentId) {
     if (source !== null && DEPLOYMENT_ID.test(source)) {
         if (description !== null) throw "--description cannot be used with an existing deployment ID";
         if (deploymentId !== null) throw "--deployment-id cannot be used with an existing deployment ID source";
         return source;
     }
-    const prepared = source === null ? { dir: context.interp.cwd, toml: "" } : prepareManifest(context.interp, source);
+    const prepared = source === null ? emptyManifest(context.interp) : prepareManifest(context.interp, source);
     return submitPrepared(context, prepared, allow, description, deploymentId);
 }
 
@@ -2004,7 +2004,7 @@ Commands:
                 Without -d or --empty-deployment the draft's staged deployment is kept
   unstage     Discard a draft and its staged changes [--draft KEY]
   deploy      Publish the local project, creating or configuring the app and activating its deployment
-                [-a APP_CONFIG] [-d DEPLOYMENT] [--description TEXT] [VALUES]
+                [-a APP_CONFIG] [-d DEPLOYMENT | --empty-deployment] [--description TEXT] [VALUES]
                 Stages into a new \`deploy-<id>\` draft, discarded if the deploy fails before applying it
   apply       Apply the staged changes of a draft with its staged deployment, else the active one
                 [--draft KEY | --reapply] [--force]: --reapply re-applies the applied revision
@@ -2012,7 +2012,7 @@ Commands:
   disable     Disable the app
   delete      Delete the app
   env         list | set NAME VALUE [--draft KEY] | unset NAME [--draft KEY]
-  secrets     list | set NAME (--from-env VAR | --stdin) [--draft KEY] | unset NAME [--draft KEY]
+  secrets     list | unset NAME [--draft KEY]; the user sets secret values
 
 VALUES, supplied to a new or deployed app:
       --env NAME[=VALUE]      Set an env var; a bare NAME reads the same-named exported variable
@@ -2074,7 +2074,7 @@ Usage: obelisk cloud app deployment <COMMAND>
 
 Commands:
   submit   Submit a deployment TOML; print the deployment ID
-             [PATH (default deployment.toml) | --empty] [--allow-unavailable-runtime-config] [--description TEXT]
+             [PATH (default deployment.toml) | --empty-deployment] [--allow-unavailable-runtime-config] [--description TEXT]
              [--deployment-id ID] [--json]
   list     List recent deployments [--json]
   active   Print the ID of the currently active deployment [--json]

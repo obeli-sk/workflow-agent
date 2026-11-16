@@ -82,7 +82,6 @@ The agent is then told about your apps and can run, for example:
 obelisk cloud app list
 obelisk cloud app deploy                    # create or update the app from ./app.toml and deploy
 obelisk cloud app execution list --app NAME
-obelisk cloud app secrets set API_KEY --stdin --app NAME
 ```
 
 Hosted API and webhook access defaults to `https://*.obelisk.works` on port

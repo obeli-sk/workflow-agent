@@ -35,10 +35,10 @@ export default async function run(args, stdin, appToml, fillEnv) {
 // A command-line error, reported like clap's.
 export class UsageError extends Error {}
 
-const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "--from-env", "-n", "--limit", "--draft", "-d", "--deployment"];
+const VALUE_FLAGS = ["--app", "--command-id", "-a", "--app-config", "-n", "--limit", "--draft", "-d", "--deployment"];
 const REPEATED_FLAGS = ["--env", "--secret"];
 const BOOLEAN_FLAGS = [
-    "--json", "--verbose", "--stdin", "--fill", "--fill-non-interactive",
+    "--json", "--verbose", "--fill", "--fill-non-interactive",
 ];
 const GLOBAL_FLAGS = ["--app", "--json", "--verbose"];
 
@@ -203,7 +203,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
         return print(await draftRequest(name, key, "DELETE", [], options), { kind: "unstaged", draft: key });
     }
     if (action === "env") return envCommand(name, key, rest, flags, options, print, apply);
-    if (action === "secrets") return secretsCommand(name, key, rest, flags, stdin, options, print, apply);
+    if (action === "secrets") return secretsCommand(name, key, rest, flags, options, print, apply);
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
 }
 
@@ -260,22 +260,17 @@ async function envCommand(name, draft, [action, key, value, ...extra], flags, op
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
 }
 
-async function secretsCommand(name, draft, [action, key, ...extra], flags, stdin, options, print, apply) {
+const SECRETS_SET_UNSUPPORTED = "`secrets set` is not available here: ask the user to set the secret with their own `obelisk cloud app secrets set` or in the dashboard, then run `obelisk cloud app apply`";
+
+async function secretsCommand(name, draft, [action, key, ...extra], flags, options, print, apply) {
     const secret = { ...options, kind: "secret" };
     if (action === "list") {
         allow(flags, []);
         arity([key], 0);
         return print(await appRequest(name, "GET", ["secrets"], secret), { kind: "secrets" });
     }
-    if (action === "set") {
-        allow(flags, ["--stdin", "--draft"]);
-        if (key === undefined) throw new UsageError("the following required arguments were not provided:\n  <NAME>");
-        if (flags["--stdin"] !== true) throw new UsageError("the following required arguments were not provided:\n  --from-env <FROM_ENV>");
-        arity(extra, 0);
-        configName(key);
-        const result = await draftRequest(name, draft, "PUT", ["secrets", key], { ...options, body: { value: stdin } }, true);
-        return print(result, { kind: "staged", message: "Secret change staged.", apply });
-    }
+    // Secret values come from the user, never through the agent.
+    if (action === "set") throw SECRETS_SET_UNSUPPORTED;
     if (action === "unset") {
         allow(flags, ["--draft"]);
         if (key === undefined) throw new UsageError("the following required arguments were not provided:\n  <NAME>");

@@ -177,22 +177,19 @@ test("commandHandler strips the command name and runs inside the shell", () => {
 
 // -- provisioner commands and deploy --
 
-test("provisioner commands forward args, policy, OBELISK_APP_NAME and --from-env", () => {
+test("provisioner commands forward args, policy and OBELISK_APP_NAME", () => {
     const i = interp("/workspace", { OBELISK_APP_NAME: "demo", API_KEY: "s3cret" });
     i.vfs.writeFile("/workspace/app.toml", 'app_name = "demo"\n');
     const cloud = fakeCloud();
-    let out = run(i, "cloud app secrets set API_KEY --from-env API_KEY", cloud);
+    let out = run(i, "cloud app env set MODE prod", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.deepEqual(cloud.runs[0], {
-        args: words("app secrets set API_KEY --stdin --app demo"), stdin: "s3cret", appToml: 'app_name = "demo"\n', fillEnv: null,
+        args: words("app env set MODE prod --app demo"), stdin: "", appToml: 'app_name = "demo"\n', fillEnv: null,
     });
 
     out = run(i, "cloud app new --fill-non-interactive", cloud);
     assert.equal(out.exitCode, 0, out.stderr);
     assert.deepEqual(new Map(cloud.runs[1].fillEnv).get("API_KEY"), "s3cret");
-
-    out = run(i, "cloud app secrets set X --from-env MISSING", cloud);
-    assert.equal(out.stderr, "Error: environment variable MISSING is not set\n");
 });
 
 test("cloud app deploy uploads without switching, then finishes with its id", () => {
@@ -271,6 +268,21 @@ test("cloud app stage submits the deployment between two cloud.run calls and sta
     for (const args of ["cloud app stage -d deployment.toml --empty-deployment", "cloud app stage --description x"]) {
         assert.notEqual(run(i, args, fakeCloud()).exitCode, 0, args);
     }
+});
+
+test("cloud app deploy --empty-deployment and deployment submit --empty skip deployment.toml", () => {
+    const i = interp("/workspace/app");
+    i.vfs.writeFile("/workspace/app/app.toml", 'app_name = "demo"\n');
+    // Never read: an empty deployment ignores the manifest.
+    i.vfs.writeFile("/workspace/app/deployment.toml", "invalid TOML");
+    for (const args of ["cloud app deploy --empty-deployment", "cloud app deployment submit --empty-deployment", "cloud app deployment submit --empty"]) {
+        const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
+        const out = run(i, args, cloud);
+        assert.equal(out.exitCode, 0, `${args}: ${out.stderr}`);
+        const submit = cloud.calls.find((call) => call.method === "PUT");
+        assert.equal(JSON.parse(submit.body).deployment_toml, "", args);
+    }
+    assert.equal(run(i, "cloud app deploy -d deployment.toml --empty-deployment", fakeCloud()).exitCode, 2);
 });
 
 test("cloud app apply sends the draft's staged deployment", () => {
@@ -835,7 +847,7 @@ test("deployment submit rejects generated metadata and missing files", () => {
 test("cloud deployment enqueue and apply reject activation before any API calls", () => {
     const id = "Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV";
     for (const action of ["enqueue", "apply"]) {
-        for (const source of [id, "--empty", "missing.toml"]) {
+        for (const source of [id, "--empty", "--empty-deployment", "missing.toml"]) {
             const cloud = fakeCloud();
             const out = run(interp(), `cloud app deployment ${action} ${source}`, cloud);
             assert.equal(out.exitCode, 1);

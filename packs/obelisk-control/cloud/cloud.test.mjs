@@ -269,7 +269,7 @@ test("app status, stage, unstage, env and secrets work on drafts", async () => {
         "POST /v1/apps/demo/config/compare": { changes: ["/cloud/memory_mb"], revision: 3 },
         "PUT /v1/apps/demo/drafts/default/config": { ...draftView({ revision: 3 }), changed: false },
         "PUT /v1/apps/demo/drafts/ci/env/MODE": { ...draftView({ key: "ci", revision: 6 }), changed: true },
-        "PUT /v1/apps/demo/drafts/default/secrets/API_KEY": { ...draftView({ revision: 7 }), changed: true },
+        "DELETE /v1/apps/demo/drafts/default/secrets/API_KEY": { ...draftView({ revision: 7 }), changed: true },
         "DELETE /v1/apps/demo/drafts/ci": { discarded: true },
     });
     const status = await run(["app", "status"], "", POLICY);
@@ -279,14 +279,19 @@ test("app status, stage, unstage, env and secrets work on drafts", async () => {
     assert.match(staged.stderr, /^Configuration unchanged at staged revision 3\.\n/);
     const env = await run(["app", "env", "set", "MODE", "prod", "--draft", "ci"], "", POLICY);
     assert.equal(env.stderr, "Environment staged. Staged revision 6; run `obelisk cloud app apply --draft ci` to apply changes.\n");
-    const secret = await run(["app", "secrets", "set", "API_KEY", "--stdin"], "s3cret", POLICY);
+    // Secret values come from the user, never through the agent.
+    const before = requests.length;
+    const set = await run(["app", "secrets", "set", "API_KEY"], "", POLICY);
+    assert.equal(set.exit_code, 1);
+    assert.match(set.stderr, /^Error: `secrets set` is not available here: ask the user to set the secret with their own `obelisk cloud app secrets set` or in the dashboard/);
+    assert.equal(requests.length, before);
+    const secret = await run(["app", "secrets", "unset", "API_KEY"], "", POLICY);
     assert.equal(secret.exit_code, 0, secret.stderr);
-    assert.deepEqual(JSON.parse(requests.find((request) => request.path.includes("/secrets/API_KEY")).body), { value: "s3cret" });
     // Edits create or reuse the draft.
     assert.deepEqual(calls(requests).filter((call) => call.includes("/drafts/")), [
         "PUT /v1/apps/demo/drafts/default/config?create_or_reuse=true",
         "PUT /v1/apps/demo/drafts/ci/env/MODE?create_or_reuse=true",
-        "PUT /v1/apps/demo/drafts/default/secrets/API_KEY?create_or_reuse=true",
+        "DELETE /v1/apps/demo/drafts/default/secrets/API_KEY?create_or_reuse=true",
     ]);
     assert.equal((await run(["app", "unstage", "--draft", "ci"], "", POLICY)).stderr, "Draft `ci` discarded.\n");
     assert.equal((await run(["app", "unstage", "--draft", "gone"], "", POLICY)).exit_code, 1);
