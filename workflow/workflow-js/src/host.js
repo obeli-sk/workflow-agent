@@ -44,7 +44,7 @@ export function createCloud(cloud, obelisk) {
             return { stdout: output.stdout, stderr: output.stderr, exitCode: output.exit_code };
         },
         create: (body, commandId) => plain(() => cloud.create(body, commandId)),
-        openDraft: (app, key, parentRevision, reuse) => plain(() => cloud.draftOpen(app, key, parentRevision, reuse)),
+        openDraft: (app, key, parentRevision) => plain(() => cloud.draftOpen(app, key, parentRevision)),
         draftRequest: (app, key, draftId, method, section, contentType, body) => plain(() => cloud.draftRequest(app, key, draftId, method, section, contentType, body)),
         read: (path) => plain(() => cloud.read(path)),
         command: (app, method, path, body, commandId, draftId = null) => plain(() => cloud.command(app, method, path, body, commandId, draftId)),

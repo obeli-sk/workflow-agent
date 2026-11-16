@@ -187,7 +187,9 @@ function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
         }
     }
     const key = opts["--draft"] ?? "default";
-    const opened = cloudValue(cloud.openDraft(name, key, appliedRevision(current), true), globals);
+    // Stage edits draft `key` whichever revision it was opened on.
+    const opened = cloudValue(cloud.read(["v1", "apps", name, "drafts", key]), globals, true)
+        ?? cloudValue(cloud.openDraft(name, key, appliedRevision(current)), globals);
     let { draft } = stageDraft(name, opened, policy, explicit, opts["--fill-non-interactive"] ? variables : null, cloud, globals);
     if (id !== null) draft = writeDraft(name, opened, ["deployment"], { deployment_id: id }, cloud, globals);
     if (globals.json) out.stdout += `${prettyJson(draft)}\n`;
@@ -483,7 +485,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     out.stderr += `Deploying ${name}\n`;
     const current = ensureApp(name, cloud, globals, out, () => initialValues(name, userSuppliedPolicy(config), explicit, fill ? variables : null));
     out.stderr += `→ obelisk cloud app stage --draft ${draft}\n`;
-    const opened = cloudValue(cloud.openDraft(name, draft, appliedRevision(current), false), globals);
+    const opened = cloudValue(cloud.openDraft(name, draft, appliedRevision(current)), globals);
     const context = {
         interp, out, verbose: globals.verbose,
         api: {

@@ -500,8 +500,8 @@ location = "packs/obelisk-control/cloud/draft-open.js"
 env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
-url_regex_suffix = "/v1/apps/[^/]+/drafts/[a-z0-9._-]+(/(config|deployment|env/[^/]+))?$"
-methods = ["GET", "POST"]
+url_regex_suffix = "/v1/apps/[^/]+/drafts/[a-z0-9._-]+$"
+methods = ["PUT"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 

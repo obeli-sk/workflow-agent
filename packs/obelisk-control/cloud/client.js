@@ -74,22 +74,35 @@ export function appRequest(name, method, suffix, options) {
     return cloudRequest(method, ["v1", "apps", name, ...suffix], options);
 }
 
-// PORT: cloud.rs's `Client::draft`: a request on draft `key`; `reuse` lets an edit create a
-// missing draft. Edits take no idempotency key.
-export async function draftRequest(name, key, method, suffix, options = {}, reuse = false) {
+function isNotFound(error) {
+    return /\(HTTP 404\)$/.test(String(error));
+}
+
+// PORT: cloud.rs's `Client::draft`: an edit of draft `key`, opening it on the applied revision
+// when missing. Edits take no idempotency key.
+export async function draftRequest(name, key, method, suffix, options = {}) {
     const kind = method === "PUT" && suffix[0] === "secrets" ? "secret" : "read";
-    if (method === "GET" || method === "POST") return appRequest(name, method, ["drafts", key, ...suffix], options);
     let draft;
     try {
         draft = await appRequest(name, "GET", ["drafts", key], options);
     } catch (error) {
-        if (!/\(HTTP 404\)$/.test(String(error))) throw error;
-        if (method === "DELETE" && suffix.length === 0) return { discarded: false };
-        if (!reuse) throw error;
+        if (!isNotFound(error)) throw error;
         const current = await appRequest(name, "GET", [], options);
-        draft = await appRequest(name, "POST", ["drafts", key], { ...options, body: { parent_revision: appliedRevision(current), reuse: true } });
+        draft = await appRequest(name, "PUT", ["drafts", key], { ...options, body: { parent_revision: appliedRevision(current) } });
     }
     return appRequest(name, method, ["drafts", key, ...suffix], { ...options, kind, draftId: draft.draft_id });
+}
+
+// PORT: cloud.rs's `unstage`: discards draft `key` by its ID.
+export async function discardDraft(name, key, options = {}) {
+    let draft;
+    try {
+        draft = await appRequest(name, "GET", ["drafts", key], options);
+    } catch (error) {
+        if (!isNotFound(error)) throw error;
+        return { discarded: false };
+    }
+    return appRequest(name, "DELETE", ["drafts", key], { ...options, draftId: draft.draft_id });
 }
 
 // The app row, or null when the provisioner has no such app.

@@ -41,12 +41,13 @@ retry resumes the failed request without repeating earlier successful requests.
 
 - `create` sends app creation with a workflow-generated command ID and captured
   JSON body. Transport failures and HTTP 5xx retry the same command.
-- `draft-open` accepts the workflow's draft label and captured applied revision.
-  It recovers an existing draft after a lost creation response. Stage accepts an
-  existing `default` (or `--draft`) and preserves its original parent and ID;
-  deploy generates a unique `deploy-<ulid>` label and requires its captured parent.
-  New drafts are opened with `{parent_revision, reuse:true}`; a changed applied
-  revision fails rather than silently rebasing the draft.
+- `draft-open` sends one `PUT` with the workflow's draft label and captured
+  applied revision as `{parent_revision}`. It opens the draft, or returns it
+  unchanged when it already exists on that parent, so a retry after a lost
+  response recovers it; another parent gives 412 rather than silently rebasing.
+  Stage first reads `default` (or `--draft`) and keeps an existing draft's parent
+  and ID, opening one only when missing; deploy generates a unique
+  `deploy-<ulid>` label and opens it directly.
 - `draft-request` sends one GET, PUT or DELETE on the captured draft. Every call
   carries `If-Match: "draft-<id>"`. Config, each public value, the deployment ID
   and cleanup are separate retryable activities. Edits never implicitly create

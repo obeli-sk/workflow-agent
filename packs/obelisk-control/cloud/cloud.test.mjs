@@ -135,22 +135,44 @@ test("command sends one request with the shell's Idempotency-Key; only failures 
     await assert.rejects(command("Demo!", "POST", ["enable"], null, id));
 });
 
-test("draft opening recovers a lost response, preserves existing stage parents and rejects a wrong deploy parent", async () => {
+test("draft opening is one PUT that recovers a lost response and rejects another parent", async () => {
     let saved = null;
     const requests = provisioner({
-        "GET /v1/apps/demo/drafts/deploy-x": () => saved ?? new Response("missing", { status: 404 }),
-        "POST /v1/apps/demo/drafts/deploy-x": (request) => {
-            assert.deepEqual(JSON.parse(request.body), { parent_revision: 7, reuse: true });
-            saved = draftView({ key: "deploy-x", draft_id: 42, parent_revision: 7 });
-            throw new Error("creation response lost");
+        "PUT /v1/apps/demo/drafts/deploy-x": (request) => {
+            const body = JSON.parse(request.body);
+            assert.deepEqual(Object.keys(body), ["parent_revision"]);
+            if (saved === null) {
+                saved = draftView({ key: "deploy-x", draft_id: 42, parent_revision: body.parent_revision });
+                throw new Error("open response lost");
+            }
+            if (saved.parent_revision !== body.parent_revision) return new Response('{"error":"Draft was opened on a different revision"}', { status: 412 });
+            return saved;
         },
     });
-    await assert.rejects(openDraft("demo", "deploy-x", 7, false), /Cloud request failed/);
-    const recovered = await openDraft("demo", "deploy-x", 7, false);
-    assert.equal(JSON.parse(recovered.body).draft_id, 42);
-    assert.equal(requests.filter(({ method }) => method === "POST").length, 1);
-    assert.equal((await openDraft("demo", "deploy-x", 8, true)).status, 200);
-    assert.equal((await openDraft("demo", "deploy-x", 8, false)).status, 409);
+    await assert.rejects(openDraft("demo", "deploy-x", 7), /Cloud request failed/);
+    assert.equal(JSON.parse((await openDraft("demo", "deploy-x", 7)).body).draft_id, 42);
+    assert.equal((await openDraft("demo", "deploy-x", 8)).status, 412);
+    assert.ok(requests.every((request) => request.method === "PUT"));
+});
+
+test("env edits open a missing draft on the applied revision", async () => {
+    const requests = provisioner({
+        "GET /v1/apps/demo": appRow({ applied_revision: 4 }),
+        "PUT /v1/apps/demo/drafts/default": (request) => {
+            assert.deepEqual(JSON.parse(request.body), { parent_revision: 4 });
+            return draftView({ draft_id: 9 });
+        },
+        "PUT /v1/apps/demo/drafts/default/env/MODE": { ...draftView({ draft_id: 9, revision: 5 }), changed: true },
+    });
+    const result = await run(["app", "env", "set", "MODE", "prod"], "", POLICY);
+    assert.equal(result.exit_code, 0, result.stderr);
+    assert.deepEqual(requests.map((request) => `${request.method} ${request.path}`), [
+        "GET /v1/apps/demo/drafts/default",
+        "GET /v1/apps/demo",
+        "PUT /v1/apps/demo/drafts/default",
+        "PUT /v1/apps/demo/drafts/default/env/MODE",
+    ]);
+    assert.equal(requests[3].headers["if-match"], '"draft-9"');
 });
 
 test("draft edit retries preserve If-Match and cannot modify a replacement", async () => {

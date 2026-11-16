@@ -71,8 +71,8 @@ function fakeCloud(routes = {}) {
         creates: [],
         opens: [],
         draftRequests: [],
-        openDraft(app, key, parentRevision, reuse) {
-            cloud.opens.push({ app, key, parentRevision, reuse });
+        openDraft(app, key, parentRevision) {
+            cloud.opens.push({ app, key, parentRevision });
             if (!drafts.has(key)) drafts.set(key, { ...draftView(), key, draft_id: drafts.size + 1, parent_revision: parentRevision, env: {}, policy: appConfig(`app_name = "${app}"\n`).policy, cloud: {} });
             return { status: 200, body: JSON.stringify(drafts.get(key)) };
         },
@@ -99,6 +99,7 @@ function fakeCloud(routes = {}) {
         // Provisioner requests are routed under `/api`.
         read(path) {
             const result = respond(null, "GET", `/api/${path.join("/")}`, null, null);
+            if (result.status === 404 && path[3] === "drafts" && drafts.has(path[4])) return { status: 200, body: JSON.stringify(drafts.get(path[4])) };
             if (path.length === 3 && path[1] === "apps" && result.status === 200) result.body = JSON.stringify({ applied_revision: 1, ...JSON.parse(result.body) });
             return result;
         },
@@ -243,7 +244,7 @@ test("cloud app deploy uploads without switching, then finishes with its id", ()
     assert.match(draft, /^deploy-[0-9a-z]{26}$/);
     const commandId = cloud.commands[0];
     assert.match(commandId, /^E_[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
-    assert.deepEqual(cloud.opens, [{ app: "demo", key: draft, parentRevision: 1, reuse: false }]);
+    assert.deepEqual(cloud.opens, [{ app: "demo", key: draft, parentRevision: 1 }]);
     assert.ok(cloud.draftRequests.every((request) => request.draftId === 1));
     assert.equal(cloud.lastCommandDraftId, 1);
     const submit = cloud.calls.find((call) => call.path === `/v1/deployments/${id}`);
@@ -279,7 +280,8 @@ test("cloud app stage creates a missing app bare, submits, then edits one captur
         allow_unavailable_runtime_config: true,
     });
     assert.deepEqual(cloud.runs, []);
-    assert.deepEqual(cloud.opens, [{ app: "demo", key: "default", parentRevision: 1, reuse: true }]);
+    assert.deepEqual(cloud.opens, [{ app: "demo", key: "default", parentRevision: 1 }]);
+    assert.ok(cloud.calls.some((call) => call.method === "GET" && call.path === "/api/v1/apps/demo/drafts/default"));
     assert.deepEqual(cloud.draftRequests.map(({ section }) => section), [["config"], ["env", "MODE"], ["deployment"]]);
     assert.ok(cloud.draftRequests.every((request) => request.draftId === 1));
     assert.deepEqual(JSON.parse(cloud.creates[0].body), { app_toml: 'app_name = "demo"\n' });
@@ -321,13 +323,13 @@ test("cloud app stage creates a missing app bare, submits, then edits one captur
 test("stage reuses default's captured identity and parent without recreating it", () => {
     const i = interp();
     i.vfs.writeFile("/workspace/app.toml", 'app_name = "demo"\n');
-    const cloud = fakeCloud({ "GET /api/v1/apps/demo": ok({ applied_revision: 9, status: "running" }) });
     const existing = draftView({ draft_id: 42, parent_revision: 7, env: {}, policy: appConfig('app_name="demo"\n').policy, cloud: {} });
+    const cloud = fakeCloud({
+        "GET /api/v1/apps/demo": ok({ applied_revision: 9, status: "running" }),
+        "GET /api/v1/apps/demo/drafts/default": ok(existing),
+    });
     const edits = [];
-    cloud.openDraft = (app, key, parent, reuse) => {
-        assert.deepEqual([app, key, parent, reuse], ["demo", "default", 9, true]);
-        return { status: 200, body: JSON.stringify(existing) };
-    };
+    cloud.openDraft = () => assert.fail("an existing draft is not reopened");
     cloud.draftRequest = (app, key, id, method, section, contentType, body) => {
         edits.push({ key, id, method, section });
         return { status: 200, body: JSON.stringify(existing) };

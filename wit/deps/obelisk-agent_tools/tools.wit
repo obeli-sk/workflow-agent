@@ -49,8 +49,8 @@ interface cloud {
   run: func(args: list<string>, stdin: string, app-toml: option<string>, fill-env: option<list<tuple<string, string>>>) -> result<command-output, string>;
   // One app creation request with an immutable JSON body and a workflow-chosen Idempotency-Key.
   create: func(body: string, command-id: string) -> result<response, string>;
-  // Reuse a stage draft, or recover a unique deploy draft opened on the captured parent.
-  draft-open: func(app: string, draft: string, parent-revision: u64, reuse: bool) -> result<response, string>;
+  // One PUT opening `draft` on `parent-revision`, or returning it unchanged; 412 when it has another parent.
+  draft-open: func(app: string, draft: string, parent-revision: u64) -> result<response, string>;
   // One retryable edit to an existing draft, without implicit draft recreation.
   draft-request: func(app: string, draft: string, draft-id: u64, method: string, section: list<string>, content-type: option<string>, body: option<string>) -> result<response, string>;
   // GET `/<path>` on the provisioner; err only when no response arrived or the server failed.

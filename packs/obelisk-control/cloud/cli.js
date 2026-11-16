@@ -11,7 +11,7 @@
 // those that bare `--env NAME` reads. Secret values never pass through here.
 // Like the CLI, JSON goes to stdout and human output to stderr; errors exit 1,
 // usage errors 2.
-import { appRequest, cloudBase, cloudRequest, draftRequest } from "./client.js";
+import { appRequest, cloudBase, cloudRequest, discardDraft, draftRequest } from "./client.js";
 import { USER_SETS_SECRETS } from "./fill.js";
 import { appConfig, configForApp, configName, validateCloudAppName } from "./policy.js";
 import { draftArg, draftValues, humanOutput, renderSummary } from "./output.js";
@@ -182,7 +182,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     if (action === "unstage") {
         allow(flags, ["--draft"]);
         arity(rest, 0);
-        return print(await draftRequest(name, key, "DELETE", [], options), { kind: "unstaged", draft: key });
+        return print(await discardDraft(name, key, options), { kind: "unstaged", draft: key });
     }
     if (action === "env") return envCommand(name, key, rest, flags, options, print, apply);
     if (action === "secrets") return secretsCommand(name, key, rest, flags, options, print, apply);
@@ -200,7 +200,7 @@ async function envCommand(name, draft, [action, key, value, ...extra], flags, op
         if (value === undefined) throw new UsageError("the following required arguments were not provided:\n  <NAME>\n  <VALUE>");
         arity(extra, 0);
         configName(key);
-        const result = await draftRequest(name, draft, "PUT", ["env", key], { ...options, body: { value } }, true);
+        const result = await draftRequest(name, draft, "PUT", ["env", key], { ...options, body: { value } });
         return print(result, { kind: "staged", message: "Environment staged.", apply });
     }
     if (action === "unset") {
@@ -208,7 +208,7 @@ async function envCommand(name, draft, [action, key, value, ...extra], flags, op
         if (key === undefined) throw new UsageError("the following required arguments were not provided:\n  <NAME>");
         arity([value], 0);
         configName(key);
-        return print(await draftRequest(name, draft, "DELETE", ["env", key], options, true), { kind: "staged", message: "Environment staged.", apply });
+        return print(await draftRequest(name, draft, "DELETE", ["env", key], options), { kind: "staged", message: "Environment staged.", apply });
     }
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
 }
@@ -229,7 +229,7 @@ async function secretsCommand(name, draft, [action, key, ...extra], flags, optio
         if (key === undefined) throw new UsageError("the following required arguments were not provided:\n  <NAME>");
         arity(extra, 0);
         configName(key);
-        const result = await draftRequest(name, draft, "DELETE", ["secrets", key], options, true);
+        const result = await draftRequest(name, draft, "DELETE", ["secrets", key], options);
         return print(result, { kind: "staged", message: "Secret change staged.", apply });
     }
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
