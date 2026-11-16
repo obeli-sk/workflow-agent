@@ -49,6 +49,7 @@ location = "activity/config-discover.js"
 env_vars = [
   { key = "APP_NAME", value = "${APP_NAME}" },
   { key = "MAX_STEPS", value = "${MAX_STEPS:-40}" },
+  { key = "BROWSER_URL", value = "${BROWSER_URL:-}" },
   { key = "PROGRAMS_JSON", value = '''
 ${PROGRAMS_JSON:-[
   {"name":"curl","ffqn":"obelisk-agent:programs/program.curl","description":"GET-only HTTP client"},
@@ -90,6 +91,24 @@ methods = ["GET"]
 url_regex_suffix = "/v1/executions/E_[^/]+/status$"
 secrets = ["OBELISK_API_TOKEN"]
 replace_in = ["headers"]
+
+[[activity_js]]
+name = "program_browser"
+ffqn = "obelisk-agent:programs/program.browser"
+params = [
+  { name = "stdin", type = "string" },
+  { name = "args", type = "list<string>" },
+]
+return_type = "result<record { stdout: string, stderr: string, exit-code: u32 }, string>"
+location = "activity/browser.js"
+# Creation and partially completed batches must not be repeated automatically.
+max_retries = 0
+exec.lock_expiry.minutes = 10
+env_vars = [{ key = "BROWSER_URL", value = "${BROWSER_URL:-}" }]
+[[activity_js.allowed_host]]
+url_prefix = "${BROWSER_URL:-http://browser-disabled.invalid}"
+url_regex_suffix = "/v1/sessions(/[A-Za-z0-9_-]+(/steps)?)?$"
+methods = ["GET", "POST", "DELETE"]
 
 # --- Docs: rendered llms.txt over the curl program ----------------------------
 # The session reads the rendered Obelisk docs through the GET-only curl program
@@ -489,7 +508,7 @@ env_vars = [
 ]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
-methods = ["POST", "DELETE"]
+methods = ["GET", "PUT", "POST", "DELETE"]
 secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
 replace_in = ["headers"]
 

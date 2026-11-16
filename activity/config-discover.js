@@ -102,9 +102,16 @@ function parentOf(executionId) {
 
 export default async function discover(executionId, backend, effort, name) {
     const obeliskVersion = (process.env["OBELISK_VERSION"] ?? "").trim() || "latest";
+    const browserFfqn = "obelisk-agent:programs/program.browser";
+    const programs = parseRegistry("PROGRAMS_JSON", parseProgram);
+    const browserEnabled = Boolean(process.env["BROWSER_URL"]?.trim());
+    const availablePrograms = browserEnabled ? programs : programs.filter((program) => program.name !== "browser" && program.ffqn !== browserFfqn);
+    if (browserEnabled && !programs.some((program) => program.name === "browser")) {
+        availablePrograms.push({ name: "browser", ffqn: browserFfqn, description: "control headless browser sessions; run browser --help" });
+    }
     return {
         max_steps: parseMaxSteps(process.env["MAX_STEPS"]),
-        programs: parseRegistry("PROGRAMS_JSON", parseProgram),
+        programs: availablePrograms,
         apps: parseRegistry("APPS_JSON", parseApp),
         obelisk_version: obeliskVersion,
         // The static sections already end in one "\n" (from packSystemPrompt);

@@ -123,8 +123,8 @@ export async function stageValues(app, key, draft, explicit, fillEnv) {
 
 // PORT: cloud.rs's `apply_request`: applies the current contents of draft `key`, or re-applies
 // the applied revision without one. `note` receives the human progress lines.
-export function applyRequest(name, key, draft, current, deploymentId, force, note) {
-    const body = { force, deployment_id: deploymentId };
+export function applyRequest(name, key, draft, current, force, note) {
+    const body = { force };
     const applied = JSON.stringify(current?.applied_revision ?? null);
     if (draft === null) {
         note(`Re-applying revision ${applied}`);

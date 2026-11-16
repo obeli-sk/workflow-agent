@@ -121,6 +121,7 @@ Besides those, the shell provides:
   snapshot of a deployment; source files load when first read.
 - `obelisk cloud ...`: the apps in the cloud (see above).
 - `curl`: GET-only, limited to the Obelisk docs and the apps' webhooks.
+- `browser`: optional headless browser control (see below).
 - `chat`: other sessions (see below).
 - `mount`: what is mounted where.
 
@@ -128,6 +129,42 @@ Besides those, the shell provides:
   appears in the UI as a form.
 
 Background jobs (`&`, `jobs`, `wait`) are not supported.
+
+## Browser control
+
+Browser control is disabled by default. Uncomment `[cloud.integrations.browser]`
+in `app.toml`, set `allowed_hosts` to the page, login and asset hosts you need,
+and apply the app configuration. The example reserves 128 MB per session.
+ObeliskNet supplies `BROWSER_URL`; new agent sessions then discover the command
+automatically. For local development, supply a compatible browser service URL.
+Applying the enabled config from your CLI requires Obelisk with opaque cloud
+integration settings support (commit `225cb3497` or newer); the currently pinned
+`v0.43.0-rc.18` CLI rejects browser-specific settings. The agent's `obelisk cloud`
+command supports them.
+
+```sh
+session=$(browser session create --ttl 600)
+browser steps "$session" <<'JSON'
+{"steps":[
+  {"op":"goto","url":"https://app.example.com"},
+  {"op":"content","format":"markdown"}
+]}
+JSON
+browser session status "$session"  # JSON, including expires_at
+browser session close "$session"
+```
+
+`browser --help` describes the step operations and locators. Creation prints
+only the session ID; status, steps and close print JSON. Failed steps return a
+nonzero exit code with partial results and denied hosts still on stdout.
+Requests are not automatically retried: inspect the page after an ambiguous
+failure before repeating an action. `browser steps ID --idempotency-key KEY`
+can retrieve a completed batch's cached result while its key remains in the
+session's last 16 keys. A key must identify the same batch.
+
+Sessions end on expiry, restart, crash or memory exhaustion. Create a new one
+explicitly when needed. Lightpanda supports DOM interaction, HTML and Markdown,
+but has no screenshots. The agent operates within the configured host policy.
 
 ## Sessions talking to each other: `chat`
 

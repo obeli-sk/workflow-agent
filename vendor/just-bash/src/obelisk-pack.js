@@ -131,9 +131,9 @@ function executeCloud(interp, args, stdin, cloud, out) {
     return cloudRun(interp, args, stdin, cloud, globals, rest);
 }
 
-// PORT: obelisk's src/command/cloud/stage.rs. `cloud.run` creates a missing app and stages
-// the config and values; the deployment is then submitted to the app's API here and a second
-// `cloud.run` records its ID in the draft. Values are staged only by the first call.
+// PORT: obelisk's src/command/cloud/stage.rs. A missing app is created bare so its API can
+// receive the deployment, which is submitted here first; `cloud.run` then stages the config,
+// values and the deployment's ID.
 function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
     const forwarded = [];
     let source;
@@ -163,11 +163,22 @@ function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
         return cloudRun(interp, forwarded, stdin, cloud, globals, rest);
     }
     const prepared = source === undefined ? null : prepareManifest(interp, source);
-    const staged = cloudRun(interp, [...forwarded, "--json"], stdin, cloud, globals, rest);
-    if (staged.exitCode !== 0) return staged;
-    out.stderr += staged.stderr;
     const policy = readPolicy(interp, appConfig);
-    const name = globals.app ?? exportedVar(interp, "OBELISK_APP_NAME") ?? parsePolicy(policy, appConfig).app_name;
+    if (policy === null) throw `Cannot read app config ${appConfig}: No such file or directory`;
+    const configured = parsePolicy(policy, appConfig).app_name;
+    const name = globals.app ?? exportedVar(interp, "OBELISK_APP_NAME") ?? configured;
+    if (typeof name !== "string") throw "Set app_name in ./app.toml, --app or OBELISK_APP_NAME";
+    // PORT: cloud.rs's `config_for_app`, checked before the app is created.
+    if (typeof configured === "string" && configured !== name) {
+        throw `${appConfig} is for app \`${configured}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${configured}\` or fix \`app_name\``;
+    }
+    const existing = cloud.read(["v1", "apps", name]);
+    if (existing.status !== 404) checked(existing);
+    else {
+        out.stderr += `App ${name} does not exist; creating it\n→ obelisk cloud app new\n`;
+        const created = cloud.run(["app", "new", "--app", name, "--json"], "", null, null);
+        if (created.exitCode !== 0) return { stdout: out.stdout, stderr: out.stderr + created.stderr, exitCode: created.exitCode };
+    }
     const context = {
         interp, out, verbose: globals.verbose,
         api: {
@@ -182,21 +193,10 @@ function cloudStage(interp, args, stdin, cloud, globals, rest, out) {
             ? submitDeployment(context, null, true, description, null)
             : submitPrepared(context, prepared, true, description, null);
     } catch (error) {
-        throw withContext(`Configuration is staged in draft \`${JSON.parse(staged.stdout).key}\`, but the deployment was not submitted; retry stage`, error);
+        throw withContext("The deployment was not submitted, nothing was staged", error);
     }
-    const recorded = cloudRun(interp, [...withoutValues(forwarded), "-d", id], "", cloud, globals, rest);
-    return { stdout: out.stdout + recorded.stdout, stderr: out.stderr + recorded.stderr, exitCode: recorded.exitCode };
-}
-
-// `args` without the value flags, so they are staged only once.
-function withoutValues(args) {
-    const kept = [];
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (arg === "--env") i++;
-        else if (!arg.startsWith("--env=") && arg !== "--fill" && arg !== "--fill-non-interactive") kept.push(arg);
-    }
-    return kept;
+    const staged = cloudRun(interp, [...forwarded, "-d", id], stdin, cloud, globals, rest);
+    return { stdout: out.stdout + staged.stdout, stderr: out.stderr + staged.stderr, exitCode: staged.exitCode };
 }
 
 function done(out, stdout) {
@@ -352,11 +352,7 @@ function cloudLifecycle(interp, action, args, globals, cloud, out) {
         if (draft === null && !opts["--reapply"]) {
             throw `Nothing staged in draft \`${key}\`; stage changes with \`obelisk cloud app stage\` or \`env set\`${draftArg(key)}, or reconcile the applied revision with \`--reapply\``;
         }
-        // The draft's staged deployment, else the active one.
-        const deploymentId = typeof draft?.deployment_id === "string"
-            ? draft.deployment_id
-            : getJson({ get: (path) => cloud.get(name, path) }, "/v1/info").deployment_id;
-        body = JSON.stringify(applyRequest(name, key, draft, current, deploymentId, opts["--force"] === true, (line) => notes.push(`${line}\n`)));
+        body = JSON.stringify(applyRequest(name, key, draft, current, opts["--force"] === true, (line) => notes.push(`${line}\n`)));
     }
     const [method, path] = { apply: ["POST", ["apply"]], enable: ["POST", ["enable"]], disable: ["POST", ["disable"]], delete: ["DELETE", []] }[action];
     let response;
@@ -368,9 +364,10 @@ function cloudLifecycle(interp, action, args, globals, cloud, out) {
     print(value(response, false, id), notes.join(""));
 }
 
-// PORT: obelisk's src/command/cloud/deploy.rs. `prepareDeploy` stages the
-// config and values into a draft or creates the app, the deployment is
-// uploaded to the app's API here, then `finishDeploy` applies.
+// PORT: obelisk's src/command/cloud/deploy.rs. `prepareDeploy` creates a
+// missing app bare and stages the config and values into a draft, the
+// deployment is uploaded to the app's API here, then `finishDeploy` stages
+// it in the draft and applies.
 function cloudDeploy(interp, args, globals, cloud, out) {
     const { opts } = parseOptions(args, {
         "-a": "--app-config", "--app-config": true, "-d": "--deployment", "--deployment": true,
@@ -425,15 +422,13 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     try {
         id = submitPrepared(context, prepared, true, opts["--description"] ?? null, null);
     } catch (error) {
-        if (target.draft) {
-            // Best effort, like the CLI.
-            try { cloud.run(["app", "unstage", "--app", name, "--draft", target.draft], "", null, null); } catch { /* ignored */ }
-        }
+        // Best effort, like the CLI.
+        try { cloud.run(["app", "unstage", "--app", name, "--draft", draft], "", null, null); } catch { /* ignored */ }
         throw withContext(`Deployment staging failed; inspect \`obelisk cloud app status --app ${name}\` and retry deploy`, error);
     }
     // Chosen here so that retrying the apply after it redeploys this app reuses the Idempotency-Key.
     const commandId = `E_${ulid()}`;
-    const deployed = activity(() => cloud.finishDeploy(name, id, target.revision, target.draft, commandId));
+    const deployed = activity(() => cloud.finishDeploy(name, id, draft, commandId));
     out.stderr += deployed.log;
     const row = deployed.app;
     if (globals.json) {

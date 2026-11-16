@@ -128,59 +128,86 @@ test("deploy refuses to create an app whose policy requires values", async () =>
     assert.deepEqual(calls(requests), ["GET /v1/apps/demo", "GET /v1/apps/demo"]);
 });
 
-test("deploy creates a missing app with explicit and filled values", async () => {
+// Routes for staging into `deploy-x` of a missing app: the config arrives without env, and each
+// env PUT adds its value.
+function createdApp(policy, routes = {}) {
+    const config = appConfig(policy);
+    const staged = draftView({ key: "deploy-x", app_toml: policy, policy: config.policy, cloud: config.cloud, env: {}, secrets: [] });
+    return provisioner({
+        "POST /v1/apps": appRow(),
+        "POST /v1/apps/demo/drafts/deploy-x": staged,
+        "PUT /v1/apps/demo/drafts/deploy-x/config": staged,
+        ...routes,
+    });
+}
+
+test("deploy creates a missing app bare and stages explicit and filled values in its draft", async () => {
     const policy = 'app_name = "demo"\n[secrets]\nEXTRA = { optional = true }\n';
-    const requests = provisioner({ "POST /v1/apps": appRow() });
+    const requests = createdApp(policy);
     const target = await deploy("", policy);
-    assert.deepEqual(target, { created: true, draft: null, revision: 1, log: "Deploying demo\n→ obelisk cloud app new\nRe-applying revision 1\n" });
-    const create = requests.find((request) => request.method === "POST");
+    assert.deepEqual(target, {
+        created: true,
+        log: "Deploying demo\nApp demo does not exist; creating it\n→ obelisk cloud app new\n→ obelisk cloud app stage --draft deploy-x\n",
+    });
+    assert.deepEqual(calls(requests), [
+        "GET /v1/apps/demo", "POST /v1/apps", "POST /v1/apps/demo/drafts/deploy-x", "PUT /v1/apps/demo/drafts/deploy-x/config",
+    ]);
+    const create = requests.find((request) => request.path === "/v1/apps");
     assert.equal(create.headers.authorization, "Bearer cloud-token");
     assert.match(create.headers["idempotency-key"], /^E_[0-9A-Z]{26}$/);
-    assert.deepEqual(JSON.parse(create.body), { app_toml: policy, env: {}, secrets: {} });
+    assert.deepEqual(JSON.parse(create.body), { app_toml: 'app_name = "demo"\n' });
+    assert.equal(requests.at(-1).body, policy);
 
-    provisioner({ "POST /v1/apps": appRow() });
+    const withMode = (request) => draftView({ key: "deploy-x", env: { MODE: JSON.parse(request.body).value } });
     // A fill reads env only, never the optional secret's same-named variable.
-    const filled = provisioner({ "POST /v1/apps": appRow() });
+    const filled = createdApp(ENV_POLICY, { "PUT /v1/apps/demo/drafts/deploy-x/env/MODE": withMode });
     await deploy("", ENV_POLICY, { fill: true, exported: [["MODE", "dev"], ["EXTRA", "e"]] });
-    assert.deepEqual(JSON.parse(filled.find((request) => request.method === "POST").body), {
-        app_toml: ENV_POLICY, env: { MODE: "dev" }, secrets: {},
-    });
-    const values = provisioner({ "POST /v1/apps": appRow() });
+    const env = (requests) => requests.filter((request) => request.path.includes("/env/") || request.path.includes("/secrets/"))
+        .map((request) => [request.path, JSON.parse(request.body)]);
+    assert.deepEqual(env(filled), [["/v1/apps/demo/drafts/deploy-x/env/MODE", { value: "dev" }]]);
+    const values = createdApp(ENV_POLICY, { "PUT /v1/apps/demo/drafts/deploy-x/env/MODE": withMode });
     await deploy("", ENV_POLICY, { env: ["MODE"], exported: [["MODE", "dev"]] });
-    assert.deepEqual(JSON.parse(values.find((request) => request.method === "POST").body), {
-        app_toml: ENV_POLICY, env: { MODE: "dev" }, secrets: {},
-    });
+    assert.deepEqual(env(values), [["/v1/apps/demo/drafts/deploy-x/env/MODE", { value: "dev" }]]);
     await assert.rejects(deploy("", ENV_POLICY, { env: ["MODE"] }), /Error: Environment variable MODE is missing/);
 });
 
-test("deploy sends cloud integrations and does not require the env they supply", async () => {
+test("deploy stages cloud integrations and does not require the env they supply", async () => {
     const policy = 'app_name = "demo"\n[cloud.integrations]\nllm = { type = "llm", env = "LLM_BASE_URL" }\n[public_env]\nLLM_BASE_URL = {}\n';
-    const requests = provisioner({ "POST /v1/apps": appRow() });
+    const requests = createdApp(policy);
     await deploy("", policy);
-    const body = JSON.parse(requests.find((request) => request.method === "POST").body);
-    assert.deepEqual(body, { app_toml: policy, env: {}, secrets: {} });
+    assert.equal(requests.find((request) => request.path.endsWith("/config")).body, policy);
+    assert.ok(!requests.some((request) => request.path.includes("/env/")));
     assert.throws(() => appConfig('app_name = "demo"\n[cloud.integrations]\nllm = { type = "llm", env = "MISSING" }\n'), /environment-backed/);
 });
 
-test("deploy creates its own draft, stages config and values and warns about other drafts", async () => {
+test("deploy preserves browser integration settings and skips its supplied URL", async () => {
+    const policy = 'app_name = "demo"\n[cloud]\nmemory_mb = 512\n[cloud.integrations.browser]\ntype = "browser"\nenv = "BROWSER_URL"\nallowed_hosts = ["https://app.example.com"]\nmax_sessions = 1\nsession_memory_mb = 128\nmax_ttl = "30m"\n[public_env]\nBROWSER_URL = { optional = true }\n';
+    assert.deepEqual(appConfig(policy).cloud.integrations.browser, {
+        type: "browser", env: "BROWSER_URL", allowed_hosts: ["https://app.example.com"],
+        max_sessions: 1, session_memory_mb: 128, max_ttl: "30m",
+    });
+    const requests = createdApp(policy);
+    await deploy("", policy);
+    assert.equal(requests.find((request) => request.path.endsWith("/config")).body, policy);
+    assert.ok(!requests.some((request) => request.path.includes("/env/")));
+});
+
+test("deploy creates its own draft and stages config and values", async () => {
     const staged = draftView({ key: "deploy-x", env: {} });
     const requests = provisioner({
         "GET /v1/apps/demo": appRow({ status: "stopped" }),
         "POST /v1/apps/demo/drafts/deploy-x": draftView({ key: "deploy-x", summary: { changed: false } }),
         "PUT /v1/apps/demo/drafts/deploy-x/config": { ...staged, values: { ...staged.values, missing_env: ["MODE"] } },
         "PUT /v1/apps/demo/drafts/deploy-x/env/MODE": { ...staged, env: { MODE: "prod" } },
-        "GET /v1/apps/demo/drafts": { drafts: [staged, draftView({ summary: { ...staged.summary, app_toml: false, env: { added: ["X"] } } })], applied_revision: 1 },
     });
     const target = await deploy("demo", POLICY, { env: ["MODE=prod"], fill: true, exported: [["API_KEY", "k"]] });
     assert.deepEqual(target, {
-        created: false, draft: "deploy-x", revision: 1,
-        log: "Deploying demo\n→ obelisk cloud app stage\n→ obelisk cloud app fill\n"
-            + "Draft `default` (env +X) will be discarded when this deploy is applied\n"
-            + "Applying draft `deploy-x` revision 2 over revision 1: app.toml\n",
+        created: false,
+        log: "Deploying demo\n→ obelisk cloud app stage --draft deploy-x\n→ obelisk cloud app fill\n",
     });
     assert.deepEqual(calls(requests), [
         "GET /v1/apps/demo", "POST /v1/apps/demo/drafts/deploy-x", "PUT /v1/apps/demo/drafts/deploy-x/config",
-        "PUT /v1/apps/demo/drafts/deploy-x/env/MODE", "GET /v1/apps/demo/drafts",
+        "PUT /v1/apps/demo/drafts/deploy-x/env/MODE",
     ]);
     const [stage, env] = requests.filter((request) => request.method === "PUT");
     assert.equal(stage.headers["content-type"], "application/toml");
@@ -207,26 +234,55 @@ test("deploy discards its draft when values are missing or the draft exists", as
     assert.deepEqual(calls(taken), ["GET /v1/apps/demo", "POST /v1/apps/demo/drafts/deploy-x"]);
 });
 
-test("finish-deploy applies the draft with the uploaded deployment, or re-applies the revision", async () => {
-    let requests = provisioner({
+const COMMAND = "E_01M7A0M1P2P2F1VNCPZ9S26DFJ";
+
+test("finish-deploy stages the uploaded deployment in the draft, warns about other drafts and applies it", async () => {
+    const staged = draftView({ key: "deploy-x", deployment_id: "Dep_1" });
+    const requests = provisioner({
+        "PUT /v1/apps/demo/drafts/deploy-x/deployment": staged,
+        "GET /v1/apps/demo/drafts": { drafts: [staged, draftView({ summary: { ...staged.summary, app_toml: false, env: { added: ["X"] } } })], applied_revision: 1 },
+        "GET /v1/apps/demo": appRow(),
         "POST /v1/apps/demo/apply": appRow({ outcome: { configuration: "applied", vm: "started" } }),
     });
-    const deployed = await finishDeploy("demo", "Dep_1", 1, "deploy-x", "E_01M7A0M1P2P2F1VNCPZ9S26DFJ");
+    const deployed = await finishDeploy("demo", "Dep_1", "deploy-x", COMMAND);
     assert.equal(JSON.parse(deployed.app_json).endpoints.internal, "https://internal--demo.obelisk.works");
-    assert.equal(deployed.log, "→ obelisk cloud app apply\nConfiguration applied. App started.\n");
-    assert.deepEqual(JSON.parse(requests[0].body), { force: false, deployment_id: "Dep_1", draft: "deploy-x" });
-    assert.equal(requests[0].headers["idempotency-key"], "E_01M7A0M1P2P2F1VNCPZ9S26DFJ");
-    requests = provisioner({ "POST /v1/apps/demo/apply": appRow() });
-    await finishDeploy("demo", "Dep_1", 1, null, "E_01M7A0M1P2P2F1VNCPZ9S26DFJ");
-    assert.deepEqual(calls(requests), ["POST /v1/apps/demo/apply"]);
-    assert.deepEqual(JSON.parse(requests[0].body), { force: false, deployment_id: "Dep_1", revision: 1 });
+    assert.equal(deployed.log, "Draft `default` (env +X) will be discarded when this deploy is applied\n"
+        + "Applying draft `deploy-x` revision 2 over revision 1: app.toml, deployment Dep_1\n"
+        + "→ obelisk cloud app apply --draft deploy-x\nConfiguration applied. App started.\n");
+    assert.deepEqual(calls(requests), [
+        `GET /v1/commands/${COMMAND}`, "PUT /v1/apps/demo/drafts/deploy-x/deployment", "GET /v1/apps/demo/drafts",
+        "GET /v1/apps/demo", "POST /v1/apps/demo/apply",
+    ]);
+    assert.deepEqual(JSON.parse(requests[1].body), { deployment_id: "Dep_1" });
+    assert.deepEqual(JSON.parse(requests.at(-1).body), { force: false, draft: "deploy-x" });
+    assert.equal(requests.at(-1).headers["idempotency-key"], COMMAND);
+});
+
+test("finish-deploy retried after its apply was accepted joins the apply", async () => {
+    const requests = provisioner({
+        [`GET /v1/commands/${COMMAND}`]: { status: "running" },
+        "POST /v1/apps/demo/apply": appRow(),
+    });
+    await finishDeploy("demo", "Dep_1", "deploy-x", COMMAND);
+    assert.deepEqual(calls(requests), [`GET /v1/commands/${COMMAND}`, "POST /v1/apps/demo/apply"]);
+    assert.deepEqual(JSON.parse(requests[1].body), { force: false, draft: "deploy-x" });
+});
+
+test("finish-deploy discards the draft when the deployment cannot be staged", async () => {
+    const requests = provisioner({
+        "PUT /v1/apps/demo/drafts/deploy-x/deployment": () => new Response(JSON.stringify({ error: "unknown deployment" }), { status: 422 }),
+        "DELETE /v1/apps/demo/drafts/deploy-x": { discarded: true },
+    });
+    await assert.rejects(finishDeploy("demo", "Dep_1", "deploy-x", COMMAND), /Error: unknown deployment \(HTTP 422\)/);
+    assert.equal(calls(requests).at(-1), "DELETE /v1/apps/demo/drafts/deploy-x");
 });
 
 test("finish-deploy requires a running app and suggests a retry on failure", async () => {
-    provisioner({ "POST /v1/apps/demo/apply": appRow({ status: "stopped" }) });
-    await assert.rejects(finishDeploy("demo", "Dep_1", 1, null, "E_01M7A0M1P2P2F1VNCPZ9S26DFJ"), /\nError: App is "stopped"; inspect it with/);
-    provisioner({ "POST /v1/apps/demo/apply": () => new Response(JSON.stringify({ error: "draft is stale" }), { status: 409 }) });
-    await assert.rejects(finishDeploy("demo", "Dep_1", 1, "deploy-x", "E_01M7A0M1P2P2F1VNCPZ9S26DFJ"), /Error: Retry with `obelisk cloud app deploy --app demo`\n\nCaused by:\n {4}draft is stale/);
+    const accepted = { [`GET /v1/commands/${COMMAND}`]: { status: "running" } };
+    provisioner({ ...accepted, "POST /v1/apps/demo/apply": appRow({ status: "stopped" }) });
+    await assert.rejects(finishDeploy("demo", "Dep_1", "deploy-x", COMMAND), /\nError: App is "stopped"; inspect it with/);
+    provisioner({ ...accepted, "POST /v1/apps/demo/apply": () => new Response(JSON.stringify({ error: "draft is stale" }), { status: 409 }) });
+    await assert.rejects(finishDeploy("demo", "Dep_1", "deploy-x", COMMAND), /Error: Retry with `obelisk cloud app deploy --app demo`\n\nCaused by:\n {4}draft is stale/);
 });
 
 test("command sends one request with the shell's Idempotency-Key; only failures are errors", async () => {

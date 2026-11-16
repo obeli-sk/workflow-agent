@@ -208,8 +208,8 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
 }
 
-// PORT: cloud/stage.rs. The shell submits the deployment after this stages the config, so
-// `-d` here is the submitted deployment's ID; a later call records it in the draft.
+// PORT: cloud/stage.rs. The shell submits the deployment before this stages the config, so
+// `-d` here is the submitted deployment's ID.
 async function stageCommand(name, key, local, rest, flags, fillEnv, options, print) {
     allow(flags, ["-a", "--draft", "-d", ...VALUES]);
     arity(rest, 0);
