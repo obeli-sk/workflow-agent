@@ -62,6 +62,8 @@ interface stub {
   record human-input-resolved-event {
     execution-id: string,
     turn-index: u64,
+    // backcompat: protocol 11 sessions did not record the answer.
+    answer: option<string>,
   }
 
   record user-message-event {

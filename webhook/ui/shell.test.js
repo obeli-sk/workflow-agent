@@ -56,7 +56,7 @@ async function loadRenderer(globals = {}) {
     const open = html.indexOf(">", start) + 1;
     const end = html.indexOf("</script>", open);
     const code = html.slice(open, end)
-        + "\n;globalThis.__render = { state, buildCachedTurns, groupTurns, renderTurnGroup, renderDetail, renderComposer, composerMode, sendComposer, stopAgent, toggleSysprompt, ensureWatch, captureCallScroll, restoreCallScroll, document };";
+        + "\n;globalThis.__render = { state, mergeTranscript, buildCachedTurns, groupTurns, renderTurnGroup, renderDetail, renderComposer, composerMode, sendComposer, stopAgent, toggleSysprompt, ensureWatch, captureCallScroll, restoreCallScroll, document };";
     const sandboxObj = { ...sandbox(), ...globals };
     const ctx = vm.createContext(sandboxObj);
     vm.runInContext(code, ctx);
@@ -702,4 +702,68 @@ test("call output scroll positions survive a transcript rebuild", async () => {
     assert.equal(rebuilt[1].scrollTop, 120);
     assert.equal(rebuilt[0].scrollTop, 0);
     assert.equal(other.scrollTop, 0);
+});
+
+test("keeps ask-user questions and answers in order across deltas and a reload", async () => {
+    const r = await loadRenderer();
+    const initial = {
+        workflow_id: "E_run",
+        replies: [toolStep(0, "2026-11-17T10:00:01Z", 100, [bashCall("ask")])],
+        human_input_events: [{
+            kind: "requested", id: "E_ask", question: "Continue?", turn_index: 0,
+            created_at: "2026-11-17T10:00:02Z",
+        }],
+    };
+    r.mergeTranscript(initial);
+    assert.equal(r.state.transcript.pending_asks.length, 1);
+    assert.match(renderTurnGroupHtml(r, r.buildCachedTurns()), /data-source="Continue%3F"/);
+    const resolved = {
+        workflow_id: "E_run",
+        human_input_events: [{
+            kind: "resolved", id: "E_ask", answer: "yes <please>", turn_index: 0,
+            created_at: "2026-11-17T10:00:03Z",
+        }],
+        replies: [{
+            reply: { response: "Continuing." }, turn_index: 0,
+            created_at: "2026-11-17T10:00:05Z", duration_milliseconds: 1000,
+        }],
+    };
+    r.mergeTranscript(resolved);
+    assert.equal(r.state.transcript.pending_asks.length, 0);
+    const turns = r.buildCachedTurns();
+    assert.equal(turns.map((t) => t.kind).join(","), "tool_calls,question,answer,assistant_response");
+    const html = renderTurnGroupHtml(r, turns);
+    assert.match(html, /<div class="label">answer<\/div><pre>\nyes &lt;please&gt;/);
+    r.mergeTranscript({
+        ...initial, reset: true,
+        replies: [...initial.replies, ...resolved.replies],
+        human_input_events: [...initial.human_input_events, ...resolved.human_input_events],
+    });
+    assert.equal(renderTurnGroupHtml(r, r.buildCachedTurns()), html);
+});
+
+test("the ask-user textarea submits on Enter and preserves Shift+Enter", async () => {
+    const r = await loadRenderer();
+    const listeners = {};
+    const textarea = { value: "yes", addEventListener: (name, fn) => { listeners[name] = fn; } };
+    let submits = 0;
+    const form = {
+        dataset: { child: "E_ask" }, addEventListener() {},
+        querySelector: () => textarea, requestSubmit: () => { submits += 1; },
+    };
+    const main = stubElement();
+    main.querySelectorAll = (selector) => selector === 'form.ask' ? [form] : [];
+    r.state.detail = detailFixture({ pending_asks: [{ id: "E_ask", question: "Continue?" }] });
+    withCachedElements(r, { detail: main }, () => { r.renderDetail(); });
+    let prevented = 0;
+    const key = (value, shiftKey = false) => listeners.keydown({
+        key: value, shiftKey, preventDefault: () => { prevented += 1; },
+    });
+    key("Enter");
+    assert.equal(submits, 1);
+    assert.equal(prevented, 1);
+    key("Enter", true);
+    key("a");
+    assert.equal(submits, 1);
+    assert.equal(prevented, 1);
 });

@@ -135,7 +135,8 @@ Besides those, the shell provides:
 - `mount`: what is mounted where.
 
 - `ask-user QUESTION`: stops and asks you something mid-task; the question
-  appears in the UI as a form.
+  appears in the UI as a form. Enter submits the answer; Shift+Enter inserts a
+  newline. The question and answer stay in the timeline after submission.
 
 Background jobs (`&`, `jobs`, `wait`) are not supported.
 
