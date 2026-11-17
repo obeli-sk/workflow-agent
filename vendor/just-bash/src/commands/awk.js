@@ -10,18 +10,20 @@
 // multi-char ERE) / -F; print/printf, assignment incl. compound (+= -= *= /=
 // %= ^=), ++/-- (pre/post), arithmetic + - * / % ^ **, string concatenation
 // (juxtaposition), comparisons (POSIX numeric-string rules), ~/!~, &&/||/!,
-// ternary ?:, if/else, while, do/while, classic for(;;),
-// break/continue/next/exit [code]; builtins length substr index split sub
-// gsub gensub match toupper tolower sprintf sin cos atan2 exp log sqrt int
-// rand srand; built-in vars NR NF FS OFS ORS RS FILENAME FNR RSTART RLENGTH;
-// minimal single-dimension arrays (arr[key], only so split() and hand-rolled
-// counters are useful); CLI flags -F/-v/--help.
+// ternary ?:, if/else, while, do/while, classic for(;;), for (k in arr),
+// break/continue/next/nextfile/exit [code]; user-defined functions (arrays
+// by reference, return); arrays with delete, `in`, (i,j) SUBSEP keys and
+// length(arr); getline in all forms (plain, var, < file, cmd |); print/printf
+// redirection (> >> | and /dev/stdout, /dev/stderr) with close/fflush;
+// system(); builtins length substr index split sub gsub gensub match toupper
+// tolower sprintf sin cos atan2 exp log sqrt int rand srand; built-in vars
+// NR NF FS OFS ORS RS SUBSEP FILENAME FNR RSTART RLENGTH; RS as newline,
+// "" (paragraphs), a single char or a regex; var=value operands; CLI flags
+// -F/-v/-f/--. Numbers print with %.6g.
 //
-// Explicitly out of scope:
-// user-defined functions (function name(...) {...}), getline, nextfile,
-// `for (k in arr)` / `delete arr[k]` / `(a, b) in arr` / SUBSEP multi-dim
-// keys / the `in` operator, regex RS/multi-char RS, output redirection
-// (print > "file", | cmd), -f progfile, and execution/allocation limits.
+// Explicitly out of scope: |& coprocesses, CONVFMT/OFMT changes, RT, arrays
+// of arrays, gawk's asort/strftime/etc., and execution/allocation limits
+// beyond a function-recursion cap.
 //
 // Regex flavor: awk regex is ERE, and JS RegExp is already ERE/PCRE-ish, so
 // (unlike sed/grep's BRE mode) there is no translateBre step here — only
@@ -38,14 +40,14 @@ export class AwkError extends Error {}
 
 const KEYWORDS = new Set([
     "BEGIN", "END", "if", "else", "while", "do", "for", "break", "continue",
-    "next", "exit", "print", "printf", "return", "in",
+    "next", "nextfile", "exit", "print", "printf", "return", "in", "function", "func", "delete", "getline",
 ]);
 function isKeyword(s) {
     return KEYWORDS.has(s);
 }
 
-const PUNCTS_2 = ["**", "==", "!=", "<=", ">=", "&&", "||", "!~", "++", "--", "+=", "-=", "*=", "/=", "%=", "^="];
-const PUNCTS_1 = ["{", "}", "(", ")", "[", "]", ";", ",", "$", "=", "<", ">", "!", "~", "+", "-", "*", "/", "%", "^", "?", ":"];
+const PUNCTS_2 = ["**", "==", "!=", "<=", ">=", ">>", "&&", "||", "!~", "++", "--", "+=", "-=", "*=", "/=", "%=", "^="];
+const PUNCTS_1 = ["{", "}", "(", ")", "[", "]", ";", ",", "$", "=", "<", ">", "!", "~", "+", "-", "*", "/", "%", "^", "?", ":", "|"];
 
 function isDigit(c) {
     return c !== undefined && c >= "0" && c <= "9";
@@ -216,6 +218,24 @@ function lex(src) {
     return toks;
 }
 
+// String-literal escapes, as applied to -v and var=value operands.
+function processEscapes(s) {
+    const chars = [...s];
+    let out = "";
+    let i = 0;
+    while (i < chars.length) {
+        if (chars[i] === "\\" && i + 1 < chars.length) {
+            const [ch, next] = decodeEscape(chars, i + 1);
+            out += ch;
+            i = next;
+        } else {
+            out += chars[i];
+            i += 1;
+        }
+    }
+    return out;
+}
+
 // ============================================================================
 // Parser (AST: plain objects tagged with `kind`)
 // ============================================================================
@@ -231,6 +251,20 @@ class Parser {
     constructor(toks) {
         this.toks = toks;
         this.pos = 0;
+        this.functions = new Map();
+        // Inside print/printf arguments an unparenthesized `>` is a redirection.
+        this.noGt = false;
+    }
+
+    // Runs `parse` with `>` meaning comparison again (inside (), [] and call args).
+    withGt(parse) {
+        const saved = this.noGt;
+        this.noGt = false;
+        try {
+            return parse();
+        } finally {
+            this.noGt = saved;
+        }
     }
 
     peek() {
@@ -286,10 +320,28 @@ class Parser {
         const rules = [];
         this.skipTerms();
         while (this.peek()) {
-            rules.push(this.parseRule());
+            if (this.eatIdent("function") || this.eatIdent("func")) this.parseFunction();
+            else rules.push(this.parseRule());
             this.skipTerms();
         }
-        return rules;
+        return { rules, functions: this.functions };
+    }
+
+    parseFunction() {
+        const name = this.advance();
+        if (!name || name.k !== "ident" || isKeyword(name.v)) throw new AwkError("expected a function name");
+        if (this.functions.has(name.v)) throw new AwkError(`function \`${name.v}' previously defined`);
+        this.expectPunct("(");
+        const params = [];
+        while (!this.peekPunct(")")) {
+            const p = this.advance();
+            if (!p || p.k !== "ident" || isKeyword(p.v)) throw new AwkError(`bad parameter list for function \`${name.v}'`);
+            params.push(p.v);
+            if (!this.eatPunct(",")) break;
+        }
+        this.expectPunct(")");
+        this.skipTermsOptBeforeStmt();
+        this.functions.set(name.v, { params, body: this.parseBlock() });
     }
 
     parseRule() {
@@ -365,6 +417,12 @@ class Parser {
         }
         if (this.eatIdent("for")) {
             this.expectPunct("(");
+            const [v, kw, arr, close] = this.toks.slice(this.pos, this.pos + 4);
+            if (v?.k === "ident" && kw?.k === "ident" && kw.v === "in" && arr?.k === "ident" && close?.k === "punct" && close.v === ")") {
+                this.pos += 4;
+                this.skipTermsOptBeforeStmt();
+                return { kind: "forIn", var: v.v, name: arr.v, body: this.parseStmt() };
+            }
             const init = this.peekPunct(";") ? null : { kind: "expr", expr: this.parseExpr() };
             this.expectPunct(";");
             const cond = this.peekPunct(";") ? null : this.parseExpr();
@@ -378,24 +436,74 @@ class Parser {
         if (this.eatIdent("break")) return { kind: "break" };
         if (this.eatIdent("continue")) return { kind: "continue" };
         if (this.eatIdent("next")) return { kind: "next" };
+        if (this.eatIdent("nextfile")) return { kind: "nextfile" };
         if (this.eatIdent("exit")) {
             const arg = this.stmtEnds() ? null : this.parseExpr();
             return { kind: "exit", arg };
         }
-        if (this.eatIdent("print")) return { kind: "print", args: this.parsePrintArgs() };
-        if (this.eatIdent("printf")) return { kind: "printf", args: this.parsePrintArgs() };
+        if (this.eatIdent("return")) {
+            const arg = this.stmtEnds() ? null : this.parseExpr();
+            return { kind: "return", arg };
+        }
+        if (this.eatIdent("delete")) {
+            const name = this.advance();
+            if (!name || name.k !== "ident") throw new AwkError("expected an array name after delete");
+            const idx = this.eatPunct("[") ? this.parseSubscript() : null;
+            return { kind: "delete", name: name.v, idx };
+        }
+        if (this.eatIdent("print")) return { kind: "print", ...this.parsePrintArgs() };
+        if (this.eatIdent("printf")) return { kind: "printf", ...this.parsePrintArgs() };
         return { kind: "expr", expr: this.parseExpr() };
     }
 
+    peekRedirect() {
+        const t = this.peek();
+        return !!t && t.k === "punct" && (t.v === ">" || t.v === ">>" || t.v === "|");
+    }
+
+    // print/printf arguments, `(a, b)` grouped form included, then an optional > >> | target.
     parsePrintArgs() {
-        const args = [];
-        if (this.stmtEnds()) return args;
-        for (;;) {
-            args.push(this.parseTernary());
-            if (this.eatPunct(",")) continue;
-            break;
+        let args = [];
+        const saved = this.noGt;
+        this.noGt = true;
+        if (!this.stmtEnds() && !this.peekRedirect()) {
+            for (;;) {
+                args.push(this.parseTernary());
+                if (!this.eatPunct(",")) break;
+            }
         }
-        return args;
+        if (args.length === 1 && args[0].kind === "grouping") args = args[0].exprs;
+        let dest = null;
+        if (this.peekRedirect()) {
+            const mode = this.advance().v;
+            dest = { mode, expr: this.parseConcat() };
+        }
+        this.noGt = saved;
+        return { args, dest };
+    }
+
+    parseSubscript() {
+        return this.withGt(() => {
+            const exprs = [this.parseExpr()];
+            while (this.eatPunct(",")) exprs.push(this.parseExpr());
+            this.expectPunct("]");
+            return exprs.length === 1 ? exprs[0] : { kind: "subscript", exprs };
+        });
+    }
+
+    // The optional lvalue after `getline`.
+    parseGetlineTarget() {
+        const t = this.peek();
+        if (t?.k === "punct" && t.v === "$") {
+            this.pos += 1;
+            return { kind: "field", idx: this.parseDollarOperand() };
+        }
+        if (t?.k === "ident" && !isKeyword(t.v)) {
+            this.pos += 1;
+            if (this.eatPunct("[")) return { kind: "arrayIndex", name: t.v, idx: this.parseSubscript() };
+            return { kind: "var", name: t.v };
+        }
+        return null;
     }
 
     // ---- expressions ----
@@ -440,10 +548,21 @@ class Parser {
     }
 
     parseAnd() {
-        let left = this.parseMatch();
+        let left = this.parseIn();
         while (this.eatPunct("&&")) {
             this.skipTermsOptBeforeStmt();
-            left = { kind: "and", left, right: this.parseMatch() };
+            left = { kind: "and", left, right: this.parseIn() };
+        }
+        return left;
+    }
+
+    parseIn() {
+        let left = this.parseMatch();
+        while (this.eatIdent("in")) {
+            const name = this.advance();
+            if (!name || name.k !== "ident") throw new AwkError("expected an array name after 'in'");
+            const keys = left.kind === "grouping" ? left.exprs : [left];
+            left = { kind: "in", idx: keys.length === 1 ? keys[0] : { kind: "subscript", exprs: keys }, name: name.v };
         }
         return left;
     }
@@ -461,7 +580,7 @@ class Parser {
     parseRel() {
         const left = this.parseConcat();
         const t = this.peek();
-        if (t && t.k === "punct" && REL_OPS.has(t.v)) {
+        if (t && t.k === "punct" && REL_OPS.has(t.v) && !(this.noGt && t.v === ">")) {
             this.pos += 1;
             return { kind: "compare", op: t.v, left, right: this.parseConcat() };
         }
@@ -479,8 +598,17 @@ class Parser {
 
     parseConcat() {
         let left = this.parseAdd();
-        while (this.startsConcatTerm()) {
-            left = { kind: "concat", left, right: this.parseAdd() };
+        for (;;) {
+            const after = this.toks[this.pos + 1];
+            if (this.startsConcatTerm()) {
+                left = { kind: "concat", left, right: this.parseAdd() };
+            } else if (this.peekPunct("|") && after?.k === "ident" && after.v === "getline") {
+                // `cmd | getline [var]`: everything concatenated so far is the command.
+                this.pos += 2;
+                left = { kind: "getline", source: "cmd", cmd: left, target: this.parseGetlineTarget() };
+            } else {
+                break;
+            }
         }
         return left;
     }
@@ -542,39 +670,39 @@ class Parser {
         if (t.k === "regex") return { kind: "regex", pat: t.v };
         if (t.k === "punct" && t.v === "$") return { kind: "field", idx: this.parseDollarOperand() };
         if (t.k === "punct" && t.v === "(") {
-            const inner = this.parseExpr();
-            this.expectPunct(")");
-            return { kind: "group", expr: inner };
+            return this.withGt(() => {
+                const exprs = [this.parseExpr()];
+                while (this.eatPunct(",")) exprs.push(this.parseExpr());
+                this.expectPunct(")");
+                // `(a, b)` is only valid before `in` or as print arguments.
+                return exprs.length === 1 ? { kind: "group", expr: exprs[0] } : { kind: "grouping", exprs };
+            });
         }
         if (t.k === "ident") {
             const name = t.v;
-            // getline and user-defined functions are out of scope (see the
-            // skip list in the module docs). They are not lexed as
-            // keywords, so without this guard `getline var < file` silently
-            // mis-parses as a comparison and a `function name` definition
-            // parses as a rule calling an undefined function. Reject both
-            // loudly instead.
-            if (name === "getline") throw new AwkError("getline is not supported");
-            if (name === "function") throw new AwkError("user-defined functions are not supported");
+            if (name === "getline") {
+                const target = this.parseGetlineTarget();
+                if (this.eatPunct("<")) return { kind: "getline", source: "file", file: this.parsePrimary(), target };
+                return { kind: "getline", source: "main", target };
+            }
+            if (isKeyword(name)) throw new AwkError(`unexpected '${name}'`);
             if (this.peekPunct("(")) {
                 this.pos += 1;
-                const args = [];
-                if (!this.peekPunct(")")) {
-                    for (;;) {
-                        args.push(this.parseTernary());
-                        if (this.eatPunct(",")) continue;
-                        break;
+                const args = this.withGt(() => {
+                    const list = [];
+                    if (!this.peekPunct(")")) {
+                        for (;;) {
+                            list.push(this.parseTernary());
+                            if (!this.eatPunct(",")) break;
+                        }
                     }
-                }
-                this.expectPunct(")");
+                    this.expectPunct(")");
+                    return list;
+                });
                 return { kind: "call", name, args };
             }
             if (name === "length") return { kind: "call", name, args: [] };
-            if (this.eatPunct("[")) {
-                const idx = this.parseExpr();
-                this.expectPunct("]");
-                return { kind: "arrayIndex", name, idx };
-            }
+            if (this.eatPunct("[")) return { kind: "arrayIndex", name, idx: this.parseSubscript() };
             return { kind: "var", name };
         }
         throw new AwkError(`unexpected token in expression`);
@@ -590,9 +718,11 @@ class Parser {
         }
         if (t && t.k === "punct" && t.v === "(") {
             this.pos += 1;
-            const inner = this.parseExpr();
-            this.expectPunct(")");
-            return inner;
+            return this.withGt(() => {
+                const inner = this.parseExpr();
+                this.expectPunct(")");
+                return inner;
+            });
         }
         if (t && t.k === "punct" && t.v === "-") {
             this.pos += 1;
@@ -678,13 +808,33 @@ function parseLeadingNumber(s) {
     return Number.isNaN(num) ? 0 : num;
 }
 
-// Not exactly POSIX's default %.6g (OFMT) — a reasonable, simpler
-// approximation.
+// Integral values print in full, everything else with the default OFMT/CONVFMT %.6g.
 function formatAwkNumber(f) {
     if (Number.isNaN(f)) return "nan";
     if (!Number.isFinite(f)) return f > 0 ? "inf" : "-inf";
-    if (f === Math.trunc(f) && Math.abs(f) < 1e16) return String(Math.trunc(f));
-    return String(f);
+    if (Number.isInteger(f)) return Object.is(f, -0) ? "-0" : BigInt(f).toString();
+    return formatG(f, 6, false, false);
+}
+
+function formatExp(f, precision, upper) {
+    if (!Number.isFinite(f)) return formatAwkNumber(f);
+    const [mant, exp] = f.toExponential(precision).split("e");
+    const digits = exp.replace(/^[+-]/, "").padStart(2, "0");
+    return `${mant}${upper ? "E" : "e"}${exp[0] === "-" ? "-" : "+"}${digits}`;
+}
+
+// C's %g: %e or %f by exponent, trailing zeros dropped unless `alt` (#).
+function formatG(f, precision, upper, alt) {
+    const p = precision === 0 ? 1 : precision;
+    if (!Number.isFinite(f)) return formatAwkNumber(f);
+    if (f === 0) return alt ? (0).toFixed(p - 1) : "0";
+    const exp = Number(f.toExponential(p - 1).split("e")[1]);
+    if (exp < -4 || exp >= p) {
+        const s = formatExp(f, p - 1, upper);
+        return alt ? s : s.replace(/\.?0+(?=[eE])/, "");
+    }
+    const s = f.toFixed(p - 1 - exp);
+    return alt || !s.includes(".") ? s : s.replace(/\.?0+$/, "");
 }
 
 function valueToNum(v) {
@@ -753,8 +903,37 @@ function resizeArray(arr, n) {
     else while (arr.length < n) arr.push("");
 }
 
+const SPECIAL_VARS = new Set(["NR", "NF", "FNR", "FS", "OFS", "ORS", "RS", "SUBSEP", "FILENAME", "RSTART", "RLENGTH"]);
+const MAX_CALL_DEPTH = 1000;
+
+// Thrown to carry next/nextfile/exit out of a user-defined function.
+class FlowSignal {
+    constructor(flow) {
+        this.flow = flow;
+    }
+}
+
+// A function frame maps each parameter to a cell: {v} for a scalar, {arr}
+// for an array, or {lazy} for an untyped argument that becomes the caller's
+// array once the callee uses it as one.
+function cellArray(cell) {
+    if (!cell.arr) {
+        if (cell.v !== undefined) throw new AwkError("attempt to use a scalar as an array");
+        cell.arr = cell.lazy ? cell.lazy() : new Map();
+    }
+    return cell.arr;
+}
+
 class Ctx {
-    constructor() {
+    constructor(interp, stdin, functions) {
+        this.interp = interp;
+        this.stdin = stdin;
+        this.functions = functions;
+        this.frames = [];
+        this.returnValue = UNINIT;
+        this.outputs = new Map();
+        this.readers = new Map();
+        this.stderr = "";
         this.vars = new Map();
         this.arrays = new Map();
         this.fields = [];
@@ -762,6 +941,8 @@ class Ctx {
         this.fs = " ";
         this.ofs = " ";
         this.ors = "\n";
+        this.rs = "\n";
+        this.subsep = "\x1c";
         this.nr = 0;
         this.fnr = 0;
         this.filename = "";
@@ -784,7 +965,112 @@ class Ctx {
 
     setRecord(record) {
         this.record = record;
-        this.fields = splitRecord(this.record, this.fs);
+        // In paragraph mode (RS="") newline always separates fields too.
+        this.fields = this.rs === "" && this.fs !== " "
+            ? record.split("\n").flatMap((line) => splitRecord(line, this.fs))
+            : splitRecord(record, this.fs);
+    }
+
+    localCell(name) {
+        return this.frames[this.frames.length - 1]?.get(name);
+    }
+
+    isArray(name) {
+        const cell = this.localCell(name);
+        return cell ? !!cell.arr : this.arrays.has(name);
+    }
+
+    globalArray(name) {
+        if (this.vars.has(name) || SPECIAL_VARS.has(name)) throw new AwkError(`attempt to use scalar \`${name}' as an array`);
+        if (!this.arrays.has(name)) this.arrays.set(name, new Map());
+        return this.arrays.get(name);
+    }
+
+    getArray(name) {
+        const cell = this.localCell(name);
+        return cell ? cellArray(cell) : this.globalArray(name);
+    }
+
+    // The frame cell for passing variable `name` as a function argument.
+    argumentCell(name) {
+        const cell = this.localCell(name);
+        if (cell) {
+            if (cell.arr) return { arr: cell.arr };
+            if (cell.v === undefined) return { lazy: () => cellArray(cell) };
+            return { v: cell.v };
+        }
+        if (this.arrays.has(name)) return { arr: this.arrays.get(name) };
+        if (!this.vars.has(name) && !SPECIAL_VARS.has(name)) return { lazy: () => this.globalArray(name) };
+        return { v: this.getVar(name) };
+    }
+
+    // Output target for print/printf redirection; returns a writer function.
+    output(name, mode) {
+        if (name === "/dev/stdout" || name === "-") return (text) => { this.stdout += text; };
+        if (name === "/dev/stderr") return (text) => { this.stderr += text; };
+        if (name === "/dev/null") return () => {};
+        let out = this.outputs.get(name);
+        if (!out) {
+            if (mode === "|") {
+                out = { pipe: true, text: "" };
+            } else {
+                const path = this.interp.resolvePath(name);
+                if (this.interp.vfs.isDir(path)) throw new AwkError(`can't redirect to \`${name}' (Is a directory)`);
+                if (mode === ">" || !this.interp.vfs.isFile(path)) this.interp.vfs.writeFile(path, "");
+                out = { path };
+            }
+            this.outputs.set(name, out);
+        }
+        return out.pipe
+            ? (text) => { out.text += text; }
+            : (text) => { this.interp.vfs.appendFile(out.path, text); };
+    }
+
+    // Reader for `getline < file` (source "file") or `cmd | getline` (source "cmd"); null if the file is missing.
+    reader(name, source) {
+        let r = this.readers.get(name);
+        if (!r) {
+            let content;
+            let status = 0;
+            if (source === "cmd") {
+                const res = runShell(this, name, "");
+                this.stderr += res.stderr;
+                content = res.stdout;
+                status = res.exitCode;
+            } else if (name === "-" || name === "/dev/stdin") {
+                content = this.stdin;
+            } else {
+                const path = this.interp.resolvePath(name);
+                if (!this.interp.vfs.isFile(path)) return null;
+                content = this.interp.vfs.readFile(path);
+            }
+            r = { records: splitRecords(content, this.rs), idx: 0, status };
+            this.readers.set(name, r);
+        }
+        return r;
+    }
+
+    // close(): finishes an output pipe or file, or forgets a reader. Returns the exit status.
+    close(name) {
+        const out = this.outputs.get(name);
+        if (out) {
+            this.outputs.delete(name);
+            if (!out.pipe) return 0;
+            const res = runShell(this, name, out.text);
+            this.stdout += res.stdout;
+            this.stderr += res.stderr;
+            return res.exitCode;
+        }
+        const r = this.readers.get(name);
+        if (r) {
+            this.readers.delete(name);
+            return r.status;
+        }
+        return -1;
+    }
+
+    closeAll() {
+        for (const name of [...this.outputs.keys()]) this.close(name);
     }
 
     rebuildRecord() {
@@ -814,6 +1100,11 @@ class Ctx {
     }
 
     getVar(name) {
+        const cell = this.localCell(name);
+        if (cell) {
+            if (cell.arr) throw new AwkError(`attempt to use array \`${name}' in a scalar context`);
+            return cell.v ?? UNINIT;
+        }
         switch (name) {
             case "NR": return vNum(this.nr);
             case "NF": return vNum(this.fields.length);
@@ -821,19 +1112,32 @@ class Ctx {
             case "FS": return vStr(this.fs);
             case "OFS": return vStr(this.ofs);
             case "ORS": return vStr(this.ors);
+            case "RS": return vStr(this.rs);
+            case "SUBSEP": return vStr(this.subsep);
             case "FILENAME": return vStr(this.filename);
             case "RSTART": return vNum(this.rstart);
             case "RLENGTH": return vNum(this.rlength);
-            default: return this.vars.get(name) ?? UNINIT;
+            default:
+                if (this.arrays.has(name)) throw new AwkError(`attempt to use array \`${name}' in a scalar context`);
+                return this.vars.get(name) ?? UNINIT;
         }
     }
 
     setVar(name, value) {
+        const cell = this.localCell(name);
+        if (cell) {
+            if (cell.arr) throw new AwkError(`attempt to use array \`${name}' in a scalar context`);
+            cell.v = value;
+            return;
+        }
+        if (this.arrays.has(name)) throw new AwkError(`attempt to use array \`${name}' in a scalar context`);
         switch (name) {
             case "NF": this.setNF(Math.trunc(valueToNum(value))); break;
             case "FS": this.fs = valueToStr(value); break;
             case "OFS": this.ofs = valueToStr(value); break;
             case "ORS": this.ors = valueToStr(value); break;
+            case "RS": this.rs = valueToStr(value); break;
+            case "SUBSEP": this.subsep = valueToStr(value); break;
             case "FILENAME": this.filename = valueToStr(value); break;
             case "RSTART": this.rstart = Math.trunc(valueToNum(value)); break;
             case "RLENGTH": this.rlength = Math.trunc(valueToNum(value)); break;
@@ -893,9 +1197,18 @@ function evalExpr(ctx, expr) {
         }
         case "var": return ctx.getVar(expr.name);
         case "arrayIndex": {
-            const key = valueToStr(evalExpr(ctx, expr.idx));
-            return ctx.arrays.get(expr.name)?.get(key) ?? UNINIT;
+            const key = subscriptKey(ctx, expr.idx);
+            const map = ctx.getArray(expr.name);
+            // Referencing an element creates it, as in awk.
+            if (!map.has(key)) map.set(key, UNINIT);
+            return map.get(key);
         }
+        case "in": {
+            const key = subscriptKey(ctx, expr.idx);
+            return vNum(ctx.getArray(expr.name).has(key) ? 1 : 0);
+        }
+        case "getline": return vNum(evalGetline(ctx, expr));
+        case "grouping": throw new AwkError("a parenthesized list is only valid before `in' or in print");
         case "field": {
             const n = Math.trunc(valueToNum(evalExpr(ctx, expr.idx)));
             return ctx.getField(n);
@@ -974,6 +1287,60 @@ function evalExpr(ctx, expr) {
     }
 }
 
+// Array key: a single expression, or `i, j` joined with SUBSEP.
+function subscriptKey(ctx, idx) {
+    if (idx.kind === "subscript") return idx.exprs.map((e) => valueToStr(evalExpr(ctx, e))).join(ctx.subsep);
+    return valueToStr(evalExpr(ctx, idx));
+}
+
+// Returns 1 on a record, 0 at end of input, -1 when the file can't be opened.
+function evalGetline(ctx, expr) {
+    let record;
+    if (expr.source === "main") {
+        record = ctx.mainInput.next();
+    } else {
+        const name = valueToStr(evalExpr(ctx, expr.source === "file" ? expr.file : expr.cmd));
+        const r = ctx.reader(name, expr.source);
+        if (!r) return -1;
+        record = r.idx < r.records.length ? r.records[r.idx++] : null;
+        if (record !== null && expr.source === "cmd") ctx.nr += 1;
+    }
+    if (record === null) return 0;
+    if (expr.target) assign(ctx, expr.target, vStrNum(record));
+    else ctx.setRecord(record);
+    return 1;
+}
+
+// Runs `cmd` with `sh -c` semantics in the shell interpreter.
+function runShell(ctx, cmd, stdin) {
+    return ctx.interp.runScriptIsolated(cmd, "sh", [], stdin);
+}
+
+function callUser(ctx, name, fn, args) {
+    if (args.length > fn.params.length) {
+        throw new AwkError(`function \`${name}' called with more arguments than declared`);
+    }
+    if (ctx.frames.length >= MAX_CALL_DEPTH) throw new AwkError(`function call nesting too deep in \`${name}'`);
+    const frame = new Map();
+    fn.params.forEach((param, i) => {
+        const arg = args[i];
+        if (arg === undefined) frame.set(param, {});
+        else if (arg.kind === "var") frame.set(param, ctx.argumentCell(arg.name));
+        else frame.set(param, { v: evalExpr(ctx, arg) });
+    });
+    ctx.frames.push(frame);
+    try {
+        const flow = execStmt(ctx, fn.body);
+        if (flow === "next" || flow === "nextfile" || flow === "exit") throw new FlowSignal(flow);
+        if (flow !== "return") return UNINIT;
+        const value = ctx.returnValue;
+        ctx.returnValue = UNINIT;
+        return value;
+    } finally {
+        ctx.frames.pop();
+    }
+}
+
 // Range pattern (pat1,pat2): matches every record from one where `start`
 // matches through the next one (inclusive) where `end` matches, then
 // re-arms. `pattern.active` is the one piece of state a range pattern
@@ -999,9 +1366,8 @@ function assign(ctx, target, value) {
             return;
         }
         case "arrayIndex": {
-            const key = valueToStr(evalExpr(ctx, target.idx));
-            if (!ctx.arrays.has(target.name)) ctx.arrays.set(target.name, new Map());
-            ctx.arrays.get(target.name).set(key, value);
+            const key = subscriptKey(ctx, target.idx);
+            ctx.getArray(target.name).set(key, value);
             return;
         }
         case "group": assign(ctx, target.expr, value); return;
@@ -1014,8 +1380,11 @@ function assign(ctx, target, value) {
 // ============================================================================
 
 function evalCall(ctx, name, args) {
+    const fn = ctx.functions.get(name);
+    if (fn) return callUser(ctx, name, fn, args);
     switch (name) {
         case "length": {
+            if (args[0]?.kind === "var" && ctx.isArray(args[0].name)) return vNum(ctx.getArray(args[0].name).size);
             const s = args.length === 0 ? ctx.record : valueToStr(evalExpr(ctx, args[0]));
             return vNum([...s].length);
         }
@@ -1042,13 +1411,20 @@ function evalCall(ctx, name, args) {
             if (args[1].kind !== "var") {
                 throw new AwkError(`split(): second argument must be an array name, got ${args[1].kind}`);
             }
-            const arrayName = args[1].name;
             const fs = args.length > 2 ? regexOperandText(ctx, args[2]) : ctx.fs;
             const parts = splitRecord(s, fs);
-            const map = new Map();
+            const map = ctx.getArray(args[1].name);
+            map.clear();
             parts.forEach((p, i) => map.set(String(i + 1), vStrNum(p)));
-            ctx.arrays.set(arrayName, map);
             return vNum(parts.length);
+        }
+        case "close": return vNum(ctx.close(valueToStr(evalExpr(ctx, args[0]))));
+        case "fflush": return vNum(0);
+        case "system": {
+            const res = runShell(ctx, valueToStr(evalExpr(ctx, args[0])), "");
+            ctx.stdout += res.stdout;
+            ctx.stderr += res.stderr;
+            return vNum(res.exitCode);
         }
         case "sub":
         case "gsub": {
@@ -1186,26 +1562,8 @@ function toUnsigned64(n) {
     return BigInt.asUintN(64, BigInt(Number.isFinite(n) ? Math.trunc(n) : 0));
 }
 
-function formatExp(f, precision, upper) {
-    if (f === 0) return `${(0).toFixed(precision)}e+0`;
-    const neg = f < 0;
-    const af = Math.abs(f);
-    let exp = Math.floor(Math.log10(af));
-    let mantissa = af / 10 ** exp;
-    let mantStr = mantissa.toFixed(precision);
-    if (mantStr.startsWith("10")) {
-        exp += 1;
-        mantissa /= 10;
-        mantStr = mantissa.toFixed(precision);
-    }
-    const e = upper ? "E" : "e";
-    const sign = exp >= 0 ? "+" : "-";
-    return `${neg ? "-" : ""}${mantStr}${e}${sign}${Math.abs(exp)}`;
-}
-
 // A compact printf/sprintf formatter covering %s %d %i %o %x %X %c %e %E %f
-// %F %g %G %% with -+0 # flags and literal width/precision digits (no
-// *-from-args). Not a port of any upstream file (awk's own printf isn't
+// %F %g %G %% with -+0 # flags and width/precision digits or `*`. Not a port of any upstream file (awk's own printf isn't
 // shared code upstream either); intentionally smaller than text.js's printf
 // since awk's conversions operate on Values, not shell argv strings.
 function awkSprintf(fmt, args) {
@@ -1214,9 +1572,9 @@ function awkSprintf(fmt, args) {
     let i = 0;
     let argI = 0;
     const nextArg = () => {
-        const v = args[argI] ?? vNum(0);
+        if (argI >= args.length) throw new AwkError("fatal: not enough arguments to satisfy format string");
         argI += 1;
-        return v;
+        return args[argI - 1];
     };
     while (i < chars.length) {
         if (chars[i] !== "%") { out += chars[i]; i += 1; continue; }
@@ -1225,11 +1583,21 @@ function awkSprintf(fmt, args) {
         let flags = "";
         while (chars[i] !== undefined && "-+0 #".includes(chars[i])) { flags += chars[i]; i += 1; }
         let width = "";
+        if (chars[i] === "*") {
+            const w = Math.trunc(valueToNum(nextArg()));
+            if (w < 0) flags += "-";
+            width = String(Math.abs(w));
+            i += 1;
+        }
         while (isDigit(chars[i])) { width += chars[i]; i += 1; }
         let precision = null;
         if (chars[i] === ".") {
             i += 1;
             let p = "";
+            if (chars[i] === "*") {
+                p = String(Math.max(Math.trunc(valueToNum(nextArg())), 0));
+                i += 1;
+            }
             while (isDigit(chars[i])) { p += chars[i]; i += 1; }
             precision = p === "" ? 0 : parseInt(p, 10);
         }
@@ -1237,6 +1605,7 @@ function awkSprintf(fmt, args) {
         if (conv === undefined) throw new AwkError("printf: dangling format spec");
         i += 1;
         const widthN = width === "" ? 0 : parseInt(width, 10);
+        const signed = (s, n) => (n >= 0 && !s.startsWith("-") ? (flags.includes("+") ? "+" : flags.includes(" ") ? " " : "") : "") + s;
         const left = flags.includes("-");
         const zero = flags.includes("0") && !left;
         const plus = flags.includes("+");
@@ -1282,21 +1651,19 @@ function awkSprintf(fmt, args) {
             case "e":
             case "E": {
                 const n = valueToNum(nextArg());
-                piece = pad(formatExp(n, precision ?? 6, conv === "E"), widthN, left, zero);
+                piece = pad(signed(formatExp(n, precision ?? 6, conv === "E"), n), widthN, left, zero);
                 break;
             }
             case "f":
             case "F": {
                 const n = valueToNum(nextArg());
-                let s = n.toFixed(precision ?? 6);
-                if (n >= 0 && plus) s = `+${s}`;
-                piece = pad(s, widthN, left, zero);
+                piece = pad(signed(n.toFixed(precision ?? 6), n), widthN, left, zero);
                 break;
             }
             case "g":
             case "G": {
                 const n = valueToNum(nextArg());
-                piece = pad(formatAwkNumber(n), widthN, left, zero);
+                piece = pad(signed(formatG(n, precision ?? 6, conv === "G", flags.includes("#")), n), widthN, left, zero);
                 break;
             }
             default: throw new AwkError(`printf: unsupported conversion %${conv}`);
@@ -1310,7 +1677,12 @@ function awkSprintf(fmt, args) {
 // Statement execution
 // ============================================================================
 
-// Flow: "normal" | "break" | "continue" | "next" | "exit"
+function writeOutput(ctx, dest, text) {
+    if (!dest) ctx.stdout += text;
+    else ctx.output(valueToStr(evalExpr(ctx, dest.expr)), dest.mode)(text);
+}
+
+// Flow: "normal" | "break" | "continue" | "next" | "nextfile" | "exit" | "return"
 function execStmt(ctx, stmt) {
     switch (stmt.kind) {
         case "block": {
@@ -1327,16 +1699,39 @@ function execStmt(ctx, stmt) {
             const line = stmt.args.length === 0
                 ? ctx.record
                 : stmt.args.map((a) => valueToStr(evalExpr(ctx, a))).join(ctx.ofs);
-            ctx.stdout += line + ctx.ors;
+            writeOutput(ctx, stmt.dest, line + ctx.ors);
             return "normal";
         }
         case "printf": {
             if (stmt.args.length === 0) throw new AwkError("printf: missing format string");
             const fmt = valueToStr(evalExpr(ctx, stmt.args[0]));
             const vals = stmt.args.slice(1).map((a) => evalExpr(ctx, a));
-            ctx.stdout += awkSprintf(fmt, vals);
+            writeOutput(ctx, stmt.dest, awkSprintf(fmt, vals));
             return "normal";
         }
+        case "delete": {
+            const map = ctx.getArray(stmt.name);
+            if (stmt.idx) map.delete(subscriptKey(ctx, stmt.idx));
+            else map.clear();
+            return "normal";
+        }
+        case "forIn": {
+            const map = ctx.getArray(stmt.name);
+            for (const key of [...map.keys()]) {
+                // Elements deleted by an earlier iteration are skipped.
+                if (map.has(key)) {
+                    assign(ctx, { kind: "var", name: stmt.var }, vStrNum(key));
+                    const flow = execStmt(ctx, stmt.body);
+                    if (flow === "break") break;
+                    if (flow !== "continue" && flow !== "normal") return flow;
+                }
+            }
+            return "normal";
+        }
+        case "return":
+            ctx.returnValue = stmt.arg ? evalExpr(ctx, stmt.arg) : UNINIT;
+            return "return";
+        case "nextfile": return "nextfile";
         case "if":
             if (valueTruthy(evalExpr(ctx, stmt.cond))) return execStmt(ctx, stmt.then);
             if (stmt.else) return execStmt(ctx, stmt.else);
@@ -1383,11 +1778,34 @@ function execStmt(ctx, stmt) {
 // Command entry point
 // ============================================================================
 
-function splitRecords(content) {
+// Splits input into records per RS: "\n", "" (paragraphs separated by blank
+// lines), a single literal character, or a regex.
+function splitRecords(content, rs) {
     if (content === "") return [];
-    const lines = content.split("\n");
-    if (lines.length && lines[lines.length - 1] === "") lines.pop();
-    return lines;
+    if (rs === "") {
+        const trimmed = content.replace(/^\n+/, "").replace(/\n+$/, "");
+        return trimmed === "" ? [] : trimmed.split(/\n\n+/);
+    }
+    const parts = [...rs].length === 1 ? content.split(rs) : splitByRegex(content, compileRegex(rs));
+    if (parts[parts.length - 1] === "") parts.pop();
+    return parts;
+}
+
+function splitByRegex(content, re) {
+    const parts = [];
+    let last = 0;
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(content)) !== null) {
+        if (m[0] === "") {
+            re.lastIndex += 1;
+        } else {
+            parts.push(content.slice(last, m.index));
+            last = m.index + m[0].length;
+        }
+    }
+    parts.push(content.slice(last));
+    return parts;
 }
 
 // `-F` treats a literal `\t` (as typed on the command line) as a tab, same
@@ -1396,136 +1814,216 @@ function interpretFsFlag(fs) {
     return fs === "\\t" ? "\t" : fs;
 }
 
-function finish(ctx, rules, runEnd) {
-    if (runEnd) {
-        for (const rule of rules) {
-            if (rule.pattern.kind === "end" && rule.action) {
-                try {
-                    execStmt(ctx, rule.action);
-                } catch (e) {
-                    if (e instanceof AwkError) return fail(`awk: ${e.message}\n`, 1);
-                    throw e;
-                }
+const ASSIGNMENT_OPERAND = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
+
+// The main input: file operands (or stdin) read in order, with var=value
+// operands applied when reached. Shared by the record loop and plain getline.
+class MainInput {
+    constructor(ctx, operands) {
+        this.ctx = ctx;
+        this.operands = operands;
+        this.pos = 0;
+        this.records = [];
+        this.idx = 0;
+        this.openedAny = false;
+    }
+
+    next() {
+        while (this.idx >= this.records.length) {
+            if (!this.openNext()) return null;
+        }
+        this.ctx.nr += 1;
+        this.ctx.fnr += 1;
+        return this.records[this.idx++];
+    }
+
+    skipFile() {
+        this.idx = this.records.length;
+    }
+
+    openNext() {
+        while (this.pos < this.operands.length) {
+            const operand = this.operands[this.pos];
+            this.pos += 1;
+            const assignment = ASSIGNMENT_OPERAND.exec(operand);
+            if (assignment) this.ctx.setVar(assignment[1], vStrNum(processEscapes(assignment[2])));
+            else if (operand !== "" && this.open(operand)) return true;
+        }
+        if (this.openedAny) return false;
+        this.openedAny = true;
+        this.load("", this.ctx.stdin);
+        return true;
+    }
+
+    // False for a directory, which is skipped with a warning like gawk does.
+    open(name) {
+        this.openedAny = true;
+        if (name === "-" || name === "/dev/stdin") {
+            this.load(name, this.ctx.stdin);
+            return true;
+        }
+        const { vfs } = this.ctx.interp;
+        const path = this.ctx.interp.resolvePath(name);
+        if (vfs.isDir(path)) {
+            this.ctx.stderr += `awk: warning: command line argument \`${name}' is a directory: skipped\n`;
+            return false;
+        }
+        if (!vfs.isFile(path)) throw new AwkError(`fatal: cannot open file \`${name}' for reading: No such file or directory`);
+        this.load(name, vfs.readFile(path));
+        return true;
+    }
+
+    load(name, content) {
+        this.ctx.filename = name;
+        this.ctx.fnr = 0;
+        this.records = splitRecords(content, this.ctx.rs);
+        this.idx = 0;
+    }
+}
+
+const USAGE = "usage: awk [-F fs] [-v var=value] [-f progfile | 'program'] [file ...]\n";
+
+function parseCommandLine(interp, argv, stdin) {
+    const opts = { fs: null, assignments: [], help: false, programText: null, operands: [] };
+    const progFiles = [];
+    const apply = (flag, value) => {
+        if (flag === "F") {
+            opts.fs = value;
+        } else if (flag === "f") {
+            progFiles.push(value);
+        } else {
+            const eq = value.indexOf("=");
+            if (eq < 1) throw new AwkError(`\`${value}' argument to \`-v' not in \`var=value' form`);
+            opts.assignments.push([value.slice(0, eq), processEscapes(value.slice(eq + 1))]);
+        }
+    };
+    const LONG = { "--field-separator": "F", "--assign": "v", "--file": "f" };
+    let i = 0;
+    while (i < argv.length && argv[i].startsWith("-") && argv[i] !== "-") {
+        const a = argv[i];
+        i += 1;
+        if (a === "--") break;
+        const [name, inline] = a.includes("=") ? [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] : [a, null];
+        if (a === "--help") {
+            opts.help = true;
+        } else if (a === "--version") {
+            opts.version = true;
+        } else if (LONG[name] && inline !== null) {
+            apply(LONG[name], inline);
+        } else if (["-F", "-v", "-f"].includes(a.slice(0, 2)) && !a.startsWith("--")) {
+            let value = a.slice(2);
+            if (value === "") {
+                if (i >= argv.length) throw new AwkError(`option requires an argument -- '${a[1]}'`);
+                value = argv[i];
+                i += 1;
             }
+            apply(a[1], value);
+        } else {
+            throw new AwkError(a.startsWith("--") ? `unrecognized option '${a}'` : `invalid option -- '${a[1]}'`);
         }
     }
-    const exitCode = ctx.exitCode ?? 0;
-    if (exitCode !== 0) return { stdout: ctx.stdout, stderr: "", exitCode };
-    return ok(ctx.stdout);
+    if (opts.help || opts.version) return opts;
+    if (progFiles.length > 0) {
+        opts.programText = progFiles.map((file) => {
+            if (file === "-" || file === "/dev/stdin") return stdin;
+            const path = interp.resolvePath(file);
+            if (!interp.vfs.isFile(path)) throw new AwkError(`fatal: can't open source file \`${file}' for reading: No such file or directory`);
+            return interp.vfs.readFile(path);
+        }).join("\n");
+    } else {
+        if (i >= argv.length) throw new AwkError("missing program");
+        opts.programText = argv[i];
+        i += 1;
+    }
+    opts.operands = argv.slice(i);
+    return opts;
+}
+
+// Runs a BEGIN/END action; next/exit inside a function arrive as FlowSignal.
+function runAction(ctx, stmt) {
+    try {
+        return execStmt(ctx, stmt);
+    } catch (e) {
+        if (e instanceof FlowSignal) return e.flow;
+        throw e;
+    }
+}
+
+function runSpecial(ctx, rules) {
+    for (const rule of rules) {
+        if (runAction(ctx, rule.action) === "exit") return "exit";
+    }
+    return "normal";
+}
+
+function ruleMatches(ctx, pattern) {
+    if (pattern.kind === "always") return true;
+    if (pattern.kind === "range") return matchRangePattern(ctx, pattern);
+    return valueTruthy(evalExpr(ctx, pattern.expr));
+}
+
+const PRINT_RECORD = { kind: "print", args: [], dest: null };
+
+// Runs the main rules against the current record: "normal", "nextfile" or "exit".
+function runRecord(ctx, rules) {
+    try {
+        for (const rule of rules) {
+            if (ruleMatches(ctx, rule.pattern)) {
+                const flow = execStmt(ctx, rule.action ?? PRINT_RECORD);
+                if (flow === "next") return "normal";
+                if (flow === "nextfile" || flow === "exit") return flow;
+            }
+        }
+    } catch (e) {
+        if (e instanceof FlowSignal) return e.flow === "next" ? "normal" : e.flow;
+        throw e;
+    }
+    return "normal";
 }
 
 export function awkCommand(interp, args, stdin) {
-    const argv = args.slice(1);
-    if (argv.includes("--help")) {
-        return ok("awk - pattern scanning and processing language\nusage: awk [-F fs] [-v var=val] 'program' [file...]\n");
-    }
-
-    let fsOverride = null;
-    const assignments = [];
-    let programText = null;
-    const files = [];
-    let i = 0;
-    while (i < argv.length) {
-        const a = argv[i];
-        if (a === "-F") {
-            i += 1;
-            fsOverride = argv[i] ?? null;
-        } else if (a.startsWith("-F") && a.length > 2) {
-            fsOverride = a.slice(2);
-        } else if (a === "-v") {
-            i += 1;
-            const kv = argv[i];
-            if (kv !== undefined) {
-                const eq = kv.indexOf("=");
-                if (eq !== -1) assignments.push([kv.slice(0, eq), kv.slice(eq + 1)]);
-            }
-        } else if (programText === null) {
-            programText = a;
-        } else {
-            files.push(a);
-        }
-        i += 1;
-    }
-
-    if (programText === null) return fail("awk: missing program\n", 1);
-
-    let rules;
+    let opts;
+    let program;
     try {
-        rules = parseProgram(programText);
+        opts = parseCommandLine(interp, args.slice(1), stdin);
+    } catch (e) {
+        if (e instanceof AwkError) return fail(`awk: ${e.message}\n${USAGE}`, 2);
+        throw e;
+    }
+    if (opts.version) return ok("awk (just-bash), a POSIX awk subset with some gawk extensions\n");
+    if (opts.help) return ok(`awk - pattern scanning and processing language\n${USAGE}`);
+    try {
+        program = parseProgram(opts.programText);
     } catch (e) {
         if (e instanceof AwkError) return fail(`awk: syntax error: ${e.message}\n`, 1);
         throw e;
     }
 
-    const ctx = new Ctx();
-    if (fsOverride !== null) ctx.fs = interpretFsFlag(fsOverride);
-    for (const [k, v] of assignments) ctx.setVar(k, vStrNum(v));
+    const ctx = new Ctx(interp, stdin, program.functions);
+    ctx.mainInput = new MainInput(ctx, opts.operands);
+    if (opts.fs !== null) ctx.fs = interpretFsFlag(opts.fs);
+    const ofKind = (kind) => program.rules.filter((r) => r.pattern.kind === kind);
+    const mains = program.rules.filter((r) => r.pattern.kind !== "begin" && r.pattern.kind !== "end");
+    const ends = ofKind("end");
 
-    // BEGIN
-    for (const rule of rules) {
-        if (rule.pattern.kind === "begin" && rule.action) {
-            try {
-                if (execStmt(ctx, rule.action) === "exit") return finish(ctx, rules, false);
-            } catch (e) {
-                if (e instanceof AwkError) return fail(`awk: ${e.message}\n`, 1);
-                throw e;
-            }
-        }
-    }
-
-    const needsInput = rules.some((r) => r.pattern.kind !== "begin");
-    if (needsInput) {
-        let sources;
-        if (files.length === 0) {
-            sources = [["", stdin, null]];
-        } else {
-            sources = files.map((f) => {
-                const path = interp.resolvePath(f);
-                if (interp.vfs.isDir(path)) return [f, null, `awk: ${f}: Is a directory`];
-                if (!interp.vfs.isFile(path)) return [f, null, `awk: ${f}: No such file or directory`];
-                return [f, interp.vfs.readFile(path), null];
-            });
-        }
-
-        outer:
-        for (const [filename, content, err] of sources) {
-            if (err) return fail(`${err}\n`, 1);
-            ctx.filename = filename;
-            ctx.fnr = 0;
-            for (const record of splitRecords(content)) {
-                ctx.nr += 1;
-                ctx.fnr += 1;
+    try {
+        for (const [k, v] of opts.assignments) ctx.setVar(k, vStrNum(v));
+        let flow = runSpecial(ctx, ofKind("begin"));
+        // exit in BEGIN skips the input but END still runs.
+        if (flow !== "exit" && (mains.length > 0 || ends.length > 0)) {
+            while (flow !== "exit") {
+                const record = ctx.mainInput.next();
+                if (record === null) break;
                 ctx.setRecord(record);
-                for (const rule of rules) {
-                    let matched;
-                    if (rule.pattern.kind === "begin" || rule.pattern.kind === "end") {
-                        matched = false;
-                    } else if (rule.pattern.kind === "always") {
-                        matched = true;
-                    } else {
-                        try {
-                            matched = rule.pattern.kind === "range"
-                                ? matchRangePattern(ctx, rule.pattern)
-                                : valueTruthy(evalExpr(ctx, rule.pattern.expr));
-                        } catch (e) {
-                            if (e instanceof AwkError) return fail(`awk: ${e.message}\n`, 1);
-                            throw e;
-                        }
-                    }
-                    if (!matched) continue;
-                    let flow;
-                    try {
-                        flow = rule.action ? execStmt(ctx, rule.action) : execStmt(ctx, { kind: "print", args: [] });
-                    } catch (e) {
-                        if (e instanceof AwkError) return fail(`awk: ${e.message}\n`, 1);
-                        throw e;
-                    }
-                    if (flow === "next") break;
-                    if (flow === "exit") break outer;
-                }
+                flow = runRecord(ctx, mains);
+                if (flow === "nextfile") ctx.mainInput.skipFile();
             }
         }
+        runSpecial(ctx, ends);
+        ctx.closeAll();
+    } catch (e) {
+        if (e instanceof AwkError) return { stdout: ctx.stdout, stderr: `${ctx.stderr}awk: ${e.message}\n`, exitCode: 2 };
+        throw e;
     }
-
-    return finish(ctx, rules, true);
+    return { stdout: ctx.stdout, stderr: ctx.stderr, exitCode: ctx.exitCode ?? 0 };
 }
