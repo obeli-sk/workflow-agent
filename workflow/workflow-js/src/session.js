@@ -176,8 +176,8 @@ class Notifications {
         this.notify({ human_input_requested: { execution_id: executionId, question, turn_index: this.turnIndex } });
     }
 
-    humanInputResolved(executionId) {
-        this.notify({ human_input_resolved: { execution_id: executionId, turn_index: this.turnIndex } });
+    humanInputResolved(executionId, answer) {
+        this.notify({ human_input_resolved: { execution_id: executionId, turn_index: this.turnIndex, answer } });
     }
 
     // A dedicated join set
@@ -237,8 +237,9 @@ function askUser(question, notifications) {
             throw SESSION_IDLE_ERROR;
         }
         if (joinSet.lastId !== executionId) throw `unexpected ask-user response: ${joinSet.lastId}`;
-        notifications.humanInputResolved(executionId);
-        return typeof answer === "string" ? answer : JSON.stringify(answer);
+        const text = typeof answer === "string" ? answer : JSON.stringify(answer);
+        notifications.humanInputResolved(executionId, text);
+        return text;
     } finally {
         joinSet.close();
     }
@@ -549,7 +550,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const pendingMessages = pendingShell === null && prompt.trim() ? [userText(prompt.trim())] : [];
 
     notifications.notify({
-        session_started: { protocol_version: 11, prompt, backend: model, effort, system_prompt: system },
+        session_started: { protocol_version: 12, prompt, backend: model, effort, system_prompt: system },
     });
     // A session created with a slug label (`chat create --name`)
     // starts already renamed; anything else arrives unnamed.
