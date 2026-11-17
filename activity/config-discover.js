@@ -55,11 +55,25 @@ const packSystemPrompt = (obeliskVersion) =>
     "- Each webhook names its server with `http_server`: `internal` for pages only you should reach (the platform handles sign-in), `external` for public sites and callbacks, which must do their own authentication and need `public_http_servers = [\"external\"]` in app.toml.\n" +
     "- Find an app's webhook URLs with `obelisk cloud app status --app NAME` and smoke-test its routes with `curl`. Verify executions through the app's API (`obelisk cloud app execution list --app NAME`, `execution logs ID`).\n";
 
-// The fixed part of the prompt tail, in the order the workflow renders it:
-// user input, then subagents, then deployment authoring. The per-session
-// "# This session" text (built by renderSelfSection) follows this.
-const staticSections = (obeliskVersion) =>
-    [USER_INPUT_SECTION, SUBAGENTS_SECTION, packSystemPrompt(obeliskVersion)].join("\n\n");
+const BROWSER_SECTION =
+    "# Browser control\n\n" +
+    "The `browser` command is enabled for this session. Use it to inspect rendered pages and interact with web UIs, including testing apps you deploy. Run `browser --help` for step operations and locators.\n\n" +
+    "Create a session, navigate, and read the page as Markdown:\n\n" +
+    "```sh\n" +
+    "session=$(browser session create --ttl 600)\n" +
+    "browser steps \"$session\" <<'JSON'\n" +
+    '{"steps":[{"op":"goto","url":"https://app.example.com"},{"op":"content","format":"markdown"}]}\n' +
+    "JSON\n" +
+    "browser session close \"$session\"\n" +
+    "```\n\n" +
+    "- Use the actual page URL and reuse the session for related interactions; close it when finished. `browser session status ID` reports expiry; create a new session explicitly after expiry, restart, or memory exhaustion.\n" +
+    "- Page, redirect, login, and asset hosts must be allowed by the browser integration's configured host policy. Failed batches exit nonzero with partial results and denied_hosts on stdout; inspect those results.\n" +
+    "- After an ambiguous failure, inspect the current page before repeating an action. `browser steps ID --idempotency-key KEY` can retrieve a completed batch's cached result while its key remains among the session's last 16 keys; reuse a key only for the same batch.\n" +
+    "- Use `sensitive:true` on secret fills to redact later results. The browser supports DOM interaction and HTML/Markdown content, but has no screenshots.\n";
+
+// Optional browser guidance precedes the per-session identity.
+const staticSections = (obeliskVersion, browserEnabled) =>
+    [USER_INPUT_SECTION, SUBAGENTS_SECTION, packSystemPrompt(obeliskVersion), ...(browserEnabled ? [BROWSER_SECTION] : [])].join("\n\n");
 
 // The "# This session" paragraph: the session's own identity (exactly what
 // `chat current` prints), its parent for context gathering, and when to rename
@@ -114,10 +128,8 @@ export default async function discover(executionId, backend, effort, name) {
         programs: availablePrograms,
         apps: parseRegistry("APPS_JSON", parseApp),
         obelisk_version: obeliskVersion,
-        // The static sections already end in one "\n" (from packSystemPrompt);
-        // one more here yields the same blank-line gap as every other
-        // section boundary in this prompt.
-        prompt_tail: `${staticSections(obeliskVersion)}\n${renderSelfSection(executionId, backend, effort, name)}`,
+        // Add a blank line between the final guidance section and session identity.
+        prompt_tail: `${staticSections(obeliskVersion, browserEnabled)}\n${renderSelfSection(executionId, backend, effort, name)}`,
     };
 }
 
