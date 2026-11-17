@@ -62,8 +62,8 @@ test("bracket expression regex", () => {
 test("missing file errors", () => {
     const r = withFixtures().exec("sed 's/a/b/' /test/nonexistent.txt");
     assert.equal(r.stdout, "");
-    assert.equal(r.stderr, "sed: /test/nonexistent.txt: No such file or directory\n");
-    assert.equal(r.exitCode, 1);
+    assert.equal(r.stderr, "sed: can't read /test/nonexistent.txt: No such file or directory\n");
+    assert.equal(r.exitCode, 2);
 });
 
 test("empty replacement deletes the match", () => {
@@ -204,4 +204,59 @@ test("Nth-occurrence substitution", () => {
     const bash = fresh();
     bash.vfs.writeFile("/t.txt", "foo bar foo baz foo\n");
     assert.equal(bash.exec("sed 's/foo/XXX/2' /t.txt").stdout, "foo bar XXX baz foo\n");
+});
+
+test("-f reads the script from a file, also with -i", () => {
+    const bash = withFixtures();
+    bash.vfs.writeFile("/test/p.sed", "s/hello/hi/\n/goodbye/d\n");
+    assert.equal(bash.exec("sed -f /test/p.sed /test/file.txt").stdout, "hi world\nhi universe\n");
+    const r = bash.exec("sed -i -f /test/p.sed /test/file.txt");
+    assert.equal(r.exitCode, 0);
+    assert.equal(bash.vfs.readFile("/test/file.txt"), "hi world\nhi universe\n");
+});
+
+test("a, i and c text decode \\n and \\t escapes", () => {
+    const r = withFixtures().exec("sed '2i\\  a\\n\\tb' /test/numbers.txt");
+    assert.equal(r.stdout, "line 1\n  a\n\tb\nline 2\nline 3\nline 4\nline 5\n");
+    const r2 = withFixtures().exec("sed '1a x\\ny' /test/numbers.txt");
+    assert.equal(r2.stdout, "line 1\nx\ny\nline 2\nline 3\nline 4\nline 5\n");
+});
+
+test("s replacement decodes \\xHH", () => {
+    const r = withFixtures().exec("sed 's/hello/\\x27hi\\x27/' /test/file.txt");
+    assert.equal(r.stdout, "'hi' world\n'hi' universe\ngoodbye world\n");
+});
+
+test("{} blocks group commands under one address", () => {
+    const r = withFixtures().exec("sed -n '2,3{s/line/L/;p}' /test/numbers.txt");
+    assert.equal(r.stdout, "L 2\nL 3\n");
+});
+
+test("0,/re/ can end the range on line 1", () => {
+    const r = withFixtures().exec("sed '0,/hello/s//hi/' /test/file.txt");
+    assert.equal(r.stdout, "hi world\nhello universe\ngoodbye world\n");
+});
+
+test("clustered -ne does not autoprint", () => {
+    const r = withFixtures().exec("sed -ne '/universe/p' /test/file.txt");
+    assert.equal(r.stdout, "hello universe\n");
+});
+
+test("-i.bak keeps a backup", () => {
+    const bash = withFixtures();
+    assert.equal(bash.exec("sed -i.bak 's/hello/hi/' /test/file.txt").stdout, "");
+    assert.equal(bash.vfs.readFile("/test/file.txt"), "hi world\nhi universe\ngoodbye world\n");
+    assert.equal(bash.vfs.readFile("/test/file.txt.bak"), "hello world\nhello universe\ngoodbye world\n");
+});
+
+test("N, P, D and labels join lines", () => {
+    const bash = withFixtures();
+    assert.equal(bash.exec("sed ':a;N;$!ba;s/\\n/,/g' /test/numbers.txt").stdout, "line 1,line 2,line 3,line 4,line 5\n");
+    assert.equal(bash.exec("sed '$!N;P;D' /test/numbers.txt").stdout, "line 1\nline 2\nline 3\nline 4\nline 5\n");
+});
+
+test("unknown options and commands fail instead of being ignored", () => {
+    const bash = withFixtures();
+    assert.equal(bash.exec("sed -x p /test/file.txt").exitCode, 1);
+    assert.equal(bash.exec("sed 'k' /test/file.txt").exitCode, 1);
 });

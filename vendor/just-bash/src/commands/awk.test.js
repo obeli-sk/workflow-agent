@@ -29,30 +29,31 @@ test("--help", () => {
 
 test("missing program is an error", () => {
     const r = fresh().exec("awk");
-    assert.equal(r.exitCode, 1);
+    assert.equal(r.exitCode, 2);
     assert.match(r.stderr, /missing program/);
 });
 
 test("missing file is an error", () => {
     const r = fresh().exec("awk '{print}' /nonexistent.txt");
-    assert.equal(r.exitCode, 1);
+    assert.equal(r.exitCode, 2);
     assert.match(r.stderr, /No such file/);
 });
 
-test("getline is rejected, not silently mishandled", () => {
+test("getline reads from files, commands and the main input", () => {
     const bash = fresh();
     bash.vfs.writeFile("/test/src.txt", "a\nb\n");
     const r = bash.exec('awk \'BEGIN{ while((getline l < "/test/src.txt")>0) s=s l; print s }\'');
-    assert.equal(r.exitCode, 1);
-    assert.equal(r.stdout, "");
-    assert.match(r.stderr, /getline is not supported/);
+    assert.equal(r.stdout, "ab\n");
+    assert.equal(bash.exec('awk \'BEGIN{ "echo hi" | getline x; print x }\'').stdout, "hi\n");
+    assert.equal(bash.exec("printf '1\\n2\\n3\\n' | awk '{ getline; print }'").stdout, "2\n3\n");
 });
 
-test("user-defined functions are rejected, not silently mishandled", () => {
+test("user-defined functions, recursion and arrays by reference", () => {
     const r = fresh().exec("echo hi | awk 'function f(x){return x x} {print f($0)}'");
-    assert.equal(r.exitCode, 1);
-    assert.equal(r.stdout, "");
-    assert.match(r.stderr, /user-defined functions are not supported/);
+    assert.equal(r.stdout, "hihi\n");
+    const prog = "function fact(n) { return n <= 1 ? 1 : n * fact(n - 1) } "
+        + "function fill(a, k) { a[k] = 1 } BEGIN { fill(arr, \"x\"); print fact(5), length(arr) }";
+    assert.equal(fresh().exec(`awk '${prog}'`).stdout, "120 1\n");
 });
 
 test("escape sequences", () => {
@@ -239,7 +240,7 @@ test("printf hex/octal/char/exponential conversions", () => {
     assert.equal(bash.exec('awk \'BEGIN{printf "%x\\n", 255}\'').stdout, "ff\n");
     assert.equal(bash.exec('awk \'BEGIN{printf "%o\\n", 8}\'').stdout, "10\n");
     assert.equal(bash.exec('awk \'BEGIN{printf "%c\\n", 65}\'').stdout, "A\n");
-    assert.equal(bash.exec('awk \'BEGIN{printf "%.2e\\n", 1234}\'').stdout, "1.23e+3\n");
+    assert.equal(bash.exec('awk \'BEGIN{printf "%.2e\\n", 1234}\'').stdout, "1.23e+03\n");
 });
 
 test("field assignment extends NF and pads with OFS", () => {
@@ -325,4 +326,58 @@ test("modulo, including negative modulo", () => {
 test("split() builtin", () => {
     const r = fresh().exec('echo "a,b,c" | awk \'{ n = split($0, arr, ","); print n, arr[1], arr[2], arr[3] }\'');
     assert.equal(r.stdout, "3 a b c\n");
+});
+
+test("-f reads the program from a file", () => {
+    const bash = withFixtures();
+    bash.vfs.writeFile("/test/p.awk", "/foo/ { print $2 }\n");
+    const r = bash.exec("awk -f /test/p.awk /test/data.txt");
+    assert.equal(r.stdout, "bar\n");
+    assert.equal(r.exitCode, 0);
+});
+
+test("unknown options fail instead of becoming the program", () => {
+    const r = withFixtures().exec("awk -x '{print}' /test/data.txt");
+    assert.equal(r.exitCode, 2);
+    assert.equal(r.stdout, "");
+});
+
+test("print and printf redirect to files, stderr and pipes", () => {
+    const bash = withFixtures();
+    const r = bash.exec("awk '{ print $1 > \"/test/out.txt\"; print \"e\" > \"/dev/stderr\" }' /test/data.txt");
+    assert.equal(r.stdout, "");
+    assert.equal(r.stderr, "e\ne\n");
+    assert.equal(bash.vfs.readFile("/test/out.txt"), "hello\nfoo\n");
+    assert.equal(bash.exec("awk '{ print $2 | \"sort\" }' /test/data.txt").stdout, "bar\nworld\n");
+    assert.equal(bash.exec("awk 'BEGIN { printf(\"%s-%s\\n\", 1, 2) }'").stdout, "1-2\n");
+});
+
+test("delete, in and for-in over arrays, including SUBSEP keys", () => {
+    const prog = "BEGIN { a[1]; a[2]; a[3]; delete a[2]; for (k in a) s = s k; m[1,2] = 1; "
+        + "print s, (2 in a), ((1,2) in m), length(a); delete a; print length(a) }";
+    assert.equal(fresh().exec(`awk '${prog}'`).stdout, "13 0 1 2\n0\n");
+});
+
+test("-v and var=value operands process escapes", () => {
+    const bash = withFixtures();
+    assert.equal(bash.exec("awk -v s='a\\tb' 'BEGIN { print s }'").stdout, "a\tb\n");
+    assert.equal(bash.exec("awk '{ print x $1; exit }' x='>\\n' /test/data.txt").stdout, ">\nhello\n");
+});
+
+test("RS selects paragraph, single-character and regex records", () => {
+    const bash = fresh();
+    bash.vfs.writeFile("/test/p.txt", "a\nb\n\n\nc\n");
+    assert.equal(bash.exec("awk -v RS= '{ print NR \": \" $1 \"+\" $2 }' /test/p.txt").stdout, "1: a+b\n2: c+\n");
+    assert.equal(bash.exec("printf 'x;y;z' | awk -v RS=';' '{ print }'").stdout, "x\ny\nz\n");
+    assert.equal(bash.exec("printf 'x12y345z' | awk -v RS='[0-9]+' '{ print }'").stdout, "x\ny\nz\n");
+});
+
+test("non-integral numbers print with %.6g", () => {
+    assert.equal(fresh().exec("awk 'BEGIN { print 1/3, 0.1 + 0.2, 1e20, 2^53 }'").stdout, "0.333333 0.3 100000000000000000000 9007199254740992\n");
+});
+
+test("exit in BEGIN still runs END", () => {
+    const r = withFixtures().exec("awk 'BEGIN { exit 3 } { print } END { print \"end\" }' /test/data.txt");
+    assert.equal(r.stdout, "end\n");
+    assert.equal(r.exitCode, 3);
 });

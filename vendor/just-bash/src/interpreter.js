@@ -392,7 +392,7 @@ export class Interpreter {
         }
     }
 
-    runScriptIsolated(source, name, args) {
+    runScriptIsolated(source, name, args, stdin = "") {
         const savedVars = new Map(this.vars);
         const savedExported = new Set(this.exported);
         const savedCwd = this.cwd;
@@ -400,7 +400,7 @@ export class Interpreter {
         const savedName = this.scriptName;
         this.positionalParams = args;
         this.scriptName = name;
-        const io = { 0: stringSource(""), 1: bufferSink(), 2: bufferSink() };
+        const io = { 0: stringSource(stdin), 1: bufferSink(), 2: bufferSink() };
         try {
             this.runStatements(parseScript(source).statements, io);
         } catch (error) {
