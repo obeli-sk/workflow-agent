@@ -47,10 +47,14 @@ test("browser registration follows BROWSER_URL, including registry overrides", a
     const curl = { name: "curl", ffqn: "ns:programs/program.curl", description: "fetch" };
     const disabled = await withEnv({ PROGRAMS_JSON: JSON.stringify([curl, browser, alias]) }, () => discover("E_1", "", "", null));
     assert.deepEqual(disabled.programs, [curl]);
+    assert.ok(!disabled.prompt_tail.includes("# Browser control"));
     const enabled = await withEnv({ BROWSER_URL: "http://127.0.0.1:9195", PROGRAMS_JSON: JSON.stringify([curl]) }, () => discover("E_1", "", "", null));
     assert.deepEqual(enabled.programs.map((program) => program.name), ["curl", "browser"]);
+    assert.ok(enabled.prompt_tail.includes("# Browser control"));
+    assert.ok(enabled.prompt_tail.indexOf("# Browser control") < enabled.prompt_tail.indexOf("# This session"));
     const explicit = await withEnv({ BROWSER_URL: "http://127.0.0.1:9195", PROGRAMS_JSON: JSON.stringify([browser]) }, () => discover("E_1", "", "", null));
     assert.deepEqual(explicit.programs, [browser]);
+    assert.ok(explicit.prompt_tail.includes("# Browser control"));
 });
 
 test("discover's prompt_tail renders the static sections then This session, with identity and parent", async () => {

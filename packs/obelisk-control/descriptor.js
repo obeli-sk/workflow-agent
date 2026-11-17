@@ -60,7 +60,7 @@ const SYSTEM_PROMPT = [
 const DOCS_SECTION = [
     '# Obelisk documentation (rendered llms.txt)',
     '',
-    'The rendered index below is the source of truth for app authoring and links every docs page. Fetch relevant pages with the GET-only curl program, e.g. `curl https://obeli.sk/docs/latest/js/js-workflows/ | sed -n 1,200p`.',
+    'The rendered index below is the source of truth for app authoring and links every docs page. When fetching Obelisk docs with the GET-only curl program, always pass `-H "Accept: text/markdown"` to receive Markdown with resolved links and code blocks instead of HTML. For example: `curl -H "Accept: text/markdown" https://obeli.sk/docs/latest/js/js-workflows/ | sed -n 1,200p`. Follow the index links for the target Obelisk version; use latest only when that is the target or the index reports a fallback.',
 ].join(nl);
 
 // Docs indexes fetched once at session start and inlined into the prompt.

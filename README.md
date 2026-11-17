@@ -98,6 +98,15 @@ The agent reads the Obelisk documentation from https://obeli.sk.
 `OBELISK_VERSION` pins it to a release (default `latest`) and is stated in the
 system prompt; `DOCS_URLS_JSON` replaces the URL list.
 
+The system prompt tells agents to request Markdown when fetching Obelisk docs:
+
+```sh
+curl -H 'Accept: text/markdown' https://obeli.sk/docs/latest/js/js-workflows/
+```
+
+Agents follow the index links for the target version, preserving resolved links,
+code blocks and tables without the HTML navigation.
+
 JS example apps from the [app catalog](https://obeli.sk/docs/latest/apps/) and the
 `website` repo (the docs' Markdown sources) are mounted read-only under
 `/workspace/github/<name>`. Override the list with `APPS_JSON`:
@@ -137,6 +146,8 @@ in `app.toml`, set `allowed_hosts` to the page, login and asset hosts you need,
 and apply the app configuration. The example reserves 128 MB per session.
 ObeliskNet supplies `BROWSER_URL`; new agent sessions then discover the command
 automatically. For local development, supply a compatible browser service URL.
+When enabled, the system prompt includes browser usage, session lifecycle,
+host policy and failure recovery guidance. This section is omitted when disabled.
 Applying the enabled config from your CLI requires Obelisk with opaque cloud
 integration settings support (commit `225cb3497` or newer); the currently pinned
 `v0.43.0-rc.18` CLI rejects browser-specific settings. The agent's `obelisk cloud`
