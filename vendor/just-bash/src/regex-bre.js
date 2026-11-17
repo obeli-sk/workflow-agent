@@ -45,6 +45,32 @@ function findBracketEnd(chars, start) {
     return Math.min(j + 1, chars.length);
 }
 
+// GNU word-boundary and buffer anchors, which JS spells differently.
+const GNU_ANCHORS = { "<": "\\b(?=\\w)", ">": "\\b(?<=\\w)", "`": "^", "'": "$" };
+
+// ERE for JS RegExp: POSIX bracket classes plus the GNU `\<` `\>` `\`` `\'` anchors.
+export function translateEre(pattern) {
+    const chars = [...pattern];
+    let out = "";
+    let i = 0;
+    while (i < chars.length) {
+        if (chars[i] === "\\" && i + 1 < chars.length) {
+            out += GNU_ANCHORS[chars[i + 1]] ?? chars[i] + chars[i + 1];
+            i += 2;
+            continue;
+        }
+        if (chars[i] === "[") {
+            const end = findBracketEnd(chars, i);
+            out += `[${expandPosixClasses(chars.slice(i + 1, end - 1).join(""))}]`;
+            i = end;
+            continue;
+        }
+        out += chars[i];
+        i += 1;
+    }
+    return out;
+}
+
 // Expand `[:class:]` POSIX classes inside `[...]` bracket expressions,
 // leaving everything else untouched. Needed even in ERE/extended mode since
 // JS RegExp has no native POSIX-class support.
@@ -83,6 +109,7 @@ export function translateBre(pattern) {
             if (next === "+") { out += "+"; atStart = false; i += 2; continue; }
             if (next === "?") { out += "?"; atStart = false; i += 2; continue; }
             if (next === "|") { out += "|"; atStart = true; i += 2; continue; }
+            if (GNU_ANCHORS[next]) { out += GNU_ANCHORS[next]; atStart = next === "`"; i += 2; continue; }
             out += `\\${next}`;
             atStart = false;
             i += 2;
