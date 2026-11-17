@@ -164,6 +164,7 @@ function appendSessionEvent(target, event, response) {
             id: typeof requested.execution_id === "string" ? requested.execution_id : "",
             question: typeof requested.question === "string" ? requested.question : "",
             turn_index: Number.isInteger(requested.turn_index) ? requested.turn_index : null,
+            created_at: createdAt,
         });
     } else if (event.human_input_resolved) {
         const resolved = event.human_input_resolved;
@@ -171,6 +172,8 @@ function appendSessionEvent(target, event, response) {
             kind: "resolved",
             id: typeof resolved.execution_id === "string" ? resolved.execution_id : "",
             turn_index: Number.isInteger(resolved.turn_index) ? resolved.turn_index : null,
+            answer: typeof resolved.answer === "string" ? resolved.answer : null,
+            created_at: createdAt,
         });
     } else if (event.user_message) {
         const message = event.user_message;

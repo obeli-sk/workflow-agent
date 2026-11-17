@@ -158,6 +158,9 @@ switch (command) {
         const shell = projection?.transcript?.shell_events
             ?.find((event) => event.id === "shell-e2e-ask");
         const valid = Boolean(requested && resolved)
+            && resolved.answer === "yes"
+            && typeof requested.created_at === "string"
+            && typeof resolved.created_at === "string"
             && shellStream(shell?.result, "stdout") === "yes\n"
             && shell?.result?.exit_code === 0
             && shell.turn_complete === true;

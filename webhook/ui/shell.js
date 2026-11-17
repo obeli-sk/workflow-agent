@@ -643,6 +643,7 @@ function mergeTranscript(delta) {
       turn_starts: [],
       sent_results: [],
       shell_starts: [],
+      human_input_events: [],
       pending_asks: [],
       session_started: null,
       input_offer: null,
@@ -671,6 +672,7 @@ function mergeTranscript(delta) {
   mergeToolResults(state.transcript.sent_results, delta.sent_results || []);
   mergeShellStarts(state.transcript.shell_starts, delta.shell_starts || []);
   mergeHumanInputEvents(state.transcript.pending_asks, delta.human_input_events || []);
+  mergeShellEvents(state.transcript.human_input_events, delta.human_input_events || []);
   if (delta.session_started) state.transcript.session_started = delta.session_started;
   if (Object.prototype.hasOwnProperty.call(delta, 'input_offer')) {
     state.transcript.input_offer = delta.input_offer || null;
@@ -921,6 +923,22 @@ function buildCachedTurns(initialPromptAt, initialPrompt) {
     turn_index: msg.turn_index,
   });
   const pending = [];
+  for (const event of cached.human_input_events || []) {
+    const requested = event.kind === 'requested';
+    const text = requested ? event.question : event.answer;
+    if (typeof text === 'string') {
+      pending.push({
+        sent: Date.parse(event.created_at || ''),
+        turn: {
+          kind: requested ? 'question' : 'answer',
+          id: event.id,
+          text,
+          created_at: event.created_at,
+          turn_index: event.turn_index,
+        },
+      });
+    }
+  }
   for (const msg of cached.user_messages || []) {
     if (!msg || typeof msg.text !== 'string') continue;
     const sent = Date.parse(startsById.get(msg.id)?.created_at || msg.created_at || '');
@@ -1115,6 +1133,12 @@ function renderDetail(forceScroll = false) {
     f.addEventListener('submit', (ev) => {
       ev.preventDefault();
       submitAnswer(f.dataset.child, f.querySelector('textarea').value);
+    });
+    f.querySelector('textarea').addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault();
+        f.requestSubmit();
+      }
     });
   }
 
@@ -1578,6 +1602,11 @@ function renderTurnGroup(group, ordinal) {
   for (const item of group.items) {
     if (item.kind === 'user_message') {
       body += '<div class="bubble user"><div class="label">user</div>' + preBlock(item.text) + '</div>';
+    } else if (item.kind === 'question') {
+      body += '<div class="bubble"><div class="label">question</div>'
+        + renderedMarkdownHtml('ask-question', item.text) + '</div>';
+    } else if (item.kind === 'answer') {
+      body += '<div class="bubble user"><div class="label">answer</div>' + preBlock(item.text) + '</div>';
     } else if (isAgentStep(item)) {
       stepNumber += 1;
       body += renderStep(item, number, stepNumber);
