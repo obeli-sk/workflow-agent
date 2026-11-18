@@ -1,7 +1,7 @@
 app_name = "workflow-agent"
 
 [cloud]
-memory_mb = 512
+memory.mib = 512
 
 [cloud.integrations]
 llm = { type = "llm", env = "LLM_BASE_URL" }
@@ -13,9 +13,6 @@ github = { type = "github", env = "GITHUB_API_URL" }
 # type = "browser"
 # env = "BROWSER_URL"
 # allowed_hosts = ["https://app.example.com"]
-# max_sessions = 1
-# session_memory_mb = 128
-# max_ttl = "30m"
 
 [secrets]
 LLM_API_KEY = { optional = true }
