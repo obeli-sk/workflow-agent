@@ -37,6 +37,13 @@ test("app policy preserves internal environment sources and rejects optional", (
     assert.throws(() => appConfig(POLICY.replace('source = "api-url"', 'source = "unknown"')), /source must be/);
 });
 
+test("cloud memory takes its unit as the key", () => {
+    assert.deepEqual(appConfig('app_name = "demo"\n[cloud]\nmemory.gib = 1\n').cloud, { memory: { gib: 1 } });
+    for (const memory of ["memory_mb = 512", "memory = 512", "memory = { mb = 512 }", "memory = { mib = 512, gib = 1 }", "memory.mib = 0"]) {
+        assert.throws(() => appConfig(`app_name = "demo"\n[cloud]\n${memory}\n`), /memory/, memory);
+    }
+});
+
 test("app policy accepts url_prefix rules in the server's stored shape", () => {
     const hosts = `app_name = "demo"
 [[outbound_http.allowed_host]]

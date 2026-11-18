@@ -52,9 +52,13 @@ export function appConfig(text, path = "app.toml") {
 
     const cloud = {};
     for (const [key, value] of Object.entries(table(toml.cloud, "cloud", fail))) {
-        if (key === "memory_mb") {
-            if (!Number.isInteger(value) || value <= 0) fail("cloud.memory_mb must be a positive integer");
-            cloud.memory_mb = value;
+        if (key === "memory") {
+            // PORT: app.rs's `MemorySizeConfig`, the unit is the only key.
+            const units = Object.keys(table(value, "cloud.memory", fail));
+            if (units.length !== 1 || !["mib", "gib"].includes(units[0])) fail("cloud.memory must set exactly one of `mib` or `gib`");
+            const amount = value[units[0]];
+            if (!Number.isInteger(amount) || amount <= 0 || amount > 0xffffffff) fail(`cloud.memory.${units[0]} must be a positive integer`);
+            cloud.memory = { [units[0]]: amount };
         } else if (key === "integrations") {
             const integrations = cloudIntegrations(value, fail);
             if (Object.keys(integrations).length > 0) cloud.integrations = integrations;

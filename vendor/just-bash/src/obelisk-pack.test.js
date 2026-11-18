@@ -366,7 +366,7 @@ test("stage reuses default's captured identity and parent without recreating it"
 
 test("deploy preserves browser settings and does not fill an integration-supplied URL", () => {
     const i = interp();
-    const policy = 'app_name="demo"\n[cloud.integrations.browser]\ntype="browser"\nenv="BROWSER_URL"\nallowed_hosts=["https://app.example.com"]\nsession_memory_mb=128\n[public_env]\nBROWSER_URL={}\n';
+    const policy = 'app_name="demo"\n[cloud.integrations.browser]\ntype="browser"\nenv="BROWSER_URL"\nallowed_hosts=["https://app.example.com"]\nsession_memory.mib=128\n[public_env]\nBROWSER_URL={}\n';
     i.vfs.writeFile("/workspace/app.toml", policy);
     const cloud = fakeCloud({ "PUT /v1/deployments/*": { status: 201, body: "" } });
     const result = run(i, "cloud app deploy --empty-deployment --fill-non-interactive", cloud);
