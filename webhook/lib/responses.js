@@ -132,6 +132,7 @@ function appendSessionEvent(target, event, response) {
             prompt: typeof started.prompt === "string" ? started.prompt : "",
             backend: typeof started.backend === "string" ? started.backend : "",
             effort: typeof started.effort === "string" ? started.effort : "",
+            api: typeof started.api === "string" ? started.api : "",
             system_prompt: typeof started.system_prompt === "string" ? started.system_prompt : "",
             created_at: createdAt,
         };

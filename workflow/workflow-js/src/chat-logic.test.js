@@ -31,6 +31,7 @@ test("currentPayload/currentOutput shape identity as JSON", () => {
         execution_id: "E_01ABC.n:research_1",
         backend: "claude",
         effort: "low",
+        api: "",
         name: "research",
         parent_id: "E_01ABC",
     });
@@ -69,10 +70,12 @@ test("usage and failure prefix and shape CommandOutput consistently", () => {
 });
 
 test("parseCreateArgs reads flags and prompt words", () => {
-    const parsed = parseCreateArgs(["--model", "fake", "check", "--effort=low", "the deploy"]);
+    const parsed = parseCreateArgs(["--model", "fake", "check", "--effort=low", "--api", "openai-responses", "the deploy"]);
     assert.equal(parsed.prompt, "check the deploy");
     assert.equal(parsed.model, "fake");
     assert.equal(parsed.effort, "low");
+    assert.equal(parsed.api, "openai-responses");
+    assert.throws(() => parseCreateArgs(["--api", "guess"]), /--api must be one of/);
     assert.equal(parsed.name, null);
 
     const named = parseCreateArgs(["--name=research", "$", "ls"]);
@@ -83,6 +86,7 @@ test("parseCreateArgs reads flags and prompt words", () => {
     assert.equal(bare.prompt, "");
     assert.equal(bare.model, null);
     assert.equal(bare.effort, null);
+    assert.equal(bare.api, null);
     assert.equal(bare.name, null);
     assert.equal(bare.watch, false);
 });

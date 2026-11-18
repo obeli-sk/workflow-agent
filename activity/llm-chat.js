@@ -27,11 +27,11 @@ const DEFAULT_MAX_TOKENS = 8192;
 import { loadMessages, obeliskApi } from "./llm-history.js";
 import { llmEndpoint, resolveModel } from "../shared/model-catalog.js";
 
-export default async function completion(system, deltaJson, toolsJson, model, effort, historyIds) {
+export default async function completion(system, deltaJson, toolsJson, model, effort, historyIds, api) {
     const messages = await loadMessages(historyIds, deltaJson, historyIds.length ? obeliskApi() : null);
     const tools = parseJson(toolsJson, 'tools-json', []);
     let cfg;
-    try { cfg = await resolveModel(model); }
+    try { cfg = await resolveModel(model, api); }
     catch (error) { throw String(error.message || error); }
     const level = resolveEffort(effort);
     const toolNames = buildToolNames(tools);

@@ -1,5 +1,5 @@
 // obelisk-agent:config/config.discover:
-//   func(execution-id: string, backend: string, effort: string, name: option<string>)
+//   func(execution-id: string, backend: string, effort: string, name: option<string>, api: string)
 //     -> result<record {
 //     max-steps: u32,
 //     programs: list<record { name: string, ffqn: string, description: string }>,
@@ -78,11 +78,12 @@ const staticSections = (obeliskVersion, browserEnabled) =>
 // The "# This session" paragraph: the session's own identity (exactly what
 // `chat current` prints), its parent for context gathering, and when to rename
 // itself.
-function renderSelfSection(executionId, backend, effort, name) {
+function renderSelfSection(executionId, backend, effort, name, api) {
     const payload = JSON.stringify({
         execution_id: executionId,
         backend,
         effort,
+        api: api ?? "",
         name: name ?? null,
         parent_id: parentOf(executionId),
     });
@@ -114,7 +115,7 @@ function parentOf(executionId) {
     return dot === -1 ? null : executionId.slice(0, dot);
 }
 
-export default async function discover(executionId, backend, effort, name) {
+export default async function discover(executionId, backend, effort, name, api) {
     const obeliskVersion = (process.env["OBELISK_VERSION"] ?? "").trim() || "latest";
     const browserFfqn = "obelisk-agent:programs/program.browser";
     const programs = parseRegistry("PROGRAMS_JSON", parseProgram);
@@ -129,7 +130,7 @@ export default async function discover(executionId, backend, effort, name) {
         apps: parseRegistry("APPS_JSON", parseApp),
         obelisk_version: obeliskVersion,
         // Add a blank line between the final guidance section and session identity.
-        prompt_tail: `${staticSections(obeliskVersion, browserEnabled)}\n${renderSelfSection(executionId, backend, effort, name)}`,
+        prompt_tail: `${staticSections(obeliskVersion, browserEnabled)}\n${renderSelfSection(executionId, backend, effort, name, api)}`,
     };
 }
 

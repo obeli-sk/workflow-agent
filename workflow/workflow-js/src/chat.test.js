@@ -26,7 +26,7 @@ function mustNotSubmit() {
     throw "runCancellableSubmit must not be called";
 }
 
-// `submit(joinSet, prompt, model, descriptorFfqn, effort, name)` mirrors runCancellableSubmit.
+// `submit(joinSet, prompt, model, descriptorFfqn, effort, name, api)` mirrors runCancellableSubmit.
 function withFakeObelisk(fake, fn, submit = mustNotSubmit) {
     runtime.obelisk = fake;
     runtime.submit = submit;
@@ -84,7 +84,7 @@ function fakeNotifications() {
 }
 
 function own(executionId = "E_top", extra = {}) {
-    return new ChatSelf(executionId, "claude", "low", extra.name ?? null);
+    return new ChatSelf(executionId, "claude", "low", extra.name ?? null, extra.api ?? "");
 }
 
 // ----- commandHandler dispatch --------------------------------------------
@@ -124,6 +124,25 @@ test("commandHandler dispatches 'create' to createChild (own submit, not delegat
         assert.equal(submitted.length, 1);
         assert.equal(submitted[0].prompt, "look into it");
         assert.equal(submitted[0].descriptorFfqn, null);
+    }, submit);
+});
+
+test("create inherits the session's api unless --api overrides it", () => {
+    const submitted = [];
+    const submit = (joinSet, prompt, model, descriptorFfqn, effort, name, api) => {
+        submitted.push(api);
+        return `E_child_${submitted.length}`;
+    };
+    withFakeObelisk(noSleepObelisk(), () => {
+        const handler = commandHandler(fakeDelegate({}).handler, own("E_1", { api: "openai-responses" }), fakeNotifications());
+        assert.equal(handler(null, ["chat", "create", "go"], "").exitCode, 0);
+        assert.equal(handler(null, ["chat", "create", "--api", "anthropic-messages", "go"], "").exitCode, 0);
+        assert.deepEqual(submitted, ["openai-responses", "anthropic-messages"]);
+    }, submit);
+    withFakeObelisk(noSleepObelisk(), () => {
+        const handler = commandHandler(fakeDelegate({}).handler, own("E_2"), fakeNotifications());
+        assert.equal(handler(null, ["chat", "create", "go"], "").exitCode, 0);
+        assert.deepEqual(submitted.slice(2), [null]);
     }, submit);
 });
 

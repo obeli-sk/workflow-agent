@@ -284,6 +284,12 @@ const SHELL_HTML = `<!doctype html>
             <option value="high">high</option>
             <option value="xhigh">xhigh</option>
           </select>
+          <select id="new-api" title="LLM API the endpoint speaks">
+            <option value="">api: default</option>
+            <option value="openai-chat-completions">chat completions</option>
+            <option value="openai-responses">responses</option>
+            <option value="anthropic-messages">anthropic messages</option>
+          </select>
         </div>
         <button type="button" id="composer-stop" hidden>Stop</button>
         <button type="submit" id="composer-send">Send</button>
@@ -590,6 +596,7 @@ function refreshDetail() {
         detail.prompt = started.prompt || null;
         detail.backend = started.backend || null;
         detail.effort = started.effort || null;
+        detail.api = started.api || null;
         detail.system_prompt = started.system_prompt || null;
         detail.session_started_at = started.created_at || null;
       }
@@ -1031,7 +1038,7 @@ function renderDetail(forceScroll = false) {
   const sig = JSON.stringify({
     id: d.id, status: d.status, result_kind: d.result_kind, join_name: d.join_name,
     name: d.name,
-    prompt: d.prompt, backend: d.backend, effort: d.effort, system_prompt: d.system_prompt,
+    prompt: d.prompt, backend: d.backend, effort: d.effort, api: d.api, system_prompt: d.system_prompt,
     session_started_at: d.session_started_at,
     turns: d.turns, final_result: d.final_result,
     pending_asks: d.pending_asks,
@@ -1104,6 +1111,7 @@ function renderDetail(forceScroll = false) {
     +   ' &middot; ' + esc(ago(d.created_at))
     +   (d.backend ? ' &middot; <code>' + esc(d.backend) + '</code>' : '')
     +   (d.effort ? ' &middot; <code>effort: ' + esc(d.effort) + '</code>' : '')
+    +   (d.api ? ' &middot; <code>api: ' + esc(d.api) + '</code>' : '')
     +   (d.system_prompt ? ' &middot; <button type="button" id="sysprompt-toggle">system prompt</button>' : '')
     +   ' &middot; <button type="button" id="logs-toggle">logs</button>'
     +   pauseBtn
@@ -1787,12 +1795,13 @@ async function submitPrompt(prompt) {
   const btn = document.getElementById('composer-send');
   const backend = document.getElementById('new-backend')?.value || null;
   const effort = document.getElementById('new-effort')?.value || '';
+  const api = document.getElementById('new-api')?.value || '';
   btn.disabled = true;
   try {
     const r = await fetch('/api/submit', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt, backend, effort }),
+      body: JSON.stringify({ prompt, backend, effort, api }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
@@ -1809,11 +1818,12 @@ async function submitPrompt(prompt) {
 async function createEmptySession() {
   const backend = document.getElementById('new-backend')?.value || null;
   const effort = document.getElementById('new-effort')?.value || '';
+  const api = document.getElementById('new-api')?.value || '';
   try {
     const r = await fetch('/api/sessions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ backend, effort }),
+      body: JSON.stringify({ backend, effort, api }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));

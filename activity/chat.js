@@ -13,7 +13,7 @@
 // documents them in the help output and implements the --top-level create
 // fallback.
 
-import { loadModelCatalog } from "../shared/model-catalog.js";
+import { APIS, loadModelCatalog } from "../shared/model-catalog.js";
 import {
     SESSION_STATE_LABELS,
     emptyMarkers,
@@ -225,6 +225,7 @@ async function cmdReadBody(id, tail, turn, json, system) {
             working: walked.working === true,
             backend: started.backend ?? null,
             effort: started.effort ?? null,
+            api: started.api || null,
             name: walked.name ?? null,
             prompt: started.prompt ?? null,
             events,
@@ -238,6 +239,7 @@ async function cmdReadBody(id, tail, turn, json, system) {
             + `, working ${walked.working ? "yes" : "no"}`
             + (started.backend ? `, backend ${started.backend}` : "")
             + (started.effort ? `, effort ${started.effort}` : "")
+            + (started.api ? `, api ${started.api}` : "")
             + (walked.name ? `, name ${walked.name}` : ""),
     ];
     if (started.prompt) head.push(`prompt ${truncate(started.prompt, 400)}`);
@@ -294,6 +296,7 @@ async function cmdStateBody(id, json) {
         pending_offer_id: walked.inputOffer?.id ?? null,
         backend: started.backend ?? null,
         effort: started.effort ?? null,
+        api: started.api || null,
         name: walked.name ?? null,
     };
     return ok(json ? JSON.stringify(state, null, 2) + "\n" : JSON.stringify(state) + "\n");
@@ -349,12 +352,15 @@ async function cmdCreate(stdin, args) {
             throw new UsageError(`--effort must be one of: ${EFFORTS.join("|")}`);
         }
     }
+    if (parsed.api !== null && !APIS.includes(parsed.api)) {
+        throw new UsageError(`--api must be one of: ${APIS.join("|")}`);
+    }
     if (parsed.name !== null && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(parsed.name)) {
         throw new UsageError("--name must be a slug: lowercase letters, digits, inner dashes");
     }
     // Only reached outside a wrapping session (or for --top-level): the
     // workflow intercepts create to schedule child sessions durably.
-    const params = [prompt, parsed.model, null, effort, parsed.name];
+    const params = [prompt, parsed.model, null, effort, parsed.name, parsed.api];
     const body = (await apiText("POST", "/v1/executions", { ffqn: RUN_FFQN, params })).trim();
     let execId = body;
     try {
@@ -582,6 +588,7 @@ function projectSessionStarted(started) {
         prompt: strOr(started.prompt),
         backend: strOr(started.backend),
         effort: strOr(started.effort),
+        api: strOr(started.api),
         system_prompt: strOr(started.system_prompt),
     };
 }
@@ -768,13 +775,13 @@ function uniqueId() {
 // ----- arg/format helpers -----------------------------------------------------
 
 // Shared option parser: booleans --json/--system/--all/--top-level/--final,
-// valued --limit/--tail/--model/--effort (both "--x v" and "--x=v");
+// valued --limit/--tail/--model/--effort/--api (both "--x v" and "--x=v");
 // everything else is positional. Unknown options throw.
 function parseFlags(args) {
     const parsed = {
         positional: [], json: false, system: false, all: false, "top-level": false,
         watch: false, final: false,
-        limit: null, tail: null, turn: null, model: null, effort: null, name: null,
+        limit: null, tail: null, turn: null, model: null, effort: null, api: null, name: null,
     };
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -818,6 +825,7 @@ function parseFlags(args) {
             case "--model": parsed.model = take(); continue;
             case "--name": parsed.name = take(); continue;
             case "--effort": parsed.effort = take(); continue;
+            case "--api": parsed.api = take(); continue;
         }
         if (arg.startsWith("-")) throw new UsageError(`unsupported option: ${arg}`);
         parsed.positional.push(arg);
@@ -928,7 +936,7 @@ function commandHelp(sub) {
                 "last_reply ({turn} when a finished assistant",
                 "message exists; sessions stay pending for follow-ups even after",
                 "one), pending input-offer id when parked on user input, backend,",
-                "effort, and slug name.",
+                "effort, api, and slug name.",
                 "",
             ].join("\n");
         case "send":
@@ -966,11 +974,12 @@ function commandHelp(sub) {
             ].join("\n");
         case "create":
             return [
-                "Usage: chat create [--model M] [--effort E] [--name SLUG]",
+                "Usage: chat create [--model M] [--effort E] [--api A] [--name SLUG]",
                 "                   [--top-level] [PROMPT...]",
                 "",
                 "Start a new session and print its execution id. Model ids come",
-                "from 'chat models'; effort is one of: " + EFFORTS.join("|") + ".",
+                "from 'chat models'; effort is one of: " + EFFORTS.join("|") + ";",
+                "api is one of: " + APIS.join("|") + " (a child inherits this session's api).",
                 "By default the session is scheduled durably as a child of this",
                 "session (it dies with this session's cancellation); --top-level",
                 "submits an independent execution instead. A PROMPT starting",
@@ -984,7 +993,7 @@ function commandHelp(sub) {
                 "Usage: chat current [--json]",
                 "",
                 "Print this session's identity as JSON: own execution id, backend,",
-                "effort, slug name, and parent session when derived. Answered by",
+                "effort, api, slug name, and parent session when derived. Answered by",
                 "the session workflow itself.",
                 "",
             ].join("\n");
@@ -1037,7 +1046,7 @@ function help() {
         "                  A child parked in step-limit resumes on `send ID continue`.",
         "  interrupt ID    Stop the script ID is running right now (exit 130);",
         "                  the session itself stays alive.",
-        "  create [--model M] [--effort E] [--name SLUG] [--watch] [--top-level] [PROMPT...]",
+        "  create [--model M] [--effort E] [--api A] [--name SLUG] [--watch] [--top-level] [PROMPT...]",
         "                  Start a new session and print its id; effort is one of "
             + EFFORTS.join("|") + ". By default the new session is scheduled as a",
         "                  child of this session; --top-level makes it independent.",

@@ -70,6 +70,9 @@ export function parseToolTimeout(value) {
 
 const MAX_SLUG_LEN = 64;
 
+// LLM wire APIs a session may select; empty uses the model's configured API.
+export const APIS = ["openai-chat-completions", "openai-responses", "anthropic-messages"];
+
 // The shared naming rule for both an initial `name` and a later `chat
 // rename`. Returns an error string, or null when valid.
 export function validateSlug(name) {

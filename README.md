@@ -51,6 +51,12 @@ Web UI addresses are internal public-env sources declared in `app.toml`:
 | `LLM_API_KEY` | unset | Bearer token, if the endpoint needs one. |
 | `AGENT_MODELS` | unset | Fallback model catalog (JSON), used when discovery is unavailable. |
 
+Model lists do not say which API a model speaks, so nothing is guessed. Each
+session picks one explicitly (the UI's api selector, `chat create --api`):
+`openai-chat-completions`, `openai-responses` or `anthropic-messages`. When
+none is picked, the model's `AGENT_MODELS` `api_type` applies, else chat
+completions. Child sessions inherit their parent's choice.
+
 For local development, set `LLM_BASE_URL` explicitly. Cloud deployment uses the
 account's `llm` integration declared in `app.toml`, overriding local values.
 A local endpoint option is

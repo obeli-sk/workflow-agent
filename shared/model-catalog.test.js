@@ -75,12 +75,11 @@ test("a path in LLM_BASE_URL applies to discovery and model requests, before a m
     }, "http://llm.test/api/");
 });
 
-test("discovered ChatGPT-subscription models use the Responses API", async () => {
-    await withEndpoint("[]", async () => response({ data: [
-        { id: "gpt-6-luna", owned_by: "chatgpt" }, { id: "fireworks/glm", owned_by: "fireworks" },
-    ] }), async () => {
-        assert.equal((await resolveModel("gpt-6-luna")).api_type, "openai-responses");
-        assert.equal((await resolveModel("fireworks/glm")).api_type, "openai-chat-completions");
+test("discovered models default to chat completions and take the selected API", async () => {
+    await withEndpoint("[]", async () => response({ data: [{ id: "gpt-6-luna", owned_by: "chatgpt" }] }), async () => {
+        assert.equal((await resolveModel("gpt-6-luna")).api_type, "openai-chat-completions");
+        assert.equal((await resolveModel("gpt-6-luna", "openai-responses")).api_type, "openai-responses");
+        await assert.rejects(resolveModel("gpt-6-luna", "bogus"), /api must be one of/);
     });
 });
 

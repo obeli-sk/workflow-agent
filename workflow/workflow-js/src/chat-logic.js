@@ -8,7 +8,7 @@
 // `parseDurationMs`/`validateSlug` live in session-logic.js, which session.js's
 // rename-at-creation path also uses.
 
-import { parseDurationMs, validateSlug } from "./session-logic.js";
+import { APIS, parseDurationMs, validateSlug } from "./session-logic.js";
 
 export const DEFAULT_PEERS_JOIN_SET = "peers";
 export const EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -37,12 +37,13 @@ export function parentOf(executionId) {
 }
 
 // `own` is duck-typed: `{executionId,
-// backend, effort, name}` (a plain object or a `ChatSelf` instance).
+// backend, effort, api, name}` (a plain object or a `ChatSelf` instance).
 export function currentPayload(own) {
     return {
         execution_id: own.executionId,
         backend: own.backend,
         effort: own.effort,
+        api: own.api ?? "",
         name: own.name ?? null,
         parent_id: parentOf(own.executionId),
     };
@@ -72,6 +73,7 @@ export function parseCreateArgs(args) {
     const positional = [];
     let model = null;
     let effort = null;
+    let api = null;
     let name = null;
     let watch = false;
     let i = 0;
@@ -80,8 +82,8 @@ export function parseCreateArgs(args) {
         const eq = arg.indexOf("=");
         const flag = eq === -1 ? arg : arg.slice(0, eq);
         const inlineValue = eq === -1 ? undefined : arg.slice(eq + 1);
-        if (flag === "--model" || flag === "--effort" || flag === "--name") {
-            const already = flag === "--model" ? model !== null : flag === "--effort" ? effort !== null : name !== null;
+        if (flag === "--model" || flag === "--effort" || flag === "--api" || flag === "--name") {
+            const already = { "--model": model, "--effort": effort, "--api": api, "--name": name }[flag] !== null;
             if (already) throw `duplicate option: ${flag}`;
             let value;
             if (inlineValue !== undefined) {
@@ -98,6 +100,9 @@ export function parseCreateArgs(args) {
                 const error = validateSlug(value);
                 if (error) throw `--name: ${error}`;
                 name = value;
+            } else if (flag === "--api") {
+                if (!APIS.includes(value)) throw `--api must be one of: ${APIS.join("|")}`;
+                api = value;
             } else {
                 if (!EFFORTS.includes(value)) throw `--effort must be one of: ${EFFORTS.join("|")}`;
                 effort = value;
@@ -111,7 +116,7 @@ export function parseCreateArgs(args) {
         }
         i += 1;
     }
-    return { prompt: positional.join(" "), model, effort, name, watch };
+    return { prompt: positional.join(" "), model, effort, api, name, watch };
 }
 
 // Adds `timed_out`/`waited_ms` to

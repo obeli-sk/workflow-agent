@@ -7,6 +7,8 @@ interface workflow {
     descriptor-ffqn: option<string>,
     effort: option<string>,
     name: option<string>,
+    // openai-chat-completions, openai-responses or anthropic-messages; none uses the model's configured API.
+    api: option<string>,
   ) -> result<_, string>;
 }
 
