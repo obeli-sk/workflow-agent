@@ -67,7 +67,7 @@ const BROWSER_SECTION =
     "browser session close \"$session\"\n" +
     "```\n\n" +
     "- Use the actual page URL and reuse the session for related interactions; close it when finished. `browser session status ID` reports expiry; create a new session explicitly after expiry, restart, or memory exhaustion.\n" +
-    "- Page, redirect, login, and asset hosts must be allowed by the browser integration's configured host policy. Failed batches exit nonzero with partial results and denied_hosts on stdout; inspect those results.\n" +
+    "- Page, redirect, login, and asset hosts must be allowed by the browser integration's configured host policy. Failed batches exit nonzero with partial results, denied_hosts and denied_requests on stdout; inspect those results.\n" +
     "- After an ambiguous failure, inspect the current page before repeating an action. `browser steps ID --idempotency-key KEY` can retrieve a completed batch's cached result while its key remains among the session's last 16 keys; reuse a key only for the same batch.\n" +
     "- Use `sensitive:true` on secret fills to redact later results. The browser supports DOM interaction and HTML/Markdown content, but has no screenshots.\n";
 

@@ -102,11 +102,11 @@ Step ops:
   add exact:true or nth:0 to refine a locator. At most 100 steps per batch.
 
 Requires the optional browser integration. Page destinations, including redirects
-and assets, must be allowed by its allowed_hosts. Lightpanda has no screenshots.
+and assets, must be allowed by its allowed_host entries. Lightpanda has no screenshots.
 Sessions can expire or end on restart or OOM; inspect status and create a new one
 when needed. Do not automatically repeat actions after an ambiguous failure.
 Batches stop on the first failed step and exit nonzero, preserving their results
-and denied_hosts in stdout. Requests are not retried automatically. Batch keys
+and denied_hosts/denied_requests in stdout. Requests are not retried automatically. Batch keys
 are cached only while the session lives (the last 16 keys); reuse a key only for
 the same batch. Use sensitive:true for secret fills to redact later results.
 `;

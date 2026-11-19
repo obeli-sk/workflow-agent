@@ -149,8 +149,10 @@ Background jobs (`&`, `jobs`, `wait`) are not supported.
 ## Browser control
 
 Browser control is disabled by default. Uncomment `[cloud.integrations.browser]`
-in `app.toml`, set `allowed_hosts` to the page, login and asset hosts you need,
-and apply the app configuration. The example reserves 128 MB per session.
+and its `[[cloud.integrations.browser.allowed_host]]` entry in `app.toml`, add
+an entry for each page, login and asset host you need (with `methods`, and
+optionally `request_url_regex`), and apply the app configuration. The example
+reserves 128 MB per session.
 ObeliskNet supplies `BROWSER_URL`; new agent sessions then discover the command
 automatically. For local development, supply a compatible browser service URL.
 When enabled, the system prompt includes browser usage, session lifecycle,
