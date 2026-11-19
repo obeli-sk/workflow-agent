@@ -86,7 +86,7 @@ The agent is then told about your apps and can run, for example:
 
 ```sh
 obelisk cloud app list
-obelisk cloud app deploy                    # create or update the app from ./app.toml and deploy
+obelisk cloud app push                      # create or update the app from ./app.toml and deploy
 obelisk cloud app execution list --app NAME
 ```
 

@@ -136,7 +136,7 @@ export function initialValues(name, policy, explicit, fillEnv) {
     return { env, secrets: {} };
 }
 
-// PORT: deploy.rs's `optional_unset`: optional declarations left unset by a fill.
+// PORT: push.rs's `optional_unset`: optional declarations left unset by a fill.
 export function unsetOptional(filled) {
     return filled.declarations
         .filter((declaration) => declaration.action === "unset")

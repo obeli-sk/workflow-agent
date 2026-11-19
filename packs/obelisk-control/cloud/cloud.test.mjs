@@ -145,20 +145,20 @@ test("command sends one request with the shell's Idempotency-Key; only failures 
 test("draft opening is one PUT that recovers a lost response and rejects another parent", async () => {
     let saved = null;
     const requests = provisioner({
-        "PUT /v1/apps/demo/drafts/deploy-x": (request) => {
+        "PUT /v1/apps/demo/drafts/push-x": (request) => {
             const body = JSON.parse(request.body);
             assert.deepEqual(Object.keys(body), ["parent_revision"]);
             if (saved === null) {
-                saved = draftView({ key: "deploy-x", draft_id: 42, parent_revision: body.parent_revision });
+                saved = draftView({ key: "push-x", draft_id: 42, parent_revision: body.parent_revision });
                 throw new Error("open response lost");
             }
             if (saved.parent_revision !== body.parent_revision) return new Response('{"error":"Draft was opened on a different revision"}', { status: 412 });
             return saved;
         },
     });
-    await assert.rejects(openDraft("demo", "deploy-x", 7), /Cloud request failed/);
-    assert.equal(JSON.parse((await openDraft("demo", "deploy-x", 7)).body).draft_id, 42);
-    assert.equal((await openDraft("demo", "deploy-x", 8)).status, 412);
+    await assert.rejects(openDraft("demo", "push-x", 7), /Cloud request failed/);
+    assert.equal(JSON.parse((await openDraft("demo", "push-x", 7)).body).draft_id, 42);
+    assert.equal((await openDraft("demo", "push-x", 8)).status, 412);
     assert.ok(requests.every((request) => request.method === "PUT"));
 });
 

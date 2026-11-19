@@ -1,8 +1,8 @@
 # ObeliskNet from the session shell (`obelisk cloud`)
 
 The emulated `obelisk` command supports `obelisk cloud ...` like the real CLI
-(obelisk's `src/command/cloud.rs` and `cloud/deploy.rs`). An agent can list
-apps, create and deploy them, manage env and secrets, and inspect executions
+(obelisk's `src/command/cloud.rs` and `cloud/push.rs`). An agent can list
+apps, create and push them, manage env and secrets, and inspect executions
 and logs of a hosted app.
 
 ## Configuration
@@ -26,7 +26,7 @@ domains. Apply the app configuration and redeploy after changing the domain.
 
 `obelisk cloud app status --app NAME` lists the URLs the app's applied
 configuration serves: API, Web UI, internal webhooks, and external webhooks
-when `external` is in `public_http_servers`. `app deploy` prints them as well.
+when `external` is in `public_http_servers`. `app push` prints them as well.
 Fetch a webhook route with `curl`.
 
 `packs/obelisk-control/descriptor.js` adds a "Cloud apps" section to the
@@ -35,7 +35,7 @@ left out and a warning is shown instead.
 
 ## Pieces
 
-The shell implements `stage` and `deploy` as workflow orchestration over separate
+The shell implements `stage` and `push` as workflow orchestration over separate
 `obelisk-agent:tools/cloud` activities. Each completed activity is recorded, so a
 retry resumes the failed request without repeating earlier successful requests.
 
@@ -46,8 +46,8 @@ retry resumes the failed request without repeating earlier successful requests.
   unchanged when it already exists on that parent, so a retry after a lost
   response recovers it; another parent gives 412 rather than silently rebasing.
   Stage first reads `default` (or `--draft`) and keeps an existing draft's parent
-  and ID, opening one only when missing; deploy generates a unique
-  `deploy-<ulid>` label and opens it directly.
+  and ID, opening one only when missing; push generates a unique
+  `push-<ulid>` label and opens it directly.
 - `draft-request` sends one GET, PUT or DELETE on the captured draft. Every call
   carries `If-Match: "draft-<id>"`. Config, each public value, the deployment ID
   and cleanup are separate retryable activities. Edits never implicitly create
@@ -75,7 +75,7 @@ No secret value passes through the shell. There is no `secrets set` or `--secret
 only the named exported variable. Required secrets must be set by the user from
 their CLI or dashboard before deployment can proceed.
 
-## Stage and deploy
+## Stage and push
 
 `cloud app stage [-a app.toml] [-d deployment.toml|Dep_ID | --empty-deployment]
 [--description TEXT] [--env NAME[=VALUE]]... [--fill-non-interactive] [--draft KEY]`
@@ -87,7 +87,7 @@ missing values so the user can fill them later, and never applies. Without `-d`
 or `--empty-deployment`, the draft keeps its already-staged deployment, matching
 the Obelisk CLI.
 
-`cloud app deploy [-a app.toml] [-d deployment.toml | --empty-deployment]
+`cloud app push [-a app.toml] [-d deployment.toml | --empty-deployment]
 [--env NAME[=VALUE]]... [--fill-non-interactive]` generates its unique draft label
 in the workflow, captures the applied revision, opens the draft, stages config
 and values, and checks required values before uploading. It then uploads, stages
@@ -119,7 +119,7 @@ transport retries report a recovery command with the original ID.
 
 `cloud app execution|component|deployment|admin ... [--app NAME]` uses the app
 API through `tenant-read`, `upload` or `tenant`. Deployment enqueue and switch
-are rejected with guidance to use `cloud app deploy` or `cloud app apply`.
+are rejected with guidance to use `cloud app push` or `cloud app apply`.
 Pull writes app.toml, deployment.toml and lazily fetched deployment files.
 
 `--json` and `--verbose` are accepted anywhere. `--app` follows the app subcommand
@@ -167,7 +167,7 @@ obelisk cloud app pull -o /workspace/example
 cd /workspace/example
 cat deployment.toml
 cat webhook/handle.js
-obelisk cloud app deploy
+obelisk cloud app push
 ```
 
 As in the real CLI, `app pull [-o DIR] [-f]` writes the app's verbatim
