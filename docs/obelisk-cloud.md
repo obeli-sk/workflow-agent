@@ -14,7 +14,7 @@ and logs of a hosted app.
 - `OBELISK_CLOUD_API_TOKEN` (optional secret) is the account token. When it is
   unset, `obelisk cloud` is left out of the system prompt.
 - `OBELISK_CLOUD_APPS_DOMAIN` (optional public env) is the hosted apps' domain,
-  the same variable the real CLI reads for `--apps-domain`. It defaults to
+  the same variable the real CLI reads. It defaults to
   `obelisk.works`. The app policy and both deployment manifests derive the
   allowed-host pattern `https://*.<domain>` from it, covering the hosted apps'
   own APIs and the shell's GET-only `curl` access to hosted webhook URLs.

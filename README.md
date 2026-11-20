@@ -157,10 +157,8 @@ ObeliskNet supplies `BROWSER_URL`; new agent sessions then discover the command
 automatically. For local development, supply a compatible browser service URL.
 When enabled, the system prompt includes browser usage, session lifecycle,
 host policy and failure recovery guidance. This section is omitted when disabled.
-Applying the enabled config from your CLI requires Obelisk with opaque cloud
-integration settings support (commit `225cb3497` or newer); the currently pinned
-`v0.43.0-rc.18` CLI rejects browser-specific settings. The agent's `obelisk cloud`
-command supports them.
+Both the Obelisk CLI and the agent's `obelisk cloud` command accept the
+browser settings.
 
 ```sh
 session=$(browser session create --ttl 600)
