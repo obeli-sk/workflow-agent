@@ -118,8 +118,8 @@ An explicit command ID first reads the accepted command's result. Exhausted
 transport retries report a recovery command with the original ID.
 
 `cloud app execution|component|deployment|admin ... [--app NAME]` uses the app
-API through `tenant-read`, `upload` or `tenant`. Deployment enqueue and switch
-are rejected with guidance to use `cloud app push` or `cloud app apply`.
+API through `tenant-read`, `upload` or `tenant`. Deployment has no enqueue or
+apply: `cloud app stage -d` then `cloud app apply`, or `cloud app push`, activate one.
 Pull writes app.toml, deployment.toml and lazily fetched deployment files.
 
 `--json` and `--verbose` are accepted anywhere. `--app` follows the app subcommand

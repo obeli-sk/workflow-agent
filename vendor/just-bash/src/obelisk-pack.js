@@ -1456,28 +1456,6 @@ function deploymentCommand(context, [action, ...args]) {
             const id = submitDeployment(context, source, allow, opts["--description"] ?? null, opts["--deployment-id"] ?? null);
             return printValue(out, id, json(opts));
         }
-        case "enqueue":
-        case "apply": {
-            const spec = { "--empty-deployment": false, "--empty": "--empty-deployment", "--description": true, "--deployment-id": true, "--json": false };
-            if (action === "enqueue") spec["--allow-unavailable-runtime-config"] = false;
-            const { opts, positionals } = parseOptions(args, spec, ["PATH|ID"]);
-            if (opts["--empty-deployment"] && positionals.length > 0) {
-                throw new UsageError("the argument '--empty-deployment' cannot be used with '[PATH|ID]'");
-            }
-            const source = opts["--empty-deployment"] ? null : positionals[0] ?? "deployment.toml";
-            const id = submitDeployment(context, source, action === "enqueue", opts["--description"] ?? null, opts["--deployment-id"] ?? null);
-            // The cloud stages the deployment in the default draft and, for apply, applies it.
-            const { ok } = parseBody(sendJson(api, "PUT", `/v1/deployments/${id}/switch`, {
-                allow_unavailable_runtime_config: opts["--allow-unavailable-runtime-config"] === true,
-                apply: action === "apply",
-            }));
-            if (action === "apply" && ok === "switched") out.stderr += "Applied successfully.\n";
-            else if (action === "apply" && ok === "restart_required") throw "Could not apply immediately; deployment enqueued. Restart the server to apply.";
-            else if (ok === "switched") out.stderr += "Deployment already active; it will remain active after restart.\n";
-            else if (ok === "restart_required") out.stderr += "Deployment staged for cloud app apply.\n";
-            else throw `unexpected outcome from server: ${ok}`;
-            return printValue(out, id, json(opts));
-        }
         case "list": {
             const { opts } = parseOptions(args, { "--json": false }, []);
             const deployments = getJson(api, "/v1/deployments");
@@ -2208,14 +2186,11 @@ Commands:
   pull     Write a deployment's editable deployment.toml and source files (fetched on first read)
              [ID (default active)] [-o|--output DIR] [-f|--force] [--include-generated-metadata]
   digest   Print a deployment's content digest: [PATH (default deployment.toml) | ID] [--json]
-  enqueue  Submit (unless ID) and stage in the default draft for \`obelisk cloud app apply\`
-             [PATH (default deployment.toml) | ID | --empty-deployment] [--description TEXT] [--deployment-id ID] [--json]
-  apply    Submit (unless ID), stage in the default draft and apply it, with anything else staged there
-             [PATH (default deployment.toml) | ID | --empty-deployment] [--description TEXT] [--deployment-id ID] [--json]
 
 Submitting stored content refreshes the deployment holding it. \`--description\` omitted keeps
 that deployment's description; an empty one clears it.
-Use \`obelisk cloud app push\` to upload and activate with app.toml in a fresh draft.
+Use \`obelisk cloud app push\` to upload and activate with app.toml in a fresh draft, or
+\`obelisk cloud app stage -d PATH|ID\` then \`obelisk cloud app apply\`.
 Leave \`content_digest\` and \`component_files\` out of deployment.toml; they are generated on submit.
 `;
 

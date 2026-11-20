@@ -1000,20 +1000,14 @@ test("deployment submit rejects generated metadata and missing files", () => {
     assert.match(api(i, "deployment submit missing.toml", fakeCloud()).stderr, /^Error: cannot read deployment manifest "missing.toml"/);
 });
 
-test("cloud deployment enqueue stages and apply applies through the switch", () => {
-    const id = "Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV";
-    const cloud = fakeCloud({ "PUT /v1/deployments/*/switch": (body) => ({ ok: JSON.parse(body).apply ? "switched" : "restart_required" }) });
-    const enqueue = api(interp(), `deployment enqueue ${id}`, cloud);
-    assert.equal(enqueue.exitCode, 0, enqueue.stderr);
-    assert.equal(enqueue.stdout, `${id}\n`);
-    assert.match(enqueue.stderr, /Deployment staged for cloud app apply\./);
-    const apply = api(interp(), `deployment apply ${id}`, cloud);
-    assert.equal(apply.exitCode, 0, apply.stderr);
-    assert.match(apply.stderr, /Applied successfully\./);
-    assert.deepEqual(cloud.calls.filter((call) => call.path.endsWith("/switch")).map((call) => [call.method, call.path, JSON.parse(call.body).apply]),
-        [["PUT", `/v1/deployments/${id}/switch`, false], ["PUT", `/v1/deployments/${id}/switch`, true]]);
-    const empty = api(interp(), `deployment apply --empty ${id}`, fakeCloud());
-    assert.equal(empty.exitCode, 2);
+test("cloud deployment enqueue and apply are not subcommands", () => {
+    for (const action of ["enqueue", "apply"]) {
+        const cloud = fakeCloud();
+        const out = api(interp(), `deployment ${action} Dep_01ARZ3NDEKTSV4RRFFQ69G5FAV`, cloud);
+        assert.equal(out.exitCode, 2);
+        assert.match(out.stderr, new RegExp(`unrecognized subcommand '${action}'`));
+        assert.ok(!cloud.calls.some((call) => call.path.endsWith("/switch")));
+    }
 });
 
 test("deployment active rejects malformed info", () => {
