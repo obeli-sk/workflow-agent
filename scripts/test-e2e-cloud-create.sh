@@ -87,7 +87,7 @@ obelisk cloud app stage --env MODE=prod --json
 SHELL
 )
 session_id="$("$OBELISK" generate execution-id)"
-params="$(jq -cn --arg script "$script" '["$ " + $script, null, null, null, null]')"
+params="$(jq -cn --arg script "$script" '["$ " + $script, null, null, null, null, null]')"
 "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$session_id" \
     obelisk-agent:workflow/workflow.run-cancellable "$params" >/dev/null
 e2e_wait_until e2e_opened_shell_done http://127.0.0.1:28191 "$session_id"

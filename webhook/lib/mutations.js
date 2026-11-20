@@ -13,8 +13,13 @@ import {
     unpauseObeliskExecution,
 } from "./obelisk-api.js";
 
-function scheduleSession(prompt, backend, effort) {
-    return runCancellableSchedule(null, prompt, backend, null, effort, null);
+// Empty optional strings mean "default" and travel as none.
+function optional(value) {
+    return typeof value === "string" && value ? value : null;
+}
+
+function scheduleSession(prompt, payload) {
+    return runCancellableSchedule(null, prompt, optional(payload.backend), null, optional(payload.effort), null, optional(payload.api));
 }
 
 export async function submit(request) {
@@ -28,12 +33,8 @@ export async function submit(request) {
     if (typeof prompt !== "string" || !prompt.trim()) {
         return jsonError(400, "prompt is required");
     }
-    // backend is the workflow's option<string>: null => claude.
-    const backend = (typeof payload?.backend === "string" && payload.backend) ? payload.backend : null;
-    // effort is the reasoning level (option<string>): null => provider default.
-    const effort = (typeof payload?.effort === "string" && payload.effort) ? payload.effort : null;
     let execId;
-    try { execId = scheduleSession(prompt, backend, effort); }
+    try { execId = scheduleSession(prompt, payload); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }
@@ -46,10 +47,8 @@ export async function createSession(request) {
     } catch (e) {
         return jsonError(400, `body must be JSON: ${e.message}`);
     }
-    const backend = typeof payload.backend === "string" && payload.backend ? payload.backend : null;
-    const effort = typeof payload.effort === "string" && payload.effort ? payload.effort : null;
     let execId;
-    try { execId = scheduleSession("", backend, effort); }
+    try { execId = scheduleSession("", payload ?? {}); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }

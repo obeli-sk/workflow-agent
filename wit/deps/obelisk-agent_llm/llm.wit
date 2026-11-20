@@ -24,6 +24,8 @@ interface chat {
     model: string,
     effort: string,
     history-ids: list<string>,
+    // Empty selects the model's configured API.
+    api: string,
   ) -> result<completion-result, string>;
 }
 

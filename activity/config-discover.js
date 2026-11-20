@@ -1,5 +1,5 @@
 // obelisk-agent:config/config.discover:
-//   func(execution-id: string, backend: string, effort: string, name: option<string>)
+//   func(execution-id: string, backend: string, effort: string, name: option<string>, api: string)
 //     -> result<record {
 //     max-steps: u32,
 //     programs: list<record { name: string, ffqn: string, description: string }>,
@@ -39,7 +39,7 @@ const packSystemPrompt = (obeliskVersion) =>
     "You are on a persistent virtual machine with a filesystem rooted at /workspace. Pull an app's " +
     "deployment into a working directory and edit deployment.toml and component sources with ordinary shell commands.\n\n" +
     "- Use `obelisk cloud app ... --app NAME` for an app's operations, as in the real CLI: `component list|source`, `execution ...`, `deployment active|list|show|pull|submit`.\n" +
-    "- Edits are local until deployed: inside the app directory, `obelisk cloud app deploy` uploads deployment.toml, then applies its ID with the staged app.toml through the provisioner, and prints the webhook URL. `deployment submit` only stores a deployment and prints its ID. `obelisk cloud app apply` applies a draft with its staged deployment, else the currently active one, without uploading local deployment.toml changes. `deployment enqueue` stages a deployment in the default draft and `deployment apply` also applies it.\n" +
+    "- Edits are local until deployed: inside the app directory, `obelisk cloud app push` uploads deployment.toml, then applies its ID with the staged app.toml through the provisioner, and prints the webhook URL. `deployment submit` only stores a deployment and prints its ID. `obelisk cloud app apply` applies a draft with its staged deployment, else the currently active one, without uploading local deployment.toml changes. `obelisk cloud app stage -d ID` stages an existing deployment for `obelisk cloud app apply`.\n" +
     "- Never ask the user for secret values, nor for env values they have not given you; no secret value passes through the shell (no `secrets set`, no `--secret`). When app.toml declares values you do not have, run `obelisk cloud app stage -a app.toml -d deployment.toml` instead of deploying: it creates a missing app, stages app.toml and the uploaded deployment in the `default` draft and never applies. Then tell the user which values are missing and to set them from their own CLI (`obelisk cloud app secrets set` / `env set`) or in the dashboard, then run `obelisk cloud app apply --app NAME`.\n" +
     "- Pull before editing an existing app: `obelisk cloud app pull -o /workspace/NAME --app NAME`. It writes app.toml and deployment.toml and loads source bytes only when read; the pull refuses to overwrite files unless `--force`. Leave `content_digest` and `component_files` out of deployment.toml: they are generated on submit.\n" +
     "- Add a component by writing its source plus an `[[activity_js]]`/`[[workflow_js]]` table (name, location, params, return_type); add a bundled JavaScript file by writing it and importing it from the component.\n" +
@@ -67,7 +67,7 @@ const BROWSER_SECTION =
     "browser session close \"$session\"\n" +
     "```\n\n" +
     "- Use the actual page URL and reuse the session for related interactions; close it when finished. `browser session status ID` reports expiry; create a new session explicitly after expiry, restart, or memory exhaustion.\n" +
-    "- Page, redirect, login, and asset hosts must be allowed by the browser integration's configured host policy. Failed batches exit nonzero with partial results and denied_hosts on stdout; inspect those results.\n" +
+    "- Page, redirect, login, and asset hosts must be allowed by the browser integration's configured host policy. Failed batches exit nonzero with partial results, denied_hosts and denied_requests on stdout; inspect those results.\n" +
     "- After an ambiguous failure, inspect the current page before repeating an action. `browser steps ID --idempotency-key KEY` can retrieve a completed batch's cached result while its key remains among the session's last 16 keys; reuse a key only for the same batch.\n" +
     "- Use `sensitive:true` on secret fills to redact later results. The browser supports DOM interaction and HTML/Markdown content, but has no screenshots.\n";
 
@@ -78,11 +78,12 @@ const staticSections = (obeliskVersion, browserEnabled) =>
 // The "# This session" paragraph: the session's own identity (exactly what
 // `chat current` prints), its parent for context gathering, and when to rename
 // itself.
-function renderSelfSection(executionId, backend, effort, name) {
+function renderSelfSection(executionId, backend, effort, name, api) {
     const payload = JSON.stringify({
         execution_id: executionId,
         backend,
         effort,
+        api: api ?? "",
         name: name ?? null,
         parent_id: parentOf(executionId),
     });
@@ -114,7 +115,7 @@ function parentOf(executionId) {
     return dot === -1 ? null : executionId.slice(0, dot);
 }
 
-export default async function discover(executionId, backend, effort, name) {
+export default async function discover(executionId, backend, effort, name, api) {
     const obeliskVersion = (process.env["OBELISK_VERSION"] ?? "").trim() || "latest";
     const browserFfqn = "obelisk-agent:programs/program.browser";
     const programs = parseRegistry("PROGRAMS_JSON", parseProgram);
@@ -129,7 +130,7 @@ export default async function discover(executionId, backend, effort, name) {
         apps: parseRegistry("APPS_JSON", parseApp),
         obelisk_version: obeliskVersion,
         // Add a blank line between the final guidance section and session identity.
-        prompt_tail: `${staticSections(obeliskVersion, browserEnabled)}\n${renderSelfSection(executionId, backend, effort, name)}`,
+        prompt_tail: `${staticSections(obeliskVersion, browserEnabled)}\n${renderSelfSection(executionId, backend, effort, name, api)}`,
     };
 }
 

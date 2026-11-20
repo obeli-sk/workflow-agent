@@ -612,11 +612,11 @@ test("interrupt refuses when the newest script already finished or none ran", as
 });
 
 test("create POSTs params and prints the generated id", async () => {
-    const { result, calls } = await run(["create", "--model", "fake", "--effort", "low", "go", "north"], [
+    const { result, calls } = await run(["create", "--model", "fake", "--effort", "low", "--api", "openai-responses", "go", "north"], [
         ["POST", "/v1/executions", (url, init) => {
             assert.deepEqual(JSON.parse(init.body), {
                 ffqn: "obelisk-agent:workflow/workflow.run-cancellable",
-                params: ["go north", "fake", null, "low", null],
+                params: ["go north", "fake", null, "low", null, "openai-responses"],
             });
             // The server wraps the id when the request accepts JSON.
             return jsonResponse(201, { ok: "E_new000000000000000000000000002" });
@@ -628,7 +628,7 @@ test("create POSTs params and prints the generated id", async () => {
 
     const plain = await run(["create"], [
         ["POST", "/v1/executions", (url, init) => {
-            assert.deepEqual(JSON.parse(init.body).params, ["", null, null, null, null]);
+            assert.deepEqual(JSON.parse(init.body).params, ["", null, null, null, null, null]);
             return jsonResponse(201, "E_plain00000000000000000000000003");
         }],
     ]);
@@ -651,7 +651,7 @@ test("create passes a valid --name and rejects bad slugs", async () => {
     const named = await run(["create", "--name", "research", "$", "ls"], [
         ["POST", "/v1/executions", (url, init) => {
             const body = JSON.parse(init.body);
-            assert.deepEqual(body.params, ["$ ls", null, null, null, "research"]);
+            assert.deepEqual(body.params, ["$ ls", null, null, null, "research", null]);
             return jsonResponse(201, { ok: "E_named00000000000000000000000004" });
         }],
     ]);
@@ -664,6 +664,12 @@ test("create passes a valid --name and rejects bad slugs", async () => {
         assert.equal(rejected.result.exit_code, 2, `expected exit 2 for name ${JSON.stringify(bad)}`);
         assert.match(rejected.result.stderr, /--name/);
     }
+});
+
+test("create rejects unknown APIs", async () => {
+    const { result } = await run(["create", "--api", "guess", "hi"]);
+    assert.equal(result.exit_code, 2);
+    assert.match(result.stderr, /--api must be one of/);
 });
 
 test("create rejects unknown effort levels", async () => {

@@ -114,9 +114,9 @@ function executeCloud(interp, args, stdin, cloud, out) {
         appPull({ interp, api, out }, rest.slice(2));
         return { ...out, exitCode: 0 };
     }
-    if (group === "app" && sub === "deploy") {
+    if (group === "app" && sub === "push") {
         if (helpRequested(rest)) return done(out, cloudAppHelp);
-        cloudDeploy(interp, rest.slice(2), globals, cloud, out);
+        cloudPush(interp, rest.slice(2), globals, cloud, out);
         return { ...out, exitCode: 0 };
     }
     if (group === "app" && LIFECYCLE_COMMANDS.includes(sub)) {
@@ -447,8 +447,8 @@ function cloudLifecycle(interp, action, args, globals, cloud, out) {
     print(value(response, false, id), notes.join(""));
 }
 
-// PORT: obelisk's src/command/cloud/deploy.rs, with each draft mutation recorded separately.
-function cloudDeploy(interp, args, globals, cloud, out) {
+// PORT: obelisk's src/command/cloud/push.rs, with each draft mutation recorded separately.
+function cloudPush(interp, args, globals, cloud, out) {
     const { opts } = parseOptions(args, {
         "-a": "--app-config", "--app-config": true, "-d": "--deployment", "--deployment": true,
         "--empty-deployment": false, "--fill": false, "--fill-non-interactive": false, "--description": true,
@@ -467,7 +467,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     const configured = parsePolicy(policy, configPath).app_name;
     const name = globals.app ?? exportedVar(interp, "OBELISK_APP_NAME") ?? configured;
     if (typeof name !== "string") throw "Set app_name in ./app.toml, --app or OBELISK_APP_NAME";
-    // PORT: cloud.rs's `config_for_app`: deploy requires its config to name the selected app.
+    // PORT: cloud.rs's `config_for_app`: push requires its config to name the selected app.
     if (typeof configured === "string" && configured !== name) {
         throw `${configPath} is for app \`${configured}\`, but the selected app is \`${name}\` (from --app or OBELISK_APP_NAME); pass \`--app ${configured}\` or fix \`app_name\``;
     }
@@ -475,7 +475,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
         throw new UsageError("the argument '--deployment <DEPLOYMENT>' cannot be used with '--empty-deployment'");
     }
     if (opts["--fill"]) throw "`--fill` requires a terminal; use `--fill-non-interactive` to read same-named environment variables";
-    const draft = `deploy-${ulid().toLowerCase()}`;
+    const draft = `push-${ulid().toLowerCase()}`;
     const prepared = opts["--empty-deployment"]
         ? emptyManifest(interp)
         : prepareManifest(interp, opts["--deployment"] ?? "deployment.toml");
@@ -485,7 +485,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     const config = appConfig(policy, configPath);
     const variables = Object.fromEntries(exported);
     const explicit = explicitValues(env, variables);
-    out.stderr += `Deploying ${name}\n`;
+    out.stderr += `Pushing ${name}\n`;
     const current = ensureApp(name, cloud, globals, out, () => initialValues(name, userSuppliedPolicy(config), explicit, fill ? variables : null));
     out.stderr += `→ obelisk cloud app stage --draft ${draft}\n`;
     const opened = cloudValue(cloud.openDraft(name, draft, appliedRevision(current)), globals);
@@ -506,18 +506,18 @@ function cloudDeploy(interp, args, globals, cloud, out) {
         if (secrets.length) throw needsUserSecrets(name, secrets);
         if (missing.length) throw `Missing values: ${missing.join(", ")}. Pass them with \`--env NAME[=VALUE]\`, or retry with \`--fill-non-interactive\``;
         const unset = unsetOptional(filled);
-        if (unset.length) out.stderr += `Optional configuration not set: ${unset.join(", ")}. Pass them with \`--env\`, or deploy with \`--fill-non-interactive\`.\n`;
+        if (unset.length) out.stderr += `Optional configuration not set: ${unset.join(", ")}. Pass them with \`--env\`, or push with \`--fill-non-interactive\`.\n`;
         out.stderr += "→ obelisk cloud app deployment submit\n";
         id = submitPrepared(context, prepared, true, opts["--description"] ?? null, null);
         staged = writeDraft(name, opened, ["deployment"], { deployment_id: id }, cloud, globals);
     } catch (error) {
         try { cloud.draftRequest(name, draft, opened.draft_id, "DELETE", [], null, null); } catch { /* best effort after retries end */ }
-        throw withContext(`Deployment staging failed; inspect \`obelisk cloud app status --app ${name}\` and retry deploy`, error);
+        throw withContext(`Deployment staging failed; inspect \`obelisk cloud app status --app ${name}\` and retry the push`, error);
     }
     try {
         const peers = cloudValue(cloud.read(["v1", "apps", name, "drafts"]), globals);
         for (const other of peers?.drafts ?? []) {
-            if (other.key !== draft && other.summary?.changed) out.stderr += `Draft \`${other.key}\` (${draftChanges(other)}) will be discarded when this deploy is applied\n`;
+            if (other.key !== draft && other.summary?.changed) out.stderr += `Draft \`${other.key}\` (${draftChanges(other)}) will be discarded when this push is applied\n`;
         }
     } catch { /* warning only */ }
     const body = JSON.stringify(applyRequest(name, draft, staged, current, false, (line) => { out.stderr += `${line}\n`; }));
@@ -535,7 +535,7 @@ function cloudDeploy(interp, args, globals, cloud, out) {
     if (globals.json) {
         out.stdout += `${prettyJson({ app: row, deployment_id: id, outcomes: row.outcome === undefined ? [] : [row.outcome] })}\n`;
     } else {
-        out.stderr += `Deployed ${name}\n${endpoints(row.endpoints, "")}`;
+        out.stderr += `Pushed ${name}\n${endpoints(row.endpoints, "")}`;
     }
 }
 
@@ -1456,28 +1456,6 @@ function deploymentCommand(context, [action, ...args]) {
             const id = submitDeployment(context, source, allow, opts["--description"] ?? null, opts["--deployment-id"] ?? null);
             return printValue(out, id, json(opts));
         }
-        case "enqueue":
-        case "apply": {
-            const spec = { "--empty-deployment": false, "--empty": "--empty-deployment", "--description": true, "--deployment-id": true, "--json": false };
-            if (action === "enqueue") spec["--allow-unavailable-runtime-config"] = false;
-            const { opts, positionals } = parseOptions(args, spec, ["PATH|ID"]);
-            if (opts["--empty-deployment"] && positionals.length > 0) {
-                throw new UsageError("the argument '--empty-deployment' cannot be used with '[PATH|ID]'");
-            }
-            const source = opts["--empty-deployment"] ? null : positionals[0] ?? "deployment.toml";
-            const id = submitDeployment(context, source, action === "enqueue", opts["--description"] ?? null, opts["--deployment-id"] ?? null);
-            // The cloud stages the deployment in the default draft and, for apply, applies it.
-            const { ok } = parseBody(sendJson(api, "PUT", `/v1/deployments/${id}/switch`, {
-                allow_unavailable_runtime_config: opts["--allow-unavailable-runtime-config"] === true,
-                apply: action === "apply",
-            }));
-            if (action === "apply" && ok === "switched") out.stderr += "Applied successfully.\n";
-            else if (action === "apply" && ok === "restart_required") throw "Could not apply immediately; deployment enqueued. Restart the server to apply.";
-            else if (ok === "switched") out.stderr += "Deployment already active; it will remain active after restart.\n";
-            else if (ok === "restart_required") out.stderr += "Deployment staged for cloud app apply.\n";
-            else throw `unexpected outcome from server: ${ok}`;
-            return printValue(out, id, json(opts));
-        }
         case "list": {
             const { opts } = parseOptions(args, { "--json": false }, []);
             const deployments = getJson(api, "/v1/deployments");
@@ -1882,10 +1860,10 @@ function sandboxReadme(appName) {
 
 \`obelisk cloud\` in this shell manages apps in the cloud. \`app.toml\` is this app's policy: it names
 the app (\`app_name\`) and caps the hosts, secrets, environment variables, and exec activities any
-deployment may use. Deploy from this directory:
+deployment may use. Push from this directory:
 
 \`\`\`sh
-obelisk cloud app deploy
+obelisk cloud app push
 \`\`\`
 
 This creates the app from \`app.toml\` when needed, uploads \`deployment.toml\`, applies both, and
@@ -2127,9 +2105,9 @@ Commands:
                 [-a APP_CONFIG] [--draft KEY] [-d DEPLOYMENT | --empty-deployment] [--description TEXT] [VALUES]
                 Without -d or --empty-deployment the draft's staged deployment is kept
   unstage     Discard a draft and its staged changes [--draft KEY]
-  deploy      Publish the local project, creating or configuring the app and activating its deployment
+  push        Publish the local project, creating or configuring the app and activating its deployment
                 [-a APP_CONFIG] [-d DEPLOYMENT | --empty-deployment] [--description TEXT] [VALUES]
-                Stages into a new \`deploy-<id>\` draft, discarded if the deploy fails before applying it
+                Stages into a new \`push-<id>\` draft, discarded if the push fails before applying it
   apply       Apply the staged changes of a draft with its staged deployment, else the active one
                 [--draft KEY | --reapply] [--force]: --reapply re-applies the applied revision
   enable      Enable the app
@@ -2142,7 +2120,7 @@ VALUES, supplied to a new, staged or deployed app:
       --env NAME[=VALUE]      Set an env var; a bare NAME reads the same-named exported variable
       --fill-non-interactive  Read the remaining declared env from same-named exported variables
 
-Secret values are never accepted: \`new\` and \`deploy\` of an app that lacks a required secret fail;
+Secret values are never accepted: \`new\` and \`push\` of an app that lacks a required secret fail;
 \`stage\` it instead and ask the user to set the secrets with their own CLI or the dashboard, then apply.
 
 Drafts default to \`default\`, shared with the dashboard. Applying a draft discards the app's other drafts.
@@ -2208,14 +2186,11 @@ Commands:
   pull     Write a deployment's editable deployment.toml and source files (fetched on first read)
              [ID (default active)] [-o|--output DIR] [-f|--force] [--include-generated-metadata]
   digest   Print a deployment's content digest: [PATH (default deployment.toml) | ID] [--json]
-  enqueue  Submit (unless ID) and stage in the default draft for \`obelisk cloud app apply\`
-             [PATH (default deployment.toml) | ID | --empty-deployment] [--description TEXT] [--deployment-id ID] [--json]
-  apply    Submit (unless ID), stage in the default draft and apply it, with anything else staged there
-             [PATH (default deployment.toml) | ID | --empty-deployment] [--description TEXT] [--deployment-id ID] [--json]
 
 Submitting stored content refreshes the deployment holding it. \`--description\` omitted keeps
 that deployment's description; an empty one clears it.
-Use \`obelisk cloud app deploy\` to upload and activate with app.toml in a fresh draft.
+Use \`obelisk cloud app push\` to upload and activate with app.toml in a fresh draft, or
+\`obelisk cloud app stage -d PATH|ID\` then \`obelisk cloud app apply\`.
 Leave \`content_digest\` and \`component_files\` out of deployment.toml; they are generated on submit.
 `;
 
@@ -2258,7 +2233,7 @@ function generateNewHelp(generate) {
         values = `(templates could not be listed: ${message(error)})`;
     }
     return `Create a JS starter app in a new NAME directory, or in the current directory if unnamed.
-Deploy it from that directory with \`obelisk cloud app deploy\`.
+Push it from that directory with \`obelisk cloud app push\`.
 
 Usage: obelisk generate new --template <TEMPLATE> [NAME]
 

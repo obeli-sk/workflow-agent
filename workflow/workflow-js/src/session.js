@@ -1,6 +1,6 @@
 // obelisk-agent:workflow/workflow.run-cancellable
 //   func(prompt: string, model: option<string>, descriptor-ffqn: option<string>,
-//        effort: option<string>, name: option<string>) -> result<_, string>
+//        effort: option<string>, name: option<string>, api: option<string>) -> result<_, string>
 //
 // One persistent Bash
 // instance, a "session-events" notification join set (the workflow self-stubs
@@ -56,6 +56,7 @@ import {
     renderMount,
     renderSystemPrompt,
     validateSlug,
+    APIS,
     shellResultOf,
     shortWarningId,
     stepLimitError,
@@ -91,19 +92,20 @@ const SESSION_NAME_JOIN_SET = "session-name";
 // chat.js's caller-aware subcommands (current/rename/create/watch).
 const CHAT_PROGRAM_FFQN = "obelisk-agent:programs/program.chat";
 
-export default function runCancellable(prompt, model, descriptorFfqn, effort, name) {
+export default function runCancellable(prompt, model, descriptorFfqn, effort, name, api) {
     try {
-        return runInner(prompt ?? "", model ?? "", descriptorFfqn ?? "", effort ?? "", name ?? "");
+        return runInner(prompt ?? "", model ?? "", descriptorFfqn ?? "", effort ?? "", name ?? "", api ?? "");
     } catch (e) {
         throw errorMessage(e);
     }
 }
 
-function runInner(prompt, model, descriptorFfqn, effort, name) {
+function runInner(prompt, model, descriptorFfqn, effort, name, api) {
     if (name) {
         const error = validateSlug(name);
         if (error) throw `invalid session name ${JSON.stringify(name)}: ${error}`;
     }
+    if (api && !APIS.includes(api)) throw `api must be one of: ${APIS.join("|")}`;
     const descriptor = descriptorFfqn || DEFAULT_DESCRIPTOR_FFQN;
     const described = dynamic.call(descriptor, []);
     if (typeof described?.prompt !== "string") {
@@ -112,7 +114,7 @@ function runInner(prompt, model, descriptorFfqn, effort, name) {
     const warnings = Array.isArray(described.warnings)
         ? described.warnings.filter((w) => typeof w === "string" && w.trim())
         : [];
-    agentLoop(prompt, described.prompt, model, effort, warnings, name);
+    agentLoop(prompt, described.prompt, { model, effort, api }, warnings, name);
 }
 
 function errorMessage(e) {
@@ -258,8 +260,8 @@ function hostSleepMs(ms) {
     }
 }
 
-function loadSessionConfig(executionId, backend, effort, name) {
-    const config = discover(executionId, backend, effort, name);
+function loadSessionConfig(executionId, llm, name) {
+    const config = discover(executionId, llm.model, llm.effort, name, llm.api);
     return {
         maxSteps: config.max_steps,
         programs: config.programs ?? [],
@@ -426,7 +428,7 @@ function takeUserEvent(session, notifications) {
 
 // One LLM call raced against the user input offer; each injected event lands
 // after the request snapshot, so it reaches the model on the following turn.
-function callLlmWithUser(session, system, pendingMessages, historyIds, model, effort, bash, notifications) {
+function callLlmWithUser(session, system, pendingMessages, historyIds, llm, bash, notifications) {
     let promptQueued = false;
     while (true) {
         notifications.flush();
@@ -434,7 +436,7 @@ function callLlmWithUser(session, system, pendingMessages, historyIds, model, ef
         const deltaJson = JSON.stringify(pendingMessages);
         const startedAt = hostNowMs();
         console.debug(`turn=${session.turnIndex} llm.completion submit (delta=${requestMessageCount}, history=${historyIds.length}, deltaJson.length=${deltaJson.length})`);
-        const completionId = completionSubmit(session.joinSet, system, deltaJson, BASH_TOOLS_JSON, model, effort, historyIds);
+        const completionId = completionSubmit(session.joinSet, system, deltaJson, BASH_TOOLS_JSON, llm.model, llm.effort, historyIds, llm.api);
 
         let completion;
         while (true) {
@@ -522,7 +524,8 @@ function dispatchBash(call, bash, notifications, turnIndex, step) {
 
 // ----- main loop -----
 
-function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name) {
+// `llm` is the session's {model, effort, api} selection; empty strings use defaults.
+function agentLoop(prompt, systemPrompt, llm, descriptorWarnings, name) {
     if (!systemPrompt) throw "system prompt is required";
 
     const notifications = new Notifications();
@@ -532,7 +535,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     // already renamed; anything else arrives unnamed.
     const executionId = obelisk.executionIdCurrent();
     const initialName = name || null;
-    const config = loadSessionConfig(executionId, model, effort, initialName);
+    const config = loadSessionConfig(executionId, llm, initialName);
     const maxSteps = config.maxSteps;
     // Always registered, independent of operator config.
     bash.registerCommand("ask-user", (_interp, args) => askUserCommand(args.slice(1), notifications));
@@ -540,7 +543,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
         obeliskVersion: config.obeliskVersion,
         githubContents,
     }, createCloud(cloudTools, obelisk)));
-    const ownSession = new chat.ChatSelf(executionId, model, effort, initialName);
+    const ownSession = new chat.ChatSelf(executionId, llm.model, llm.effort, initialName, llm.api);
     registerPrograms(bash, config, ownSession, notifications);
 
     const startupMount = renderMount(config.apps);
@@ -550,7 +553,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
     const pendingMessages = pendingShell === null && prompt.trim() ? [userText(prompt.trim())] : [];
 
     notifications.notify({
-        session_started: { protocol_version: 12, prompt, backend: model, effort, system_prompt: system },
+        session_started: { protocol_version: 12, prompt, backend: llm.model, effort: llm.effort, api: llm.api, system_prompt: system },
     });
     // A session created with a slug label (`chat create --name`)
     // starts already renamed; anything else arrives unnamed.
@@ -615,7 +618,7 @@ function agentLoop(prompt, systemPrompt, model, effort, descriptorWarnings, name
                 turnComplete = !shouldCallLlm;
             } else {
                 publishAgentStatus(notifications, true, turnIndex);
-                const outcome = callLlmWithUser(session, system, pendingMessages, historyIds, model, effort, bash, notifications);
+                const outcome = callLlmWithUser(session, system, pendingMessages, historyIds, llm, bash, notifications);
                 if (outcome.kind === "failed") {
                     notifications.notify({ agent_error: llmErrorEvent(turnIndex, outcome.message) });
                     shouldCallLlm = false;

@@ -387,6 +387,7 @@ params = [
   { name = "descriptor-ffqn", type = "option<string>" },
   { name = "effort",          type = "option<string>" },
   { name = "name",            type = "option<string>" },
+  { name = "api",             type = "option<string>" },
 ]
 return_type = "result<_, string>"
 # Replaying a long session and running uninterruptible synchronous steps (like

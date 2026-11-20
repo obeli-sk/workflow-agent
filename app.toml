@@ -12,7 +12,11 @@ github = { type = "github", env = "GITHUB_API_URL" }
 # [cloud.integrations.browser]
 # type = "browser"
 # env = "BROWSER_URL"
-# allowed_hosts = ["https://app.example.com"]
+#
+# What pages may load: same keys as [[outbound_http.allowed_host]], without secrets.
+# [[cloud.integrations.browser.allowed_host]]
+# pattern = "https://app.example.com"
+# methods = ["GET", "POST"]
 
 [secrets]
 LLM_API_KEY = { optional = true }
@@ -42,7 +46,7 @@ OBELISK_CLOUD_APPS_DOMAIN = { optional = true }
 pattern = "https://obeli.sk"
 methods = ["GET"]
 
-# Browser control; page destinations are restricted by the integration's allowed_hosts.
+# Browser control; page destinations are restricted by the integration's allowed_host entries.
 [[outbound_http.allowed_host]]
 url_prefix = "${BROWSER_URL:-http://browser-disabled.invalid}"
 url_regex_suffix = "/v1/sessions(/[A-Za-z0-9_-]+(/steps)?)?$"

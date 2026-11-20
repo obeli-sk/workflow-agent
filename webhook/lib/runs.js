@@ -142,6 +142,7 @@ export async function detailRun(id, cursorState) {
         prompt: started?.prompt || null,
         backend: started?.backend || null,
         effort: started?.effort || null,
+        api: started?.api || null,
         name: walk.sessionName ?? null,
         system_prompt: started?.system_prompt || null,
         transcript: {

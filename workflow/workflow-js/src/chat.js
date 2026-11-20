@@ -39,10 +39,11 @@ export { parentOf };
 // Live identity of the invoking session, captured where commands are
 // registered (the activity cannot learn its caller).
 export class ChatSelf {
-    constructor(executionId, backend, effort, name = null) {
+    constructor(executionId, backend, effort, name = null, api = "") {
         this.executionId = executionId;
         this.backend = backend;
         this.effort = effort;
+        this.api = api;
         this.name = name;
         // Join sets holding the sessions created by `chat create`, keyed by
         // slug (`--name` labels each child with its own join set, so its
@@ -124,10 +125,12 @@ export function createChild(own, args, delegate, interp) {
         }
         own.peers.set(setName, joinSet);
     }
+    // Children inherit the API: the endpoint that needs it is shared by the whole session tree.
+    const api = parsed.api ?? (own.api || null);
     // A child session always uses the default descriptor.
     let executionId;
     try {
-        executionId = runCancellableSubmit(joinSet, parsed.prompt, parsed.model, null, parsed.effort, parsed.name);
+        executionId = runCancellableSubmit(joinSet, parsed.prompt, parsed.model, null, parsed.effort, parsed.name, api);
     } catch (error) {
         return failure(`child submit: ${describeError(error)}`);
     }

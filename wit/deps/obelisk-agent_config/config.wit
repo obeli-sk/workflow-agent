@@ -35,6 +35,6 @@ interface config {
     prompt-tail: string,
   }
 
-  discover: func(execution-id: string, backend: string, effort: string, name: option<string>) -> result<session-config, string>;
+  discover: func(execution-id: string, backend: string, effort: string, name: option<string>, api: string) -> result<session-config, string>;
   input-accepted-at: func(execution-id: string) -> result<u64, string>;
 }

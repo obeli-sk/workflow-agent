@@ -13,14 +13,14 @@ export function configuredModels() {
         if (!entry || typeof entry.id !== "string" || !entry.id) {
             throw new Error(`AGENT_MODELS[${index}] has no string id`);
         }
-        return { ...entry, label: entry.label || entry.id, api_type: entry.api_type || "" };
+        return { ...entry, label: entry.label || entry.id, api_type: entry.api_type || DEFAULT_API };
     });
 }
 
-// ChatGPT-subscription models (owned_by "chatgpt") are served only by the Responses API.
-function discoveredApiType(model) {
-    return model.owned_by === "chatgpt" ? "openai-responses" : "openai-chat-completions";
-}
+// The model list does not say which API a model speaks, so nothing is guessed from it: the
+// session's explicit choice wins, then the AGENT_MODELS entry, then chat completions.
+export const APIS = ["openai-chat-completions", "openai-responses", "anthropic-messages"];
+const DEFAULT_API = "openai-chat-completions";
 
 // LLM_BASE_URL is the endpoint up to `/v1`, including any gateway prefix,
 // e.g. "https://openrouter.ai/api"; it is also the allowed_host url_prefix.
@@ -56,7 +56,7 @@ export async function loadModelCatalog() {
                             ...prior,
                             id: prior?.id || model.id,
                             label: model.display_name || prior?.label || model.id,
-                            api_type: prior?.api_type || discoveredApiType(model),
+                            api_type: prior?.api_type || DEFAULT_API,
                             wire_model: model.id,
                             is_default: !!model.is_default,
                         };
@@ -69,7 +69,7 @@ export async function loadModelCatalog() {
     return configured;
 }
 
-export async function resolveModel(model) {
+export async function resolveModel(model, api) {
     const catalog = await loadModelCatalog();
     const id = typeof model === "string" ? model.trim() : "";
     let config = id ? catalog.find((entry) => entry.id === id || entry.wire_model === id) : catalog[0];
@@ -78,7 +78,11 @@ export async function resolveModel(model) {
         try { config = configuredModels().find((entry) => entry.id === id); } catch (_) {}
     }
     if (!config) throw new Error(id ? `model '${id}' is not in the model catalog` : "No models available from discovery or AGENT_MODELS");
-    if (!config.api_type) throw new Error(`model '${config.id}' is missing api_type`);
+    if (api) {
+        if (!APIS.includes(api)) throw new Error(`api must be one of: ${APIS.join("|")}`);
+        config = { ...config, api_type: api };
+    }
+    console.debug(`model '${config.id}' uses ${config.api_type}${api ? " (selected)" : ""}`);
     return config;
 }
 

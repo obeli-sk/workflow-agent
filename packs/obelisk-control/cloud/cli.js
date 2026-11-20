@@ -5,7 +5,7 @@
 //
 // PORT: obelisk's src/command/cloud.rs. The provisioner half of `obelisk cloud`
 // (apps, tokens, env and secrets); the shell's `obelisk` command handles
-// `app new|deploy|apply|enable|disable|delete` and the app API subcommands itself. `app-toml` is the
+// `app new|push|apply|enable|disable|delete` and the app API subcommands itself. `app-toml` is the
 // policy file's text (`-a PATH`, else ./app.toml) when the shell found one;
 // `fill-env` the shell's exported variables for `--fill-non-interactive`, or
 // those that bare `--env NAME` reads. Secret values never pass through here.

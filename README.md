@@ -51,6 +51,12 @@ Web UI addresses are internal public-env sources declared in `app.toml`:
 | `LLM_API_KEY` | unset | Bearer token, if the endpoint needs one. |
 | `AGENT_MODELS` | unset | Fallback model catalog (JSON), used when discovery is unavailable. |
 
+Model lists do not say which API a model speaks, so nothing is guessed. Each
+session picks one explicitly (the UI's api selector, `chat create --api`):
+`openai-chat-completions`, `openai-responses` or `anthropic-messages`. When
+none is picked, the model's `AGENT_MODELS` `api_type` applies, else chat
+completions. Child sessions inherit their parent's choice.
+
 For local development, set `LLM_BASE_URL` explicitly. Cloud deployment uses the
 account's `llm` integration declared in `app.toml`, overriding local values.
 A local endpoint option is
@@ -80,7 +86,7 @@ The agent is then told about your apps and can run, for example:
 
 ```sh
 obelisk cloud app list
-obelisk cloud app deploy                    # create or update the app from ./app.toml and deploy
+obelisk cloud app push                      # create or update the app from ./app.toml and deploy
 obelisk cloud app execution list --app NAME
 ```
 
@@ -143,16 +149,16 @@ Background jobs (`&`, `jobs`, `wait`) are not supported.
 ## Browser control
 
 Browser control is disabled by default. Uncomment `[cloud.integrations.browser]`
-in `app.toml`, set `allowed_hosts` to the page, login and asset hosts you need,
-and apply the app configuration. The example reserves 128 MB per session.
+and its `[[cloud.integrations.browser.allowed_host]]` entry in `app.toml`, add
+an entry for each page, login and asset host you need (with `methods`, and
+optionally `request_url_regex`), and apply the app configuration. The example
+reserves 128 MB per session.
 ObeliskNet supplies `BROWSER_URL`; new agent sessions then discover the command
 automatically. For local development, supply a compatible browser service URL.
 When enabled, the system prompt includes browser usage, session lifecycle,
 host policy and failure recovery guidance. This section is omitted when disabled.
-Applying the enabled config from your CLI requires Obelisk with opaque cloud
-integration settings support (commit `225cb3497` or newer); the currently pinned
-`v0.43.0-rc.18` CLI rejects browser-specific settings. The agent's `obelisk cloud`
-command supports them.
+Both the Obelisk CLI and the agent's `obelisk cloud` command accept the
+browser settings.
 
 ```sh
 session=$(browser session create --ttl 600)
