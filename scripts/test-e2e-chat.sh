@@ -92,7 +92,7 @@ grep -q "Usage: chat COMMAND" <<<"$HELP_OUT"
 echo ">>> creating a parent session and running chat current in it"
 PARENT_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$PARENT_ID" "$RUN_FFQN" \
-    '["", null, null, null, null]'
+    '["", null, null, null, null, null]'
 CURRENT_OUT="$(shell_turn "$PARENT_ID" "shell-chat-current" 'chat current')"
 node scripts/e2e-json.js check-current-id "$PARENT_ID" <<<"$CURRENT_OUT"
 run_detail "$PARENT_ID" | node -e '

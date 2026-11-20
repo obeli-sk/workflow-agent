@@ -14,7 +14,7 @@ export OBELISK_JS_RUNTIME=v8
 e2e_start_server
 SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$SESSION_ID" \
-    obelisk-agent:workflow/workflow.run-cancellable '["", null, null, null, null]'
+    obelisk-agent:workflow/workflow.run-cancellable '["", null, null, null, null, null]'
 UI_URL="http://127.0.0.1:${BENCH_UI_PORT:-19090}"
 
 detail() {

@@ -85,7 +85,7 @@ projection_named() {
 echo ">>> checking ask-user lifecycle through the session projection"
 ASK_SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$ASK_SESSION_ID" "$RUN_FFQN" \
-    '["", null, null, null, null]'
+    '["", null, null, null, null, null]'
 
 ASK_OFFER_ID="$(e2e_take_offer "$ASK_SESSION_ID")"
 ASK_SCRIPT="ask-user 'Continue?'"
@@ -111,7 +111,7 @@ echo ">>> ask-user projection E2E PASS"
 echo ">>> creating an empty session and running one direct shell turn"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$SESSION_ID" "$RUN_FFQN" \
-    '["", null, null, null, null]'
+    '["", null, null, null, null, null]'
 
 e2e_take_offer "$SESSION_ID" >/dev/null
 INJECTION_ID="$E2E_OFFER"
@@ -194,7 +194,7 @@ echo ">>> ls E2E PASS"
 echo ">>> creating a session with an initial name"
 NAMED_SESSION_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$NAMED_SESSION_ID" "$RUN_FFQN" \
-    '["", null, null, null, "e2e-rename-check"]'
+    '["", null, null, null, "e2e-rename-check", null]'
 e2e_wait_until projection_named "$NAMED_SESSION_ID" e2e-rename-check \
     || { echo "session did not report its initial name: $PROJECTION" >&2; exit 1; }
 echo ">>> rename E2E PASS: the session-name join set published the at-creation name"
@@ -204,7 +204,7 @@ echo ">>> exercising 'chat create' (self-referential child submit)"
 SESSION_ID="$("$OBELISK" generate execution-id)"
 CHAT_SESSION_ID="$SESSION_ID"
 "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$CHAT_SESSION_ID" "$RUN_FFQN" \
-    '["", null, null, null, null]'
+    '["", null, null, null, null, null]'
 run_shell_turn "shell-e2e-3" "chat create --name e2e-chat-child hello from the e2e test"
 CHILD_ID="$(printf '%s' "$SHELL_STDOUT" | tr -d '[:space:]')"
 if [[ -z "$CHILD_ID" ]]; then
@@ -221,7 +221,7 @@ echo ">>> chat create E2E PASS: the self-referential child submit works and repo
 EXEC_ID="$("$OBELISK" generate execution-id)"
 echo ">>> submitting $RUN_FFQN as $EXEC_ID"
 "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$EXEC_ID" "$RUN_FFQN" \
-    '["hello from the e2e test", null, null, null, null]'
+    '["hello from the e2e test", null, null, null, null, null]'
 
 EXPECT="No models available from discovery or AGENT_MODELS"
 echo ">>> waiting for the recoverable LLM configuration error"
