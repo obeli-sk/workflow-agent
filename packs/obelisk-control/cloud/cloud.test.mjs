@@ -336,8 +336,8 @@ test("app logs prints the newest lines or pages forward from --since", async () 
         { timestamp: "2026-11-22T15:28:01.468044322Z", level: "info", message: "Machine started in 778ms", machine_id: "84ed09eb490928", region: "ams", source: "runner" },
         { timestamp: "2026-11-22T15:28:01.548908094Z", level: "info", message: "Server started", machine_id: "84ed09eb490928", region: "ams", source: "app" },
     ], next: "1795361281548908094" };
-    const lines = "2026-11-22T15:28:01.468044322Z  84ed09eb490928  runner  Machine started in 778ms\n"
-        + "2026-11-22T15:28:01.548908094Z  84ed09eb490928  app     Server started\n";
+    const lines = "2026-11-22T15:28:01.468044322Z  info   84ed09eb490928  runner  Machine started in 778ms\n"
+        + "2026-11-22T15:28:01.548908094Z  info   84ed09eb490928  app     Server started\n";
     const requests = provisioner({ "GET /v1/apps/demo/logs": logs });
     const newest = await run(["app", "logs"], "", POLICY);
     assert.equal(newest.exit_code, 0, newest.stderr);

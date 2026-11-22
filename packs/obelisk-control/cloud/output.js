@@ -84,7 +84,7 @@ export function renderSummary(summary, value) {
         case "logs": {
             const logs = Array.isArray(value?.logs) ? value.logs : [];
             for (const entry of logs) {
-                line(`${text(entry, "timestamp", "")}  ${text(entry, "machine_id", "-")}  ${text(entry, "source", "-").padEnd(6)}  ${text(entry, "message", "")}`);
+                line(`${text(entry, "timestamp", "")}  ${text(entry, "level", "-").padEnd(5)}  ${text(entry, "machine_id", "-")}  ${text(entry, "source", "-").padEnd(6)}  ${text(entry, "message", "")}`);
             }
             if (logs.length === 0) line("No logs.");
             else if (summary.limit !== null && logs.length >= summary.limit) {
