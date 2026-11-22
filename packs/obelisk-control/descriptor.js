@@ -127,6 +127,7 @@ const APP_COMMANDS = [
     '- `obelisk cloud app list`; `obelisk cloud app status --app NAME` shows the state and endpoints. `--app` may be left out when OBELISK_APP_NAME is exported or inside a directory whose app.toml names the app.',
     '- The app\'s own API, as in the real CLI: `component list|source`, `execution list|status|result|logs|events|responses|submit|cancel|pause|unpause|replay|persist-backtraces|advance|upgrade`, `deployment active|list|show|pull|digest|submit`, `admin ...`. Human output goes to stderr and values or `--json` to stdout.',
     '- To see where a workflow made its calls, run `execution persist-backtraces ID`, then `execution events ID --backtraces` for the call-site frames with source snippets.',
+    '- `obelisk cloud app events --app NAME` lists lifecycle and VM events; `obelisk cloud app logs --app NAME [-n N] [--since TIME|30m]` prints the VM logs, oldest first, including startup failures.',
     '- `obelisk cloud app execution list --app NAME` hides webhook-spawned child executions unless `--show-derived` is passed.',
     '- Pull an existing app with `obelisk cloud app pull -o DIRECTORY --app NAME`: it writes app.toml, the active deployment.toml and its source files. Edit the pulled files. `deployment pull [ID]` pulls one deployment without app.toml. A deployment cannot grant itself additional permissions.',
 ];

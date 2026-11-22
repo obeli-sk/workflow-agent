@@ -2,7 +2,7 @@ import { serverInfo } from "../../../shared/obelisk-api-fixtures.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { default: run } = await import("./cli.js");
+const { default: run, sinceNanos } = await import("./cli.js");
 const { default: tenant } = await import("./tenant.js");
 const { default: tenantRead } = await import("./tenant-read.js");
 const { default: command } = await import("./command.js");
@@ -329,6 +329,33 @@ test("app events lists recent events newest first", async () => {
     assert.equal((await run(["app", "events", "-n", "51"], "", POLICY)).exit_code, 2);
     provisioner({ "GET /v1/apps/demo/events": { events: [] } });
     assert.equal((await run(["app", "events"], "", POLICY)).stderr, "No events.\n");
+});
+
+test("app logs prints the newest lines or pages forward from --since", async () => {
+    const logs = { logs: [
+        { timestamp: "2026-11-22T15:28:01.468044322Z", level: "info", message: "Machine started in 778ms", machine_id: "84ed09eb490928", region: "ams", source: "runner" },
+        { timestamp: "2026-11-22T15:28:01.548908094Z", level: "info", message: "Server started", machine_id: "84ed09eb490928", region: "ams", source: "app" },
+    ], next: "1795361281548908094" };
+    const lines = "2026-11-22T15:28:01.468044322Z  84ed09eb490928  runner  Machine started in 778ms\n"
+        + "2026-11-22T15:28:01.548908094Z  84ed09eb490928  app     Server started\n";
+    const requests = provisioner({ "GET /v1/apps/demo/logs": logs });
+    const newest = await run(["app", "logs"], "", POLICY);
+    assert.equal(newest.exit_code, 0, newest.stderr);
+    assert.equal(newest.stderr, lines);
+    assert.equal(requests[0].path, "/v1/apps/demo/logs?limit=100");
+    const forward = await run(["app", "logs", "-n", "2", "--since", "2026-11-22T15:28:00.5Z"], "", POLICY);
+    assert.equal(forward.stderr, `${lines}More lines may follow; continue with \`--since 2026-11-22T15:28:01.548908094Z\`.\n`);
+    assert.equal(requests[1].path, "/v1/apps/demo/logs?limit=2&after=1795361280500000000");
+    assert.equal((await run(["app", "logs", "-n", "501"], "", POLICY)).exit_code, 2);
+    assert.equal((await run(["app", "logs", "--since", "yesterday"], "", POLICY)).exit_code, 2);
+    provisioner({ "GET /v1/apps/demo/logs": { logs: [], next: null } });
+    assert.equal((await run(["app", "logs"], "", POLICY)).stderr, "No logs.\n");
+});
+
+test("--since takes a time or a duration ago", () => {
+    assert.equal(sinceNanos("2026-11-22T16:28:01.548908094+01:00", 0), 1795361281548908094n);
+    assert.equal(sinceNanos("1h30m", 6_000_000), 600_000_000_000n);
+    assert.equal(sinceNanos("30m", 1_800_000), 0n);
 });
 
 test("app commands never use another app's config", async () => {

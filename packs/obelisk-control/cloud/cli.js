@@ -35,7 +35,7 @@ export default async function run(args, stdin, appToml, fillEnv) {
 // A command-line error, reported like clap's.
 export class UsageError extends Error {}
 
-const VALUE_FLAGS = ["--app", "-a", "--app-config", "-n", "--limit", "--draft", "-d", "--deployment"];
+const VALUE_FLAGS = ["--app", "-a", "--app-config", "-n", "--limit", "--draft", "-d", "--deployment", "--since"];
 const REPEATED_FLAGS = ["--env"];
 const BOOLEAN_FLAGS = [
     "--json", "--verbose", "--fill", "--fill-non-interactive",
@@ -136,6 +136,22 @@ async function tokenState() {
 
 const POLICY_COMMANDS = ["status"];
 
+// PORT: args.rs's `parse_since`: an RFC 3339 time, or a duration before now, as Unix nanoseconds.
+export function sinceNanos(value, nowMs) {
+    const time = /^(\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?([Zz]|[+-]\d{2}:?\d{2})$/.exec(value);
+    if (time) {
+        const ms = Date.parse(`${time[1].replace(/[t ]/, "T")}${time[3].toUpperCase()}`);
+        if (!Number.isNaN(ms)) return BigInt(ms) * 1_000_000n + BigInt((time[2] ?? "").padEnd(9, "0"));
+    }
+    const units = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
+    const parts = [...value.matchAll(/(\d+)\s*(ms|h|m|s)\s*/g)];
+    if (parts.length > 0 && parts.map((part) => part[0]).join("") === value) {
+        const ago = parts.reduce((sum, [, count, unit]) => sum + Number(count) * units[unit], 0);
+        return BigInt(nowMs - ago) * 1_000_000n;
+    }
+    throw new UsageError(`invalid value '${value}' for '--since <SINCE>': expected an RFC 3339 time or a duration like \`30m\`, got \`${value}\``);
+}
+
 // PORT: args.rs's `parse_draft_key`.
 function draftKey(flags) {
     const key = flags["--draft"] ?? "default";
@@ -178,6 +194,17 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
             throw new UsageError(`invalid value '${limit}' for '--limit <LIMIT>': ${limit} is not in 1..=50`);
         }
         return print(await appRequest(name, "GET", ["events"], { ...options, query: { limit } }), { kind: "events" });
+    }
+    if (action === "logs") {
+        allow(flags, ["-n", "--since"]);
+        arity(rest, 0);
+        const limit = flags["-n"] ?? "100";
+        if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 500) {
+            throw new UsageError(`invalid value '${limit}' for '--limit <LIMIT>': ${limit} is not in 1..=500`);
+        }
+        const since = flags["--since"];
+        const query = since === undefined ? { limit } : { limit, after: sinceNanos(since, Date.now()).toString() };
+        return print(await appRequest(name, "GET", ["logs"], { ...options, query }), { kind: "logs", limit: since === undefined ? null : Number(limit) });
     }
     if (action === "unstage") {
         allow(flags, ["--draft"]);
