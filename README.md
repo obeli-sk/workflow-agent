@@ -21,23 +21,39 @@ Use `nix develop` to get the pinned Obelisk CLI.
 git clone https://github.com/obeli-sk/workflow-agent.git
 cd workflow-agent
 nix develop
-obelisk cloud auth login
-obelisk generate app-name
+LOGIN_EXPIRY=$(obelisk cloud auth login --default --json | jq -er '.expires_at')
+APP_NAME=$(obelisk generate app-name)
 ```
 
 `obelisk generate app-name` writes a unique name to `app.toml`. Run it once for
 each new app.
 
-### 2. Push the app
+### 2. Create a cloud token and push the app
+
+Create a dedicated account-wide token so Workflow Agent can manage cloud apps.
+Give it the same expiry as your CLI login and pass it to the app as a secret.
 
 ```sh
-obelisk cloud app push
+TOKEN_DIR=$(mktemp -d)
+TOKEN_FILE="$TOKEN_DIR/token"
+obelisk cloud token new --name "$APP_NAME" --expires-at "$LOGIN_EXPIRY" \
+  --token-file "$TOKEN_FILE" &&
+  OBELISK_CLOUD_API_TOKEN="$(cat "$TOKEN_FILE")" obelisk cloud app push \
+    --env OBELISK_CLOUD_API_URL=https://cloud.obeli.sk/api \
+    --secret OBELISK_CLOUD_API_TOKEN
 ```
 
 This uploads `app.toml`, `deployment.toml`, and the JavaScript sources, then
 activates the deployment. The app uses your account's LLM and GitHub
-integrations for model access and repository mounts. Run the same push
-command after editing the app to update it.
+integrations for model access and repository mounts.
+
+After the push succeeds, remove the temporary credential file.
+
+```sh
+rm "$TOKEN_FILE" && rmdir "$TOKEN_DIR"
+```
+
+For later updates, run `obelisk cloud app push` to reuse the saved app settings.
 
 ### 3. Open the agent
 
@@ -111,10 +127,9 @@ for other endpoints, used as `AGENT_MODELS="$(cat models.openrouter.json)"`:
 
 The agent controls apps through `obelisk cloud ...`, which talks to a cloud
 provisioner with the same API as ObeliskNet. Without a token, `obelisk cloud`
-is left out of the system prompt. For a hosted agent, set
-`OBELISK_CLOUD_API_URL` as an app environment variable and
-`OBELISK_CLOUD_API_TOKEN` as an app secret in the dashboard, then apply the
-configuration. For a local agent, export them before starting the server.
+is left out of the system prompt. The cloud deployment steps configure the
+provisioner URL and token for the hosted agent. For a local agent, export them
+before starting the server.
 
 ```sh
 export OBELISK_CLOUD_API_URL=https://cloud.obeli.sk/api   # the provisioner API
