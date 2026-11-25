@@ -148,7 +148,7 @@ const CLOUD_SECTION = [
 ].join(nl);
 
 async function cloudSection() {
-    if (!process.env["OBELISK_CLOUD_API_TOKEN"]) {
+    if (!process.env["WORKFLOW_AGENT_CLOUD_TOKEN"]) {
         return { section: null, warnings: ["No cloud is configured; `obelisk cloud` is left out of the prompt"] };
     }
     try {

@@ -22,11 +22,11 @@ env_vars = [
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
-# Lists ObeliskNet apps for the prompt when OBELISK_CLOUD_API_TOKEN is set.
+# Lists ObeliskNet apps for the prompt when WORKFLOW_AGENT_CLOUD_TOKEN is set.
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-https://cloud.obeli.sk/api}"
 methods = ["GET"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 # --- Shell programs ----------------------------------------------------------
@@ -446,7 +446,7 @@ secrets = [{ name = "LLM_API_KEY", optional = true }]
 replace_in = ["headers"]
 
 # --- Cloud apps (`obelisk cloud`) ---------------------------------------------
-# Back the shell's `obelisk cloud ...`. OBELISK_CLOUD_API_TOKEN authenticates both
+# Back the shell's `obelisk cloud ...`. WORKFLOW_AGENT_CLOUD_TOKEN authenticates both
 # the ObeliskNet provisioner (OBELISK_CLOUD_API_URL) and each app's own API, which
 # lives under OBELISK_CLOUD_APPS_DOMAIN.
 # Draft edits and app API mutations lack durable response deduplication.
@@ -465,7 +465,7 @@ env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-h
 url_prefix = "${OBELISK_CLOUD_API_URL:-https://cloud.obeli.sk/api}"
 url_regex_suffix = "/v1/apps$"
 methods = ["POST"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -482,12 +482,12 @@ env_vars = [
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-https://cloud.obeli.sk/api}"
 methods = ["GET", "POST", "PUT", "DELETE"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 [[activity_js.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["GET"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -503,7 +503,7 @@ env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-h
 url_prefix = "${OBELISK_CLOUD_API_URL:-https://cloud.obeli.sk/api}"
 url_regex_suffix = "/v1/apps/[^/]+/drafts/[a-z0-9._-]+$"
 methods = ["PUT"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 [[activity_js]]
@@ -519,7 +519,7 @@ env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-h
 url_prefix = "${OBELISK_CLOUD_API_URL:-https://cloud.obeli.sk/api}"
 url_regex_suffix = "/v1/apps/[^/]+/drafts/[a-z0-9._-]+(/(config|deployment|env/[^/]+))?$"
 methods = ["GET", "PUT", "DELETE"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 # Provisioner reads the shell makes before a lifecycle command.
@@ -536,7 +536,7 @@ env_vars = [
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-https://cloud.obeli.sk/api}"
 methods = ["GET"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 # `app apply|enable|disable|delete` as built by the shell. The shell passes the
@@ -556,7 +556,7 @@ env_vars = [
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-https://cloud.obeli.sk/api}"
 methods = ["POST", "DELETE"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 # Content-addressed files and fixed-ID deployment submissions are safe to resend.
@@ -573,7 +573,7 @@ env_vars = [{ key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_D
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["PUT"]
 request_url_regex = "^PUT https://[^/]+/v1/(files/sha256:[0-9a-f]{64}|deployments/Dep_[0-7][0-9A-HJKMNP-TV-Z]{25})$"
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 # Other app mutations: execution controls and admin maintenance.
@@ -589,7 +589,7 @@ env_vars = [
 [[activity_js.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["POST", "PUT", "DELETE"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 # Read-only app API requests, retried on transient errors.
@@ -606,5 +606,5 @@ env_vars = [
 [[activity_js.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["GET"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]

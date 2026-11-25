@@ -53,7 +53,7 @@ e2e_init() {
 
     export OBELISK_API_TOKEN="$token"
     # No provisioner, so `obelisk cloud` stays out of the prompt.
-    unset OBELISK_CLOUD_API_TOKEN
+    unset WORKFLOW_AGENT_CLOUD_TOKEN
     export OBELISK__API__LISTENING_ADDR="127.0.0.1:${api_port}"
     export OBELISK__HTTP_SERVER__INTERNAL__LISTENING_ADDR="127.0.0.1:${ui_port}"
     # OBELISK_UI_URL is a required internal webui-url source, so the Web UI must listen.

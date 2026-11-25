@@ -23,7 +23,7 @@ LLM_API_KEY = { optional = true }
 # The agent's own Obelisk server, accessed e.g. by the UI to get execution state.
 OBELISK_API_TOKEN = { type = "internal" }
 # Optional: ObeliskNet token enabling `obelisk cloud` in the shell.
-OBELISK_CLOUD_API_TOKEN = { optional = true }
+WORKFLOW_AGENT_CLOUD_TOKEN = { optional = true }
 
 [public_env]
 APP_NAME = { type = "internal", source = "app-name" }
@@ -162,13 +162,13 @@ replace_in = ["headers"]
 [[outbound_http.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-https://cloud.obeli.sk/api}"
 methods = ["GET", "POST", "PUT", "DELETE"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 [[outbound_http.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
 methods = ["GET", "POST", "PUT", "DELETE"]
-secrets = [{ name = "OBELISK_CLOUD_API_TOKEN", optional = true }]
+secrets = [{ name = "WORKFLOW_AGENT_CLOUD_TOKEN", optional = true }]
 replace_in = ["headers"]
 
 # Hosted app webhooks use the public HTTPS listener.

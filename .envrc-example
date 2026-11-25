@@ -1,8 +1,7 @@
 use flake .
 
 # ObeliskNet provisioner for `obelisk cloud`; without a token the shell has no cloud.
-# export OBELISK_CLOUD_API_URL=https://cloud.obeli.sk/api
-# export OBELISK_CLOUD_API_TOKEN=...
+# export WORKFLOW_AGENT_CLOUD_TOKEN=...
 
 # Local backend: models are discovered from GET /v1/models.
 export LLM_BASE_URL=http://127.0.0.1:9190

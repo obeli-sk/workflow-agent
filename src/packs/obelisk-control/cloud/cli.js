@@ -59,7 +59,7 @@ export function parseArgs(args) {
         } else if (BOOLEAN_FLAGS.includes(arg)) {
             flags[arg] = true;
         } else if (["--api-url", "--api-token", "--apps-domain", "--account"].includes(name)) {
-            throw `${name} is not supported here; the cloud comes from OBELISK_CLOUD_API_URL, OBELISK_CLOUD_API_TOKEN and OBELISK_CLOUD_APPS_DOMAIN`;
+            throw `${name} is not supported here; the cloud comes from OBELISK_CLOUD_API_URL, WORKFLOW_AGENT_CLOUD_TOKEN and OBELISK_CLOUD_APPS_DOMAIN`;
         } else if (arg.startsWith("-") && arg !== "-") {
             throw new UsageError(`unexpected argument '${arg}' found`);
         } else {
@@ -118,11 +118,11 @@ async function execute({ positionals, flags }, stdin, appToml, fillEnv) {
 // configured token, whose account name and expiry it cannot know.
 async function authCommand([action, ...extra], flags) {
     if (["login", "switch", "logout"].includes(action)) {
-        throw `\`cloud auth ${action}\` is not available in the sandbox; the account comes from OBELISK_CLOUD_API_TOKEN`;
+        throw `\`cloud auth ${action}\` is not available in the sandbox; the account comes from WORKFLOW_AGENT_CLOUD_TOKEN`;
     }
     if (action !== "status") throw new UsageError(`unrecognized subcommand '${action ?? ""}'`);
     arity(extra, 0);
-    const accounts = process.env["OBELISK_CLOUD_API_TOKEN"]
+    const accounts = process.env["WORKFLOW_AGENT_CLOUD_TOKEN"]
         ? [{
             default: true,
             api_url: cloudBase(),

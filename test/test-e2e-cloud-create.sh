@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 ROOT="$PWD"
 source "$ROOT/test/e2e-lib.sh"
 e2e_init "cloud-create-e2e" 28116 28191 "e2e-cloud-create-token"
-export OBELISK_CLOUD_API_TOKEN="e2e-cloud-token"
+export WORKFLOW_AGENT_CLOUD_TOKEN="e2e-cloud-token"
 export OBELISK_CLOUD_API_URL="http://127.0.0.1:28195/api"
 export OBELISK_API_URL="$E2E_API_URL"
 

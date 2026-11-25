@@ -71,7 +71,7 @@ const APP_API = "https://api--demo.obelisk.works";
 function provisioner(routes) {
     // The provisioner API lives under `/api` behind app-proxy.
     process.env.OBELISK_CLOUD_API_URL = "https://cloud.test/api/";
-    process.env.OBELISK_CLOUD_API_TOKEN = "cloud-token";
+    process.env.WORKFLOW_AGENT_CLOUD_TOKEN = "cloud-token";
     const requests = [];
     globalThis.fetch = async (url, init = {}) => {
         const { origin, search } = new URL(url);
@@ -461,7 +461,7 @@ test("run rejects credential flags and leaves lifecycle commands to the shell", 
 
     const flagged = await run(["app", "list", "--api-token", "x"], "", null);
     assert.equal(flagged.exit_code, 1);
-    assert.match(flagged.stderr, /OBELISK_CLOUD_API_TOKEN/);
+    assert.match(flagged.stderr, /WORKFLOW_AGENT_CLOUD_TOKEN/);
 });
 
 test("the descriptor lists the cloud's apps, or leaves the cloud out without a token", async () => {
@@ -473,7 +473,7 @@ test("the descriptor lists the cloud's apps, or leaves the cloud out without a t
         const hosted = await describe();
         assert.match(hosted.prompt, /- demo: running/);
         assert.deepEqual(hosted.warnings, []);
-        delete process.env.OBELISK_CLOUD_API_TOKEN;
+        delete process.env.WORKFLOW_AGENT_CLOUD_TOKEN;
         const none = await describe();
         assert.ok(!none.prompt.includes("- demo: running"));
         assert.match(none.warnings[0], /No cloud is configured/);

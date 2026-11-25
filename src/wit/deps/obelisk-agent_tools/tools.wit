@@ -28,7 +28,7 @@ interface webapi {
   stub-execution: func(execution-id: string, result-json: string) -> result<action-result, tool-error>;
 }
 
-// ObeliskNet (`obelisk cloud`), authenticated by OBELISK_CLOUD_API_TOKEN.
+// ObeliskNet (`obelisk cloud`), authenticated by WORKFLOW_AGENT_CLOUD_TOKEN.
 interface cloud {
   record command-output {
     stdout: string,

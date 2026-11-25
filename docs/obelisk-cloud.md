@@ -10,7 +10,7 @@ and logs of a hosted app.
 - `OBELISK_CLOUD_API_URL` (optional public env) points at the provisioner API.
   It defaults to `https://cloud.obeli.sk/api`. Set it to the API URL from
   `obelisk cloud auth status --json` for a custom cloud.
-- `OBELISK_CLOUD_API_TOKEN` (optional secret) is the account token. When it is
+- `WORKFLOW_AGENT_CLOUD_TOKEN` (optional secret) is the account token. When it is
   unset, `obelisk cloud` is left out of the system prompt.
 - `OBELISK_CLOUD_APPS_DOMAIN` (optional public env) is the hosted apps' domain,
   the same variable the real CLI reads. It defaults to

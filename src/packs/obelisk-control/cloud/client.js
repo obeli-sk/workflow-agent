@@ -9,8 +9,8 @@ export function cloudBase() {
 }
 
 export function cloudToken() {
-    const token = process.env["OBELISK_CLOUD_API_TOKEN"];
-    if (!token) throw "OBELISK_CLOUD_API_TOKEN is not configured";
+    const token = process.env["WORKFLOW_AGENT_CLOUD_TOKEN"];
+    if (!token) throw "WORKFLOW_AGENT_CLOUD_TOKEN is not configured";
     return token;
 }
 

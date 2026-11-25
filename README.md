@@ -27,7 +27,7 @@ each new app.
 
 Create a dedicated account-wide token so Workflow Agent can manage cloud apps.
 Use your saved default cloud account's expiry and pass the token to the app as
-a secret.
+a secret. The Obelisk CLI uses your saved account to authenticate the push.
 
 ```sh
 CLOUD_ACCOUNT=$(obelisk cloud auth status --json | jq -ec '.accounts[] | select(.default)')
@@ -43,8 +43,8 @@ On public Obelisk Cloud, the TOML configs supply the default API URL
 just the token.
 
 ```sh
-OBELISK_CLOUD_API_TOKEN="$(cat "$TOKEN_FILE")" obelisk cloud app push \
-  --secret OBELISK_CLOUD_API_TOKEN
+WORKFLOW_AGENT_CLOUD_TOKEN="$(cat "$TOKEN_FILE")" obelisk cloud app push \
+  --secret WORKFLOW_AGENT_CLOUD_TOKEN
 ```
 
 For a custom cloud, use the saved account's API URL and apps domain when pushing.
@@ -53,11 +53,10 @@ Pass both values through to the deployed app.
 ```sh
 CLOUD_API_URL=$(printf '%s\n' "$CLOUD_ACCOUNT" | jq -er '.api_url')
 CLOUD_APPS_DOMAIN=$(printf '%s\n' "$CLOUD_ACCOUNT" | jq -er '.apps_domain')
-OBELISK_CLOUD_API_URL="$CLOUD_API_URL" \
-  OBELISK_CLOUD_APPS_DOMAIN="$CLOUD_APPS_DOMAIN" \
-  OBELISK_CLOUD_API_TOKEN="$(cat "$TOKEN_FILE")" obelisk cloud app push \
-    --env OBELISK_CLOUD_API_URL --env OBELISK_CLOUD_APPS_DOMAIN \
-    --secret OBELISK_CLOUD_API_TOKEN
+WORKFLOW_AGENT_CLOUD_TOKEN="$(cat "$TOKEN_FILE")" obelisk cloud app push \
+  --env "OBELISK_CLOUD_API_URL=$CLOUD_API_URL" \
+  --env "OBELISK_CLOUD_APPS_DOMAIN=$CLOUD_APPS_DOMAIN" \
+  --secret WORKFLOW_AGENT_CLOUD_TOKEN
 ```
 
 This uploads `app.toml`, `deployment.toml`, and the JavaScript sources, then
@@ -71,6 +70,8 @@ rm "$TOKEN_FILE" && rmdir "$TOKEN_DIR"
 ```
 
 For later updates, run `obelisk cloud app push` to reuse the saved app settings.
+If your deployment used the old `OBELISK_CLOUD_API_TOKEN` app secret, create a
+token with a fresh name and pass it as `WORKFLOW_AGENT_CLOUD_TOKEN` on the next push.
 
 ### 3. Open the agent
 
@@ -149,7 +150,7 @@ is left out of the system prompt. The cloud deployment steps configure access fo
 the hosted agent. For a local agent, export the token before starting the server.
 
 ```sh
-export OBELISK_CLOUD_API_TOKEN=...
+export WORKFLOW_AGENT_CLOUD_TOKEN=...
 ```
 
 The agent is then told about your apps and can run, for example:
@@ -161,8 +162,8 @@ obelisk cloud app execution list --app NAME
 ```
 
 The default cloud API is `https://cloud.obeli.sk/api`. For a custom cloud,
-set `OBELISK_CLOUD_API_URL` and `OBELISK_CLOUD_APPS_DOMAIN` before starting
-the local agent. The domain sets the allowed app host pattern
+pass `OBELISK_CLOUD_API_URL` and `OBELISK_CLOUD_APPS_DOMAIN` to `just serve`.
+The domain sets the allowed app host pattern
 `https://*.<domain>`. The webhook grant is GET-only and carries no API token.
 `obelisk cloud app status --app NAME` lists the app's API, Web UI and webhook URLs.
 

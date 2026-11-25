@@ -303,7 +303,7 @@ function cloudGlobals(args) {
             globals.app = arg === "--app" ? args[++i] : arg.slice("--app=".length);
             if (globals.app === undefined) throw new UsageError("a value is required for '--app <NAME>' but none was supplied");
         } else if (["--api-url", "--api-token", "--apps-domain", "--account"].includes(arg.split("=")[0])) {
-            throw `${arg.split("=")[0]} is not supported here; the cloud comes from OBELISK_CLOUD_API_URL, OBELISK_CLOUD_API_TOKEN and OBELISK_CLOUD_APPS_DOMAIN`;
+            throw `${arg.split("=")[0]} is not supported here; the cloud comes from OBELISK_CLOUD_API_URL, WORKFLOW_AGENT_CLOUD_TOKEN and OBELISK_CLOUD_APPS_DOMAIN`;
         } else rest.push(arg);
     }
     if (globals.app !== undefined && (appTooEarly || rest[0] !== "app" || rest[1] === "list")) {
