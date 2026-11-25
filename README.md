@@ -10,19 +10,15 @@ nothing but a database row, and it resumes exactly where it left off.
 
 ## Deploying to Obelisk Cloud
 
-### 1. Clone and log in
+### 1. Clone and name the app
 
 Install the Obelisk CLI and `jq`.
 
 ```sh
 git clone https://github.com/obeli-sk/workflow-agent.git
 cd workflow-agent
-obelisk cloud auth login --default
 APP_NAME=$(obelisk generate app-name)
 ```
-
-For a custom cloud, pass its API URL to `obelisk cloud auth login --default`.
-If you're already signed in to the cloud you want to deploy to, use your saved default account.
 
 `obelisk generate app-name` writes a unique name to `app.toml`. Run it once for
 each new app.
@@ -30,7 +26,8 @@ each new app.
 ### 2. Create a cloud token and push the app
 
 Create a dedicated account-wide token so Workflow Agent can manage cloud apps.
-Give it the same expiry as your CLI login and pass it to the app as a secret.
+Use your saved default cloud account's expiry and pass the token to the app as
+a secret.
 
 ```sh
 CLOUD_ACCOUNT=$(obelisk cloud auth status --json | jq -ec '.accounts[] | select(.default)')
