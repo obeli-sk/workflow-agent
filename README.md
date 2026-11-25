@@ -12,15 +12,17 @@ nothing but a database row, and it resumes exactly where it left off.
 
 ### 1. Clone and log in
 
-Use `nix develop` to get the pinned Obelisk CLI.
+Install the Obelisk CLI and `jq`.
 
 ```sh
 git clone https://github.com/obeli-sk/workflow-agent.git
 cd workflow-agent
-nix develop
-LOGIN_EXPIRY=$(obelisk cloud auth login --default --json | jq -er '.expires_at')
+obelisk cloud auth login --default
 APP_NAME=$(obelisk generate app-name)
 ```
+
+For a custom cloud, pass its API URL to `obelisk cloud auth login --default`.
+If you're already signed in to the cloud you want to deploy to, use your saved default account.
 
 `obelisk generate app-name` writes a unique name to `app.toml`. Run it once for
 each new app.
@@ -31,12 +33,33 @@ Create a dedicated account-wide token so Workflow Agent can manage cloud apps.
 Give it the same expiry as your CLI login and pass it to the app as a secret.
 
 ```sh
+CLOUD_ACCOUNT=$(obelisk cloud auth status --json | jq -ec '.accounts[] | select(.default)')
+LOGIN_EXPIRY=$(printf '%s\n' "$CLOUD_ACCOUNT" | jq -er '.expires_at')
 TOKEN_DIR=$(mktemp -d)
 TOKEN_FILE="$TOKEN_DIR/token"
 obelisk cloud token new --name "$APP_NAME" --expires-at "$LOGIN_EXPIRY" \
-  --token-file "$TOKEN_FILE" &&
+  --token-file "$TOKEN_FILE"
+```
+
+On public Obelisk Cloud, the TOML configs supply the default API URL
+(`https://cloud.obeli.sk/api`) and apps domain (`obelisk.works`). Push with
+just the token.
+
+```sh
+OBELISK_CLOUD_API_TOKEN="$(cat "$TOKEN_FILE")" obelisk cloud app push \
+  --secret OBELISK_CLOUD_API_TOKEN
+```
+
+For a custom cloud, use the saved account's API URL and apps domain when pushing.
+Pass both values through to the deployed app.
+
+```sh
+CLOUD_API_URL=$(printf '%s\n' "$CLOUD_ACCOUNT" | jq -er '.api_url')
+CLOUD_APPS_DOMAIN=$(printf '%s\n' "$CLOUD_ACCOUNT" | jq -er '.apps_domain')
+OBELISK_CLOUD_API_URL="$CLOUD_API_URL" \
+  OBELISK_CLOUD_APPS_DOMAIN="$CLOUD_APPS_DOMAIN" \
   OBELISK_CLOUD_API_TOKEN="$(cat "$TOKEN_FILE")" obelisk cloud app push \
-    --env OBELISK_CLOUD_API_URL=https://cloud.obeli.sk/api \
+    --env OBELISK_CLOUD_API_URL --env OBELISK_CLOUD_APPS_DOMAIN \
     --secret OBELISK_CLOUD_API_TOKEN
 ```
 
@@ -66,8 +89,9 @@ directly.
 
 ## Running locally
 
+With Obelisk and `just` installed, start the server from the checkout.
+
 ```sh
-nix develop                                # pinned Obelisk and toolchain
 export LLM_BASE_URL=http://127.0.0.1:9190  # any OpenAI- or Anthropic-compatible endpoint
 just serve
 ```
@@ -124,12 +148,10 @@ for other endpoints, used as `AGENT_MODELS="$(cat models.openrouter.json)"`:
 
 The agent controls apps through `obelisk cloud ...`, which talks to a cloud
 provisioner with the same API as ObeliskNet. Without a token, `obelisk cloud`
-is left out of the system prompt. The cloud deployment steps configure the
-provisioner URL and token for the hosted agent. For a local agent, export them
-before starting the server.
+is left out of the system prompt. The cloud deployment steps configure access for
+the hosted agent. For a local agent, export the token before starting the server.
 
 ```sh
-export OBELISK_CLOUD_API_URL=https://cloud.obeli.sk/api   # the provisioner API
 export OBELISK_CLOUD_API_TOKEN=...
 ```
 
@@ -141,9 +163,10 @@ obelisk cloud app push                      # create or update the app from ./ap
 obelisk cloud app execution list --app NAME
 ```
 
-Hosted API and webhook access defaults to `https://*.obelisk.works` on port
-443, including `dev.obelisk.works`. For another domain, set
-`OBELISK_CLOUD_APPS_DOMAIN`; the grant becomes `https://*.<domain>`. The webhook grant is GET-only and carries no API token.
+The default cloud API is `https://cloud.obeli.sk/api`. For a custom cloud,
+set `OBELISK_CLOUD_API_URL` and `OBELISK_CLOUD_APPS_DOMAIN` before starting
+the local agent. The domain sets the allowed app host pattern
+`https://*.<domain>`. The webhook grant is GET-only and carries no API token.
 `obelisk cloud app status --app NAME` lists the app's API, Web UI and webhook URLs.
 
 Interactive commands (`--fill`) are not
