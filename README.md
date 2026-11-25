@@ -11,9 +11,47 @@ shell yourself by prefixing a message with `$ `, e.g. `$ ls /workspace`.
 Sessions survive restarts. A session waiting for you or for the model costs
 nothing but a database row, and it resumes exactly where it left off.
 
+## Deploying to Obelisk Cloud
+
+### 1. Clone and log in
+
+Use `nix develop` to get the pinned Obelisk CLI.
+
+```sh
+git clone https://github.com/obeli-sk/workflow-agent.git
+cd workflow-agent
+nix develop
+obelisk cloud auth login
+obelisk generate app-name
+```
+
+`obelisk generate app-name` writes a unique name to `app.toml`. Run it once for
+each new app.
+
+### 2. Push the app
+
+```sh
+obelisk cloud app push
+```
+
+This uploads `app.toml`, `deployment.toml`, and the JavaScript sources, then
+activates the deployment. The app uses your account's LLM and GitHub
+integrations for model access and repository mounts. Run the same push
+command after editing the app to update it.
+
+### 3. Open the agent
+
+```sh
+obelisk cloud app status
+```
+
+Open the **Internal webhooks** URL from the output and sign in. Choose a model
+and send a prompt to start a session. Send `$ ls /workspace` to try the shell
+directly.
+
 ![workflow-agent web UI](docs/workflow-agent.png)
 
-## Quick start
+## Running locally
 
 ```sh
 nix develop                                # pinned Obelisk and toolchain
@@ -21,13 +59,8 @@ export LLM_BASE_URL=http://127.0.0.1:9190  # any OpenAI- or Anthropic-compatible
 just serve
 ```
 
-Open http://localhost:9091. `just serve` uses `obelisk server run --dev`, which
-starts this `internal` server without credentials; keep it on localhost. On
-ObeliskNet the UI is at `https://internal--<app>.<domain>`, behind platform
-sign-in. Then:
-
-- type a prompt to start a session with the agent,
-- or start with `$ ` to open a session straight in the shell (`$ help` lists the commands).
+Open http://localhost:9091. `just serve` uses `obelisk server run --dev` to
+start the private `internal` server on localhost without credentials.
 
 You can send messages while the agent is working. A message is queued for the
 agent's next step, and a `$ ` command runs right away. A session with no input
@@ -74,11 +107,14 @@ for other endpoints, used as `AGENT_MODELS="$(cat models.openrouter.json)"`:
   `https://llm.int.exe.xyz`. From outside exe.dev, use the reverse proxy in
   [`examples/exe-llm-proxy.conf`](examples/exe-llm-proxy.conf) over an SSH tunnel.
 
-### Apps in the cloud
+### Manage cloud apps from the agent
 
 The agent controls apps through `obelisk cloud ...`, which talks to a cloud
 provisioner with the same API as ObeliskNet. Without a token, `obelisk cloud`
-is left out of the system prompt.
+is left out of the system prompt. For a hosted agent, set
+`OBELISK_CLOUD_API_URL` as an app environment variable and
+`OBELISK_CLOUD_API_TOKEN` as an app secret in the dashboard, then apply the
+configuration. For a local agent, export them before starting the server.
 
 ```sh
 export OBELISK_CLOUD_API_URL=https://cloud.obeli.sk/api   # the provisioner API
