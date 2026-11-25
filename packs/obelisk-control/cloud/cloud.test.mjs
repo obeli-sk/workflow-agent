@@ -331,6 +331,45 @@ test("app events lists recent events newest first", async () => {
     assert.equal((await run(["app", "events"], "", POLICY)).stderr, "No events.\n");
 });
 
+test("cloud status shows the account's plan, hold, apps and allowances", async () => {
+    const requests = provisioner({ "GET /v1/account": {
+        plan: { name: "Hobby", price_usd: 15 }, apps_allowed: 4,
+        hold: { reason: "budget.storage_class_a", message: "Writes and lists used up.", created_at: 1 },
+        from: 0, to: 0,
+        budgets: [
+            { kind: "storage_class_a", allowance: 400000, used: 400100, state: "exhausted" },
+            { kind: "llm", allowance: 4.5, used: 1.2, state: "ok" },
+            { kind: "stored_bytes", allowance: 5368709120, used: 104857600, state: "ok" },
+        ],
+        apps: [{ app_name: "demo", status: "stopped", enabled: true }, { app_name: "old", status: "stopped", enabled: false }],
+        events: [{ event_id: 1, created_at: 1762180000000, level: "info", code: "account.hold.applied", message: "Apps stopped" }],
+    } });
+    const result = await run(["status"], "", POLICY);
+    assert.equal(result.exit_code, 0, result.stderr);
+    assert.equal(result.stderr, "Hobby plan, $15 per month\n"
+        + "Apps stopped: Writes and lists used up.\n"
+        + "\nApps (2 of 4):\n  demo: stopped\n  old: disabled\n"
+        + "\nAllowances this month:\n"
+        + "  Writes and lists 400100 of 400000 (100%, exhausted)\n"
+        + "  LLM              $1.20 of $4.50 (27%)\n"
+        + "  Stored data      100.0 MiB of 5.00 GiB (2%)\n"
+        + "\nRecent events:\n"
+        + "  2025-11-03 14:26:40 UTC  info   Apps stopped\n");
+    assert.equal(requests[0].path, "/v1/account");
+    assert.equal((await run(["status", "extra"], "", POLICY)).exit_code, 2);
+});
+
+test("cloud events lists account events", async () => {
+    const requests = provisioner({ "GET /v1/account/events": { events: [
+        { event_id: 1, created_at: 1762180000000, level: "warn", code: "account.budget.nearing", message: "80% of reads used" },
+    ], next: null } });
+    const result = await run(["events", "-n", "3"], "", POLICY);
+    assert.equal(result.exit_code, 0, result.stderr);
+    assert.equal(result.stderr, "2025-11-03 14:26:40 UTC  warn   80% of reads used  (account.budget.nearing)\n");
+    assert.equal(requests[0].path, "/v1/account/events?limit=3");
+    assert.equal((await run(["events", "-n", "0"], "", POLICY)).exit_code, 2);
+});
+
 test("app logs prints the newest lines or pages forward from --since", async () => {
     const logs = { logs: [
         { timestamp: "2026-11-22T15:28:01.468044322Z", level: "info", message: "Machine started in 778ms", machine_id: "84ed09eb490928", region: "ams", source: "runner" },

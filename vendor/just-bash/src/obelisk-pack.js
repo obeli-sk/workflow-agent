@@ -2077,8 +2077,10 @@ const cloudHelp = `Manage apps through the Obelisk cloud control plane
 Usage: obelisk cloud [OPTIONS] <COMMAND>
 
 Commands:
-  auth   Show the cloud account this shell is configured with (status)
-  app    List apps or manage one and its deployments, executions and configuration
+  auth    Show the cloud account this shell is configured with (status)
+  app     List apps or manage one and its deployments, executions and configuration
+  status  Show the account's plan, any hold stopping its apps, this month's allowances and its apps
+  events  List recent account events, such as allowance warnings and holds, newest first [-n|--limit N]
 
 Options:
       --json        Print machine-readable JSON instead of human-readable output

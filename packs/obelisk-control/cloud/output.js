@@ -73,6 +73,9 @@ export function renderSummary(summary, value) {
             out += endpoints(value?.app?.endpoints, value?.api_ready === true ? "ready" : idle && value?.api_ready === null ? "resumes on request" : "unavailable");
             break;
         }
+        case "account":
+            out += account(value);
+            break;
         case "events": {
             const events = Array.isArray(value?.events) ? value.events : [];
             if (events.length === 0) line("No events.");
@@ -200,6 +203,60 @@ function draftNotes(draft) {
     const unused = draftValues(draft, "unused");
     if (unused.length > 0) out += `Not declared in app.toml: ${unused.join(", ")}\n`;
     return out;
+}
+
+// PORT: output.rs's `account`: plan, hold, apps, this month's allowances and the latest events.
+function account(value) {
+    let out = `${text(value?.plan, "name", "Unknown")} plan, $${JSON.stringify(value?.plan?.price_usd ?? null)} per month\n`;
+    if (value?.hold != null) out += `Apps stopped: ${text(value.hold, "message", "the account is on hold")}\n`;
+    const apps = Array.isArray(value?.apps) ? value.apps : [];
+    out += `\nApps (${apps.length} of ${JSON.stringify(value?.apps_allowed ?? null)}):\n`;
+    if (apps.length === 0) out += "  none\n";
+    for (const item of apps) {
+        const status = item?.enabled === false && item?.status !== "deleting" ? "disabled" : text(item, "status", "unknown");
+        out += `  ${text(item, "app_name", "?")}: ${status}\n`;
+    }
+    out += "\nAllowances this month:\n";
+    for (const budget of Array.isArray(value?.budgets) ? value.budgets : []) {
+        const kind = text(budget, "kind", "");
+        const used = typeof budget?.used === "number" ? budget.used : 0;
+        const allowance = typeof budget?.allowance === "number" ? budget.allowance : 0;
+        const percent = allowance > 0 ? used / allowance * 100 : 0;
+        const state = text(budget, "state", "ok");
+        out += `  ${(ALLOWANCE_LABELS[kind] ?? kind).padEnd(16)} ${quantity(kind, used)} of ${quantity(kind, allowance)} (${percent.toFixed(0)}%${state === "ok" ? "" : `, ${state}`})\n`;
+    }
+    const events = Array.isArray(value?.events) ? value.events : [];
+    if (events.length > 0) {
+        out += "\nRecent events:\n";
+        for (const event of events) {
+            out += `  ${time(event?.created_at)}  ${text(event, "level", "").padEnd(5)}  ${text(event, "message", "")}\n`;
+        }
+    }
+    return out;
+}
+
+const ALLOWANCE_LABELS = {
+    memory_gb_hours: "Memory",
+    vcpu_hours: "vCPU",
+    llm: "LLM",
+    storage_class_a: "Writes and lists",
+    storage_class_b: "Reads",
+    stored_bytes: "Stored data",
+    transfer_bytes: "Transfer",
+};
+
+function quantity(kind, value) {
+    switch (kind) {
+        case "memory_gb_hours": return `${value.toFixed(1)} GB·h`;
+        case "vcpu_hours": return `${value.toFixed(1)} vCPU·h`;
+        case "llm": return `$${value.toFixed(2)}`;
+        case "stored_bytes":
+        case "transfer_bytes": {
+            const gib = value / 2 ** 30;
+            return gib >= 1 ? `${gib.toFixed(2)} GiB` : `${(value / 2 ** 20).toFixed(1)} MiB`;
+        }
+        default: return value.toFixed(0);
+    }
 }
 
 // Unix milliseconds as UTC time.

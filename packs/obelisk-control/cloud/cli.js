@@ -99,6 +99,17 @@ async function execute({ positionals, flags }, stdin, appToml, fillEnv) {
         allow(flags, []);
         return authCommand(rest, flags);
     }
+    if (group === "status") {
+        allow(flags, []);
+        arity(rest, 0);
+        return print(await cloudRequest("GET", ["v1", "account"], options), { kind: "account" });
+    }
+    if (group === "events") {
+        allow(flags, ["-n"]);
+        arity(rest, 0);
+        const limit = eventsLimit(flags);
+        return print(await cloudRequest("GET", ["v1", "account", "events"], { ...options, query: { limit } }), { kind: "events" });
+    }
     if (group === "app") return appCommand(rest, flags, stdin, appToml, fillEnv, options, print);
     throw new UsageError(`unrecognized subcommand '${positionals.join(" ")}'`);
 }
@@ -152,6 +163,14 @@ export function sinceNanos(value, nowMs) {
     throw new UsageError(`invalid value '${value}' for '--since <SINCE>': expected an RFC 3339 time or a duration like \`30m\`, got \`${value}\``);
 }
 
+function eventsLimit(flags) {
+    const limit = flags["-n"] ?? "5";
+    if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 50) {
+        throw new UsageError(`invalid value '${limit}' for '--limit <LIMIT>': ${limit} is not in 1..=50`);
+    }
+    return limit;
+}
+
 // PORT: args.rs's `parse_draft_key`.
 function draftKey(flags) {
     const key = flags["--draft"] ?? "default";
@@ -189,10 +208,7 @@ async function appCommand([action, ...rest], flags, stdin, appToml, fillEnv, opt
     if (action === "events") {
         allow(flags, ["-n"]);
         arity(rest, 0);
-        const limit = flags["-n"] ?? "5";
-        if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 50) {
-            throw new UsageError(`invalid value '${limit}' for '--limit <LIMIT>': ${limit} is not in 1..=50`);
-        }
+        const limit = eventsLimit(flags);
         return print(await appRequest(name, "GET", ["events"], { ...options, query: { limit } }), { kind: "events" });
     }
     if (action === "logs") {
