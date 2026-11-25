@@ -9,7 +9,7 @@ name = "pack_describe"
 ffqn = "obelisk-control:agent/pack.describe"
 params = []
 return_type = "result<record { prompt: string, tools-json: string, warnings: list<string> }, string>"
-location = "packs/obelisk-control/descriptor.js"
+location = "src/packs/obelisk-control/descriptor.js"
 exec.lock_expiry.seconds = 30
 # The descriptor fetches the docs indexes listed in DOCS_URLS_JSON (see the
 # curl-program block below) once at session start and inlines them into the
@@ -44,8 +44,8 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "config_discover"
 ffqn = "obelisk-agent:config/config.discover"
-wit = "wit"
-location = "activity/config-discover.js"
+wit = "src/wit"
+location = "src/activity/config-discover.js"
 env_vars = [
   { key = "APP_NAME", value = "${APP_NAME}" },
   { key = "MAX_STEPS", value = "${MAX_STEPS:-40}" },
@@ -57,7 +57,7 @@ ${PROGRAMS_JSON:-[
 ]}
 ''' },
   # Each entry mounts a lazily-listed GitHub repo tree at /workspace/github/<name>
-  # (vendor/just-bash/src/obelisk-web.js -> the mount_apps activity below). `owner`
+  # (src/vendor/just-bash/src/obelisk-web.js -> the mount_apps activity below). `owner`
   # defaults to "obeli-sk" and `ref` to "main" when omitted; `description` is
   # a terse "Lang: phrase" surfaced verbatim as a bullet in the system
   # prompt (session-logic.js's renderAppHelp) -
@@ -82,8 +82,8 @@ exec.lock_expiry.seconds = 30
 [[activity_js]]
 name = "input_accepted_at"
 ffqn = "obelisk-agent:config/config.input-accepted-at"
-wit = "wit"
-location = "activity/input-accepted-at.js"
+wit = "src/wit"
+location = "src/activity/input-accepted-at.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_API_URL}"
@@ -100,7 +100,7 @@ params = [
   { name = "args", type = "list<string>" },
 ]
 return_type = "result<record { stdout: string, stderr: string, exit-code: u32 }, string>"
-location = "activity/browser.js"
+location = "src/activity/browser.js"
 # Creation and partially completed batches must not be repeated automatically.
 max_retries = 0
 exec.lock_expiry.minutes = 10
@@ -135,7 +135,7 @@ params = [
   { name = "args",  type = "list<string>" },
 ]
 return_type = "result<record { stdout: string, stderr: string, exit-code: u32 }, string>"
-location = "activity/curl.js"
+location = "src/activity/curl.js"
 exec.lock_expiry.seconds = 30
 # Docs (llms.txt index + every page URL it references) and obeli.sk release
 # notes; the prompt points the model at the same hosts' indexes.
@@ -158,7 +158,7 @@ params = [
   { name = "args",  type = "list<string>" },
 ]
 return_type = "result<record { stdout: string, stderr: string, exit-code: u32 }, string>"
-location = "activity/chat.js"
+location = "src/activity/chat.js"
 # create POSTs new executions; a retry after an ambiguous failure would
 # double-submit. (The session loop also intercepts create/rename/current.)
 max_retries = 0
@@ -205,8 +205,8 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "mount_apps"
 ffqn = "obelisk-agent:mounts/apps.request"
-wit = "wit"
-location = "activity/github-contents.js"
+wit = "src/wit"
+location = "src/activity/github-contents.js"
 exec.lock_expiry.seconds = 30
 env_vars = [{ key = "GITHUB_API_URL", value = "${GITHUB_API_URL:-https://api.github.com}" }]
 [[activity_js.allowed_host]]
@@ -231,8 +231,8 @@ url_regex_suffix = "/[^/]+/[^/]+/(contents|commits/)"
 [[activity_js]]
 name = "llm_chat"
 ffqn = "obelisk-agent:llm/chat.completion"
-wit = "wit"
-location = "activity/llm-chat.js"
+wit = "src/wit"
+location = "src/activity/llm-chat.js"
 exec.lock_expiry.minutes = 10
 max_retries = 3
 env_vars = [
@@ -265,8 +265,8 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_pause_execution"
 ffqn = "obelisk-agent:tools/webapi.pause-execution"
-wit = "wit"
-location = "packs/obelisk-control/tools/pause-execution.js"
+wit = "src/wit"
+location = "src/packs/obelisk-control/tools/pause-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_API_URL}"
@@ -284,8 +284,8 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_unpause_execution"
 ffqn = "obelisk-agent:tools/webapi.unpause-execution"
-wit = "wit"
-location = "packs/obelisk-control/tools/unpause-execution.js"
+wit = "src/wit"
+location = "src/packs/obelisk-control/tools/unpause-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_API_URL}"
@@ -303,8 +303,8 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_cancel_execution"
 ffqn = "obelisk-agent:tools/webapi.cancel-execution"
-wit = "wit"
-location = "packs/obelisk-control/tools/cancel-execution.js"
+wit = "src/wit"
+location = "src/packs/obelisk-control/tools/cancel-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_API_URL}"
@@ -322,8 +322,8 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "tool_stub_execution"
 ffqn = "obelisk-agent:tools/webapi.stub-execution"
-wit = "wit"
-location = "packs/obelisk-control/tools/stub-execution.js"
+wit = "src/wit"
+location = "src/packs/obelisk-control/tools/stub-execution.js"
 env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_API_URL}"
@@ -343,7 +343,7 @@ replace_in = ["headers"]
 [[activity_stub]]
 name = "tool_ask_user"
 ffqn = "obelisk-agent:stub/stub.ask-user"
-wit = "wit"
+wit = "src/wit"
 
 # One generic user-message offer owned by the session loop. The UI may
 # fulfil it only while this concrete stub execution is pending. The workflow
@@ -351,12 +351,12 @@ wit = "wit"
 [[activity_stub]]
 name = "session_injection"
 ffqn = "obelisk-agent:stub/stub.injection"
-wit = "wit"
+wit = "src/wit"
 
 [[activity_stub]]
 name = "session_record_output"
 ffqn = "obelisk-agent:stub/stub.record-output"
-wit = "wit"
+wit = "src/wit"
 
 # Renames publish on their own join set through this dedicated stub, so
 # consumers fetch a session's current name with one bounded request instead of
@@ -364,7 +364,7 @@ wit = "wit"
 [[activity_stub]]
 name = "session_renamed"
 ffqn = "obelisk-agent:stub/stub.session-renamed"
-wit = "wit"
+wit = "src/wit"
 
 # Per-script interrupt offer: the workflow submits one child per running bash
 # script and announces its id via shell-started events; writing it stops that
@@ -372,15 +372,15 @@ wit = "wit"
 [[activity_stub]]
 name = "session_interrupt"
 ffqn = "obelisk-agent:stub/stub.interrupt"
-wit = "wit"
+wit = "src/wit"
 
-# Session workflow (workflow/workflow-js): a dependency-free `just-bash`
+# Session workflow (src/workflow): a dependency-free `just-bash`
 # interpreter and the session loop.
 
 [[workflow_js]]
 name = "workflow_agent_js"
 ffqn = "obelisk-agent:workflow/workflow.run-cancellable"
-location = "workflow/workflow-js/src/session.js"
+location = "src/workflow/session.js"
 params = [
   { name = "prompt",          type = "string" },
   { name = "model",           type = "option<string>" },
@@ -398,7 +398,7 @@ exec.lock_expiry.minutes = 2
 [[webhook_endpoint_js]]
 name = "ui-api"
 http_server = "internal"
-location = "webhook/ui-api.js"
+location = "src/webhook/ui-api.js"
 routes = [
   { methods = ["GET"], route = "/" },
   { methods = ["GET"], route = "/api/models" },
@@ -455,11 +455,11 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "cloud_create"
 ffqn = "obelisk-agent:tools/cloud.create"
-wit = "wit"
+wit = "src/wit"
 max_retries = 3
 retry_exp_backoff.seconds = 1
 exec.lock_expiry.minutes = 1
-location = "packs/obelisk-control/cloud/create.js"
+location = "src/packs/obelisk-control/cloud/create.js"
 env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
@@ -471,10 +471,10 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "cloud_run"
 ffqn = "obelisk-agent:tools/cloud.run"
-wit = "wit"
+wit = "src/wit"
 max_retries = 0
 exec.lock_expiry.minutes = 1
-location = "packs/obelisk-control/cloud/cli.js"
+location = "src/packs/obelisk-control/cloud/cli.js"
 env_vars = [
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
   { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
@@ -493,11 +493,11 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "cloud_draft_open"
 ffqn = "obelisk-agent:tools/cloud.draft-open"
-wit = "wit"
+wit = "src/wit"
 max_retries = 3
 retry_exp_backoff.seconds = 1
 exec.lock_expiry.minutes = 1
-location = "packs/obelisk-control/cloud/draft-open.js"
+location = "src/packs/obelisk-control/cloud/draft-open.js"
 env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
@@ -509,11 +509,11 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "cloud_draft_request"
 ffqn = "obelisk-agent:tools/cloud.draft-request"
-wit = "wit"
+wit = "src/wit"
 max_retries = 3
 retry_exp_backoff.seconds = 1
 exec.lock_expiry.minutes = 1
-location = "packs/obelisk-control/cloud/draft-request.js"
+location = "src/packs/obelisk-control/cloud/draft-request.js"
 env_vars = [{ key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" }]
 [[activity_js.allowed_host]]
 url_prefix = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}"
@@ -526,10 +526,10 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "cloud_read"
 ffqn = "obelisk-agent:tools/cloud.read"
-wit = "wit"
+wit = "src/wit"
 # `GET /v1/commands/ID` holds the response until the command finishes.
 exec.lock_expiry.minutes = 10
-location = "packs/obelisk-control/cloud/read.js"
+location = "src/packs/obelisk-control/cloud/read.js"
 env_vars = [
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
 ]
@@ -544,12 +544,12 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "cloud_command"
 ffqn = "obelisk-agent:tools/cloud.command"
-wit = "wit"
+wit = "src/wit"
 max_retries = 3
 retry_exp_backoff.seconds = 1
 # Applying waits for the app VM to come up.
 exec.lock_expiry.minutes = 10
-location = "packs/obelisk-control/cloud/command.js"
+location = "src/packs/obelisk-control/cloud/command.js"
 env_vars = [
   { key = "OBELISK_CLOUD_API_URL", value = "${OBELISK_CLOUD_API_URL:-http://127.0.0.1:9090/api}" },
 ]
@@ -563,11 +563,11 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "cloud_upload"
 ffqn = "obelisk-agent:tools/cloud.upload"
-wit = "wit"
+wit = "src/wit"
 max_retries = 3
 retry_exp_backoff.seconds = 1
 exec.lock_expiry.minutes = 10
-location = "packs/obelisk-control/cloud/upload.js"
+location = "src/packs/obelisk-control/cloud/upload.js"
 env_vars = [{ key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" }]
 [[activity_js.allowed_host]]
 pattern = "https://*.${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}"
@@ -580,9 +580,9 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "cloud_tenant"
 ffqn = "obelisk-agent:tools/cloud.tenant"
-wit = "wit"
+wit = "src/wit"
 max_retries = 0
-location = "packs/obelisk-control/cloud/tenant.js"
+location = "src/packs/obelisk-control/cloud/tenant.js"
 env_vars = [
   { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]
@@ -596,10 +596,10 @@ replace_in = ["headers"]
 [[activity_js]]
 name = "cloud_tenant_read"
 ffqn = "obelisk-agent:tools/cloud.tenant-read"
-wit = "wit"
+wit = "src/wit"
 # `execution status|result --follow` holds the response until the execution finishes.
 exec.lock_expiry.minutes = 10
-location = "packs/obelisk-control/cloud/tenant-read.js"
+location = "src/packs/obelisk-control/cloud/tenant-read.js"
 env_vars = [
   { key = "OBELISK_CLOUD_APPS_DOMAIN", value = "${OBELISK_CLOUD_APPS_DOMAIN:-obelisk.works}" },
 ]

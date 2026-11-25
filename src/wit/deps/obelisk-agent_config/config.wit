@@ -12,7 +12,7 @@ interface config {
   }
 
   // A GitHub repo tree mounted read-only at /workspace/github/<name>
-  // (vendor/just-bash/src/obelisk-web.js -> the mount_apps activity). `description`
+  // (src/vendor/just-bash/src/obelisk-web.js -> the mount_apps activity). `description`
   // is surfaced in the system prompt so the model knows what the repo is
   // and how to use it.
   record app {

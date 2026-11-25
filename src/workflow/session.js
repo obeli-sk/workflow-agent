@@ -34,10 +34,10 @@ import {
     sessionRenamedSubmit,
 } from "obelisk-agent:stub-obelisk-ext/stub";
 import { recordOutputStub, sessionRenamedStub } from "obelisk-agent:stub-obelisk-stub/stub";
-import { Bash } from "../../../vendor/just-bash/src/bash.js";
-import * as obeliskPack from "../../../vendor/just-bash/src/obelisk-pack.js";
-import * as obeliskProgram from "../../../vendor/just-bash/src/obelisk-program.js";
-import * as obeliskWeb from "../../../vendor/just-bash/src/obelisk-web.js";
+import { Bash } from "../vendor/just-bash/src/bash.js";
+import * as obeliskPack from "../vendor/just-bash/src/obelisk-pack.js";
+import * as obeliskProgram from "../vendor/just-bash/src/obelisk-program.js";
+import * as obeliskWeb from "../vendor/just-bash/src/obelisk-web.js";
 import { childErrorMessage, createCloud, createHost } from "./host.js";
 import { arm as armScriptWatch } from "./script-watch.js";
 import * as chat from "./chat.js";

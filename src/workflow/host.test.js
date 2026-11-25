@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createCloud, decodeChildErrorValue } from "./host.js";
-import { Bash } from "../../../vendor/just-bash/src/bash.js";
-import { commandHandler } from "../../../vendor/just-bash/src/obelisk-pack.js";
-import { sha256Hex } from "../../../vendor/just-bash/src/commands/hash.js";
-import { utf8Encode } from "../../../vendor/just-bash/src/utf8.js";
+import { Bash } from "../vendor/just-bash/src/bash.js";
+import { commandHandler } from "../vendor/just-bash/src/obelisk-pack.js";
+import { sha256Hex } from "../vendor/just-bash/src/commands/hash.js";
+import { utf8Encode } from "../vendor/just-bash/src/utf8.js";
 
 test("child activity errors decode string-or-variant values", () => {
     assert.equal(decodeChildErrorValue("bad input"), "bad input");

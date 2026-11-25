@@ -8,7 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-source "$ROOT/scripts/e2e-lib.sh"
+source "$ROOT/test/e2e-lib.sh"
 
 API_PORT=28016
 UI_PORT=28091
@@ -18,7 +18,7 @@ export AGENT_MODELS="[]"
 export LLM_BASE_URL="http://127.0.0.1:${UI_PORT}"
 
 export APPS_JSON='[{"name":"components","repo":"components","description":"E2E GitHub mount"}]'
-e2e_start_github_mock "obeli-sk/components=$ROOT/scripts/e2e-fixtures/components"
+e2e_start_github_mock "obeli-sk/components=$ROOT/test/e2e-fixtures/components"
 e2e_start_server
 
 RUN_FFQN="obelisk-agent:workflow/workflow.run-cancellable"
@@ -49,7 +49,7 @@ shell_notification() {
             NOTIFICATION="$candidate"
             return 0
         fi
-    done < <(node scripts/e2e-json.js execution-ids "obelisk-agent:stub/stub.record-output" <<<"$SESSION_EXECUTIONS")
+    done < <(node test/e2e-json.js execution-ids "obelisk-agent:stub/stub.record-output" <<<"$SESSION_EXECUTIONS")
     return 1
 }
 
@@ -64,8 +64,8 @@ run_shell_turn() {
 
     e2e_wait_until shell_notification "$shell_id" \
         || { echo "shell turn $shell_id did not complete: $SESSION_EXECUTIONS" >&2; exit 1; }
-    SHELL_STDOUT="$(node scripts/e2e-json.js shell-stdout <<<"$NOTIFICATION")"
-    SHELL_STDERR="$(node scripts/e2e-json.js shell-stderr <<<"$NOTIFICATION")"
+    SHELL_STDOUT="$(node test/e2e-json.js shell-stdout <<<"$NOTIFICATION")"
+    SHELL_STDERR="$(node test/e2e-json.js shell-stderr <<<"$NOTIFICATION")"
 }
 
 # Fetches a run's projection into PROJECTION and pipes it to an e2e-json.js check.
@@ -73,7 +73,7 @@ projection_check() {
     local session_id="$1"
     shift
     PROJECTION="$(run_detail "$session_id")" \
-        && node scripts/e2e-json.js "$@" <<<"$PROJECTION" >/dev/null 2>&1
+        && node test/e2e-json.js "$@" <<<"$PROJECTION" >/dev/null 2>&1
 }
 
 # Waits until a run's projection reports the given name.
@@ -89,7 +89,7 @@ ASK_SESSION_ID="$("$OBELISK" generate execution-id)"
 
 ASK_OFFER_ID="$(e2e_take_offer "$ASK_SESSION_ID")"
 ASK_SCRIPT="ask-user 'Continue?'"
-ASK_BODY="$(node scripts/e2e-json.js shell-input "$ASK_OFFER_ID" shell-e2e-ask "$ASK_SCRIPT")"
+ASK_BODY="$(node test/e2e-json.js shell-input "$ASK_OFFER_ID" shell-e2e-ask "$ASK_SCRIPT")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d "$ASK_BODY" \
@@ -97,7 +97,7 @@ curl --fail --silent --show-error \
 
 e2e_wait_until projection_check "$ASK_SESSION_ID" check-human-input-request \
     || { echo "ask-user request was not projected: $PROJECTION" >&2; exit 1; }
-ASK_ID="$(node scripts/e2e-json.js pending-ask-id <<<"$PROJECTION")"
+ASK_ID="$(node test/e2e-json.js pending-ask-id <<<"$PROJECTION")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
     -d '{"answer":"yes"}' \
@@ -115,7 +115,7 @@ SESSION_ID="$("$OBELISK" generate execution-id)"
 
 e2e_take_offer "$SESSION_ID" >/dev/null
 INJECTION_ID="$E2E_OFFER"
-RESPONSE_CURSOR="$(node scripts/e2e-json.js response-cursor <<<"$PROJECTION")"
+RESPONSE_CURSOR="$(node test/e2e-json.js response-cursor <<<"$PROJECTION")"
 
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
@@ -130,20 +130,20 @@ curl --fail --silent --show-error \
 # each record-output result in turn.
 shell_session_done() {
     shell_notification shell-e2e-1 \
-        && node scripts/e2e-json.js check-shell-session <<<"$SESSION_EXECUTIONS"
+        && node test/e2e-json.js check-shell-session <<<"$SESSION_EXECUTIONS"
 }
 e2e_wait_until shell_session_done \
     || { echo "shell turn did not complete correctly: $SESSION_EXECUTIONS" >&2; exit 1; }
-node scripts/e2e-json.js check-shell-notification <<<"$NOTIFICATION"
+node test/e2e-json.js check-shell-notification <<<"$NOTIFICATION"
 
 # The next input_offer is published after the record-output stub, so poll until it settles.
 shell_projection() {
     SHELL_PROJECTION="$(curl --fail --silent \
         "http://127.0.0.1:${UI_PORT}/api/runs/$SESSION_ID?workflow_id=$SESSION_ID&response_cursor=$RESPONSE_CURSOR")" \
-        && node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION" 2>/dev/null
+        && node test/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION" 2>/dev/null
 }
 e2e_wait_until shell_projection \
-    || { node scripts/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"; exit 1; }
+    || { node test/e2e-json.js check-shell-projection <<<"$SHELL_PROJECTION"; exit 1; }
 echo ">>> shell-only E2E PASS: curl was registered and invoked without starting the agent"
 
 echo ">>> running the obelisk/mount custom commands"

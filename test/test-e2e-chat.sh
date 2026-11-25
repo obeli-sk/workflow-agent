@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-source "$ROOT/scripts/e2e-lib.sh"
+source "$ROOT/test/e2e-lib.sh"
 
 API_PORT=28018
 UI_PORT=28093
@@ -35,8 +35,8 @@ chat_direct() {
     "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$exec_id" "$CHAT_FFQN" "$params" >/dev/null
     e2e_wait_until chat_finished "$exec_id" \
         || { echo "chat direct call did not finish: $params" >&2; return 1; }
-    node scripts/e2e-json.js program-stdout <<<"$CHAT_RESULT" && return 0
-    node scripts/e2e-json.js program-stderr <<<"$CHAT_RESULT" >&2 || true
+    node test/e2e-json.js program-stdout <<<"$CHAT_RESULT" && return 0
+    node test/e2e-json.js program-stderr <<<"$CHAT_RESULT" >&2 || true
     return 1
 }
 
@@ -59,13 +59,13 @@ projection_check() {
     local session_id="$1"
     shift
     PROJECTION="$(run_detail "$session_id")" \
-        && node scripts/e2e-json.js "$@" <<<"$PROJECTION" >/dev/null 2>&1
+        && node test/e2e-json.js "$@" <<<"$PROJECTION" >/dev/null 2>&1
 }
 
 # Same for the /api/runs listing, into RUNS.
 runs_check() {
     RUNS="$(curl --fail --silent "http://127.0.0.1:${UI_PORT}/api/runs")" \
-        && node scripts/e2e-json.js "$@" <<<"$RUNS" >/dev/null 2>&1
+        && node test/e2e-json.js "$@" <<<"$RUNS" >/dev/null 2>&1
 }
 
 # Run one shell turn in a live session and print the shell command's stdout.
@@ -78,7 +78,7 @@ shell_turn() {
         "http://127.0.0.1:${UI_PORT}/api/input/$session_id" >/dev/null
     e2e_wait_until projection_check "$session_id" check-shell-event-done "$turn_id" \
         || { echo "shell turn $turn_id did not complete: $PROJECTION" >&2; return 1; }
-    node scripts/e2e-json.js shell-event-stdout "$turn_id" <<<"$PROJECTION"
+    node test/e2e-json.js shell-event-stdout "$turn_id" <<<"$PROJECTION"
 }
 
 echo ">>> chat models lists the fake catalog"
@@ -94,7 +94,7 @@ PARENT_ID="$("$OBELISK" generate execution-id)"
 "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$PARENT_ID" "$RUN_FFQN" \
     '["", null, null, null, null, null]'
 CURRENT_OUT="$(shell_turn "$PARENT_ID" "shell-chat-current" 'chat current')"
-node scripts/e2e-json.js check-current-id "$PARENT_ID" <<<"$CURRENT_OUT"
+node test/e2e-json.js check-current-id "$PARENT_ID" <<<"$CURRENT_OUT"
 run_detail "$PARENT_ID" | node -e '
     const detail = JSON.parse(require("fs").readFileSync(0, "utf8"));
     require("node:assert/strict").match(detail.system_prompt, /You are running in the Obelisk app "workflow-agent"\./);
@@ -123,7 +123,7 @@ kill "$WATCH_PID" 2>/dev/null || true
 echo ">>> renaming the parent via chat rename and seeing it on /api/runs"
 shell_turn "$PARENT_ID" "shell-chat-rename" 'chat rename e2e-slug' >/dev/null
 RENAME_OUT="$(shell_turn "$PARENT_ID" "shell-chat-current-2" 'chat current')"
-node scripts/e2e-json.js check-current-id "$PARENT_ID" --name e2e-slug <<<"$RENAME_OUT"
+node test/e2e-json.js check-current-id "$PARENT_ID" --name e2e-slug <<<"$RENAME_OUT"
 e2e_wait_until runs_check check-runs-name e2e-slug \
     || { echo "renamed run not listed: $RUNS" >&2; exit 1; }
 
@@ -154,7 +154,7 @@ e2e_wait_until projection_check "$BASH_CHILD_ID" check-shell-script 'echo opened
     || { echo "bash-first child never ran its script: $PROJECTION" >&2; exit 1; }
 
 echo ">>> the named child knows its slug and its parent"
-chat_until "[\"\",[\"state\",\"$BASH_CHILD_ID\"]]" node scripts/e2e-json.js check-state-name e2e-child >/dev/null
+chat_until "[\"\",[\"state\",\"$BASH_CHILD_ID\"]]" node test/e2e-json.js check-state-name e2e-child >/dev/null
 READ_SYS="$(chat_until "[\"\",[\"read\",\"$BASH_CHILD_ID\",\"--system\"]]" grep -q "# This session")"
 grep -q "child session by $PARENT_ID" <<<"$READ_SYS"
 
@@ -173,7 +173,7 @@ LIST_OUT="$(chat_until '["",["list","--json"]]' grep -q "$CHILD_ID")"
 grep -q "e2e-slug" <<<"$LIST_OUT"
 
 echo ">>> chat state reports an idle child with a fresh offer"
-chat_until "[\"\",[\"state\",\"$CHILD_ID\"]]" node scripts/e2e-json.js check-pending-offer "$CHILD_ID" >/dev/null
+chat_until "[\"\",[\"state\",\"$CHILD_ID\"]]" node test/e2e-json.js check-pending-offer "$CHILD_ID" >/dev/null
 
 echo ">>> chat watch times out on an idle parked child"
 WATCH_OUT="$(shell_turn "$PARENT_ID" "shell-chat-watch-timeout" \

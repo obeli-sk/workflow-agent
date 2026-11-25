@@ -1,7 +1,7 @@
 // Host-installed abort watcher for one running bash script. The session loop
 // arms a watcher around every script invocation (in workflow-js: a fresh
 // join set holding an operator-interrupt offer stub and an optional
-// watchdog delay -- see workflow/workflow-js/src/script-watch.js). The
+// watchdog delay -- see src/workflow/script-watch.js). The
 // interpreter observes the signal only at durable boundaries, after a
 // custom command completes and inside `sleep`, so nothing executing is ever
 // killed mid-command; whatever ran already stays recorded in the output.

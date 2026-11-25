@@ -20,13 +20,13 @@ esac
 source=$(nix eval --raw --impure --expr \
     '(builtins.fetchTree (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.obelisk.locked).outPath')
 if [[ "$mode" == check ]]; then
-    diff -ru "$source/$artifact" vendor/obelisk-api
+    diff -ru "$source/$artifact" src/vendor/obelisk-api
     diff -u "$source/assets/openapi/lifecycle.json" assets/schemas/obelisk-openapi.json
 else
-    mkdir -p vendor assets/schemas
-    rm -rf vendor/obelisk-api
-    cp -R "$source/$artifact" vendor/obelisk-api
-    chmod -R u+w vendor/obelisk-api
+    mkdir -p src/vendor assets/schemas
+    rm -rf src/vendor/obelisk-api
+    cp -R "$source/$artifact" src/vendor/obelisk-api
+    chmod -R u+w src/vendor/obelisk-api
     cp "$source/assets/openapi/lifecycle.json" assets/schemas/obelisk-openapi.json
     chmod u+w assets/schemas/obelisk-openapi.json
 fi

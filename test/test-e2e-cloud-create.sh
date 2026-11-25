@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-source "$ROOT/scripts/e2e-lib.sh"
+source "$ROOT/test/e2e-lib.sh"
 e2e_init "cloud-create-e2e" 28116 28191 "e2e-cloud-create-token"
 export OBELISK_CLOUD_API_TOKEN="e2e-cloud-token"
 export OBELISK_CLOUD_API_URL="http://127.0.0.1:28195/api"
@@ -91,7 +91,7 @@ params="$(jq -cn --arg script "$script" '["$ " + $script, null, null, null, null
 "$OBELISK" execution submit --api-url "$E2E_API_URL" -e "$session_id" \
     obelisk-agent:workflow/workflow.run-cancellable "$params" >/dev/null
 e2e_wait_until e2e_opened_shell_done http://127.0.0.1:28191 "$session_id"
-node scripts/e2e-json.js check-shell-script "$script" <<<"$PROJECTION"
-node scripts/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION" | jq -e '.draft_id == 42 and .env.MODE == "prod" and .parent_revision == 7'
+node test/e2e-json.js check-shell-script "$script" <<<"$PROJECTION"
+node test/e2e-json.js shell-event-stdout shell-opened-0 <<<"$PROJECTION" | jq -e '.draft_id == 42 and .env.MODE == "prod" and .parent_revision == 7'
 curl --fail --silent http://127.0.0.1:28195/stats | jq -e '.draftAttempts == {open:2,config:2,env:2}'
 "$OBELISK" execution cancel --api-url "$E2E_API_URL" "$session_id" >/dev/null

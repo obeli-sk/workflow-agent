@@ -5,7 +5,7 @@
 // `createCloud` backs obelisk-pack.js's `obelisk cloud` with the cloud
 // activities, turning child errors into plain messages.
 
-import { isDeploymentUpload } from "../../../shared/deployment-upload.js";
+import { isDeploymentUpload } from "../shared/deployment-upload.js";
 
 export function createHost(dynamic, obelisk) {
     return {

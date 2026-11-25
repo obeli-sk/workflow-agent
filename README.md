@@ -33,6 +33,9 @@ You can send messages while the agent is working. A message is queued for the
 agent's next step, and a `$ ` command runs right away. A session with no input
 for 7 days ends on its own.
 
+`just serve` uses a 2 MiB persisted-value limit for deployment manifests and
+source attachments. Obelisk writes logs to the console.
+
 ## Configuration
 
 Runtime settings use environment variables read at server start. Self API and
@@ -206,6 +209,8 @@ it in the sidebar.
 
 ## Development
 
+Application sources live in `src/`. End-to-end suites and fixtures live in `test/`.
+
 ```sh
 just test-js
 just test        # including end-to-end tests
@@ -220,4 +225,4 @@ Design notes live in [`docs/`](docs/).
 ## License
 
 Apache-2.0. The vendored just-bash port keeps its own LICENSE/NOTICE under
-`vendor/just-bash`.
+`src/vendor/just-bash`.

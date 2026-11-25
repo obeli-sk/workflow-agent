@@ -99,7 +99,7 @@ jobs:
         run: nix develop --command echo
 
       - name: obelisk server verify
-        run: nix develop --command obelisk server verify --dev --skip-db -d deployment.toml -s server.toml -a app.toml
+        run: nix develop --command obelisk server verify --dev --skip-db -d deployment.toml -a app.toml
 
   e2e:
     name: End-to-end tests
@@ -120,4 +120,4 @@ jobs:
         run: nix develop --command echo
 
       - name: e2e suites
-        run: nix develop --command node --test scripts/e2e/*.test.mjs
+        run: nix develop --command just test-e2e

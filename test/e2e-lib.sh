@@ -16,7 +16,7 @@ e2e_wait_until() {
 # Wait check: SESSION shows an input offer not yet taken; sets PROJECTION and E2E_OFFER.
 e2e_fresh_offer() {
     PROJECTION="$(run_detail "$1")" || return 1
-    E2E_OFFER="$(node "$ROOT/scripts/e2e-json.js" input-offer-id <<<"$PROJECTION" 2>/dev/null)" || return 1
+    E2E_OFFER="$(node "$ROOT/test/e2e-json.js" input-offer-id <<<"$PROJECTION" 2>/dev/null)" || return 1
     [[ -n "$E2E_OFFER" ]] && ! grep -qxF -- "$E2E_OFFER" "$E2E_TMP/used-offers" 2>/dev/null
 }
 
@@ -35,7 +35,7 @@ e2e_take_offer() {
 # Wait check: SESSION's opening shell script (shell-opened-0) finished; sets PROJECTION.
 e2e_opened_shell_done() {
     PROJECTION="$(curl --fail --silent "$1/api/runs/$2")" \
-        && node "$ROOT/scripts/e2e-json.js" check-shell-event-done shell-opened-0 <<<"$PROJECTION" 2>/dev/null
+        && node "$ROOT/test/e2e-json.js" check-shell-event-done shell-opened-0 <<<"$PROJECTION" 2>/dev/null
 }
 
 e2e_init() {
@@ -78,9 +78,9 @@ e2e_github_listening() {
     [[ -n "$E2E_GITHUB_PORT" ]]
 }
 
-# Serves each owner/repo=DIR through scripts/e2e-github-server.mjs and points the mount activity at it.
+# Serves each owner/repo=DIR through test/e2e-github-server.mjs and points the mount activity at it.
 e2e_start_github_mock() {
-    node "$ROOT/scripts/e2e-github-server.mjs" "$@" > "$E2E_TMP/github.log" 2>&1 &
+    node "$ROOT/test/e2e-github-server.mjs" "$@" > "$E2E_TMP/github.log" 2>&1 &
     E2E_GITHUB_PID=$!
     e2e_wait_until e2e_github_listening || { echo "fake github did not start: $(cat "$E2E_TMP/github.log")" >&2; return 1; }
     export GITHUB_API_URL="http://127.0.0.1:${E2E_GITHUB_PORT}"
@@ -114,11 +114,17 @@ e2e_server_settled() {
 
 e2e_start_server() {
     local deployment="${1:-$ROOT/deployment.toml}"
+    local -a server_args=()
+    if [[ -n "${E2E_SERVER_CONFIG:-}" ]]; then
+        server_args=(--server-config "$E2E_SERVER_CONFIG")
+    else
+        export OBELISK__LIMITS__MAX_PERSISTED_VALUE_SIZE__MIB="${OBELISK__LIMITS__MAX_PERSISTED_VALUE_SIZE__MIB:-2}"
+    fi
 
     echo ">>> starting ISOLATED obelisk server on ${E2E_API_URL} (sqlite: ${E2E_TMP}/obelisk-sqlite)"
     # --dev starts the `internal` server, which serves the UI, without credentials.
     "$OBELISK" server run --dev \
-        --server-config "${E2E_SERVER_CONFIG:-$ROOT/server.toml}" \
+        "${server_args[@]}" \
         --app-config "${E2E_APP_CONFIG:-$ROOT/app.toml}" \
         --deployment "$deployment" \
         > "$E2E_TMP/server.log" 2>&1 &

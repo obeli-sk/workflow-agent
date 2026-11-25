@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-source "$ROOT/scripts/e2e-lib.sh"
+source "$ROOT/test/e2e-lib.sh"
 
 OUTPUT_DIR="$(realpath -m "${1:-/tmp/workflow-agent-replay-benchmark}")"
 mkdir -p "$OUTPUT_DIR"
@@ -25,7 +25,7 @@ wait_for_offer() {
     local deadline=$((SECONDS + 60)) projection
     while true; do
         projection="$(detail)"
-        OFFER_ID="$(node scripts/e2e-json.js input-offer-id <<<"$projection")"
+        OFFER_ID="$(node test/e2e-json.js input-offer-id <<<"$projection")"
         [[ -n "$OFFER_ID" ]] && break
         [[ $SECONDS -lt $deadline ]] || { echo 'Input offer timed out' >&2; exit 1; }
         sleep 0.2
@@ -54,9 +54,9 @@ BASH
     deadline=$((SECONDS + 60))
     while true; do
         projection="$(detail)"
-        if node scripts/e2e-json.js check-shell-event-done "$SHELL_ID" <<<"$projection"; then
+        if node test/e2e-json.js check-shell-event-done "$SHELL_ID" <<<"$projection"; then
             jq -e --arg id "$SHELL_ID" '.transcript.shell_events[] | select(.id==$id) | .result.exit_code==0' <<<"$projection" >/dev/null
-            stdout="$(node scripts/e2e-json.js shell-event-stdout "$SHELL_ID" <<<"$projection")"
+            stdout="$(node test/e2e-json.js shell-event-stdout "$SHELL_ID" <<<"$projection")"
             [[ "$stdout" == "2001000"$'\n'"1111"$'\n'"$turn" ]] || {
                 echo "Unexpected shell output: $stdout" >&2; exit 1;
             }

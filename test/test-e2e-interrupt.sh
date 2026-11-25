@@ -16,7 +16,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-source "$ROOT/scripts/e2e-lib.sh"
+source "$ROOT/test/e2e-lib.sh"
 
 API_PORT=28019
 UI_PORT=28094
@@ -26,7 +26,7 @@ export OBELISK_API_URL="$E2E_API_URL"
 export AGENT_MODELS='[{"id":"fake","label":"Fake","api_type":"openai-chat-completions"},{"id":"fake-loop","label":"Fake Loop","api_type":"openai-chat-completions"}]'
 export LLM_BASE_URL="http://127.0.0.1:${LLM_PORT}"
 
-node scripts/e2e-llm-server.mjs "$LLM_PORT" >"$E2E_TMP/llm.log" 2>&1 &
+node test/e2e-llm-server.mjs "$LLM_PORT" >"$E2E_TMP/llm.log" 2>&1 &
 E2E_LLM_PID=$!
 cleanup() {
     kill "$E2E_LLM_PID" 2>/dev/null || true
@@ -49,7 +49,7 @@ projection_check() {
     local session_id="$1"
     shift
     PROJECTION="$(run_detail "$session_id")" \
-        && node scripts/e2e-json.js "$@" <<<"$PROJECTION" >/dev/null 2>&1
+        && node test/e2e-json.js "$@" <<<"$PROJECTION" >/dev/null 2>&1
 }
 
 # Polls SUBJECT_ID's projection until the checker passes; PROJECTION keeps that snapshot.
@@ -70,13 +70,13 @@ INJECTION_ID="$(e2e_take_offer "$SESSION_ID")"
 
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
-    -d "$(node scripts/e2e-json.js shell-input "$INJECTION_ID" shell-int-1 \
+    -d "$(node test/e2e-json.js shell-input "$INJECTION_ID" shell-int-1 \
         'echo before-stop; sleep 30; echo unreachable')" \
     "$UI_BASE/api/input/$SESSION_ID" >/dev/null
 
 SUBJECT_ID="$SESSION_ID"
 wait_for "interrupt offer" check-interrupt-offer shell-int-1
-INTERRUPT_OFFER="$(node scripts/e2e-json.js interrupt-offer shell-int-1 <<<"$PROJECTION")"
+INTERRUPT_OFFER="$(node test/e2e-json.js interrupt-offer shell-int-1 <<<"$PROJECTION")"
 
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
@@ -91,10 +91,10 @@ echo ">>> operator interrupt E2E PASS: script stopped at exit 130 with output pr
 INJECTION_ID="$(e2e_take_offer "$SESSION_ID")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
-    -d "$(node scripts/e2e-json.js shell-input "$INJECTION_ID" shell-int-2 'echo still-alive')" \
+    -d "$(node test/e2e-json.js shell-input "$INJECTION_ID" shell-int-2 'echo still-alive')" \
     "$UI_BASE/api/input/$SESSION_ID" >/dev/null
 wait_for "follow-up command completion" check-shell-event-done shell-int-2
-ALIVE_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-int-2 <<<"$PROJECTION")"
+ALIVE_OUT="$(node test/e2e-json.js shell-event-stdout shell-int-2 <<<"$PROJECTION")"
 [[ "$ALIVE_OUT" == "still-alive" ]] || {
     echo "follow-up output wrong: $ALIVE_OUT" >&2
     exit 1
@@ -137,10 +137,10 @@ echo ">>> composer stop E2E PASS: the agent-loop turn stopped mid-iteration"
 FOLLOWUP_OFFER="$(e2e_take_offer "$LOOP_SESSION")"
 curl --fail --silent --show-error \
     -H 'content-type: application/json' \
-    -d "$(node scripts/e2e-json.js shell-input "$FOLLOWUP_OFFER" shell-loop-followup 'echo still-alive-loop')" \
+    -d "$(node test/e2e-json.js shell-input "$FOLLOWUP_OFFER" shell-loop-followup 'echo still-alive-loop')" \
     "$UI_BASE/api/input/$LOOP_SESSION" >/dev/null
 wait_for "follow-up command completion after stop" check-shell-event-done shell-loop-followup
-FOLLOWUP_OUT="$(node scripts/e2e-json.js shell-event-stdout shell-loop-followup <<<"$PROJECTION")"
+FOLLOWUP_OUT="$(node test/e2e-json.js shell-event-stdout shell-loop-followup <<<"$PROJECTION")"
 [[ "$FOLLOWUP_OUT" == "still-alive-loop" ]] || {
     echo "follow-up output wrong after composer stop: $FOLLOWUP_OUT" >&2
     exit 1

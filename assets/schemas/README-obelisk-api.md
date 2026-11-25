@@ -1,6 +1,6 @@
 # Obelisk API client
 
-`obelisk-openapi.json` and `vendor/obelisk-api` are imported from the `obelisk`
+`obelisk-openapi.json` and `src/vendor/obelisk-api` are imported from the `obelisk`
 flake input locked in `flake.lock`, the same revision that provides the Obelisk
 binary. `obelisk-api.language` selects the Rust or JavaScript package.
 Only server info, app policy and deployment switch are in this first slice.

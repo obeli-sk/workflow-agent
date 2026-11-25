@@ -3,8 +3,8 @@
 // --test` (see session-logic.test.js), unlike session.js itself which can
 // only be exercised by deploying it.
 
-import { parseScript } from "../../../vendor/just-bash/src/parser.js";
-import { utf8Encode } from "../../../vendor/just-bash/src/utf8.js";
+import { parseScript } from "../vendor/just-bash/src/parser.js";
+import { utf8Encode } from "../vendor/just-bash/src/utf8.js";
 
 export const MAX_TOOL_RESULT_BYTES = 96 * 1024;
 export const STEP_WARNING_FRACTION = 3;

@@ -66,7 +66,7 @@ async function dispatch(stdin, args) {
         case "send": return cmdSend(stdin, rest);
         case "interrupt": return cmdInterrupt(rest);
         case "create": return cmdCreate(stdin, rest);
-        // Answered by the session workflow wrapper (see workflow/workflow-js/src/chat.js); reaching
+        // Answered by the session workflow wrapper (see src/workflow/chat.js); reaching
         // this activity means there is no wrapping session to report, rename,
         // or durably block for.
         case "current":

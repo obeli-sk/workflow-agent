@@ -2,7 +2,7 @@
 // `chat` speaks HTTP to this Obelisk instance but cannot know which session
 // invoked it, nor schedule child executions; `commandHandler` wraps that
 // program's generic handler (`delegate`, built exactly like this module's own
-// `commandHandler` -- see vendor/just-bash/src/obelisk-program.js's header
+// `commandHandler` -- see src/vendor/just-bash/src/obelisk-program.js's header
 // comment) and intercepts what only a session can answer: `current`
 // (identity), `rename` (slug), and `create` (child scheduling by default).
 // Everything else delegates to the activity unchanged.

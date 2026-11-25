@@ -30,7 +30,7 @@ export class ScriptWatchGuard {
         return null;
     }
 
-    // Handle for `Bash#setScriptWatch`, matching vendor/just-bash/src/
+    // Handle for `Bash#setScriptWatch`, matching src/vendor/just-bash/src/
     // watch.js's duck-typed ScriptWatch contract (`poll()` / `sleep(ms)`).
     watcher() {
         return {
