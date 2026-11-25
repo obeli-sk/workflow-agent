@@ -1,8 +1,5 @@
 # workflow-agent
 
-> [!NOTE]
-> **Preview only.** APIs and design are unstable and subject to change.
-
 A coding agent that runs as a durable [Obelisk](https://obeli.sk) workflow. Each
 chat session has a persistent virtual filesystem and a single tool, `bash`, through
 which the agent explores, builds and deploys Obelisk apps. You can use the same
