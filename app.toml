@@ -1,4 +1,4 @@
-app_name = "workflow-agent"
+app_name = "workflow_agent"
 
 [cloud]
 memory.mib = 512
